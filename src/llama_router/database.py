@@ -202,6 +202,28 @@ class Database:
             rows = await cursor.fetchall()
             return [_row_to_benchmark(r) for r in rows]
 
+    async def get_all_benchmarks(self) -> list[dict]:
+        """Return all benchmarks with provider names, ordered by model then slowest first."""
+        async with self.db.execute(
+            "SELECT b.*, p.name AS provider_name "
+            "FROM benchmarks b "
+            "JOIN providers p ON p.id = b.provider_id "
+            "ORDER BY b.model_name ASC, b.tokens_per_second ASC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "provider_id": r["provider_id"],
+                    "provider_name": r["provider_name"],
+                    "model_name": r["model_name"],
+                    "startup_time_ms": r["startup_time_ms"],
+                    "tokens_per_second": r["tokens_per_second"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ]
+
 
 def _row_to_provider(row: aiosqlite.Row) -> Provider:
     return Provider(

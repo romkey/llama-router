@@ -44,87 +44,241 @@
     </div>
 </div>
 
-<h4 class="mb-3">Providers</h4>
-<div class="row g-3 mb-5">
-    {% for info in providers %}
-    <div class="col-md-4">
-        <div class="card provider-card h-100">
-            <div class="card-body">
-                <div class="d-flex justify-content-between align-items-start mb-2">
-                    <h5 class="card-title mb-0">
-                        <a href="/providers/{{ info.provider.id }}" class="text-decoration-none">
-                            {{ info.provider.name }}
-                        </a>
-                    </h5>
-                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
-                        {{ info.provider.status.value }}
-                    </span>
-                </div>
-                <p class="text-muted small mb-2">
-                    <i class="bi bi-link-45deg me-1"></i>{{ info.provider.url }}
-                </p>
-                <p class="mb-1">
-                    <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
-                </p>
-                {% if info.active_requests > 0 %}
-                <p class="text-warning mb-1">
-                    <i class="bi bi-activity me-1"></i>{{ info.active_requests }} active request{{ 's' if info.active_requests != 1 }}
-                </p>
-                {% endif %}
-                {% if info.models %}
-                <div class="mt-2">
-                    {% for m in info.models[:5] %}
-                    <span class="badge bg-body-secondary text-body me-1 mb-1">{{ m.name }}</span>
-                    {% endfor %}
-                    {% if info.models | length > 5 %}
-                    <span class="badge bg-body-secondary text-body">+{{ info.models | length - 5 }} more</span>
-                    {% endif %}
-                </div>
-                {% endif %}
-            </div>
-            <div class="card-footer bg-transparent border-top-0">
-                <div class="d-flex gap-2">
-                    <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary flex-fill">Details</a>
-                    <form method="post" action="/providers/{{ info.provider.id }}/remove" class="flex-fill">
-                        <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Remove this provider?')">Remove</button>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
-    {% else %}
-    <div class="col-12">
-        <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i>No providers configured yet. Add one to get started.
-        </div>
-    </div>
-    {% endfor %}
-</div>
+<!-- Main tabs -->
+<ul class="nav nav-tabs mb-4" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="providers-tab" data-bs-toggle="tab" data-bs-target="#providers-pane" type="button" role="tab">
+            <i class="bi bi-hdd-stack me-1"></i>Providers
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="benchmarks-tab" data-bs-toggle="tab" data-bs-target="#benchmarks-pane" type="button" role="tab">
+            <i class="bi bi-speedometer me-1"></i>Benchmarks
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane" type="button" role="tab">
+            <i class="bi bi-cpu me-1"></i>Models
+        </button>
+    </li>
+</ul>
 
-{% if models %}
-<h4 class="mb-3">Available Models</h4>
-<div class="table-responsive">
-    <table class="table table-hover">
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Size</th>
-                <th>Modified</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for m in models %}
-            <tr>
-                <td><code>{{ m.name }}</code></td>
-                <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
-                <td>{{ m.modified_at or "—" }}</td>
-            </tr>
+<div class="tab-content">
+
+    <!-- ==================== PROVIDERS TAB ==================== -->
+    <div class="tab-pane fade show active" id="providers-pane" role="tabpanel">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h4 class="mb-0">Providers</h4>
+            <div class="btn-group btn-group-sm" role="group" aria-label="View toggle">
+                <button type="button" class="btn btn-outline-secondary active" id="btn-card-view" onclick="switchProviderView('card')" title="Card view">
+                    <i class="bi bi-grid-3x2-gap-fill"></i>
+                </button>
+                <button type="button" class="btn btn-outline-secondary" id="btn-list-view" onclick="switchProviderView('list')" title="List view">
+                    <i class="bi bi-list-ul"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Card view (expanded) -->
+        <div id="providers-card-view">
+            <div class="row g-3 mb-3">
+                {% for info in providers %}
+                <div class="col-md-4">
+                    <div class="card provider-card h-100">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <h5 class="card-title mb-0">
+                                    <a href="/providers/{{ info.provider.id }}" class="text-decoration-none">
+                                        {{ info.provider.name }}
+                                    </a>
+                                </h5>
+                                <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                    {{ info.provider.status.value }}
+                                </span>
+                            </div>
+                            <p class="text-muted small mb-2">
+                                <i class="bi bi-link-45deg me-1"></i>{{ info.provider.url }}
+                            </p>
+                            <p class="mb-1">
+                                <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
+                            </p>
+                            {% if info.active_requests > 0 %}
+                            <p class="text-warning mb-1">
+                                <i class="bi bi-activity me-1"></i>{{ info.active_requests }} active request{{ 's' if info.active_requests != 1 }}
+                            </p>
+                            {% endif %}
+                            {% if info.models %}
+                            <div class="mt-2">
+                                {% for m in info.models[:5] %}
+                                <span class="badge bg-body-secondary text-body me-1 mb-1">{{ m.name }}</span>
+                                {% endfor %}
+                                {% if info.models | length > 5 %}
+                                <span class="badge bg-body-secondary text-body">+{{ info.models | length - 5 }} more</span>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="card-footer bg-transparent border-top-0">
+                            <div class="d-flex gap-2">
+                                <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary flex-fill">Details</a>
+                                <form method="post" action="/providers/{{ info.provider.id }}/remove" class="flex-fill">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Remove this provider?')">Remove</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% else %}
+                <div class="col-12">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle me-2"></i>No providers configured yet. Add one to get started.
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- List view (compact) -->
+        <div id="providers-list-view" style="display: none;">
+            {% if providers %}
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-3">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>URL</th>
+                            <th>Status</th>
+                            <th>Models</th>
+                            <th>Active</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for info in providers %}
+                        <tr>
+                            <td>
+                                <a href="/providers/{{ info.provider.id }}" class="text-decoration-none fw-semibold">
+                                    {{ info.provider.name }}
+                                </a>
+                            </td>
+                            <td class="text-muted small">{{ info.provider.url }}</td>
+                            <td>
+                                <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                    {{ info.provider.status.value }}
+                                </span>
+                            </td>
+                            <td>{{ info.models | length }}</td>
+                            <td>
+                                {% if info.active_requests > 0 %}
+                                <span class="text-warning">{{ info.active_requests }}</span>
+                                {% else %}
+                                0
+                                {% endif %}
+                            </td>
+                            <td class="text-end">
+                                <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary me-1">Details</a>
+                                <form method="post" action="/providers/{{ info.provider.id }}/remove" class="d-inline">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this provider?')">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle me-2"></i>No providers configured yet. Add one to get started.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- ==================== BENCHMARKS TAB ==================== -->
+    <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel">
+        {% if benchmarks_by_model %}
+            {% for model_name, benchmarks in benchmarks_by_model | dictsort %}
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h5 class="mb-0"><code>{{ model_name }}</code></h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Provider</th>
+                                    <th>Tokens/s</th>
+                                    <th>Startup</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for b in benchmarks %}
+                                <tr>
+                                    <td>
+                                        <a href="/providers/{{ b.provider_id }}" class="text-decoration-none">
+                                            {{ b.provider_name }}
+                                        </a>
+                                    </td>
+                                    <td>{{ "%.1f" | format(b.tokens_per_second) if b.tokens_per_second else "—" }}</td>
+                                    <td>{{ "%.0f ms" | format(b.startup_time_ms) if b.startup_time_ms else "—" }}</td>
+                                    <td class="text-muted small">{{ b.created_at or "—" }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
             {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endif %}
+        {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle me-2"></i>No benchmarks yet. Go to a provider's detail page and run benchmarks on individual models.
+        </div>
+        {% endif %}
+    </div>
 
+    <!-- ==================== MODELS TAB ==================== -->
+    <div class="tab-pane fade" id="models-pane" role="tabpanel">
+        {% if models %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Size</th>
+                        <th>Modified</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for m in models %}
+                    {% set base_name = m.name.split(':')[0] %}
+                    <tr>
+                        <td>
+                            <code>
+                                <a href="https://huggingface.co/{{ base_name }}" target="_blank" rel="noopener" class="text-decoration-none">
+                                    {{ m.name }} <i class="bi bi-box-arrow-up-right small"></i>
+                                </a>
+                            </code>
+                        </td>
+                        <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
+                        <td>{{ m.modified_at or "—" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle me-2"></i>No models available. Add a provider to discover models.
+        </div>
+        {% endif %}
+    </div>
+
+</div>
+
+<!-- Add Provider Modal -->
 <div class="modal fade" id="addProviderModal" tabindex="-1">
     <div class="modal-dialog">
         <form method="post" action="/providers/add" class="modal-content">
@@ -149,4 +303,32 @@
         </form>
     </div>
 </div>
+
+<script>
+function switchProviderView(view) {
+    const cardView = document.getElementById('providers-card-view');
+    const listView = document.getElementById('providers-list-view');
+    const btnCard = document.getElementById('btn-card-view');
+    const btnList = document.getElementById('btn-list-view');
+
+    if (view === 'card') {
+        cardView.style.display = '';
+        listView.style.display = 'none';
+        btnCard.classList.add('active');
+        btnList.classList.remove('active');
+    } else {
+        cardView.style.display = 'none';
+        listView.style.display = '';
+        btnCard.classList.remove('active');
+        btnList.classList.add('active');
+    }
+
+    localStorage.setItem('providerView', view);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const saved = localStorage.getItem('providerView');
+    if (saved) switchProviderView(saved);
+});
+</script>
 {% endblock %}

@@ -17,11 +17,23 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     pm = deps.get_pm()
+    db = deps.get_db()
     infos = await pm.list_provider_infos()
-    all_models = await deps.get_db().list_all_models()
+    all_models = await db.list_all_models()
+    all_benchmarks = await db.get_all_benchmarks()
+
+    benchmarks_by_model: dict[str, list[dict]] = {}
+    for b in all_benchmarks:
+        benchmarks_by_model.setdefault(b["model_name"], []).append(b)
+
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "providers": infos, "models": all_models},
+        {
+            "request": request,
+            "providers": infos,
+            "models": all_models,
+            "benchmarks_by_model": benchmarks_by_model,
+        },
     )
 
 
