@@ -61,6 +61,31 @@ class ProviderManager:
 
         return provider
 
+    async def update_provider(self, provider_id: int, name: str, url: str) -> None:
+        old_provider = await self._db.get_provider(provider_id)
+        await self._db.update_provider(provider_id, name, url)
+
+        if old_provider and old_provider.url.rstrip("/") != url.rstrip("/"):
+            if provider_id in self._clients:
+                await self._clients[provider_id].close()
+            client = OllamaClient(url)
+            self._clients[provider_id] = client
+            try:
+                await self._discover_provider(provider_id, client)
+                await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
+            except Exception:
+                logger.exception("Failed to discover updated provider %d", provider_id)
+                await self._db.update_provider_status(
+                    provider_id, ProviderStatus.OFFLINE
+                )
+
+    async def delete_remote_model(self, provider_id: int, model_name: str) -> None:
+        client = self._clients.get(provider_id)
+        if not client:
+            raise ValueError("Provider not found")
+        await client.delete_model(model_name)
+        await self._discover_provider(provider_id, client)
+
     async def remove_provider(self, provider_id: int) -> None:
         if provider_id in self._clients:
             await self._clients[provider_id].close()

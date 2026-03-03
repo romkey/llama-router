@@ -91,6 +91,10 @@ class OllamaClient:
             async for chunk in resp.aiter_bytes():
                 yield chunk
 
+    async def delete_model(self, model: str) -> None:
+        resp = await self._http.request("DELETE", "/api/delete", json={"model": model})
+        resp.raise_for_status()
+
     async def benchmark_chat(self, model: str, prompt: str) -> dict[str, float]:
         """Run a simple benchmark returning startup_time_ms and tokens_per_second."""
         body = {

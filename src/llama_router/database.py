@@ -95,6 +95,14 @@ class Database:
             rows = await cursor.fetchall()
             return [_row_to_provider(r) for r in rows]
 
+    async def update_provider(self, provider_id: int, name: str, url: str) -> None:
+        url = url.rstrip("/")
+        await self.db.execute(
+            "UPDATE providers SET name = ?, url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (name, url, provider_id),
+        )
+        await self.db.commit()
+
     async def update_provider_status(
         self, provider_id: int, status: ProviderStatus
     ) -> None:

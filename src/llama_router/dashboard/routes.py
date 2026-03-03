@@ -59,6 +59,16 @@ async def add_provider(name: str = Form(...), url: str = Form(...)):
     return RedirectResponse(url="/", status_code=303)
 
 
+@router.post("/providers/{provider_id}/edit")
+async def edit_provider(provider_id: int, name: str = Form(...), url: str = Form(...)):
+    pm = deps.get_pm()
+    try:
+        await pm.update_provider(provider_id, name, url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
 @router.post("/providers/{provider_id}/remove")
 async def remove_provider(provider_id: int):
     pm = deps.get_pm()
@@ -79,6 +89,16 @@ async def benchmark_model(provider_id: int, model_name: str):
     result = await pm.benchmark_provider(provider_id, model_name)
     if not result:
         raise HTTPException(status_code=500, detail="Benchmark failed")
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
+@router.post("/providers/{provider_id}/delete-model/{model_name:path}")
+async def delete_model(provider_id: int, model_name: str):
+    pm = deps.get_pm()
+    try:
+        await pm.delete_remote_model(provider_id, model_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
