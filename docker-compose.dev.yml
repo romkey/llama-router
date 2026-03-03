@@ -1,0 +1,9 @@
+services:
+  test:
+    build:
+      context: .
+      target: base
+    command: sh -c "pip install '.[dev]' && black --check src/ tests/ && pytest -v"
+    volumes:
+      - .:/app
+    working_dir: /app

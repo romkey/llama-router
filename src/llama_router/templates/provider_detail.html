@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}{{ info.provider.name }} - llama-router{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Dashboard</a></li>
+        <li class="breadcrumb-item active">{{ info.provider.name }}</li>
+    </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>
+            {{ info.provider.name }}
+            <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle">
+                {{ info.provider.status.value }}
+            </span>
+        </h2>
+        <p class="text-muted mb-0">
+            <i class="bi bi-link-45deg me-1"></i>{{ info.provider.url }}
+        </p>
+    </div>
+    <div class="d-flex gap-2">
+        <form method="post" action="/providers/{{ info.provider.id }}/refresh">
+            <button class="btn btn-outline-primary">
+                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+            </button>
+        </form>
+        <form method="post" action="/providers/{{ info.provider.id }}/remove">
+            <button class="btn btn-outline-danger" onclick="return confirm('Remove this provider?')">
+                <i class="bi bi-trash me-1"></i>Remove
+            </button>
+        </form>
+    </div>
+</div>
+
+{% if info.active_requests > 0 %}
+<div class="alert alert-warning">
+    <i class="bi bi-activity me-2"></i>{{ info.active_requests }} active request{{ 's' if info.active_requests != 1 }}
+</div>
+{% endif %}
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Models ({{ info.models | length }})</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if info.models %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Size</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for m in info.models %}
+                            <tr>
+                                <td><code>{{ m.name }}</code></td>
+                                <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
+                                <td>
+                                    <form method="post" action="/providers/{{ info.provider.id }}/benchmark/{{ m.name }}" class="d-inline">
+                                        <button class="btn btn-sm btn-outline-info" title="Benchmark">
+                                            <i class="bi bi-speedometer"></i>
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted p-3 mb-0">No models found on this provider.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">Pull Model</h5>
+            </div>
+            <div class="card-body">
+                <form method="post" action="/providers/{{ info.provider.id }}/pull" class="d-flex gap-2">
+                    <input type="text" class="form-control" name="model" placeholder="e.g. llama3:8b" required>
+                    <button class="btn btn-primary text-nowrap">
+                        <i class="bi bi-download me-1"></i>Pull
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Benchmarks</h5>
+            </div>
+            <div class="card-body p-0">
+                {% if info.benchmarks %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Model</th>
+                                <th>Startup</th>
+                                <th>Tokens/s</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for b in info.benchmarks %}
+                            <tr>
+                                <td><code>{{ b.model_name }}</code></td>
+                                <td>{{ "%.0f ms" | format(b.startup_time_ms) if b.startup_time_ms else "—" }}</td>
+                                <td>{{ "%.1f" | format(b.tokens_per_second) if b.tokens_per_second else "—" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-muted p-3 mb-0">No benchmarks yet. Click the speedometer icon on a model to run one.</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="mb-0">Info</h5>
+            </div>
+            <ul class="list-group list-group-flush">
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Status</span>
+                    <span class="status-{{ info.provider.status.value }}">{{ info.provider.status.value }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Active Requests</span>
+                    <span>{{ info.active_requests }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Models</span>
+                    <span>{{ info.models | length }}</span>
+                </li>
+                {% if info.provider.created_at %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Added</span>
+                    <span>{{ info.provider.created_at }}</span>
+                </li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}

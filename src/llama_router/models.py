@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+
+from pydantic import BaseModel
+
+
+class ProviderStatus(str, Enum):
+    IDLE = "idle"
+    BUSY = "busy"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
+
+
+class Provider(BaseModel):
+    id: int | None = None
+    name: str
+    url: str
+    status: ProviderStatus = ProviderStatus.UNKNOWN
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ProviderModel(BaseModel):
+    id: int | None = None
+    provider_id: int
+    name: str
+    size: int | None = None
+    digest: str | None = None
+    modified_at: str | None = None
+    details: dict | None = None
+
+
+class BenchmarkResult(BaseModel):
+    id: int | None = None
+    provider_id: int
+    model_name: str
+    startup_time_ms: float | None = None
+    tokens_per_second: float | None = None
+    created_at: datetime | None = None
+
+
+class ProviderInfo(BaseModel):
+    provider: Provider
+    models: list[ProviderModel] = []
+    benchmarks: list[BenchmarkResult] = []
+    active_requests: int = 0

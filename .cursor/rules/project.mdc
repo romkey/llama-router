@@ -1,0 +1,74 @@
+---
+description: Project context and general conventions for llama-router
+alwaysApply: true
+---
+
+# llama-router
+
+An Ollama router that aggregates multiple Ollama backends behind a single API.
+
+## Architecture
+
+- Built with FastAPI serving both the dashboard and API
+- Dashboard uses server-side rendered Jinja2 templates with Bootstrap styling
+- Dashboard on port 80 for management and monitoring, shows visual representation of all providers with status, models, and performance data
+- Ollama-compatible API on port 11434 (standard Ollama port)
+- When a new backend is configured, the router queries it for available models and capabilities, and caches that information
+- Authentication is handled by an external reverse proxy; the app itself does not implement auth
+
+## Ollama API
+
+- Not a full pass-through proxy — supports a focused subset of the Ollama API
+- Supported use cases: running LLMs, embedding/encoding models
+- Key endpoints: `/api/chat`, `/api/embeddings`, `/api/pull`, `/api/tags`, and introspection endpoints
+- Does not support `/api/generate` at this time
+- Aggregates model lists across all providers for `/api/tags`
+
+## Providers
+
+- Backends are added, removed, and configured through the web dashboard
+- Tracks all available Ollama backend providers and their current status (idle, busy, offline)
+- Tracks which providers are currently in use and serving requests
+- Periodically health-checks providers to detect when they go offline or come back online
+- Discovers and records what models each provider has, along with hardware/software capabilities
+- Can automatically benchmark providers, measuring startup time and tokens-per-second performance
+- Stores benchmark results persistently so performance data survives restarts
+
+## Routing
+
+- When multiple providers have the same model, route to the least-busy, most-capable provider
+- Use benchmark data (tokens/sec, startup time) to rank provider capability
+- Fall back gracefully when preferred provider is unavailable
+
+## General Conventions
+
+- Use Python 3.11+
+- Prefer type hints on all function signatures
+- Use `pyproject.toml` for project metadata and dependencies
+- Use virtual environments for dependency isolation
+- Write docstrings for public modules, classes, and functions
+- Keep functions focused and under ~50 lines
+- Prefer composition over inheritance
+
+## Lint
+
+- Use black to lint the code
+- Keep code passing lint
+
+## Docker
+
+- Provide an example compose file for users
+- Provide a compose file for doing tests and lint during development
+
+## GitHub
+
+- GitHub workflow should run tests and linting, then build and push a Docker image to GHCR
+
+## Version
+
+- Semantic versioning
+- Git tags with version
+
+## Database and Data Persistence
+
+- SQLite3

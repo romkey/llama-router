@@ -1,0 +1,14 @@
+services:
+  llama-router:
+    build: .
+    ports:
+      - "80:80"
+      - "11434:11434"
+    volumes:
+      - llama-router-data:/app/data
+    environment:
+      LLAMA_ROUTER_DATABASE_PATH: /app/data/llama_router.db
+    restart: unless-stopped
+
+volumes:
+  llama-router-data:

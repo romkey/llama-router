@@ -1,0 +1,39 @@
+---
+description: Python coding standards
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python Standards
+
+## Style
+
+- Follow PEP 8 conventions
+- Use `snake_case` for functions and variables, `PascalCase` for classes
+- Use `UPPER_SNAKE_CASE` for constants
+- Prefer f-strings over `.format()` or `%` formatting
+- Use `pathlib.Path` instead of `os.path`
+
+## Imports
+
+- Group imports: stdlib, third-party, local (separated by blank lines)
+- Use absolute imports over relative imports
+- Avoid wildcard imports (`from module import *`)
+
+## Error Handling
+
+- Catch specific exceptions, never bare `except:`
+- Use custom exception classes for domain errors
+- Log errors with context before re-raising
+
+## Async
+
+- Use `async`/`await` for I/O-bound operations
+- Prefer `asyncio` patterns over threading for concurrency
+
+## Testing
+
+- Use `pytest` for tests
+- Name test files `test_*.py` and test functions `test_*`
+- Use fixtures for shared setup
+- Aim for clear arrange-act-assert structure
