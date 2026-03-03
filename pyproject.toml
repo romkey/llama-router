@@ -15,6 +15,7 @@ dependencies = [
     "jinja2",
     "pydantic",
     "pydantic-settings",
+    "python-multipart",
 ]
 
 [project.optional-dependencies]
