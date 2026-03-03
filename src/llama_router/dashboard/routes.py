@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 
-from .app import templates
 from . import deps
+
+_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
 router = APIRouter()
 
