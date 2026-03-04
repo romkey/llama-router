@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     dashboard_port: int = 80
     api_host: str = "0.0.0.0"
     api_port: int = 11434
+    llamacpp_host: str = "0.0.0.0"
+    llamacpp_port: int = 8080
     health_check_interval_seconds: int = 30
     benchmark_prompt: str = "Write a short sentence about the weather."
 

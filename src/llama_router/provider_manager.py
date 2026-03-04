@@ -8,12 +8,14 @@ from collections import defaultdict
 
 from .config import settings
 from .database import Database
+from .llamacpp_client import LlamaCppClient
 from .models import (
     BenchmarkResult,
     Provider,
     ProviderInfo,
     ProviderModel,
     ProviderStatus,
+    ProviderType,
 )
 from .ollama_client import OllamaClient
 
@@ -23,7 +25,8 @@ logger = logging.getLogger(__name__)
 class ProviderManager:
     def __init__(self, db: Database):
         self._db = db
-        self._clients: dict[int, OllamaClient] = {}
+        self._ollama_clients: dict[int, OllamaClient] = {}
+        self._llamacpp_clients: dict[int, LlamaCppClient] = {}
         self._active_requests: dict[int, int] = defaultdict(int)
         self._health_task: asyncio.Task | None = None
 
@@ -31,7 +34,7 @@ class ProviderManager:
         providers = await self._db.list_providers()
         for p in providers:
             assert p.id is not None
-            self._clients[p.id] = OllamaClient(p.url)
+            self._create_clients(p)
         self._health_task = asyncio.create_task(self._health_check_loop())
 
     async def stop(self) -> None:
@@ -41,17 +44,40 @@ class ProviderManager:
                 await self._health_task
             except asyncio.CancelledError:
                 pass
-        for client in self._clients.values():
+        for client in self._ollama_clients.values():
+            await client.close()
+        for client in self._llamacpp_clients.values():
             await client.close()
 
-    async def add_provider(self, name: str, url: str) -> Provider:
-        provider = await self._db.add_provider(name, url)
+    def _create_clients(self, provider: Provider) -> None:
         assert provider.id is not None
-        client = OllamaClient(url)
-        self._clients[provider.id] = client
+        if provider.supports_ollama:
+            self._ollama_clients[provider.id] = OllamaClient(provider.url)
+        if provider.supports_llamacpp:
+            url = provider.llamacpp_url or provider.url
+            self._llamacpp_clients[provider.id] = LlamaCppClient(url)
+
+    async def _close_clients(self, provider_id: int) -> None:
+        if provider_id in self._ollama_clients:
+            await self._ollama_clients[provider_id].close()
+            del self._ollama_clients[provider_id]
+        if provider_id in self._llamacpp_clients:
+            await self._llamacpp_clients[provider_id].close()
+            del self._llamacpp_clients[provider_id]
+
+    async def add_provider(
+        self,
+        name: str,
+        url: str,
+        provider_type: ProviderType = ProviderType.OLLAMA,
+        llamacpp_url: str | None = None,
+    ) -> Provider:
+        provider = await self._db.add_provider(name, url, provider_type, llamacpp_url)
+        assert provider.id is not None
+        self._create_clients(provider)
 
         try:
-            await self._discover_provider(provider.id, client)
+            await self._discover_provider(provider)
             await self._db.update_provider_status(provider.id, ProviderStatus.IDLE)
             provider.status = ProviderStatus.IDLE
         except Exception:
@@ -61,35 +87,39 @@ class ProviderManager:
 
         return provider
 
-    async def update_provider(self, provider_id: int, name: str, url: str) -> None:
-        old_provider = await self._db.get_provider(provider_id)
-        await self._db.update_provider(provider_id, name, url)
-
-        if old_provider and old_provider.url.rstrip("/") != url.rstrip("/"):
-            if provider_id in self._clients:
-                await self._clients[provider_id].close()
-            client = OllamaClient(url)
-            self._clients[provider_id] = client
-            try:
-                await self._discover_provider(provider_id, client)
-                await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
-            except Exception:
-                logger.exception("Failed to discover updated provider %d", provider_id)
-                await self._db.update_provider_status(
-                    provider_id, ProviderStatus.OFFLINE
-                )
+    async def update_provider(
+        self,
+        provider_id: int,
+        name: str,
+        url: str,
+        provider_type: ProviderType | None = None,
+        llamacpp_url: str | None = None,
+    ) -> None:
+        await self._db.update_provider(
+            provider_id, name, url, provider_type, llamacpp_url
+        )
+        await self._close_clients(provider_id)
+        provider = await self._db.get_provider(provider_id)
+        if not provider:
+            return
+        self._create_clients(provider)
+        try:
+            await self._discover_provider(provider)
+            await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
+        except Exception:
+            logger.exception("Failed to discover updated provider %d", provider_id)
+            await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
     async def delete_remote_model(self, provider_id: int, model_name: str) -> None:
-        client = self._clients.get(provider_id)
-        if not client:
-            raise ValueError("Provider not found")
-        await client.delete_model(model_name)
-        await self._discover_provider(provider_id, client)
+        ollama = self._ollama_clients.get(provider_id)
+        if ollama:
+            await ollama.delete_model(model_name)
+        provider = await self._db.get_provider(provider_id)
+        if provider:
+            await self._discover_provider(provider)
 
     async def remove_provider(self, provider_id: int) -> None:
-        if provider_id in self._clients:
-            await self._clients[provider_id].close()
-            del self._clients[provider_id]
+        await self._close_clients(provider_id)
         self._active_requests.pop(provider_id, None)
         await self._db.remove_provider(provider_id)
 
@@ -123,8 +153,15 @@ class ProviderManager:
             )
         return infos
 
+    def get_ollama_client(self, provider_id: int) -> OllamaClient:
+        return self._ollama_clients[provider_id]
+
+    def get_llamacpp_client(self, provider_id: int) -> LlamaCppClient:
+        return self._llamacpp_clients[provider_id]
+
     def get_client(self, provider_id: int) -> OllamaClient:
-        return self._clients[provider_id]
+        """Backward compat: return Ollama client."""
+        return self._ollama_clients[provider_id]
 
     def acquire(self, provider_id: int) -> None:
         self._active_requests[provider_id] += 1
@@ -138,11 +175,11 @@ class ProviderManager:
         return self._active_requests.get(provider_id, 0)
 
     async def refresh_provider(self, provider_id: int) -> None:
-        client = self._clients.get(provider_id)
-        if not client:
+        provider = await self._db.get_provider(provider_id)
+        if not provider:
             return
         try:
-            await self._discover_provider(provider_id, client)
+            await self._discover_provider(provider)
             await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
         except Exception:
             logger.exception("Failed to refresh provider %d", provider_id)
@@ -151,11 +188,20 @@ class ProviderManager:
     async def benchmark_provider(
         self, provider_id: int, model_name: str
     ) -> BenchmarkResult | None:
-        client = self._clients.get(provider_id)
-        if not client:
+        provider = await self._db.get_provider(provider_id)
+        if not provider:
             return None
         try:
-            metrics = await client.benchmark_chat(model_name, settings.benchmark_prompt)
+            if provider.supports_ollama and provider_id in self._ollama_clients:
+                metrics = await self._ollama_clients[provider_id].benchmark_chat(
+                    model_name, settings.benchmark_prompt
+                )
+            elif provider.supports_llamacpp and provider_id in self._llamacpp_clients:
+                metrics = await self._llamacpp_clients[provider_id].benchmark_chat(
+                    model_name, settings.benchmark_prompt
+                )
+            else:
+                return None
             result = BenchmarkResult(
                 provider_id=provider_id,
                 model_name=model_name,
@@ -170,21 +216,45 @@ class ProviderManager:
             )
             return None
 
-    async def _discover_provider(self, provider_id: int, client: OllamaClient) -> None:
-        tags = await client.get_tags()
-        models = [
-            ProviderModel(
-                provider_id=provider_id,
-                name=m.name,
-                size=m.size,
-                digest=m.digest,
-                modified_at=m.modified_at,
-                details=m.details,
-            )
-            for m in tags
-        ]
-        await self._db.set_provider_models(provider_id, models)
-        logger.info("Discovered %d models on provider %d", len(models), provider_id)
+    async def _discover_provider(self, provider: Provider) -> None:
+        assert provider.id is not None
+        all_models: list[ProviderModel] = []
+        seen_names: set[str] = set()
+
+        if provider.supports_ollama and provider.id in self._ollama_clients:
+            tags = await self._ollama_clients[provider.id].get_tags()
+            for m in tags:
+                if m.name not in seen_names:
+                    seen_names.add(m.name)
+                    all_models.append(
+                        ProviderModel(
+                            provider_id=provider.id,
+                            name=m.name,
+                            size=m.size,
+                            digest=m.digest,
+                            modified_at=m.modified_at,
+                            details=m.details,
+                        )
+                    )
+
+        if provider.supports_llamacpp and provider.id in self._llamacpp_clients:
+            lcpp_models = await self._llamacpp_clients[provider.id].get_models()
+            for m in lcpp_models:
+                if m.name not in seen_names:
+                    seen_names.add(m.name)
+                    all_models.append(
+                        ProviderModel(
+                            provider_id=provider.id,
+                            name=m.name,
+                            size=m.size,
+                            details=m.details,
+                        )
+                    )
+
+        await self._db.set_provider_models(provider.id, all_models)
+        logger.info(
+            "Discovered %d models on provider %s", len(all_models), provider.name
+        )
 
     async def _health_check_loop(self) -> None:
         while True:
@@ -198,14 +268,20 @@ class ProviderManager:
         providers = await self._db.list_providers()
         for p in providers:
             assert p.id is not None
-            client = self._clients.get(p.id)
-            if not client:
-                continue
-            reachable = await client.is_reachable()
+            reachable = False
+
+            ollama = self._ollama_clients.get(p.id)
+            lcpp = self._llamacpp_clients.get(p.id)
+
+            if ollama and await ollama.is_reachable():
+                reachable = True
+            if lcpp and await lcpp.is_reachable():
+                reachable = True
+
             if reachable:
                 if p.status == ProviderStatus.OFFLINE:
                     logger.info("Provider %s is back online, re-discovering", p.name)
-                    await self._discover_provider(p.id, client)
+                    await self._discover_provider(p)
                 if self._active_requests.get(p.id, 0) > 0:
                     await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
                 else:

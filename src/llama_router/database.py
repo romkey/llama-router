@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import aiosqlite
 
 from .config import settings
-from .models import BenchmarkResult, Provider, ProviderModel, ProviderStatus
+from .models import (
+    BenchmarkResult,
+    Provider,
+    ProviderModel,
+    ProviderStatus,
+    ProviderType,
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     url TEXT NOT NULL,
+    llamacpp_url TEXT,
+    provider_type TEXT NOT NULL DEFAULT 'ollama',
     status TEXT NOT NULL DEFAULT 'unknown',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -39,6 +46,16 @@ CREATE TABLE IF NOT EXISTS benchmarks (
 );
 """
 
+_MIGRATIONS = [
+    (
+        "add_llamacpp_columns",
+        [
+            "ALTER TABLE providers ADD COLUMN llamacpp_url TEXT",
+            "ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'ollama'",
+        ],
+    ),
+]
+
 
 class Database:
     def __init__(self, db_path: str | None = None):
@@ -50,7 +67,27 @@ class Database:
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA foreign_keys = ON")
         await self._db.executescript(_SCHEMA)
+        await self._run_migrations()
         await self._db.commit()
+
+    async def _run_migrations(self) -> None:
+        """Apply migrations idempotently by checking column existence."""
+        async with self.db.execute("PRAGMA table_info(providers)") as cursor:
+            columns = {row["name"] for row in await cursor.fetchall()}
+
+        for _name, statements in _MIGRATIONS:
+            for stmt in statements:
+                col = (
+                    stmt.split("ADD COLUMN ")[1].split()[0]
+                    if "ADD COLUMN" in stmt
+                    else None
+                )
+                if col and col in columns:
+                    continue
+                try:
+                    await self.db.execute(stmt)
+                except Exception:
+                    pass
 
     async def close(self) -> None:
         if self._db:
@@ -63,14 +100,28 @@ class Database:
 
     # --- Providers ---
 
-    async def add_provider(self, name: str, url: str) -> Provider:
+    async def add_provider(
+        self,
+        name: str,
+        url: str,
+        provider_type: ProviderType = ProviderType.OLLAMA,
+        llamacpp_url: str | None = None,
+    ) -> Provider:
         url = url.rstrip("/")
+        if llamacpp_url:
+            llamacpp_url = llamacpp_url.rstrip("/")
         cursor = await self.db.execute(
-            "INSERT INTO providers (name, url) VALUES (?, ?)",
-            (name, url),
+            "INSERT INTO providers (name, url, llamacpp_url, provider_type) VALUES (?, ?, ?, ?)",
+            (name, url, llamacpp_url, provider_type.value),
         )
         await self.db.commit()
-        return Provider(id=cursor.lastrowid, name=name, url=url)
+        return Provider(
+            id=cursor.lastrowid,
+            name=name,
+            url=url,
+            llamacpp_url=llamacpp_url,
+            provider_type=provider_type,
+        )
 
     async def remove_provider(self, provider_id: int) -> None:
         await self.db.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
@@ -95,12 +146,29 @@ class Database:
             rows = await cursor.fetchall()
             return [_row_to_provider(r) for r in rows]
 
-    async def update_provider(self, provider_id: int, name: str, url: str) -> None:
+    async def update_provider(
+        self,
+        provider_id: int,
+        name: str,
+        url: str,
+        provider_type: ProviderType | None = None,
+        llamacpp_url: str | None = None,
+    ) -> None:
         url = url.rstrip("/")
-        await self.db.execute(
-            "UPDATE providers SET name = ?, url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (name, url, provider_id),
-        )
+        if llamacpp_url:
+            llamacpp_url = llamacpp_url.rstrip("/")
+        if provider_type is not None:
+            await self.db.execute(
+                "UPDATE providers SET name = ?, url = ?, llamacpp_url = ?, provider_type = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (name, url, llamacpp_url, provider_type.value, provider_id),
+            )
+        else:
+            await self.db.execute(
+                "UPDATE providers SET name = ?, url = ?, llamacpp_url = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (name, url, llamacpp_url, provider_id),
+            )
         await self.db.commit()
 
     async def update_provider_status(
@@ -111,6 +179,34 @@ class Database:
             (status.value, provider_id),
         )
         await self.db.commit()
+
+    async def get_providers_for_model(
+        self, model_name: str, protocol: str | None = None
+    ) -> list[Provider]:
+        """Find providers that have a model. Optionally filter by protocol."""
+        if protocol == "ollama":
+            query = (
+                "SELECT p.* FROM providers p "
+                "JOIN provider_models pm ON p.id = pm.provider_id "
+                "WHERE pm.name = ? AND p.status != 'offline' "
+                "AND p.provider_type IN ('ollama', 'both')"
+            )
+        elif protocol == "llamacpp":
+            query = (
+                "SELECT p.* FROM providers p "
+                "JOIN provider_models pm ON p.id = pm.provider_id "
+                "WHERE pm.name = ? AND p.status != 'offline' "
+                "AND p.provider_type IN ('llamacpp', 'both')"
+            )
+        else:
+            query = (
+                "SELECT p.* FROM providers p "
+                "JOIN provider_models pm ON p.id = pm.provider_id "
+                "WHERE pm.name = ? AND p.status != 'offline'"
+            )
+        async with self.db.execute(query, (model_name,)) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_provider(r) for r in rows]
 
     # --- Models ---
 
@@ -141,16 +237,6 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_model(r) for r in rows]
-
-    async def get_providers_for_model(self, model_name: str) -> list[Provider]:
-        async with self.db.execute(
-            "SELECT p.* FROM providers p "
-            "JOIN provider_models pm ON p.id = pm.provider_id "
-            "WHERE pm.name = ? AND p.status != 'offline'",
-            (model_name,),
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [_row_to_provider(r) for r in rows]
 
     async def list_all_models(self) -> list[dict]:
         """Return deduplicated model list across all online providers."""
@@ -238,6 +324,8 @@ def _row_to_provider(row: aiosqlite.Row) -> Provider:
         id=row["id"],
         name=row["name"],
         url=row["url"],
+        llamacpp_url=row["llamacpp_url"],
+        provider_type=ProviderType(row["provider_type"]),
         status=ProviderStatus(row["status"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],

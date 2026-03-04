@@ -13,12 +13,16 @@
     <div>
         <h2>
             {{ info.provider.name }}
+            <span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.provider_type.value }}</span>
             <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle">
                 {{ info.provider.status.value }}
             </span>
         </h2>
         <p class="text-muted mb-0">
             <i class="bi bi-link-45deg me-1"></i>{{ info.provider.url }}
+            {% if info.provider.llamacpp_url %}
+            <br><i class="bi bi-link-45deg me-1"></i>{{ info.provider.llamacpp_url }} <span class="text-muted">(llama.cpp)</span>
+            {% endif %}
         </p>
     </div>
     <div class="d-flex gap-2">
@@ -72,11 +76,13 @@
                                             <i class="bi bi-speedometer"></i>
                                         </button>
                                     </form>
+                                    {% if info.provider.supports_ollama %}
                                     <form method="post" action="/providers/{{ info.provider.id }}/delete-model/{{ m.name }}" class="d-inline">
                                         <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick="return confirm('Delete {{ m.name }} from this provider?')">
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </form>
+                                    {% endif %}
                                 </td>
                             </tr>
                             {% endfor %}
@@ -89,6 +95,7 @@
             </div>
         </div>
 
+        {% if info.provider.supports_ollama %}
         <div class="card mt-4">
             <div class="card-header">
                 <h5 class="mb-0">Pull Model</h5>
@@ -102,6 +109,7 @@
                 </form>
             </div>
         </div>
+        {% endif %}
     </div>
 
     <div class="col-lg-5">
@@ -143,6 +151,10 @@
             </div>
             <ul class="list-group list-group-flush">
                 <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Type</span>
+                    <span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Status</span>
                     <span class="status-{{ info.provider.status.value }}">{{ info.provider.status.value }}</span>
                 </li>
@@ -179,8 +191,20 @@
                     <input type="text" class="form-control" id="edit-name" name="name" required value="{{ info.provider.name }}">
                 </div>
                 <div class="mb-3">
-                    <label for="edit-url" class="form-label">Ollama URL</label>
+                    <label for="edit-provider-type" class="form-label">Type</label>
+                    <select class="form-select" id="edit-provider-type" name="provider_type" onchange="toggleEditUrlFields()">
+                        <option value="ollama" {% if info.provider.provider_type.value == 'ollama' %}selected{% endif %}>Ollama</option>
+                        <option value="llamacpp" {% if info.provider.provider_type.value == 'llamacpp' %}selected{% endif %}>llama.cpp</option>
+                        <option value="both" {% if info.provider.provider_type.value == 'both' %}selected{% endif %}>Both</option>
+                    </select>
+                </div>
+                <div class="mb-3" id="edit-url-group">
+                    <label for="edit-url" class="form-label">URL</label>
                     <input type="url" class="form-control" id="edit-url" name="url" required value="{{ info.provider.url }}">
+                </div>
+                <div class="mb-3" id="edit-llamacpp-url-group" {% if info.provider.provider_type.value != 'both' %}style="display: none;"{% endif %}>
+                    <label for="edit-llamacpp-url" class="form-label">llama.cpp URL</label>
+                    <input type="url" class="form-control" id="edit-llamacpp-url" name="llamacpp_url" value="{{ info.provider.llamacpp_url or '' }}">
                 </div>
             </div>
             <div class="modal-footer">
@@ -190,4 +214,12 @@
         </form>
     </div>
 </div>
+
+<script>
+function toggleEditUrlFields() {
+    const ptype = document.getElementById('edit-provider-type').value;
+    const lcppGroup = document.getElementById('edit-llamacpp-url-group');
+    lcppGroup.style.display = (ptype === 'both') ? '' : 'none';
+}
+</script>
 {% endblock %}

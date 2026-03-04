@@ -16,12 +16,18 @@ class Router:
         self._db = db
         self._pm = provider_manager
 
-    async def route(self, model_name: str) -> Provider | None:
+    async def route(
+        self, model_name: str, protocol: str | None = None
+    ) -> Provider | None:
         """Pick the best provider for the requested model.
+
+        Args:
+            model_name: The model to route for.
+            protocol: Optional filter - "ollama" or "llamacpp". If None, any protocol.
 
         Strategy: least-busy first, then highest tokens/sec as tiebreaker.
         """
-        candidates = await self._db.get_providers_for_model(model_name)
+        candidates = await self._db.get_providers_for_model(model_name, protocol)
         if not candidates:
             return None
 
@@ -35,15 +41,15 @@ class Router:
             active = self._pm.active_requests(provider.id)
             bench = await self._db.get_latest_benchmark(provider.id, model_name)
             tps = bench.tokens_per_second if bench and bench.tokens_per_second else 0
-            # Lower score = better: active requests dominate, fast providers break ties
             score = active - (tps / 10000)
             scored.append((score, provider))
 
         scored.sort(key=lambda x: x[0])
         chosen = scored[0][1]
         logger.info(
-            "Routing model %s to provider %s (active=%d)",
+            "Routing model %s (%s) to provider %s (active=%d)",
             model_name,
+            protocol or "any",
             chosen.name,
             self._pm.active_requests(chosen.id),  # type: ignore[arg-type]
         )

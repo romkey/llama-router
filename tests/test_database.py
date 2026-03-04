@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from llama_router.database import Database
-from llama_router.models import BenchmarkResult, ProviderModel, ProviderStatus
+from llama_router.models import (
+    BenchmarkResult,
+    ProviderModel,
+    ProviderStatus,
+    ProviderType,
+)
 
 
 @pytest.mark.asyncio
@@ -99,3 +104,30 @@ async def test_list_all_models_deduplicates(db: Database):
     models = await db.list_all_models()
     assert len(models) == 1
     assert models[0]["name"] == "llama3:8b"
+
+
+@pytest.mark.asyncio
+async def test_providers_for_model_protocol_filter(db: Database):
+    p1 = await db.add_provider("ollama-srv", "http://host1:11434")
+    p2 = await db.add_provider("lcpp-srv", "http://host2:8080", ProviderType.LLAMACPP)
+    p3 = await db.add_provider(
+        "both-srv", "http://host3:11434", ProviderType.BOTH, "http://host3:8080"
+    )
+    for p in [p1, p2, p3]:
+        await db.update_provider_status(p.id, ProviderStatus.IDLE)
+        await db.set_provider_models(
+            p.id, [ProviderModel(provider_id=p.id, name="llama3:8b")]
+        )
+
+    all_providers = await db.get_providers_for_model("llama3:8b")
+    assert len(all_providers) == 3
+
+    ollama_providers = await db.get_providers_for_model("llama3:8b", protocol="ollama")
+    assert len(ollama_providers) == 2
+    names = {p.name for p in ollama_providers}
+    assert names == {"ollama-srv", "both-srv"}
+
+    lcpp_providers = await db.get_providers_for_model("llama3:8b", protocol="llamacpp")
+    assert len(lcpp_providers) == 2
+    names = {p.name for p in lcpp_providers}
+    assert names == {"lcpp-srv", "both-srv"}

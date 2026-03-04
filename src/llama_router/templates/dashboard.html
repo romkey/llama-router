@@ -92,12 +92,18 @@
                                         {{ info.provider.name }}
                                     </a>
                                 </h5>
-                                <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
-                                    {{ info.provider.status.value }}
-                                </span>
+                                <div>
+                                    <span class="badge bg-info text-dark me-1">{{ info.provider.provider_type.value }}</span>
+                                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                        {{ info.provider.status.value }}
+                                    </span>
+                                </div>
                             </div>
                             <p class="text-muted small mb-2">
                                 <i class="bi bi-link-45deg me-1"></i>{{ info.provider.url }}
+                                {% if info.provider.llamacpp_url %}
+                                <br><i class="bi bi-link-45deg me-1"></i>{{ info.provider.llamacpp_url }} <span class="text-muted">(llama.cpp)</span>
+                                {% endif %}
                             </p>
                             <p class="mb-1">
                                 <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
@@ -146,6 +152,7 @@
                     <thead>
                         <tr>
                             <th>Name</th>
+                            <th>Type</th>
                             <th>URL</th>
                             <th>Status</th>
                             <th>Models</th>
@@ -161,6 +168,7 @@
                                     {{ info.provider.name }}
                                 </a>
                             </td>
+                            <td><span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span></td>
                             <td class="text-muted small">{{ info.provider.url }}</td>
                             <td>
                                 <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
@@ -292,8 +300,21 @@
                     <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. gpu-server-1">
                 </div>
                 <div class="mb-3">
-                    <label for="url" class="form-label">Ollama URL</label>
+                    <label for="provider_type" class="form-label">Type</label>
+                    <select class="form-select" id="provider_type" name="provider_type" onchange="toggleUrlFields()">
+                        <option value="ollama">Ollama</option>
+                        <option value="llamacpp">llama.cpp</option>
+                        <option value="both">Both</option>
+                    </select>
+                </div>
+                <div class="mb-3" id="url-group">
+                    <label for="url" class="form-label">URL</label>
                     <input type="url" class="form-control" id="url" name="url" required placeholder="http://192.168.1.100:11434">
+                    <div class="form-text" id="url-help">Ollama API URL</div>
+                </div>
+                <div class="mb-3" id="llamacpp-url-group" style="display: none;">
+                    <label for="llamacpp_url" class="form-label">llama.cpp URL</label>
+                    <input type="url" class="form-control" id="llamacpp_url" name="llamacpp_url" placeholder="http://192.168.1.100:8080">
                 </div>
             </div>
             <div class="modal-footer">
@@ -305,6 +326,22 @@
 </div>
 
 <script>
+function toggleUrlFields() {
+    const ptype = document.getElementById('provider_type').value;
+    const urlHelp = document.getElementById('url-help');
+    const lcppGroup = document.getElementById('llamacpp-url-group');
+    if (ptype === 'ollama') {
+        urlHelp.textContent = 'Ollama API URL';
+        lcppGroup.style.display = 'none';
+    } else if (ptype === 'llamacpp') {
+        urlHelp.textContent = 'llama.cpp server URL';
+        lcppGroup.style.display = 'none';
+    } else {
+        urlHelp.textContent = 'Ollama API URL';
+        lcppGroup.style.display = '';
+    }
+}
+
 function switchProviderView(view) {
     const cardView = document.getElementById('providers-card-view');
     const listView = document.getElementById('providers-list-view');

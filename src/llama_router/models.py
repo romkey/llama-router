@@ -13,13 +13,29 @@ class ProviderStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ProviderType(str, Enum):
+    OLLAMA = "ollama"
+    LLAMACPP = "llamacpp"
+    BOTH = "both"
+
+
 class Provider(BaseModel):
     id: int | None = None
     name: str
     url: str
+    llamacpp_url: str | None = None
+    provider_type: ProviderType = ProviderType.OLLAMA
     status: ProviderStatus = ProviderStatus.UNKNOWN
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    @property
+    def supports_ollama(self) -> bool:
+        return self.provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
+
+    @property
+    def supports_llamacpp(self) -> bool:
+        return self.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
 
 
 class ProviderModel(BaseModel):

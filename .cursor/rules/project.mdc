@@ -5,14 +5,16 @@ alwaysApply: true
 
 # llama-router
 
-An Ollama router that aggregates multiple Ollama backends behind a single API.
+An LLM router that aggregates multiple Ollama and llama.cpp backends behind unified APIs.
 
 ## Architecture
 
-- Built with FastAPI serving both the dashboard and API
+- Built with FastAPI serving the dashboard and both API protocols
 - Dashboard uses server-side rendered Jinja2 templates with Bootstrap styling
-- Dashboard on port 80 for management and monitoring, shows visual representation of all providers with status, models, and performance data
-- Ollama-compatible API on port 11434 (standard Ollama port)
+- Three servers run concurrently:
+  - Dashboard on port 80 for management and monitoring
+  - Ollama-compatible API on port 11434
+  - llama.cpp / OpenAI-compatible API on port 8080
 - When a new backend is configured, the router queries it for available models and capabilities, and caches that information
 - Authentication is handled by an external reverse proxy; the app itself does not implement auth
 
@@ -23,19 +25,29 @@ An Ollama router that aggregates multiple Ollama backends behind a single API.
 - Key endpoints: `/api/chat`, `/api/embeddings`, `/api/pull`, `/api/tags`, and introspection endpoints
 - Does not support `/api/generate` at this time
 - Aggregates model lists across all providers for `/api/tags`
+- Routes only to providers with type "ollama" or "both"
+
+## llama.cpp API
+
+- OpenAI-compatible API proxy for llama.cpp server backends
+- Key endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/health`
+- Routes only to providers with type "llamacpp" or "both"
 
 ## Providers
 
+- Each provider has a type: "ollama", "llamacpp", or "both"
+- Providers with type "both" have separate URLs for each protocol (ollama_url and llamacpp_url)
 - Backends are added, removed, and configured through the web dashboard
-- Tracks all available Ollama backend providers and their current status (idle, busy, offline)
+- Tracks all available backend providers and their current status (idle, busy, offline)
 - Tracks which providers are currently in use and serving requests
-- Periodically health-checks providers to detect when they go offline or come back online
-- Discovers and records what models each provider has, along with hardware/software capabilities
+- Periodically health-checks providers via their respective protocol endpoints
+- Discovers and merges model lists from both Ollama and llama.cpp endpoints
 - Can automatically benchmark providers, measuring startup time and tokens-per-second performance
 - Stores benchmark results persistently so performance data survives restarts
 
 ## Routing
 
+- Protocol-aware: Ollama API requests route to ollama-capable providers, llama.cpp requests to llamacpp-capable providers
 - When multiple providers have the same model, route to the least-busy, most-capable provider
 - Use benchmark data (tokens/sec, startup time) to rank provider capability
 - Fall back gracefully when preferred provider is unavailable

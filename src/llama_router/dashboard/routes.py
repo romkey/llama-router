@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..models import ProviderType
 from . import deps
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -50,20 +52,35 @@ async def provider_detail(request: Request, provider_id: int):
 
 
 @router.post("/providers/add")
-async def add_provider(name: str = Form(...), url: str = Form(...)):
+async def add_provider(
+    name: str = Form(...),
+    url: str = Form(...),
+    provider_type: str = Form("ollama"),
+    llamacpp_url: Optional[str] = Form(None),
+):
     pm = deps.get_pm()
+    ptype = ProviderType(provider_type)
+    lcpp_url = llamacpp_url if llamacpp_url else None
     try:
-        await pm.add_provider(name, url)
+        await pm.add_provider(name, url, ptype, lcpp_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return RedirectResponse(url="/", status_code=303)
 
 
 @router.post("/providers/{provider_id}/edit")
-async def edit_provider(provider_id: int, name: str = Form(...), url: str = Form(...)):
+async def edit_provider(
+    provider_id: int,
+    name: str = Form(...),
+    url: str = Form(...),
+    provider_type: str = Form("ollama"),
+    llamacpp_url: Optional[str] = Form(None),
+):
     pm = deps.get_pm()
+    ptype = ProviderType(provider_type)
+    lcpp_url = llamacpp_url if llamacpp_url else None
     try:
-        await pm.update_provider(provider_id, name, url)
+        await pm.update_provider(provider_id, name, url, ptype, lcpp_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
