@@ -47,22 +47,22 @@
 <!-- Main tabs -->
 <ul class="nav nav-tabs mb-4" role="tablist">
     <li class="nav-item" role="presentation">
-        <button class="nav-link active" id="providers-tab" data-bs-toggle="tab" data-bs-target="#providers-pane" type="button" role="tab">
+        <button class="nav-link active" id="providers-tab" data-bs-toggle="tab" data-bs-target="#providers-pane" type="button" role="tab" aria-controls="providers-pane" aria-selected="true">
             <i class="bi bi-hdd-stack me-1"></i>Providers
         </button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" id="benchmarks-tab" data-bs-toggle="tab" data-bs-target="#benchmarks-pane" type="button" role="tab">
+        <button class="nav-link" id="benchmarks-tab" data-bs-toggle="tab" data-bs-target="#benchmarks-pane" type="button" role="tab" aria-controls="benchmarks-pane" aria-selected="false">
             <i class="bi bi-speedometer me-1"></i>Benchmarks
         </button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane" type="button" role="tab">
+        <button class="nav-link" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane" type="button" role="tab" aria-controls="models-pane" aria-selected="false">
             <i class="bi bi-cpu me-1"></i>Models
         </button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab">
+        <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab" aria-controls="log-pane" aria-selected="false">
             <i class="bi bi-journal-text me-1"></i>Log
             <span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>
         </button>
@@ -72,7 +72,7 @@
 <div class="tab-content">
 
     <!-- ==================== PROVIDERS TAB ==================== -->
-    <div class="tab-pane fade show active" id="providers-pane" role="tabpanel">
+    <div class="tab-pane fade show active" id="providers-pane" role="tabpanel" aria-labelledby="providers-tab" tabindex="0">
         <div class="d-flex justify-content-between align-items-center mb-3">
             <h4 class="mb-0">Providers</h4>
             <div class="btn-group btn-group-sm" role="group" aria-label="View toggle">
@@ -221,7 +221,7 @@
     </div>
 
     <!-- ==================== BENCHMARKS TAB ==================== -->
-    <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel">
+    <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel" aria-labelledby="benchmarks-tab" tabindex="0">
         {% if benchmarks_by_model %}
             {% for model_name, benchmarks in benchmarks_by_model | dictsort %}
             <div class="card mb-3">
@@ -274,7 +274,7 @@
     </div>
 
     <!-- ==================== MODELS TAB ==================== -->
-    <div class="tab-pane fade" id="models-pane" role="tabpanel">
+    <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         {% if models %}
         <div class="table-responsive">
             <table class="table table-hover">
@@ -331,7 +331,7 @@
     </div>
 
     <!-- ==================== LOG TAB ==================== -->
-    <div class="tab-pane fade" id="log-pane" role="tabpanel">
+    <div class="tab-pane fade" id="log-pane" role="tabpanel" aria-labelledby="log-tab" tabindex="0">
         {% if log_entries %}
         <div class="table-responsive">
             <table class="table table-hover table-sm">
@@ -457,6 +457,9 @@
     </div>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
 <script>
 function toggleUrlFields() {
     const ptype = document.getElementById('provider_type').value;
@@ -495,17 +498,23 @@ function switchProviderView(view) {
     localStorage.setItem('providerView', view);
 }
 
-document.addEventListener('DOMContentLoaded', function() {
+(function() {
     const saved = localStorage.getItem('providerView');
     if (saved) switchProviderView(saved);
 
     if (location.hash) {
         const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
-        if (tab) new bootstrap.Tab(tab).show();
+        if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
     }
 
+    document.querySelectorAll('[data-bs-toggle="tab"]').forEach(function(tab) {
+        tab.addEventListener('shown.bs.tab', function(e) {
+            history.replaceState(null, '', e.target.dataset.bsTarget);
+        });
+    });
+
     setInterval(refreshStatus, 5000);
-});
+})();
 
 const STATUS_CLASSES = {
     idle: 'badge bg-success',
