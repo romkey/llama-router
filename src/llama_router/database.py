@@ -12,6 +12,7 @@ from .models import (
     ProviderModel,
     ProviderStatus,
     ProviderType,
+    RequestLog,
 )
 
 _SCHEMA = """
@@ -45,6 +46,25 @@ CREATE TABLE IF NOT EXISTS benchmarks (
     tokens_per_second REAL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS request_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id INTEGER,
+    provider_name TEXT,
+    protocol TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    source_ip TEXT,
+    model TEXT,
+    request_size INTEGER NOT NULL DEFAULT 0,
+    response_size INTEGER NOT NULL DEFAULT 0,
+    duration_ms REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ok',
+    streamed INTEGER NOT NULL DEFAULT 0,
+    error_detail TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_log_created ON request_log(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS provider_addresses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -435,6 +455,46 @@ class Database:
                 for r in rows
             ]
 
+    # --- Request Log ---
+
+    async def save_request_log(self, entry: RequestLog) -> None:
+        await self.db.execute(
+            "INSERT INTO request_log "
+            "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
+            "request_size, response_size, duration_ms, status, streamed, error_detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.provider_id,
+                entry.provider_name,
+                entry.protocol,
+                entry.endpoint,
+                entry.source_ip,
+                entry.model,
+                entry.request_size,
+                entry.response_size,
+                entry.duration_ms,
+                entry.status,
+                int(entry.streamed),
+                entry.error_detail,
+            ),
+        )
+        await self.db.commit()
+
+    async def get_request_logs(
+        self, limit: int = 200, offset: int = 0
+    ) -> list[RequestLog]:
+        async with self.db.execute(
+            "SELECT * FROM request_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_request_log(r) for r in rows]
+
+    async def count_request_logs(self) -> int:
+        async with self.db.execute("SELECT COUNT(*) AS cnt FROM request_log") as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
+
 
 def _row_to_provider(row: aiosqlite.Row) -> Provider:
     return Provider(
@@ -480,5 +540,24 @@ def _row_to_address(row: aiosqlite.Row) -> ProviderAddress:
         llamacpp_url=row["llamacpp_url"],
         is_preferred=bool(row["is_preferred"]),
         is_live=bool(row["is_live"]),
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_request_log(row: aiosqlite.Row) -> RequestLog:
+    return RequestLog(
+        id=row["id"],
+        provider_id=row["provider_id"],
+        provider_name=row["provider_name"],
+        protocol=row["protocol"],
+        endpoint=row["endpoint"],
+        source_ip=row["source_ip"],
+        model=row["model"],
+        request_size=row["request_size"],
+        response_size=row["response_size"],
+        duration_ms=row["duration_ms"],
+        status=row["status"],
+        streamed=bool(row["streamed"]),
+        error_detail=row["error_detail"],
         created_at=row["created_at"],
     )

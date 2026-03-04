@@ -8,6 +8,7 @@ from llama_router.models import (
     ProviderModel,
     ProviderStatus,
     ProviderType,
+    RequestLog,
 )
 
 
@@ -173,3 +174,37 @@ async def test_seed_addresses_migration(db: Database):
     assert addrs[0].url == "http://host:11434"
     assert addrs[0].llamacpp_url == "http://host:8080"
     assert addrs[0].is_preferred is True
+
+
+@pytest.mark.asyncio
+async def test_request_log(db: Database):
+    entry = RequestLog(
+        provider_id=1,
+        provider_name="test-srv",
+        protocol="ollama",
+        endpoint="/api/chat",
+        source_ip="192.168.1.10",
+        model="llama3:8b",
+        request_size=512,
+        response_size=2048,
+        duration_ms=1500.5,
+        status="ok",
+        streamed=True,
+    )
+    await db.save_request_log(entry)
+
+    logs = await db.get_request_logs(limit=10)
+    assert len(logs) == 1
+    log = logs[0]
+    assert log.provider_name == "test-srv"
+    assert log.protocol == "ollama"
+    assert log.endpoint == "/api/chat"
+    assert log.source_ip == "192.168.1.10"
+    assert log.model == "llama3:8b"
+    assert log.request_size == 512
+    assert log.response_size == 2048
+    assert log.duration_ms == 1500.5
+    assert log.streamed is True
+
+    count = await db.count_request_logs()
+    assert count == 1

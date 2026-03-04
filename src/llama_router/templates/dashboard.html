@@ -61,6 +61,12 @@
             <i class="bi bi-cpu me-1"></i>Models
         </button>
     </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab">
+            <i class="bi bi-journal-text me-1"></i>Log
+            {% if log_total %}<span class="badge bg-secondary ms-1">{{ log_total }}</span>{% endif %}
+        </button>
+    </li>
 </ul>
 
 <div class="tab-content">
@@ -308,6 +314,92 @@
         {% endif %}
     </div>
 
+    <!-- ==================== LOG TAB ==================== -->
+    <div class="tab-pane fade" id="log-pane" role="tabpanel">
+        {% if log_entries %}
+        <div class="table-responsive">
+            <table class="table table-hover table-sm">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Source IP</th>
+                        <th>Protocol</th>
+                        <th>Endpoint</th>
+                        <th>Model</th>
+                        <th>Provider</th>
+                        <th>Req Size</th>
+                        <th>Resp Size</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in log_entries %}
+                    <tr class="{% if entry.status == 'error' %}table-danger{% endif %}">
+                        <td class="text-muted small text-nowrap">{{ entry.created_at or "—" }}</td>
+                        <td class="small"><code>{{ entry.source_ip or "—" }}</code></td>
+                        <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
+                        <td class="small"><code>{{ entry.endpoint }}</code></td>
+                        <td class="small"><code>{{ entry.model or "—" }}</code></td>
+                        <td class="small">
+                            {% if entry.provider_id %}
+                            <a href="/providers/{{ entry.provider_id }}" class="text-decoration-none">{{ entry.provider_name }}</a>
+                            {% else %}
+                            —
+                            {% endif %}
+                        </td>
+                        <td class="text-end small">{{ "%.1f KB" | format(entry.request_size / 1024) if entry.request_size else "—" }}</td>
+                        <td class="text-end small">{{ "%.1f KB" | format(entry.response_size / 1024) if entry.response_size else "—" }}</td>
+                        <td class="text-end small text-nowrap">
+                            {% if entry.duration_ms >= 1000 %}
+                            {{ "%.1f s" | format(entry.duration_ms / 1000) }}
+                            {% else %}
+                            {{ "%.0f ms" | format(entry.duration_ms) }}
+                            {% endif %}
+                            {% if entry.streamed %}<i class="bi bi-broadcast ms-1 text-muted" title="Streamed"></i>{% endif %}
+                        </td>
+                        <td>
+                            {% if entry.status == 'ok' %}
+                            <span class="badge bg-success">OK</span>
+                            {% else %}
+                            <span class="badge bg-danger" title="{{ entry.error_detail or '' }}">Error</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        {% if log_pages > 1 %}
+        <nav>
+            <ul class="pagination pagination-sm justify-content-center">
+                <li class="page-item {% if log_page <= 1 %}disabled{% endif %}">
+                    <a class="page-link" href="?log_page={{ log_page - 1 }}#log-pane">Prev</a>
+                </li>
+                {% for p in range(1, log_pages + 1) %}
+                {% if p <= 3 or p > log_pages - 3 or (p >= log_page - 1 and p <= log_page + 1) %}
+                <li class="page-item {% if p == log_page %}active{% endif %}">
+                    <a class="page-link" href="?log_page={{ p }}#log-pane">{{ p }}</a>
+                </li>
+                {% elif p == 4 or p == log_pages - 3 %}
+                <li class="page-item disabled"><span class="page-link">…</span></li>
+                {% endif %}
+                {% endfor %}
+                <li class="page-item {% if log_page >= log_pages %}disabled{% endif %}">
+                    <a class="page-link" href="?log_page={{ log_page + 1 }}#log-pane">Next</a>
+                </li>
+            </ul>
+        </nav>
+        {% endif %}
+
+        {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Send requests through the Ollama or llama.cpp APIs to see them here.
+        </div>
+        {% endif %}
+    </div>
+
 </div>
 
 <!-- Add Provider Modal -->
@@ -390,6 +482,11 @@ function switchProviderView(view) {
 document.addEventListener('DOMContentLoaded', function() {
     const saved = localStorage.getItem('providerView');
     if (saved) switchProviderView(saved);
+
+    if (location.hash) {
+        const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
+        if (tab) new bootstrap.Tab(tab).show();
+    }
 });
 </script>
 {% endblock %}

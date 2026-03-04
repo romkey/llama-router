@@ -67,6 +67,23 @@ class ProviderAddress(BaseModel):
     created_at: datetime | None = None
 
 
+class RequestLog(BaseModel):
+    id: int | None = None
+    provider_id: int | None = None
+    provider_name: str | None = None
+    protocol: str  # "ollama" or "llamacpp"
+    endpoint: str  # e.g. "/api/chat", "/v1/chat/completions"
+    source_ip: str | None = None
+    model: str | None = None
+    request_size: int = 0
+    response_size: int = 0
+    duration_ms: float = 0.0
+    status: str = "ok"  # "ok" or "error"
+    streamed: bool = False
+    error_detail: str | None = None
+    created_at: datetime | None = None
+
+
 class ProviderInfo(BaseModel):
     provider: Provider
     models: list[ProviderModel] = []

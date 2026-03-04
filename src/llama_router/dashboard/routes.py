@@ -39,6 +39,14 @@ async def dashboard(request: Request):
         for m in info.models:
             model_provider_counts[m.name] = model_provider_counts.get(m.name, 0) + 1
 
+    log_page = int(request.query_params.get("log_page", "1"))
+    log_per_page = 50
+    log_total = await db.count_request_logs()
+    log_entries = await db.get_request_logs(
+        limit=log_per_page, offset=(log_page - 1) * log_per_page
+    )
+    log_pages = max(1, (log_total + log_per_page - 1) // log_per_page)
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -48,6 +56,10 @@ async def dashboard(request: Request):
             "benchmarks_by_model": benchmarks_by_model,
             "ollama_count": ollama_count,
             "model_provider_counts": model_provider_counts,
+            "log_entries": log_entries,
+            "log_page": log_page,
+            "log_pages": log_pages,
+            "log_total": log_total,
         },
     )
 
