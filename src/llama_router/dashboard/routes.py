@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +32,13 @@ async def dashboard(request: Request):
     for b in all_benchmarks:
         benchmarks_by_model.setdefault(b["model_name"], []).append(b)
 
+    ollama_providers = [i for i in infos if i.provider.supports_ollama]
+    ollama_count = len(ollama_providers)
+    model_provider_counts: dict[str, int] = {}
+    for info in ollama_providers:
+        for m in info.models:
+            model_provider_counts[m.name] = model_provider_counts.get(m.name, 0) + 1
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -38,6 +46,8 @@ async def dashboard(request: Request):
             "providers": infos,
             "models": all_models,
             "benchmarks_by_model": benchmarks_by_model,
+            "ollama_count": ollama_count,
+            "model_provider_counts": model_provider_counts,
         },
     )
 
@@ -133,3 +143,23 @@ async def pull_model(provider_id: int, model: str = Form(...)):
         raise HTTPException(status_code=500, detail=str(e))
     await pm.refresh_provider(provider_id)
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
+@router.post("/models/pull-all")
+async def pull_model_all_providers(model: str = Form(...)):
+    pm = deps.get_pm()
+    infos = await pm.list_provider_infos()
+    ollama_infos = [i for i in infos if i.provider.supports_ollama]
+
+    async def _pull_one(info):
+        assert info.provider.id is not None
+        client = pm.get_ollama_client(info.provider.id)
+        try:
+            async for _ in client.pull_stream(model):
+                pass
+            await pm.refresh_provider(info.provider.id)
+        except Exception:
+            pass
+
+    await asyncio.gather(*[_pull_one(i) for i in ollama_infos])
+    return RedirectResponse(url="/#models-pane", status_code=303)

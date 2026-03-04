@@ -257,11 +257,13 @@
                         <th>Name</th>
                         <th>Size</th>
                         <th>Modified</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for m in models %}
                     {% set base_name = m.name.split(':')[0] %}
+                    {% set on_all = model_provider_counts.get(m.name, 0) >= ollama_count and ollama_count > 0 %}
                     <tr>
                         <td>
                             <code>
@@ -272,6 +274,14 @@
                         </td>
                         <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
                         <td>{{ m.modified_at or "—" }}</td>
+                        <td class="text-end">
+                            <form method="post" action="/models/pull-all" class="d-inline">
+                                <input type="hidden" name="model" value="{{ m.name }}">
+                                <button class="btn btn-sm btn-outline-primary" title="Pull to all Ollama providers" {% if on_all %}disabled{% endif %}>
+                                    <i class="bi bi-download me-1"></i>Pull all
+                                </button>
+                            </form>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
