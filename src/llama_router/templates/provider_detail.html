@@ -169,6 +169,20 @@
                         <i class="bi bi-download me-1"></i>Pull
                     </button>
                 </form>
+                {% if missing_models %}
+                <hr class="my-3">
+                <p class="text-muted small mb-2">Available on other providers:</p>
+                <div class="d-flex flex-wrap gap-2">
+                    {% for m in missing_models %}
+                    <form method="post" action="/providers/{{ info.provider.id }}/pull" class="d-inline">
+                        <input type="hidden" name="model" value="{{ m.name }}">
+                        <button class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-download me-1"></i>{{ m.name }}
+                        </button>
+                    </form>
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
         </div>
         {% endif %}

@@ -67,12 +67,18 @@ async def dashboard(request: Request):
 @router.get("/providers/{provider_id}", response_class=HTMLResponse)
 async def provider_detail(request: Request, provider_id: int):
     pm = deps.get_pm()
+    db = deps.get_db()
     info = await pm.get_provider_info(provider_id)
     if not info:
         raise HTTPException(status_code=404, detail="Provider not found")
+
+    local_names = {m.name for m in info.models}
+    all_models = await db.list_all_models()
+    missing_models = [m for m in all_models if m["name"] not in local_names]
+
     return templates.TemplateResponse(
         "provider_detail.html",
-        {"request": request, "info": info},
+        {"request": request, "info": info, "missing_models": missing_models},
     )
 
 
