@@ -8,6 +8,7 @@ from .config import settings
 from .models import (
     BenchmarkResult,
     Provider,
+    ProviderAddress,
     ProviderModel,
     ProviderStatus,
     ProviderType,
@@ -42,6 +43,16 @@ CREATE TABLE IF NOT EXISTS benchmarks (
     model_name TEXT NOT NULL,
     startup_time_ms REAL,
     tokens_per_second REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS provider_addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    llamacpp_url TEXT,
+    is_preferred INTEGER NOT NULL DEFAULT 0,
+    is_live INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -88,6 +99,28 @@ class Database:
                     await self.db.execute(stmt)
                 except Exception:
                     pass
+
+        await self._seed_addresses()
+
+    async def _seed_addresses(self) -> None:
+        """Migrate existing provider url/llamacpp_url into provider_addresses."""
+        async with self.db.execute(
+            "SELECT id, url, llamacpp_url FROM providers"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            async with self.db.execute(
+                "SELECT COUNT(*) AS cnt FROM provider_addresses WHERE provider_id = ?",
+                (row["id"],),
+            ) as cursor:
+                count_row = await cursor.fetchone()
+            if count_row["cnt"] == 0 and row["url"]:
+                await self.db.execute(
+                    "INSERT INTO provider_addresses (provider_id, url, llamacpp_url, is_preferred) "
+                    "VALUES (?, ?, ?, 1)",
+                    (row["id"], row["url"], row["llamacpp_url"]),
+                )
+        await self.db.commit()
 
     async def close(self) -> None:
         if self._db:
@@ -207,6 +240,90 @@ class Database:
         async with self.db.execute(query, (model_name,)) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_provider(r) for r in rows]
+
+    # --- Addresses ---
+
+    async def add_address(
+        self,
+        provider_id: int,
+        url: str,
+        llamacpp_url: str | None = None,
+        is_preferred: bool = False,
+    ) -> ProviderAddress:
+        url = url.rstrip("/")
+        if llamacpp_url:
+            llamacpp_url = llamacpp_url.rstrip("/")
+        cursor = await self.db.execute(
+            "INSERT INTO provider_addresses (provider_id, url, llamacpp_url, is_preferred) "
+            "VALUES (?, ?, ?, ?)",
+            (provider_id, url, llamacpp_url, int(is_preferred)),
+        )
+        await self.db.commit()
+        return ProviderAddress(
+            id=cursor.lastrowid,
+            provider_id=provider_id,
+            url=url,
+            llamacpp_url=llamacpp_url,
+            is_preferred=is_preferred,
+        )
+
+    async def update_address(
+        self,
+        address_id: int,
+        url: str,
+        llamacpp_url: str | None = None,
+        is_preferred: bool | None = None,
+    ) -> None:
+        url = url.rstrip("/")
+        if llamacpp_url:
+            llamacpp_url = llamacpp_url.rstrip("/")
+        if is_preferred is not None:
+            await self.db.execute(
+                "UPDATE provider_addresses SET url = ?, llamacpp_url = ?, is_preferred = ? WHERE id = ?",
+                (url, llamacpp_url, int(is_preferred), address_id),
+            )
+        else:
+            await self.db.execute(
+                "UPDATE provider_addresses SET url = ?, llamacpp_url = ? WHERE id = ?",
+                (url, llamacpp_url, address_id),
+            )
+        await self.db.commit()
+
+    async def remove_address(self, address_id: int) -> None:
+        await self.db.execute(
+            "DELETE FROM provider_addresses WHERE id = ?", (address_id,)
+        )
+        await self.db.commit()
+
+    async def set_address_preferred(self, address_id: int, is_preferred: bool) -> None:
+        await self.db.execute(
+            "UPDATE provider_addresses SET is_preferred = ? WHERE id = ?",
+            (int(is_preferred), address_id),
+        )
+        await self.db.commit()
+
+    async def set_address_live(self, address_id: int, is_live: bool) -> None:
+        await self.db.execute(
+            "UPDATE provider_addresses SET is_live = ? WHERE id = ?",
+            (int(is_live), address_id),
+        )
+        await self.db.commit()
+
+    async def get_addresses(self, provider_id: int) -> list[ProviderAddress]:
+        async with self.db.execute(
+            "SELECT * FROM provider_addresses WHERE provider_id = ? "
+            "ORDER BY is_preferred DESC, id ASC",
+            (provider_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_address(r) for r in rows]
+
+    async def get_address(self, address_id: int) -> ProviderAddress | None:
+        async with self.db.execute(
+            "SELECT * FROM provider_addresses WHERE id = ?", (address_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_address(row) if row else None
 
     # --- Models ---
 
@@ -351,5 +468,17 @@ def _row_to_benchmark(row: aiosqlite.Row) -> BenchmarkResult:
         model_name=row["model_name"],
         startup_time_ms=row["startup_time_ms"],
         tokens_per_second=row["tokens_per_second"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_address(row: aiosqlite.Row) -> ProviderAddress:
+    return ProviderAddress(
+        id=row["id"],
+        provider_id=row["provider_id"],
+        url=row["url"],
+        llamacpp_url=row["llamacpp_url"],
+        is_preferred=bool(row["is_preferred"]),
+        is_live=bool(row["is_live"]),
         created_at=row["created_at"],
     )

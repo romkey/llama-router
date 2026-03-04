@@ -37,6 +37,12 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 
 - Each provider has a type: "ollama", "llamacpp", or "both"
 - Providers with type "both" have separate URLs for each protocol (ollama_url and llamacpp_url)
+- Each provider can have multiple network addresses (e.g. internal and external IPs)
+  - Addresses are individually marked as preferred or not preferred
+  - Health checks probe every address; each address has its own live/not-live status
+  - A provider is considered online if any of its addresses respond
+  - The router selects the best address: preferred+live > live > preferred > any
+  - Addresses can be added, edited (via popup dialog), and removed from the provider detail page
 - Backends are added, removed, and configured through the web dashboard
 - Tracks all available backend providers and their current status (idle, busy, offline)
 - Tracks which providers are currently in use and serving requests

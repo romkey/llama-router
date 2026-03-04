@@ -132,6 +132,53 @@ async def delete_model(provider_id: int, model_name: str):
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
+@router.post("/providers/{provider_id}/addresses/add")
+async def add_address(
+    provider_id: int,
+    url: str = Form(...),
+    llamacpp_url: Optional[str] = Form(None),
+    is_preferred: Optional[str] = Form(None),
+):
+    pm = deps.get_pm()
+    lcpp = llamacpp_url if llamacpp_url else None
+    try:
+        await pm.add_address(provider_id, url, lcpp, is_preferred=bool(is_preferred))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
+@router.post("/providers/{provider_id}/addresses/{address_id}/edit")
+async def edit_address(
+    provider_id: int,
+    address_id: int,
+    url: str = Form(...),
+    llamacpp_url: Optional[str] = Form(None),
+    is_preferred: Optional[str] = Form(None),
+):
+    pm = deps.get_pm()
+    lcpp = llamacpp_url if llamacpp_url else None
+    try:
+        await pm.update_address(address_id, url, lcpp, is_preferred=bool(is_preferred))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
+@router.post("/providers/{provider_id}/addresses/{address_id}/remove")
+async def remove_address(provider_id: int, address_id: int):
+    pm = deps.get_pm()
+    await pm.remove_address(address_id)
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
+@router.post("/providers/{provider_id}/addresses/{address_id}/toggle-preferred")
+async def toggle_preferred(provider_id: int, address_id: int):
+    pm = deps.get_pm()
+    await pm.toggle_address_preferred(address_id)
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
 @router.post("/providers/{provider_id}/pull")
 async def pull_model(provider_id: int, model: str = Form(...)):
     pm = deps.get_pm()

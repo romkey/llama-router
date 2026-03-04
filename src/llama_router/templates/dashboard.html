@@ -99,12 +99,19 @@
                                     </span>
                                 </div>
                             </div>
-                            <p class="text-muted small mb-2">
-                                <i class="bi bi-link-45deg me-1"></i>{{ info.provider.url }}
-                                {% if info.provider.llamacpp_url %}
-                                <br><i class="bi bi-link-45deg me-1"></i>{{ info.provider.llamacpp_url }} <span class="text-muted">(llama.cpp)</span>
-                                {% endif %}
-                            </p>
+                            <div class="small mb-2">
+                                {% for addr in info.addresses %}
+                                <div class="text-muted">
+                                    {% if addr.is_live %}
+                                    <i class="bi bi-circle-fill text-success me-1" style="font-size:.55rem" title="Live"></i>
+                                    {% else %}
+                                    <i class="bi bi-circle-fill text-danger me-1" style="font-size:.55rem" title="Not responding"></i>
+                                    {% endif %}
+                                    {{ addr.url }}
+                                    {% if addr.is_preferred %}<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem" title="Preferred"></i>{% endif %}
+                                </div>
+                                {% endfor %}
+                            </div>
                             <p class="mb-1">
                                 <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
                             </p>
@@ -169,7 +176,14 @@
                                 </a>
                             </td>
                             <td><span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span></td>
-                            <td class="text-muted small">{{ info.provider.url }}</td>
+                            <td class="text-muted small">
+                                {% for addr in info.addresses %}
+                                <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
+                                    <i class="bi bi-circle-fill {% if addr.is_live %}text-success{% else %}text-danger{% endif %}" style="font-size:.5rem"></i>
+                                    {{ addr.url }}{% if not loop.last %}, {% endif %}
+                                </span>
+                                {% endfor %}
+                            </td>
                             <td>
                                 <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
                                     {{ info.provider.status.value }}

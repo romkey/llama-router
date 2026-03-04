@@ -131,3 +131,45 @@ async def test_providers_for_model_protocol_filter(db: Database):
     assert len(lcpp_providers) == 2
     names = {p.name for p in lcpp_providers}
     assert names == {"lcpp-srv", "both-srv"}
+
+
+@pytest.mark.asyncio
+async def test_address_crud(db: Database):
+    p = await db.add_provider("srv", "http://host:11434")
+    addr1 = await db.add_address(p.id, "http://host:11434", is_preferred=True)
+    addr2 = await db.add_address(p.id, "http://backup:11434", is_preferred=False)
+
+    addrs = await db.get_addresses(p.id)
+    assert len(addrs) == 2
+    assert addrs[0].is_preferred is True
+
+    await db.set_address_live(addr1.id, True)
+    a = await db.get_address(addr1.id)
+    assert a is not None and a.is_live is True
+
+    await db.set_address_preferred(addr2.id, True)
+    a2 = await db.get_address(addr2.id)
+    assert a2 is not None and a2.is_preferred is True
+
+    await db.update_address(addr2.id, "http://new-backup:11434", is_preferred=False)
+    a2 = await db.get_address(addr2.id)
+    assert a2 is not None and a2.url == "http://new-backup:11434"
+    assert a2.is_preferred is False
+
+    await db.remove_address(addr2.id)
+    addrs = await db.get_addresses(p.id)
+    assert len(addrs) == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_addresses_migration(db: Database):
+    """Existing provider url/llamacpp_url get seeded into addresses table."""
+    p = await db.add_provider(
+        "srv", "http://host:11434", ProviderType.BOTH, "http://host:8080"
+    )
+    await db._seed_addresses()
+    addrs = await db.get_addresses(p.id)
+    assert len(addrs) >= 1
+    assert addrs[0].url == "http://host:11434"
+    assert addrs[0].llamacpp_url == "http://host:8080"
+    assert addrs[0].is_preferred is True

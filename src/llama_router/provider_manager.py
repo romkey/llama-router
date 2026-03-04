@@ -12,6 +12,7 @@ from .llamacpp_client import LlamaCppClient
 from .models import (
     BenchmarkResult,
     Provider,
+    ProviderAddress,
     ProviderInfo,
     ProviderModel,
     ProviderStatus,
@@ -34,7 +35,7 @@ class ProviderManager:
         providers = await self._db.list_providers()
         for p in providers:
             assert p.id is not None
-            self._create_clients(p)
+            await self._rebuild_clients(p)
         self._health_task = asyncio.create_task(self._health_check_loop())
 
     async def stop(self) -> None:
@@ -49,12 +50,35 @@ class ProviderManager:
         for client in self._llamacpp_clients.values():
             await client.close()
 
-    def _create_clients(self, provider: Provider) -> None:
+    # --- Address helpers ---
+
+    def _best_address(self, addresses: list[ProviderAddress]) -> ProviderAddress | None:
+        """Pick the best address: prefer live+preferred > live > preferred > any."""
+        if not addresses:
+            return None
+        live_preferred = [a for a in addresses if a.is_live and a.is_preferred]
+        if live_preferred:
+            return live_preferred[0]
+        live = [a for a in addresses if a.is_live]
+        if live:
+            return live[0]
+        preferred = [a for a in addresses if a.is_preferred]
+        if preferred:
+            return preferred[0]
+        return addresses[0]
+
+    async def _rebuild_clients(self, provider: Provider) -> None:
+        """Close existing clients and create new ones from the best live address."""
         assert provider.id is not None
+        await self._close_clients(provider.id)
+        addresses = await self._db.get_addresses(provider.id)
+        addr = self._best_address(addresses)
+        if not addr:
+            return
         if provider.supports_ollama:
-            self._ollama_clients[provider.id] = OllamaClient(provider.url)
+            self._ollama_clients[provider.id] = OllamaClient(addr.url)
         if provider.supports_llamacpp:
-            url = provider.llamacpp_url or provider.url
+            url = addr.llamacpp_url or addr.url
             self._llamacpp_clients[provider.id] = LlamaCppClient(url)
 
     async def _close_clients(self, provider_id: int) -> None:
@@ -65,6 +89,8 @@ class ProviderManager:
             await self._llamacpp_clients[provider_id].close()
             del self._llamacpp_clients[provider_id]
 
+    # --- Provider CRUD ---
+
     async def add_provider(
         self,
         name: str,
@@ -74,7 +100,8 @@ class ProviderManager:
     ) -> Provider:
         provider = await self._db.add_provider(name, url, provider_type, llamacpp_url)
         assert provider.id is not None
-        self._create_clients(provider)
+        await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
+        await self._rebuild_clients(provider)
 
         try:
             await self._discover_provider(provider)
@@ -98,11 +125,10 @@ class ProviderManager:
         await self._db.update_provider(
             provider_id, name, url, provider_type, llamacpp_url
         )
-        await self._close_clients(provider_id)
         provider = await self._db.get_provider(provider_id)
         if not provider:
             return
-        self._create_clients(provider)
+        await self._rebuild_clients(provider)
         try:
             await self._discover_provider(provider)
             await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
@@ -123,16 +149,68 @@ class ProviderManager:
         self._active_requests.pop(provider_id, None)
         await self._db.remove_provider(provider_id)
 
+    # --- Address CRUD ---
+
+    async def add_address(
+        self,
+        provider_id: int,
+        url: str,
+        llamacpp_url: str | None = None,
+        is_preferred: bool = False,
+    ) -> ProviderAddress:
+        addr = await self._db.add_address(provider_id, url, llamacpp_url, is_preferred)
+        provider = await self._db.get_provider(provider_id)
+        if provider:
+            await self._rebuild_clients(provider)
+        return addr
+
+    async def update_address(
+        self,
+        address_id: int,
+        url: str,
+        llamacpp_url: str | None = None,
+        is_preferred: bool | None = None,
+    ) -> None:
+        addr = await self._db.get_address(address_id)
+        if not addr:
+            return
+        await self._db.update_address(address_id, url, llamacpp_url, is_preferred)
+        provider = await self._db.get_provider(addr.provider_id)
+        if provider:
+            await self._rebuild_clients(provider)
+
+    async def remove_address(self, address_id: int) -> None:
+        addr = await self._db.get_address(address_id)
+        if not addr:
+            return
+        await self._db.remove_address(address_id)
+        provider = await self._db.get_provider(addr.provider_id)
+        if provider:
+            await self._rebuild_clients(provider)
+
+    async def toggle_address_preferred(self, address_id: int) -> None:
+        addr = await self._db.get_address(address_id)
+        if not addr:
+            return
+        await self._db.set_address_preferred(address_id, not addr.is_preferred)
+        provider = await self._db.get_provider(addr.provider_id)
+        if provider:
+            await self._rebuild_clients(provider)
+
+    # --- Info ---
+
     async def get_provider_info(self, provider_id: int) -> ProviderInfo | None:
         provider = await self._db.get_provider(provider_id)
         if not provider:
             return None
         models = await self._db.get_provider_models(provider_id)
         benchmarks = await self._db.get_benchmarks_for_provider(provider_id)
+        addresses = await self._db.get_addresses(provider_id)
         return ProviderInfo(
             provider=provider,
             models=models,
             benchmarks=benchmarks,
+            addresses=addresses,
             active_requests=self._active_requests.get(provider_id, 0),
         )
 
@@ -143,11 +221,13 @@ class ProviderManager:
             assert p.id is not None
             models = await self._db.get_provider_models(p.id)
             benchmarks = await self._db.get_benchmarks_for_provider(p.id)
+            addresses = await self._db.get_addresses(p.id)
             infos.append(
                 ProviderInfo(
                     provider=p,
                     models=models,
                     benchmarks=benchmarks,
+                    addresses=addresses,
                     active_requests=self._active_requests.get(p.id, 0),
                 )
             )
@@ -268,19 +348,20 @@ class ProviderManager:
         providers = await self._db.list_providers()
         for p in providers:
             assert p.id is not None
-            reachable = False
+            addresses = await self._db.get_addresses(p.id)
+            any_live = False
 
-            ollama = self._ollama_clients.get(p.id)
-            lcpp = self._llamacpp_clients.get(p.id)
+            for addr in addresses:
+                assert addr.id is not None
+                reachable = await self._probe_address(p, addr)
+                await self._db.set_address_live(addr.id, reachable)
+                if reachable:
+                    any_live = True
 
-            if ollama and await ollama.is_reachable():
-                reachable = True
-            if lcpp and await lcpp.is_reachable():
-                reachable = True
-
-            if reachable:
+            if any_live:
                 if p.status == ProviderStatus.OFFLINE:
                     logger.info("Provider %s is back online, re-discovering", p.name)
+                    await self._rebuild_clients(p)
                     await self._discover_provider(p)
                 if self._active_requests.get(p.id, 0) > 0:
                     await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
@@ -290,3 +371,24 @@ class ProviderManager:
                 if p.status != ProviderStatus.OFFLINE:
                     logger.warning("Provider %s went offline", p.name)
                 await self._db.update_provider_status(p.id, ProviderStatus.OFFLINE)
+
+    async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
+        """Check if a single address is reachable via the provider's protocol(s)."""
+        if provider.supports_ollama:
+            tmp = OllamaClient(addr.url)
+            try:
+                if await tmp.is_reachable():
+                    return True
+            finally:
+                await tmp.close()
+
+        if provider.supports_llamacpp:
+            url = addr.llamacpp_url or addr.url
+            tmp = LlamaCppClient(url)
+            try:
+                if await tmp.is_reachable():
+                    return True
+            finally:
+                await tmp.close()
+
+        return False

@@ -57,8 +57,19 @@ class BenchmarkResult(BaseModel):
     created_at: datetime | None = None
 
 
+class ProviderAddress(BaseModel):
+    id: int | None = None
+    provider_id: int
+    url: str
+    llamacpp_url: str | None = None
+    is_preferred: bool = False
+    is_live: bool = False
+    created_at: datetime | None = None
+
+
 class ProviderInfo(BaseModel):
     provider: Provider
     models: list[ProviderModel] = []
     benchmarks: list[BenchmarkResult] = []
+    addresses: list[ProviderAddress] = []
     active_requests: int = 0
