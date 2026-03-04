@@ -10,8 +10,11 @@ from fastapi.templating import Jinja2Templates
 from ..models import ProviderType
 from . import deps
 
+from .. import __version__
+
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+templates.env.globals["version"] = __version__
 
 router = APIRouter()
 
