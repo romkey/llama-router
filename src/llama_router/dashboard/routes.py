@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..models import ProviderType
@@ -70,6 +70,50 @@ async def dashboard(request: Request):
             "log_pages": log_pages,
             "log_total": log_total,
         },
+    )
+
+
+@router.get("/api/status")
+async def api_status():
+    pm = deps.get_pm()
+    db = deps.get_db()
+    infos = await pm.list_provider_infos()
+    all_models = await db.list_all_models()
+    log_total = await db.count_request_logs()
+
+    providers_data = []
+    for info in infos:
+        providers_data.append(
+            {
+                "id": info.provider.id,
+                "name": info.provider.name,
+                "status": info.provider.status.value,
+                "provider_type": info.provider.provider_type.value,
+                "model_count": len(info.models),
+                "active_requests": info.active_requests,
+                "addresses": [
+                    {
+                        "id": a.id,
+                        "url": a.url,
+                        "is_live": a.is_live,
+                        "is_preferred": a.is_preferred,
+                    }
+                    for a in info.addresses
+                ],
+            }
+        )
+
+    return JSONResponse(
+        {
+            "provider_count": len(infos),
+            "online_count": sum(
+                1 for i in infos if i.provider.status.value != "offline"
+            ),
+            "busy_count": sum(1 for i in infos if i.active_requests > 0),
+            "model_count": len(all_models),
+            "log_total": log_total,
+            "providers": providers_data,
+        }
     )
 
 

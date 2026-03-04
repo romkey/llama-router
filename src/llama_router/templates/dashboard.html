@@ -14,7 +14,7 @@
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Providers</h5>
-                <p class="display-6">{{ providers | length }}</p>
+                <p class="display-6" id="stat-providers">{{ providers | length }}</p>
             </div>
         </div>
     </div>
@@ -22,7 +22,7 @@
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Online</h5>
-                <p class="display-6 text-success">{{ providers | selectattr('provider.status.value', 'ne', 'offline') | list | length }}</p>
+                <p class="display-6 text-success" id="stat-online">{{ providers | selectattr('provider.status.value', 'ne', 'offline') | list | length }}</p>
             </div>
         </div>
     </div>
@@ -30,7 +30,7 @@
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Busy</h5>
-                <p class="display-6 text-warning">{{ providers | selectattr('active_requests', 'gt', 0) | list | length }}</p>
+                <p class="display-6 text-warning" id="stat-busy">{{ providers | selectattr('active_requests', 'gt', 0) | list | length }}</p>
             </div>
         </div>
     </div>
@@ -38,7 +38,7 @@
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Models</h5>
-                <p class="display-6">{{ models | length }}</p>
+                <p class="display-6" id="stat-models">{{ models | length }}</p>
             </div>
         </div>
     </div>
@@ -64,7 +64,7 @@
     <li class="nav-item" role="presentation">
         <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab">
             <i class="bi bi-journal-text me-1"></i>Log
-            {% if log_total %}<span class="badge bg-secondary ms-1">{{ log_total }}</span>{% endif %}
+            <span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>
         </button>
     </li>
 </ul>
@@ -89,7 +89,7 @@
         <div id="providers-card-view">
             <div class="row g-3 mb-3">
                 {% for info in providers %}
-                <div class="col-md-4">
+                <div class="col-md-4" data-card-provider="{{ info.provider.id }}">
                     <div class="card provider-card h-100">
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-start mb-2">
@@ -100,12 +100,12 @@
                                 </h5>
                                 <div>
                                     <span class="badge bg-info text-dark me-1">{{ info.provider.provider_type.value }}</span>
-                                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status>
                                         {{ info.provider.status.value }}
                                     </span>
                                 </div>
                             </div>
-                            <div class="small mb-2">
+                            <div class="small mb-2" data-card-addresses>
                                 {% for addr in info.addresses %}
                                 <div class="text-muted">
                                     {% if addr.is_live %}
@@ -118,14 +118,12 @@
                                 </div>
                                 {% endfor %}
                             </div>
-                            <p class="mb-1">
+                            <p class="mb-1" data-card-models>
                                 <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
                             </p>
-                            {% if info.active_requests > 0 %}
-                            <p class="text-warning mb-1">
-                                <i class="bi bi-activity me-1"></i>{{ info.active_requests }} active request{{ 's' if info.active_requests != 1 }}
+                            <p class="text-warning mb-1" data-card-active style="{% if info.active_requests == 0 %}display:none{% endif %}">
+                                <i class="bi bi-activity me-1"></i><span>{{ info.active_requests }}</span> active request{{ 's' if info.active_requests != 1 }}
                             </p>
-                            {% endif %}
                             {% if info.models %}
                             <div class="mt-2">
                                 {% for m in info.models[:5] %}
@@ -175,14 +173,14 @@
                     </thead>
                     <tbody>
                         {% for info in providers %}
-                        <tr>
+                        <tr data-list-provider="{{ info.provider.id }}">
                             <td>
                                 <a href="/providers/{{ info.provider.id }}" class="text-decoration-none fw-semibold">
                                     {{ info.provider.name }}
                                 </a>
                             </td>
                             <td><span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span></td>
-                            <td class="text-muted small">
+                            <td class="text-muted small" data-list-addresses>
                                 {% for addr in info.addresses %}
                                 <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
                                     <i class="bi bi-circle-fill {% if addr.is_live %}text-success{% else %}text-danger{% endif %}" style="font-size:.5rem"></i>
@@ -190,13 +188,13 @@
                                 </span>
                                 {% endfor %}
                             </td>
-                            <td>
+                            <td data-list-status>
                                 <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
                                     {{ info.provider.status.value }}
                                 </span>
                             </td>
-                            <td>{{ info.models | length }}</td>
-                            <td>
+                            <td data-list-models>{{ info.models | length }}</td>
+                            <td data-list-active>
                                 {% if info.active_requests > 0 %}
                                 <span class="text-warning">{{ info.active_requests }}</span>
                                 {% else %}
@@ -505,6 +503,101 @@ document.addEventListener('DOMContentLoaded', function() {
         const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
         if (tab) new bootstrap.Tab(tab).show();
     }
+
+    setInterval(refreshStatus, 5000);
 });
+
+const STATUS_CLASSES = {
+    idle: 'badge bg-success',
+    busy: 'badge bg-warning text-dark',
+    offline: 'badge bg-danger',
+    unknown: 'badge bg-secondary'
+};
+
+function refreshStatus() {
+    fetch('/api/status')
+        .then(r => r.json())
+        .then(updateDashboard)
+        .catch(() => {});
+}
+
+function updateDashboard(data) {
+    setText('stat-providers', data.provider_count);
+    setText('stat-online', data.online_count);
+    setText('stat-busy', data.busy_count);
+    setText('stat-models', data.model_count);
+    const logEl = document.getElementById('stat-log-total');
+    if (logEl) logEl.textContent = data.log_total || '';
+
+    const byId = {};
+    data.providers.forEach(p => { byId[p.id] = p; });
+
+    document.querySelectorAll('[data-card-provider]').forEach(card => {
+        const p = byId[card.dataset.cardProvider];
+        if (!p) return;
+
+        const statusEl = card.querySelector('[data-card-status]');
+        if (statusEl) { statusEl.className = STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown; statusEl.textContent = p.status; }
+
+        const addrEl = card.querySelector('[data-card-addresses]');
+        if (addrEl) addrEl.innerHTML = renderCardAddresses(p.addresses);
+
+        const modelsEl = card.querySelector('[data-card-models]');
+        if (modelsEl) modelsEl.innerHTML = '<i class="bi bi-cpu me-1"></i>' + p.model_count + ' model' + (p.model_count !== 1 ? 's' : '');
+
+        const activeEl = card.querySelector('[data-card-active]');
+        if (activeEl) {
+            if (p.active_requests > 0) {
+                activeEl.style.display = '';
+                activeEl.innerHTML = '<i class="bi bi-activity me-1"></i><span>' + p.active_requests + '</span> active request' + (p.active_requests !== 1 ? 's' : '');
+            } else {
+                activeEl.style.display = 'none';
+            }
+        }
+    });
+
+    document.querySelectorAll('[data-list-provider]').forEach(row => {
+        const p = byId[row.dataset.listProvider];
+        if (!p) return;
+
+        const statusEl = row.querySelector('[data-list-status]');
+        if (statusEl) statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + p.status + '</span>';
+
+        const addrEl = row.querySelector('[data-list-addresses]');
+        if (addrEl) addrEl.innerHTML = renderListAddresses(p.addresses);
+
+        const modelsEl = row.querySelector('[data-list-models]');
+        if (modelsEl) modelsEl.textContent = p.model_count;
+
+        const activeEl = row.querySelector('[data-list-active]');
+        if (activeEl) activeEl.innerHTML = p.active_requests > 0
+            ? '<span class="text-warning">' + p.active_requests + '</span>'
+            : '0';
+    });
+}
+
+function renderCardAddresses(addrs) {
+    return addrs.map(a =>
+        '<div class="text-muted">' +
+        '<i class="bi bi-circle-fill ' + (a.is_live ? 'text-success' : 'text-danger') + ' me-1" style="font-size:.55rem"></i>' +
+        a.url +
+        (a.is_preferred ? '<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem"></i>' : '') +
+        '</div>'
+    ).join('');
+}
+
+function renderListAddresses(addrs) {
+    return addrs.map((a, i) =>
+        '<span title="' + (a.is_live ? 'Live' : 'Not responding') + '">' +
+        '<i class="bi bi-circle-fill ' + (a.is_live ? 'text-success' : 'text-danger') + '" style="font-size:.5rem"></i> ' +
+        a.url + (i < addrs.length - 1 ? ', ' : '') +
+        '</span>'
+    ).join('');
+}
+
+function setText(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+}
 </script>
 {% endblock %}
