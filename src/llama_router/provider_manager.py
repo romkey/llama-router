@@ -272,19 +272,23 @@ class ProviderManager:
         if not provider:
             return None
         try:
+            protocol: str | None = None
             if provider.supports_ollama and provider_id in self._ollama_clients:
                 metrics = await self._ollama_clients[provider_id].benchmark_chat(
                     model_name, settings.benchmark_prompt
                 )
+                protocol = "ollama"
             elif provider.supports_llamacpp and provider_id in self._llamacpp_clients:
                 metrics = await self._llamacpp_clients[provider_id].benchmark_chat(
                     model_name, settings.benchmark_prompt
                 )
+                protocol = "llamacpp"
             else:
                 return None
             result = BenchmarkResult(
                 provider_id=provider_id,
                 model_name=model_name,
+                protocol=protocol,
                 startup_time_ms=metrics["startup_time_ms"],
                 tokens_per_second=metrics["tokens_per_second"],
             )

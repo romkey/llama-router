@@ -52,6 +52,7 @@ class BenchmarkResult(BaseModel):
     id: int | None = None
     provider_id: int
     model_name: str
+    protocol: str | None = None
     startup_time_ms: float | None = None
     tokens_per_second: float | None = None
     created_at: datetime | None = None

@@ -200,6 +200,7 @@
                         <thead>
                             <tr>
                                 <th>Model</th>
+                                <th>API</th>
                                 <th>Startup</th>
                                 <th>Tokens/s</th>
                             </tr>
@@ -208,6 +209,13 @@
                             {% for b in info.benchmarks %}
                             <tr>
                                 <td><code>{{ b.model_name }}</code></td>
+                                <td>
+                                    {% if b.protocol %}
+                                    <span class="badge {% if b.protocol == 'ollama' %}bg-primary{% else %}bg-info text-dark{% endif %}">{{ b.protocol }}</span>
+                                    {% else %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
                                 <td>{{ "%.0f ms" | format(b.startup_time_ms) if b.startup_time_ms else "—" }}</td>
                                 <td>{{ "%.1f" | format(b.tokens_per_second) if b.tokens_per_second else "—" }}</td>
                             </tr>

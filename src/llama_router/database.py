@@ -85,6 +85,12 @@ _MIGRATIONS = [
             "ALTER TABLE providers ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'ollama'",
         ],
     ),
+    (
+        "add_benchmark_protocol",
+        [
+            "ALTER TABLE benchmarks ADD COLUMN protocol TEXT",
+        ],
+    ),
 ]
 
 
@@ -103,18 +109,21 @@ class Database:
 
     async def _run_migrations(self) -> None:
         """Apply migrations idempotently by checking column existence."""
-        async with self.db.execute("PRAGMA table_info(providers)") as cursor:
-            columns = {row["name"] for row in await cursor.fetchall()}
+        table_columns: dict[str, set[str]] = {}
+
+        async def _cols(table: str) -> set[str]:
+            if table not in table_columns:
+                async with self.db.execute(f"PRAGMA table_info({table})") as cur:
+                    table_columns[table] = {r["name"] for r in await cur.fetchall()}
+            return table_columns[table]
 
         for _name, statements in _MIGRATIONS:
             for stmt in statements:
-                col = (
-                    stmt.split("ADD COLUMN ")[1].split()[0]
-                    if "ADD COLUMN" in stmt
-                    else None
-                )
-                if col and col in columns:
-                    continue
+                if "ADD COLUMN" in stmt:
+                    table = stmt.split("ALTER TABLE ")[1].split()[0]
+                    col = stmt.split("ADD COLUMN ")[1].split()[0]
+                    if col in await _cols(table):
+                        continue
                 try:
                     await self.db.execute(stmt)
                 except Exception:
@@ -401,11 +410,12 @@ class Database:
 
     async def save_benchmark(self, result: BenchmarkResult) -> None:
         await self.db.execute(
-            "INSERT INTO benchmarks (provider_id, model_name, startup_time_ms, tokens_per_second) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO benchmarks (provider_id, model_name, protocol, startup_time_ms, tokens_per_second) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
                 result.provider_id,
                 result.model_name,
+                result.protocol,
                 result.startup_time_ms,
                 result.tokens_per_second,
             ),
@@ -448,6 +458,7 @@ class Database:
                     "provider_id": r["provider_id"],
                     "provider_name": r["provider_name"],
                     "model_name": r["model_name"],
+                    "protocol": r["protocol"],
                     "startup_time_ms": r["startup_time_ms"],
                     "tokens_per_second": r["tokens_per_second"],
                     "created_at": r["created_at"],
@@ -535,6 +546,7 @@ def _row_to_benchmark(row: aiosqlite.Row) -> BenchmarkResult:
         id=row["id"],
         provider_id=row["provider_id"],
         model_name=row["model_name"],
+        protocol=row["protocol"],
         startup_time_ms=row["startup_time_ms"],
         tokens_per_second=row["tokens_per_second"],
         created_at=row["created_at"],
