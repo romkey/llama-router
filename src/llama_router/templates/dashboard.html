@@ -276,6 +276,8 @@
                     <tr>
                         <th>Name</th>
                         <th>Size</th>
+                        <th>Providers</th>
+                        <th>Requests</th>
                         <th>Modified</th>
                         <th></th>
                     </tr>
@@ -293,6 +295,8 @@
                             </code>
                         </td>
                         <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
+                        <td>{{ all_provider_counts.get(m.name, 0) }}</td>
+                        <td>{{ model_request_counts.get(m.name, 0) }}</td>
                         <td>{{ m.modified_at or "—" }}</td>
                         <td class="text-end text-nowrap">
                             <form method="post" action="/models/pull-all" class="d-inline">

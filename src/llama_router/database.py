@@ -490,6 +490,15 @@ class Database:
             rows = await cursor.fetchall()
             return [_row_to_request_log(r) for r in rows]
 
+    async def get_model_request_counts(self) -> dict[str, int]:
+        """Return {model_name: request_count} for all models in the log."""
+        async with self.db.execute(
+            "SELECT model, COUNT(*) AS cnt FROM request_log "
+            "WHERE model IS NOT NULL GROUP BY model"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {r["model"]: r["cnt"] for r in rows}
+
     async def count_request_logs(self) -> int:
         async with self.db.execute("SELECT COUNT(*) AS cnt FROM request_log") as cursor:
             row = await cursor.fetchone()
