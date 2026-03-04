@@ -228,3 +228,24 @@ async def pull_model_all_providers(model: str = Form(...)):
 
     await asyncio.gather(*[_pull_one(i) for i in ollama_infos])
     return RedirectResponse(url="/#models-pane", status_code=303)
+
+
+@router.post("/models/delete-all")
+async def delete_model_all_providers(model: str = Form(...)):
+    pm = deps.get_pm()
+    infos = await pm.list_provider_infos()
+    targets = [
+        i
+        for i in infos
+        if i.provider.supports_ollama and any(m.name == model for m in i.models)
+    ]
+
+    async def _delete_one(info):
+        assert info.provider.id is not None
+        try:
+            await pm.delete_remote_model(info.provider.id, model)
+        except Exception:
+            pass
+
+    await asyncio.gather(*[_delete_one(i) for i in targets])
+    return RedirectResponse(url="/#models-pane", status_code=303)

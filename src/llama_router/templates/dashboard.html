@@ -294,11 +294,17 @@
                         </td>
                         <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
                         <td>{{ m.modified_at or "—" }}</td>
-                        <td class="text-end">
+                        <td class="text-end text-nowrap">
                             <form method="post" action="/models/pull-all" class="d-inline">
                                 <input type="hidden" name="model" value="{{ m.name }}">
                                 <button class="btn btn-sm btn-outline-primary" title="Pull to all Ollama providers" {% if on_all %}disabled{% endif %}>
                                     <i class="bi bi-download me-1"></i>Pull all
+                                </button>
+                            </form>
+                            <form method="post" action="/models/delete-all" class="d-inline">
+                                <input type="hidden" name="model" value="{{ m.name }}">
+                                <button class="btn btn-sm btn-outline-danger" title="Delete from all providers" onclick="return confirm('Delete {{ m.name }} from ALL providers?')">
+                                    <i class="bi bi-trash me-1"></i>Delete all
                                 </button>
                             </form>
                         </td>
