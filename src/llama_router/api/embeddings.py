@@ -12,8 +12,7 @@ from . import deps
 router = APIRouter()
 
 
-@router.post("/api/embeddings")
-async def embeddings(request: Request):
+async def _handle_embedding(request: Request, endpoint: str, method: str):
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -34,14 +33,14 @@ async def embeddings(request: Request):
     start = time.monotonic()
     pm.acquire(provider.id)
     try:
-        result = await client.embeddings(body)
+        result = await getattr(client, method)(body)
         resp_size = len(json.dumps(result).encode())
         duration = (time.monotonic() - start) * 1000
         await log_request(
             db,
             provider=provider,
             protocol="ollama",
-            endpoint="/api/embeddings",
+            endpoint=endpoint,
             request=request,
             model=model,
             request_body=body,
@@ -55,7 +54,7 @@ async def embeddings(request: Request):
             db,
             provider=provider,
             protocol="ollama",
-            endpoint="/api/embeddings",
+            endpoint=endpoint,
             request=request,
             model=model,
             request_body=body,
@@ -67,3 +66,13 @@ async def embeddings(request: Request):
         raise
     finally:
         pm.release(provider.id)
+
+
+@router.post("/api/embeddings")
+async def embeddings(request: Request):
+    return await _handle_embedding(request, "/api/embeddings", "embeddings")
+
+
+@router.post("/api/embed")
+async def embed(request: Request):
+    return await _handle_embedding(request, "/api/embed", "embed")

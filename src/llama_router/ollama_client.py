@@ -80,6 +80,11 @@ class OllamaClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def embed(self, body: dict) -> dict:
+        resp = await self._http.post("/api/embed", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
     async def pull_stream(self, model: str) -> AsyncIterator[bytes]:
         async with self._http.stream(
             "POST",
