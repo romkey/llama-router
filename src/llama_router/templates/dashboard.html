@@ -118,6 +118,15 @@
                                 </div>
                                 {% endfor %}
                             </div>
+                            {% if info.provider.machine_type or info.provider.gpu_type %}
+                            <p class="text-muted small mb-1">
+                                {% if info.provider.machine_type %}<i class="bi bi-pc-display me-1"></i>{{ info.provider.machine_type }}{% endif %}
+                                {% if info.provider.gpu_type %}
+                                {% if info.provider.machine_type %}<span class="mx-1">&middot;</span>{% endif %}
+                                <i class="bi bi-gpu-card me-1"></i>{{ info.provider.gpu_type }}{% if info.provider.gpu_ram %} ({{ info.provider.gpu_ram }}){% endif %}
+                                {% endif %}
+                            </p>
+                            {% endif %}
                             <p class="mb-1" data-card-models>
                                 <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
                             </p>
@@ -165,6 +174,7 @@
                             <th>Name</th>
                             <th>Type</th>
                             <th>URL</th>
+                            <th>Hardware</th>
                             <th>Status</th>
                             <th>Models</th>
                             <th>Active</th>
@@ -187,6 +197,9 @@
                                     {{ addr.url }}{% if not loop.last %}, {% endif %}
                                 </span>
                                 {% endfor %}
+                            </td>
+                            <td class="small text-muted">
+                                {% if info.provider.gpu_type %}{{ info.provider.gpu_type }}{% if info.provider.gpu_ram %} ({{ info.provider.gpu_ram }}){% endif %}{% elif info.provider.machine_type %}{{ info.provider.machine_type }}{% else %}—{% endif %}
                             </td>
                             <td data-list-status>
                                 <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
@@ -447,6 +460,22 @@
                 <div class="mb-3" id="llamacpp-url-group" style="display: none;">
                     <label for="llamacpp_url" class="form-label">llama.cpp URL</label>
                     <input type="url" class="form-control" id="llamacpp_url" name="llamacpp_url" placeholder="http://192.168.1.100:8080">
+                </div>
+                <hr>
+                <p class="text-muted small mb-2">Hardware (optional)</p>
+                <div class="mb-3">
+                    <label for="machine_type" class="form-label">Machine Type</label>
+                    <input type="text" class="form-control" id="machine_type" name="machine_type" placeholder="e.g. Mac Studio M2 Ultra, Dell R750xa">
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="gpu_type" class="form-label">GPU Type</label>
+                        <input type="text" class="form-control" id="gpu_type" name="gpu_type" placeholder="e.g. RTX 4090, A100">
+                    </div>
+                    <div class="col-md-6">
+                        <label for="gpu_ram" class="form-label">GPU RAM</label>
+                        <input type="text" class="form-control" id="gpu_ram" name="gpu_ram" placeholder="e.g. 24 GB, 192 GB">
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">

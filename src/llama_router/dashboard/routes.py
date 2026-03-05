@@ -141,12 +141,23 @@ async def add_provider(
     url: str = Form(...),
     provider_type: str = Form("ollama"),
     llamacpp_url: Optional[str] = Form(None),
+    machine_type: Optional[str] = Form(None),
+    gpu_type: Optional[str] = Form(None),
+    gpu_ram: Optional[str] = Form(None),
 ):
     pm = deps.get_pm()
     ptype = ProviderType(provider_type)
     lcpp_url = llamacpp_url if llamacpp_url else None
     try:
-        await pm.add_provider(name, url, ptype, lcpp_url)
+        await pm.add_provider(
+            name,
+            url,
+            ptype,
+            lcpp_url,
+            machine_type=machine_type or None,
+            gpu_type=gpu_type or None,
+            gpu_ram=gpu_ram or None,
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return RedirectResponse(url="/", status_code=303)
@@ -159,12 +170,24 @@ async def edit_provider(
     url: str = Form(...),
     provider_type: str = Form("ollama"),
     llamacpp_url: Optional[str] = Form(None),
+    machine_type: Optional[str] = Form(None),
+    gpu_type: Optional[str] = Form(None),
+    gpu_ram: Optional[str] = Form(None),
 ):
     pm = deps.get_pm()
     ptype = ProviderType(provider_type)
     lcpp_url = llamacpp_url if llamacpp_url else None
     try:
-        await pm.update_provider(provider_id, name, url, ptype, lcpp_url)
+        await pm.update_provider(
+            provider_id,
+            name,
+            url,
+            ptype,
+            lcpp_url,
+            machine_type=machine_type or None,
+            gpu_type=gpu_type or None,
+            gpu_ram=gpu_ram or None,
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)

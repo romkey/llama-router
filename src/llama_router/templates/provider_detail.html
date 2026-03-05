@@ -250,6 +250,24 @@
                     <span class="text-muted">Models</span>
                     <span>{{ info.models | length }}</span>
                 </li>
+                {% if info.provider.machine_type %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Machine</span>
+                    <span>{{ info.provider.machine_type }}</span>
+                </li>
+                {% endif %}
+                {% if info.provider.gpu_type %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">GPU</span>
+                    <span>{{ info.provider.gpu_type }}</span>
+                </li>
+                {% endif %}
+                {% if info.provider.gpu_ram %}
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">GPU RAM</span>
+                    <span>{{ info.provider.gpu_ram }}</span>
+                </li>
+                {% endif %}
                 {% if info.provider.created_at %}
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Added</span>
@@ -289,6 +307,22 @@
                 <div class="mb-3" id="edit-llamacpp-url-group" {% if info.provider.provider_type.value != 'both' %}style="display: none;"{% endif %}>
                     <label for="edit-llamacpp-url" class="form-label">llama.cpp URL</label>
                     <input type="url" class="form-control" id="edit-llamacpp-url" name="llamacpp_url" value="{{ info.provider.llamacpp_url or '' }}">
+                </div>
+                <hr>
+                <p class="text-muted small mb-2">Hardware (optional)</p>
+                <div class="mb-3">
+                    <label for="edit-machine-type" class="form-label">Machine Type</label>
+                    <input type="text" class="form-control" id="edit-machine-type" name="machine_type" value="{{ info.provider.machine_type or '' }}" placeholder="e.g. Mac Studio M2 Ultra, Dell R750xa">
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="edit-gpu-type" class="form-label">GPU Type</label>
+                        <input type="text" class="form-control" id="edit-gpu-type" name="gpu_type" value="{{ info.provider.gpu_type or '' }}" placeholder="e.g. RTX 4090, A100">
+                    </div>
+                    <div class="col-md-6">
+                        <label for="edit-gpu-ram" class="form-label">GPU RAM</label>
+                        <input type="text" class="form-control" id="edit-gpu-ram" name="gpu_ram" value="{{ info.provider.gpu_ram or '' }}" placeholder="e.g. 24 GB, 192 GB">
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">

@@ -97,8 +97,19 @@ class ProviderManager:
         url: str,
         provider_type: ProviderType = ProviderType.OLLAMA,
         llamacpp_url: str | None = None,
+        machine_type: str | None = None,
+        gpu_type: str | None = None,
+        gpu_ram: str | None = None,
     ) -> Provider:
-        provider = await self._db.add_provider(name, url, provider_type, llamacpp_url)
+        provider = await self._db.add_provider(
+            name,
+            url,
+            provider_type,
+            llamacpp_url,
+            machine_type=machine_type,
+            gpu_type=gpu_type,
+            gpu_ram=gpu_ram,
+        )
         assert provider.id is not None
         await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
         await self._rebuild_clients(provider)
@@ -121,9 +132,19 @@ class ProviderManager:
         url: str,
         provider_type: ProviderType | None = None,
         llamacpp_url: str | None = None,
+        machine_type: str | None = None,
+        gpu_type: str | None = None,
+        gpu_ram: str | None = None,
     ) -> None:
         await self._db.update_provider(
-            provider_id, name, url, provider_type, llamacpp_url
+            provider_id,
+            name,
+            url,
+            provider_type,
+            llamacpp_url,
+            machine_type=machine_type,
+            gpu_type=gpu_type,
+            gpu_ram=gpu_ram,
         )
         provider = await self._db.get_provider(provider_id)
         if not provider:

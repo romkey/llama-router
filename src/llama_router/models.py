@@ -26,6 +26,9 @@ class Provider(BaseModel):
     llamacpp_url: str | None = None
     provider_type: ProviderType = ProviderType.OLLAMA
     status: ProviderStatus = ProviderStatus.UNKNOWN
+    machine_type: str | None = None
+    gpu_type: str | None = None
+    gpu_ram: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

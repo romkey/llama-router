@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS providers (
     llamacpp_url TEXT,
     provider_type TEXT NOT NULL DEFAULT 'ollama',
     status TEXT NOT NULL DEFAULT 'unknown',
+    machine_type TEXT,
+    gpu_type TEXT,
+    gpu_ram TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -89,6 +92,14 @@ _MIGRATIONS = [
         "add_benchmark_protocol",
         [
             "ALTER TABLE benchmarks ADD COLUMN protocol TEXT",
+        ],
+    ),
+    (
+        "add_provider_hw_fields",
+        [
+            "ALTER TABLE providers ADD COLUMN machine_type TEXT",
+            "ALTER TABLE providers ADD COLUMN gpu_type TEXT",
+            "ALTER TABLE providers ADD COLUMN gpu_ram TEXT",
         ],
     ),
 ]
@@ -168,13 +179,25 @@ class Database:
         url: str,
         provider_type: ProviderType = ProviderType.OLLAMA,
         llamacpp_url: str | None = None,
+        machine_type: str | None = None,
+        gpu_type: str | None = None,
+        gpu_ram: str | None = None,
     ) -> Provider:
         url = url.rstrip("/")
         if llamacpp_url:
             llamacpp_url = llamacpp_url.rstrip("/")
         cursor = await self.db.execute(
-            "INSERT INTO providers (name, url, llamacpp_url, provider_type) VALUES (?, ?, ?, ?)",
-            (name, url, llamacpp_url, provider_type.value),
+            "INSERT INTO providers (name, url, llamacpp_url, provider_type, machine_type, gpu_type, gpu_ram) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                name,
+                url,
+                llamacpp_url,
+                provider_type.value,
+                machine_type,
+                gpu_type,
+                gpu_ram,
+            ),
         )
         await self.db.commit()
         return Provider(
@@ -183,6 +206,9 @@ class Database:
             url=url,
             llamacpp_url=llamacpp_url,
             provider_type=provider_type,
+            machine_type=machine_type,
+            gpu_type=gpu_type,
+            gpu_ram=gpu_ram,
         )
 
     async def remove_provider(self, provider_id: int) -> None:
@@ -215,6 +241,9 @@ class Database:
         url: str,
         provider_type: ProviderType | None = None,
         llamacpp_url: str | None = None,
+        machine_type: str | None = None,
+        gpu_type: str | None = None,
+        gpu_ram: str | None = None,
     ) -> None:
         url = url.rstrip("/")
         if llamacpp_url:
@@ -222,14 +251,25 @@ class Database:
         if provider_type is not None:
             await self.db.execute(
                 "UPDATE providers SET name = ?, url = ?, llamacpp_url = ?, provider_type = ?, "
+                "machine_type = ?, gpu_type = ?, gpu_ram = ?, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (name, url, llamacpp_url, provider_type.value, provider_id),
+                (
+                    name,
+                    url,
+                    llamacpp_url,
+                    provider_type.value,
+                    machine_type,
+                    gpu_type,
+                    gpu_ram,
+                    provider_id,
+                ),
             )
         else:
             await self.db.execute(
                 "UPDATE providers SET name = ?, url = ?, llamacpp_url = ?, "
+                "machine_type = ?, gpu_type = ?, gpu_ram = ?, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (name, url, llamacpp_url, provider_id),
+                (name, url, llamacpp_url, machine_type, gpu_type, gpu_ram, provider_id),
             )
         await self.db.commit()
 
@@ -524,6 +564,9 @@ def _row_to_provider(row: aiosqlite.Row) -> Provider:
         llamacpp_url=row["llamacpp_url"],
         provider_type=ProviderType(row["provider_type"]),
         status=ProviderStatus(row["status"]),
+        machine_type=row["machine_type"],
+        gpu_type=row["gpu_type"],
+        gpu_ram=row["gpu_ram"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
