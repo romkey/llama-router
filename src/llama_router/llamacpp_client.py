@@ -81,7 +81,7 @@ class LlamaCppClient:
         return resp.json()
 
     async def benchmark_chat(self, model: str, prompt: str) -> dict[str, float]:
-        """Run a simple benchmark returning startup_time_ms and tokens_per_second."""
+        """Run a chat benchmark returning startup_time_ms and tokens_per_second."""
         body = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -102,5 +102,24 @@ class LlamaCppClient:
         tps = (
             completion_tokens / elapsed_s if completion_tokens and elapsed_s > 0 else 0
         )
+
+        return {"startup_time_ms": 0, "tokens_per_second": tps}
+
+    async def benchmark_embed(self, model: str, prompt: str) -> dict[str, float]:
+        """Run an embedding benchmark returning startup_time_ms and tokens_per_second."""
+        body = {"model": model, "input": prompt}
+        start = time.monotonic()
+        resp = await self._http.post(
+            "/v1/embeddings",
+            json=body,
+            timeout=httpx.Timeout(30.0, read=120.0),
+        )
+        elapsed_s = time.monotonic() - start
+        resp.raise_for_status()
+        data = resp.json()
+
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        tps = prompt_tokens / elapsed_s if prompt_tokens and elapsed_s > 0 else 0
 
         return {"startup_time_ms": 0, "tokens_per_second": tps}

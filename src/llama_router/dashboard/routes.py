@@ -113,6 +113,7 @@ async def dashboard(request: Request):
 
     cache = deps.get_cache()
     cache_stats = cache.stats() if cache else None
+    cached_models = cache.cached_models() if cache else set()
 
     return templates.TemplateResponse(
         "dashboard.html",
@@ -131,6 +132,7 @@ async def dashboard(request: Request):
             "log_pages": log_pages,
             "log_total": log_total,
             "cache_stats": cache_stats,
+            "cached_models": cached_models,
         },
     )
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlparse
@@ -194,29 +193,55 @@ class OllamaClient:
         resp.raise_for_status()
 
     async def benchmark_chat(self, model: str, prompt: str) -> dict[str, float]:
-        """Run a simple benchmark returning startup_time_ms and tokens_per_second."""
+        """Run a chat benchmark returning startup_time_ms and tokens_per_second."""
         body = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }
-        start = time.monotonic()
         resp = await self._http.post(
             "/api/chat",
             json=body,
             timeout=httpx.Timeout(30.0, read=120.0),
         )
-        elapsed = time.monotonic() - start
         resp.raise_for_status()
         data = resp.json()
 
-        total_duration_ns = data.get("total_duration", 0)
         load_duration_ns = data.get("load_duration", 0)
         eval_count = data.get("eval_count", 0)
         eval_duration_ns = data.get("eval_duration", 1)
 
         startup_ms = load_duration_ns / 1_000_000
         tps = (eval_count / eval_duration_ns * 1_000_000_000) if eval_count else 0
+
+        return {"startup_time_ms": startup_ms, "tokens_per_second": tps}
+
+    async def benchmark_embed(self, model: str, prompt: str) -> dict[str, float]:
+        """Run an embedding benchmark returning startup_time_ms and tokens_per_second.
+
+        tokens_per_second here represents input processing speed
+        (prompt_eval_count / eval_duration).
+        """
+        body = {"model": model, "input": prompt}
+        resp = await self._http.post(
+            "/api/embed",
+            json=body,
+            timeout=httpx.Timeout(30.0, read=120.0),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        load_duration_ns = data.get("load_duration", 0)
+        prompt_eval_count = data.get("prompt_eval_count", 0)
+        total_duration_ns = data.get("total_duration", 0)
+
+        startup_ms = load_duration_ns / 1_000_000
+        eval_ns = total_duration_ns - load_duration_ns
+        tps = (
+            (prompt_eval_count / eval_ns * 1_000_000_000)
+            if prompt_eval_count and eval_ns > 0
+            else 0
+        )
 
         return {"startup_time_ms": startup_ms, "tokens_per_second": tps}
 

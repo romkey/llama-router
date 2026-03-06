@@ -294,18 +294,43 @@ class ProviderManager:
             return None
         try:
             protocol: str | None = None
+            metrics: dict[str, float] | None = None
+
             if provider.supports_ollama and provider_id in self._ollama_clients:
-                metrics = await self._ollama_clients[provider_id].benchmark_chat(
-                    model_name, settings.benchmark_prompt
-                )
+                client = self._ollama_clients[provider_id]
                 protocol = "ollama"
+                try:
+                    metrics = await client.benchmark_chat(
+                        model_name, settings.benchmark_prompt
+                    )
+                except Exception:
+                    logger.info(
+                        "Chat benchmark failed for %s on provider %d, trying embed",
+                        model_name,
+                        provider_id,
+                    )
+                    metrics = await client.benchmark_embed(
+                        model_name, settings.benchmark_prompt
+                    )
             elif provider.supports_llamacpp and provider_id in self._llamacpp_clients:
-                metrics = await self._llamacpp_clients[provider_id].benchmark_chat(
-                    model_name, settings.benchmark_prompt
-                )
+                client = self._llamacpp_clients[provider_id]
                 protocol = "llamacpp"
+                try:
+                    metrics = await client.benchmark_chat(
+                        model_name, settings.benchmark_prompt
+                    )
+                except Exception:
+                    logger.info(
+                        "Chat benchmark failed for %s on provider %d, trying embed",
+                        model_name,
+                        provider_id,
+                    )
+                    metrics = await client.benchmark_embed(
+                        model_name, settings.benchmark_prompt
+                    )
             else:
                 return None
+
             result = BenchmarkResult(
                 provider_id=provider_id,
                 model_name=model_name,
@@ -321,6 +346,29 @@ class ProviderManager:
             )
             return None
 
+    @staticmethod
+    def _strip_cache_prefix(name: str) -> str:
+        """Remove the cache registry prefix that Ollama adds to model names.
+
+        Models pulled through the cache get stored as e.g.
+        ``host:9200/library/llama3.2:latest``.  Strip the ``host:port/library/``
+        (or ``host:port/``) prefix so we display just ``llama3.2:latest``.
+        """
+        if "/" not in name:
+            return name
+        host = settings.cache_external_host
+        port = str(settings.cache_port)
+        prefixes = []
+        if host:
+            prefixes.append(f"{host}:{port}/library/")
+            prefixes.append(f"{host}:{port}/")
+        prefixes.append(f"127.0.0.1:{port}/library/")
+        prefixes.append(f"127.0.0.1:{port}/")
+        for pfx in prefixes:
+            if name.startswith(pfx):
+                return name[len(pfx) :]
+        return name
+
     async def _discover_provider(self, provider: Provider) -> None:
         assert provider.id is not None
         all_models: list[ProviderModel] = []
@@ -329,12 +377,13 @@ class ProviderManager:
         if provider.supports_ollama and provider.id in self._ollama_clients:
             tags = await self._ollama_clients[provider.id].get_tags()
             for m in tags:
-                if m.name not in seen_names:
-                    seen_names.add(m.name)
+                clean_name = self._strip_cache_prefix(m.name)
+                if clean_name not in seen_names:
+                    seen_names.add(clean_name)
                     all_models.append(
                         ProviderModel(
                             provider_id=provider.id,
-                            name=m.name,
+                            name=clean_name,
                             size=m.size,
                             digest=m.digest,
                             modified_at=m.modified_at,

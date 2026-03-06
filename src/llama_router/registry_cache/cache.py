@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import time
 from pathlib import Path
@@ -82,6 +81,27 @@ class BlobCache:
         p = self._manifest_path(name, reference)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
+
+    def cached_models(self) -> set[str]:
+        """Return set of cached model names in Ollama format (e.g. 'llama3.2:latest')."""
+        result: set[str] = set()
+        if not self._manifests_dir.exists():
+            return result
+        for d in self._manifests_dir.iterdir():
+            if not d.is_dir():
+                continue
+            name = d.name
+            if name.startswith("library_"):
+                name = name[len("library_") :]
+            else:
+                name = name.replace("_", "/", 1)
+            for f in d.iterdir():
+                if f.is_file():
+                    tag = f.name
+                    age = time.time() - f.stat().st_mtime
+                    if age <= self._manifest_ttl_seconds:
+                        result.add(f"{name}:{tag}")
+        return result
 
     # --- Stats ---
 
