@@ -44,6 +44,7 @@ async def chat(request: Request):
         body["model"] = result.resolved_model
 
     assert provider.id is not None
+    body["model"] = pm.resolve_backend_model_name(provider.id, body["model"])
     client = pm.get_client(provider.id)
     stream = body.get("stream", True)
     start = time.monotonic()

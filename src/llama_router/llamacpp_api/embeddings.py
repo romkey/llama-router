@@ -46,6 +46,7 @@ async def embeddings(request: Request):
         body["model"] = result.resolved_model
 
     assert provider.id is not None
+    body["model"] = pm.resolve_backend_model_name(provider.id, body["model"])
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
     pm.acquire(provider.id)

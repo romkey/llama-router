@@ -30,6 +30,7 @@ class ProviderManager:
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
         self._active_requests: dict[int, int] = defaultdict(int)
         self._health_task: asyncio.Task | None = None
+        self._model_raw_names: dict[int, dict[str, str]] = {}
 
     async def start(self) -> None:
         providers = await self._db.list_providers()
@@ -369,10 +370,22 @@ class ProviderManager:
                 return name[len(pfx) :]
         return name
 
+    def resolve_backend_model_name(self, provider_id: int, clean_name: str) -> str:
+        """Return the raw model name the backend knows for a given clean name.
+
+        If the model was pulled through the cache, Ollama stores it with a
+        prefix (e.g. ``host:9200/library/qwen3.5:9B``).  The router stores
+        and displays the stripped name (``qwen3.5:9B``).  When forwarding a
+        request to the backend we must use the raw name the backend recognises.
+        """
+        raw_map = self._model_raw_names.get(provider_id, {})
+        return raw_map.get(clean_name, clean_name)
+
     async def _discover_provider(self, provider: Provider) -> None:
         assert provider.id is not None
         all_models: list[ProviderModel] = []
         seen_names: set[str] = set()
+        raw_names: dict[str, str] = {}
 
         if provider.supports_ollama and provider.id in self._ollama_clients:
             tags = await self._ollama_clients[provider.id].get_tags()
@@ -380,6 +393,8 @@ class ProviderManager:
                 clean_name = self._strip_cache_prefix(m.name)
                 if clean_name not in seen_names:
                     seen_names.add(clean_name)
+                    if clean_name != m.name:
+                        raw_names[clean_name] = m.name
                     all_models.append(
                         ProviderModel(
                             provider_id=provider.id,
@@ -405,6 +420,7 @@ class ProviderManager:
                         )
                     )
 
+        self._model_raw_names[provider.id] = raw_names
         await self._db.set_provider_models(provider.id, all_models)
         logger.info(
             "Discovered %d models on provider %s", len(all_models), provider.name
