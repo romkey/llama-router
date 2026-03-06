@@ -216,12 +216,14 @@ async def get_blob(name: str, digest: str, request: Request):
 
     cache.blob_misses += 1
 
-    # HEAD to upstream (following redirects to CDN) for the real Content-Length
-    # so Ollama can display accurate download progress.
+    # Try HEAD to upstream for Content-Length (progress display only).
+    # This must NEVER prevent the 307 redirect from being returned —
+    # Ollama unconditionally calls resp.Location() and any non-redirect
+    # response causes "http: no Location header in response".
     upstream_url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            head = await client.head(upstream_url, timeout=30.0)
+            head = await client.head(upstream_url, timeout=10.0)
             if head.status_code == 200:
                 cl = head.headers.get("content-length")
                 if cl:
@@ -236,19 +238,15 @@ async def get_blob(name: str, digest: str, request: Request):
                         "Blob cache MISS: %s — redirecting to stream-through",
                         digest[:24],
                     )
-            elif head.status_code == 404:
-                raise HTTPException(status_code=404, detail="Blob not found upstream")
             else:
-                logger.warning(
-                    "Blob HEAD upstream HTTP %d for %s",
-                    head.status_code,
+                logger.info(
+                    "Blob cache MISS: %s (HEAD upstream %d) — redirecting to stream-through",
                     digest[:24],
+                    head.status_code,
                 )
-    except HTTPException:
-        raise
     except Exception as exc:
-        logger.warning(
-            "Blob HEAD for content-length failed: %s — %s (proceeding anyway)",
+        logger.info(
+            "Blob cache MISS: %s (HEAD failed: %s) — redirecting to stream-through",
             digest[:24],
             exc,
         )
