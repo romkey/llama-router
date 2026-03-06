@@ -335,6 +335,28 @@ async def benchmark_model(provider_id: int, model_name: str):
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
+@router.post("/benchmarks/{benchmark_id}/delete")
+async def delete_benchmark(request: Request, benchmark_id: int):
+    db = deps.get_db()
+    await db.delete_benchmark(benchmark_id)
+    referer = request.headers.get("referer", "/")
+    return RedirectResponse(url=referer, status_code=303)
+
+
+@router.post("/benchmarks/delete-model/{model_name:path}")
+async def delete_benchmarks_for_model(model_name: str):
+    db = deps.get_db()
+    await db.delete_benchmarks_for_model(model_name)
+    return RedirectResponse(url="/#benchmarks-pane", status_code=303)
+
+
+@router.post("/benchmarks/delete-all")
+async def delete_all_benchmarks():
+    db = deps.get_db()
+    await db.delete_all_benchmarks()
+    return RedirectResponse(url="/#benchmarks-pane", status_code=303)
+
+
 @router.post("/providers/{provider_id}/delete-model/{model_name:path}")
 async def delete_model(provider_id: int, model_name: str):
     pm = deps.get_pm()

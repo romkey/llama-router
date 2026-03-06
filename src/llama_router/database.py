@@ -512,6 +512,24 @@ class Database:
                 for r in rows
             ]
 
+    async def delete_benchmark(self, benchmark_id: int) -> None:
+        await self.db.execute("DELETE FROM benchmarks WHERE id = ?", (benchmark_id,))
+        await self.db.commit()
+
+    async def delete_benchmarks_for_model(self, model_name: str) -> int:
+        """Delete all benchmarks for a model. Returns the number of rows deleted."""
+        cursor = await self.db.execute(
+            "DELETE FROM benchmarks WHERE model_name = ?", (model_name,)
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
+    async def delete_all_benchmarks(self) -> int:
+        """Delete all benchmark results. Returns the number of rows deleted."""
+        cursor = await self.db.execute("DELETE FROM benchmarks")
+        await self.db.commit()
+        return cursor.rowcount
+
     # --- Request Log ---
 
     async def save_request_log(self, entry: RequestLog) -> None:
