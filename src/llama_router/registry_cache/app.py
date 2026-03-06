@@ -8,11 +8,13 @@ on disk so subsequent pulls are served at LAN speed.
 from __future__ import annotations
 
 import logging
+import time
 from typing import AsyncIterator
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .cache import BlobCache
 
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 UPSTREAM = "https://registry.ollama.ai"
 CHUNK_SIZE = 256 * 1024  # 256 KB
 
-app = FastAPI(title="llama-router Registry Cache")
+app = FastAPI(title="llama-router Registry Cache", redirect_slashes=False)
 
 _cache: BlobCache | None = None
 
@@ -36,20 +38,53 @@ def _get_cache() -> BlobCache:
     return _cache
 
 
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.monotonic()
+        logger.info(
+            "Cache %s %s from %s",
+            request.method,
+            request.url.path,
+            request.client.host if request.client else "?",
+        )
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            elapsed = (time.monotonic() - start) * 1000
+            logger.error(
+                "Cache %s %s → exception after %.0fms: %s",
+                request.method,
+                request.url.path,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = (time.monotonic() - start) * 1000
+        logger.info(
+            "Cache %s %s → %d (%.0fms)",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed,
+        )
+        return response
+
+
+app.add_middleware(RequestLoggingMiddleware)
+
+
+# Accept both /v2 and /v2/ since redirect_slashes is disabled
+@app.get("/v2")
 @app.get("/v2/")
-async def v2_check(request: Request):
+async def v2_check():
     """OCI version check — Ollama calls this to verify the registry is reachable."""
-    logger.info(
-        "Registry check from %s", request.client.host if request.client else "?"
-    )
     return JSONResponse({})
 
 
 @app.get("/v2/{name:path}/manifests/{reference}")
-async def get_manifest(name: str, reference: str, request: Request):
+async def get_manifest(name: str, reference: str):
     cache = _get_cache()
 
-    logger.info("Manifest request: %s:%s", name, reference)
     cached = cache.get_manifest(name, reference)
     if cached is not None:
         cache.manifest_hits += 1
@@ -63,26 +98,29 @@ async def get_manifest(name: str, reference: str, request: Request):
 
     cache.manifest_misses += 1
     url = f"{UPSTREAM}/v2/{name}/manifests/{reference}"
-    logger.info("Manifest cache MISS: %s:%s — fetching from %s", name, reference, url)
+    logger.info("Manifest cache MISS: %s:%s — fetching from upstream", name, reference)
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(url, timeout=30.0)
     except Exception as exc:
-        logger.error("Manifest fetch failed for %s:%s — %s", name, reference, exc)
+        logger.error("Manifest upstream fetch failed: %s:%s — %s", name, reference, exc)
         raise HTTPException(status_code=502, detail=f"Upstream fetch error: {exc}")
 
     if resp.status_code != 200:
         logger.error(
-            "Manifest upstream error for %s:%s — HTTP %d",
+            "Manifest upstream HTTP %d for %s:%s",
+            resp.status_code,
             name,
             reference,
-            resp.status_code,
         )
-        raise HTTPException(status_code=resp.status_code, detail="Upstream error")
+        status = 404 if resp.status_code == 404 else 502
+        raise HTTPException(status_code=status, detail="Upstream error")
 
     data = resp.content
     cache.save_manifest(name, reference, data)
-    logger.info("Manifest cached: %s:%s (%d bytes)", name, reference, len(data))
+    logger.info(
+        "Manifest fetched and cached: %s:%s (%d bytes)", name, reference, len(data)
+    )
     return Response(
         content=data,
         media_type=resp.headers.get(
@@ -97,6 +135,7 @@ async def head_blob(name: str, digest: str):
 
     if cache.has_blob(digest):
         size = cache.blob_size(digest)
+        logger.info("HEAD blob HIT: %s (%s)", digest[:24], _human_bytes(size))
         return Response(
             status_code=200,
             headers={
@@ -106,16 +145,27 @@ async def head_blob(name: str, digest: str):
         )
 
     url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        resp = await client.head(url, timeout=30.0)
+    logger.info("HEAD blob MISS (local), checking upstream: %s", digest[:24])
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.head(url, timeout=30.0)
+    except Exception as exc:
+        logger.error("HEAD blob upstream failed: %s — %s", digest[:24], exc)
+        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
 
     if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail="Upstream error")
+        logger.warning(
+            "HEAD blob upstream HTTP %d for %s", resp.status_code, digest[:24]
+        )
+        status = 404 if resp.status_code == 404 else 502
+        raise HTTPException(status_code=status, detail="Upstream error")
 
+    content_length = resp.headers.get("content-length", "0")
+    logger.info("HEAD blob upstream OK: %s (%s bytes)", digest[:24], content_length)
     return Response(
         status_code=200,
         headers={
-            "Content-Length": resp.headers.get("content-length", "0"),
+            "Content-Length": content_length,
             "Docker-Content-Digest": digest,
         },
     )
@@ -150,7 +200,7 @@ async def get_blob(name: str, digest: str):
 
     cache.blob_misses += 1
     url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
-    logger.info("Blob cache MISS: %s — streaming from %s", digest[:24], url)
+    logger.info("Blob cache MISS: %s — streaming from upstream", digest[:24])
 
     async def _stream_and_cache() -> AsyncIterator[bytes]:
         """Stream the blob to the client while saving it to disk."""
@@ -159,7 +209,7 @@ async def get_blob(name: str, digest: str):
         try:
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
-                    "GET", url, timeout=httpx.Timeout(30.0, read=600.0)
+                    "GET", url, timeout=httpx.Timeout(30.0, read=1800.0)
                 ) as resp:
                     resp.raise_for_status()
                     with open(tmp, "wb") as f:
@@ -172,7 +222,7 @@ async def get_blob(name: str, digest: str):
         except Exception as exc:
             cache.remove_temp_blob(digest)
             logger.error(
-                "Blob cache FAILED: %s after %s — %s",
+                "Blob stream-through FAILED: %s after %s — %s",
                 digest[:24],
                 _human_bytes(total_bytes),
                 exc,
