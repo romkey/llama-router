@@ -23,8 +23,8 @@ def _forward_backend_error(exc: httpx.HTTPStatusError) -> JSONResponse:
     return JSONResponse(content=body, status_code=exc.response.status_code)
 
 
-@router.post("/v1/chat/completions")
-async def chat_completions(request: Request):
+@router.post("/v1/responses")
+async def responses(request: Request):
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -55,7 +55,7 @@ async def chat_completions(request: Request):
 
             async def generate():
                 try:
-                    async for chunk in client.chat_completions_stream(body):
+                    async for chunk in client.responses_stream(body):
                         yield chunk
                 finally:
                     pm.release(provider.id)
@@ -65,7 +65,7 @@ async def chat_completions(request: Request):
                 db=db,
                 provider=provider,
                 protocol="v1",
-                endpoint="/v1/chat/completions",
+                endpoint="/v1/responses",
                 request=request,
                 model=model,
                 request_body=body,
@@ -73,7 +73,7 @@ async def chat_completions(request: Request):
             )
             return StreamingResponse(logged, media_type="text/event-stream")
         else:
-            resp = await client.chat_completions(body)
+            resp = await client.responses(body)
             pm.release(provider.id)
             import json as _json
 
@@ -83,7 +83,7 @@ async def chat_completions(request: Request):
                 db,
                 provider=provider,
                 protocol="v1",
-                endpoint="/v1/chat/completions",
+                endpoint="/v1/responses",
                 request=request,
                 model=model,
                 request_body=body,
@@ -95,7 +95,7 @@ async def chat_completions(request: Request):
         pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         logger.warning(
-            "Backend %s returned HTTP %d for /v1/chat/completions %s",
+            "Backend %s returned HTTP %d for /v1/responses %s",
             provider.name,
             exc.response.status_code,
             model,
@@ -104,7 +104,7 @@ async def chat_completions(request: Request):
             db,
             provider=provider,
             protocol="v1",
-            endpoint="/v1/chat/completions",
+            endpoint="/v1/responses",
             request=request,
             model=model,
             request_body=body,
@@ -121,7 +121,7 @@ async def chat_completions(request: Request):
             db,
             provider=provider,
             protocol="v1",
-            endpoint="/v1/chat/completions",
+            endpoint="/v1/responses",
             request=request,
             model=model,
             request_body=body,

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..request_logger import log_request
+from ..v1_client import get_v1_client
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ async def embeddings(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
 
-    result = await rt.route(model, protocol="llamacpp")
+    result = await rt.route(model)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -45,17 +46,17 @@ async def embeddings(request: Request):
         body["model"] = result.resolved_model
 
     assert provider.id is not None
-    client = pm.get_llamacpp_client(provider.id)
+    client = get_v1_client(pm, provider.id)
     start = time.monotonic()
     pm.acquire(provider.id)
     try:
-        result = await client.embeddings(body)
-        resp_size = len(json.dumps(result).encode())
+        resp = await client.embeddings(body)
+        resp_size = len(json.dumps(resp).encode())
         duration = (time.monotonic() - start) * 1000
         await log_request(
             db,
             provider=provider,
-            protocol="llamacpp",
+            protocol="v1",
             endpoint="/v1/embeddings",
             request=request,
             model=model,
@@ -63,7 +64,7 @@ async def embeddings(request: Request):
             response_size=resp_size,
             duration_ms=duration,
         )
-        return JSONResponse(content=result)
+        return JSONResponse(content=resp)
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
@@ -75,7 +76,7 @@ async def embeddings(request: Request):
         await log_request(
             db,
             provider=provider,
-            protocol="llamacpp",
+            protocol="v1",
             endpoint="/v1/embeddings",
             request=request,
             model=model,
@@ -91,7 +92,7 @@ async def embeddings(request: Request):
         await log_request(
             db,
             provider=provider,
-            protocol="llamacpp",
+            protocol="v1",
             endpoint="/v1/embeddings",
             request=request,
             model=model,

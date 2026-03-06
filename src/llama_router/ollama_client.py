@@ -188,6 +188,97 @@ class OllamaClient:
         logger.info("Pull %s completed: %s", model, final_status)
         return last_status
 
+    # --- OpenAI-compatible v1/* endpoints (served by Ollama natively) ---
+
+    async def v1_chat_completions_stream(self, body: dict) -> AsyncIterator[bytes]:
+        body["stream"] = True
+        async with self._http.stream("POST", "/v1/chat/completions", json=body) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def v1_chat_completions(self, body: dict) -> dict:
+        body["stream"] = False
+        resp = await self._http.post("/v1/chat/completions", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def v1_completions_stream(self, body: dict) -> AsyncIterator[bytes]:
+        body["stream"] = True
+        async with self._http.stream("POST", "/v1/completions", json=body) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def v1_completions(self, body: dict) -> dict:
+        body["stream"] = False
+        resp = await self._http.post("/v1/completions", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def v1_embeddings(self, body: dict) -> dict:
+        resp = await self._http.post("/v1/embeddings", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def v1_responses_stream(self, body: dict) -> AsyncIterator[bytes]:
+        body["stream"] = True
+        async with self._http.stream("POST", "/v1/responses", json=body) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def v1_responses(self, body: dict) -> dict:
+        body["stream"] = False
+        resp = await self._http.post("/v1/responses", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def v1_images_generations(self, body: dict) -> dict:
+        resp = await self._http.post(
+            "/v1/images/generations", json=body, timeout=httpx.Timeout(10.0, read=600.0)
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def v1_images_edits(self, data: bytes, content_type: str) -> httpx.Response:
+        resp = await self._http.post(
+            "/v1/images/edits",
+            content=data,
+            headers={"Content-Type": content_type},
+            timeout=httpx.Timeout(10.0, read=600.0),
+        )
+        resp.raise_for_status()
+        return resp
+
+    async def v1_audio_speech(self, body: dict) -> AsyncIterator[bytes]:
+        async with self._http.stream(
+            "POST",
+            "/v1/audio/speech",
+            json=body,
+            timeout=httpx.Timeout(10.0, read=600.0),
+        ) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def v1_audio_transcriptions(
+        self, data: bytes, content_type: str
+    ) -> httpx.Response:
+        resp = await self._http.post(
+            "/v1/audio/transcriptions",
+            content=data,
+            headers={"Content-Type": content_type},
+            timeout=httpx.Timeout(10.0, read=600.0),
+        )
+        resp.raise_for_status()
+        return resp
+
+    async def v1_audio_voices(self) -> dict:
+        resp = await self._http.get("/v1/audio/voices")
+        resp.raise_for_status()
+        return resp.json()
+
     async def delete_model(self, model: str) -> None:
         resp = await self._http.request("DELETE", "/api/delete", json={"model": model})
         resp.raise_for_status()

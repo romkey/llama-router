@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..request_logger import StreamLogger, log_request
+from ..v1_client import get_v1_client
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ async def completions(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
 
-    result = await rt.route(model, protocol="llamacpp")
+    result = await rt.route(model)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -44,7 +45,7 @@ async def completions(request: Request):
         body["model"] = result.resolved_model
 
     assert provider.id is not None
-    client = pm.get_llamacpp_client(provider.id)
+    client = get_v1_client(pm, provider.id)
     stream = body.get("stream", False)
     start = time.monotonic()
 
@@ -63,7 +64,7 @@ async def completions(request: Request):
                 generate(),
                 db=db,
                 provider=provider,
-                protocol="llamacpp",
+                protocol="v1",
                 endpoint="/v1/completions",
                 request=request,
                 model=model,
@@ -72,16 +73,16 @@ async def completions(request: Request):
             )
             return StreamingResponse(logged, media_type="text/event-stream")
         else:
-            result = await client.completions(body)
+            resp = await client.completions(body)
             pm.release(provider.id)
             import json as _json
 
-            resp_size = len(_json.dumps(result).encode())
+            resp_size = len(_json.dumps(resp).encode())
             duration = (time.monotonic() - start) * 1000
             await log_request(
                 db,
                 provider=provider,
-                protocol="llamacpp",
+                protocol="v1",
                 endpoint="/v1/completions",
                 request=request,
                 model=model,
@@ -89,7 +90,7 @@ async def completions(request: Request):
                 response_size=resp_size,
                 duration_ms=duration,
             )
-            return JSONResponse(content=result)
+            return JSONResponse(content=resp)
     except httpx.HTTPStatusError as exc:
         pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
@@ -102,7 +103,7 @@ async def completions(request: Request):
         await log_request(
             db,
             provider=provider,
-            protocol="llamacpp",
+            protocol="v1",
             endpoint="/v1/completions",
             request=request,
             model=model,
@@ -119,7 +120,7 @@ async def completions(request: Request):
         await log_request(
             db,
             provider=provider,
-            protocol="llamacpp",
+            protocol="v1",
             endpoint="/v1/completions",
             request=request,
             model=model,

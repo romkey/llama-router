@@ -80,6 +80,73 @@ class LlamaCppClient:
         resp.raise_for_status()
         return resp.json()
 
+    # --- v1/responses ---
+
+    async def responses_stream(self, body: dict) -> AsyncIterator[bytes]:
+        body["stream"] = True
+        async with self._http.stream("POST", "/v1/responses", json=body) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def responses(self, body: dict) -> dict:
+        body["stream"] = False
+        resp = await self._http.post("/v1/responses", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    # --- v1/images ---
+
+    async def images_generations(self, body: dict) -> dict:
+        resp = await self._http.post(
+            "/v1/images/generations", json=body, timeout=httpx.Timeout(10.0, read=600.0)
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def images_edits(self, data: bytes, content_type: str) -> httpx.Response:
+        """Proxy a multipart images/edits request, returning the raw response."""
+        resp = await self._http.post(
+            "/v1/images/edits",
+            content=data,
+            headers={"Content-Type": content_type},
+            timeout=httpx.Timeout(10.0, read=600.0),
+        )
+        resp.raise_for_status()
+        return resp
+
+    # --- v1/audio ---
+
+    async def audio_speech(self, body: dict) -> AsyncIterator[bytes]:
+        """Stream audio bytes from a TTS request."""
+        async with self._http.stream(
+            "POST",
+            "/v1/audio/speech",
+            json=body,
+            timeout=httpx.Timeout(10.0, read=600.0),
+        ) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def audio_transcriptions(
+        self, data: bytes, content_type: str
+    ) -> httpx.Response:
+        """Proxy a multipart audio/transcriptions request, returning the raw response."""
+        resp = await self._http.post(
+            "/v1/audio/transcriptions",
+            content=data,
+            headers={"Content-Type": content_type},
+            timeout=httpx.Timeout(10.0, read=600.0),
+        )
+        resp.raise_for_status()
+        return resp
+
+    async def audio_voices(self) -> dict:
+        resp = await self._http.get("/v1/audio/voices")
+        resp.raise_for_status()
+        return resp.json()
+
     async def benchmark_chat(self, model: str, prompt: str) -> dict[str, float]:
         """Run a chat benchmark returning startup_time_ms and tokens_per_second."""
         body = {
