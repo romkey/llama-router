@@ -11,6 +11,8 @@ services:
     environment:
       LLAMA_ROUTER_DATABASE_PATH: /app/data/llama_router.db
       LLAMA_ROUTER_CACHE_DIR: /app/data/model_cache
+      # Set this to the IP/hostname your Ollama backends can reach this host on
+      # LLAMA_ROUTER_CACHE_EXTERNAL_HOST: 192.168.1.50
     restart: unless-stopped
 
 volumes:

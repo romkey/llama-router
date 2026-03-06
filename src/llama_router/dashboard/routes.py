@@ -24,11 +24,19 @@ _active_pulls: dict[str, dict] = {}
 
 
 def _cache_registry_url() -> str | None:
-    """Return the cache registry URL if cache is enabled, else None."""
+    """Return the cache registry URL if cache is enabled, else None.
+
+    Uses cache_external_host (the address backends can reach) rather than
+    cache_host (the bind address).
+    """
     if not settings.cache_enabled:
         return None
-    host = settings.cache_host
-    if host == "0.0.0.0":
+    host = settings.cache_external_host
+    if not host:
+        logger.warning(
+            "LLAMA_ROUTER_CACHE_EXTERNAL_HOST is not set — cache pulls will "
+            "use 127.0.0.1 which only works if Ollama runs on the same host"
+        )
         host = "127.0.0.1"
     return f"http://{host}:{settings.cache_port}"
 

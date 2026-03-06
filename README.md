@@ -50,12 +50,13 @@ The cache acts as a pull-through proxy for the Ollama model registry (`registry.
 | `CACHE_DIR` | `./model_cache` | Directory to store cached blobs and manifests |
 | `CACHE_HOST` | `0.0.0.0` | Cache registry bind address |
 | `CACHE_PORT` | `9200` | Cache registry port |
+| `CACHE_EXTERNAL_HOST` | *(none)* | **Required for cache.** The hostname or IP that Ollama backends use to reach the cache (e.g. `192.168.1.50`, `llama-router.local`). Falls back to `127.0.0.1` if unset, which only works when Ollama runs on the same machine. |
 | `CACHE_MANIFEST_TTL_HOURS` | `240` | Hours before re-fetching a cached manifest (default 10 days) |
 
 #### How the cache works
 
 1. You pull a model through the dashboard or the Ollama API (e.g. `llama3:8b`).
-2. llama-router rewrites the pull request so Ollama fetches layers from `http://<cache-host>:9200/...` instead of `registry.ollama.ai`.
+2. llama-router rewrites the pull request so Ollama fetches layers from `http://<cache-external-host>:9200/...` instead of `registry.ollama.ai`.
 3. The cache checks its local blob store (content-addressed by SHA256 digest):
    - **Cache hit** — the blob is streamed directly from disk at LAN speed.
    - **Cache miss** — the blob is fetched from the upstream registry, streamed to the Ollama client, and simultaneously saved to disk for future requests.
