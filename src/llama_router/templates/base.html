@@ -16,14 +16,23 @@
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg bg-body-tertiary mb-4">
+    <nav class="navbar navbar-expand-lg bg-body-tertiary">
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="bi bi-diagram-3-fill me-2"></i>llama-router
             </a>
         </div>
     </nav>
-    <div class="container">
+    <div class="container mt-3">
+        <ul class="nav nav-tabs mb-4" id="main-nav-tabs" role="tablist">
+            {% block nav_tabs %}
+            <li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
+            <li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
+            <li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
+            <li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
+            <li class="nav-item"><a class="nav-link" href="/#cache-pane"><i class="bi bi-archive me-1"></i>Cache</a></li>
+            {% endblock %}
+        </ul>
         {% block content %}{% endblock %}
     </div>
     <footer class="container text-center text-muted py-4 mt-5 border-top">

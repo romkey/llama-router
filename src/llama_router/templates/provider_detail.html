@@ -1,14 +1,18 @@
 {% extends "base.html" %}
 {% block title %}{{ info.provider.name }} - llama-router{% endblock %}
 
-{% block content %}
-<nav aria-label="breadcrumb" class="mb-3">
-    <ol class="breadcrumb">
-        <li class="breadcrumb-item"><a href="/">Dashboard</a></li>
-        <li class="breadcrumb-item active">{{ info.provider.name }}</li>
-    </ol>
-</nav>
+{% block nav_tabs %}
+<li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
+<li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
+<li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
+<li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
+<li class="nav-item"><a class="nav-link" href="/#cache-pane"><i class="bi bi-archive me-1"></i>Cache</a></li>
+<li class="nav-item ms-auto">
+    <span class="nav-link active"><i class="bi bi-hdd-network me-1"></i>{{ info.provider.name }}</span>
+</li>
+{% endblock %}
 
+{% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2>
