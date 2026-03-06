@@ -1,14 +1,25 @@
 from __future__ import annotations
 
+import logging
 import time
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..request_logger import StreamLogger, log_request
 from . import deps
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _forward_backend_error(exc: httpx.HTTPStatusError) -> JSONResponse:
+    try:
+        body = exc.response.json()
+    except Exception:
+        body = {"error": exc.response.text or str(exc)}
+    return JSONResponse(content=body, status_code=exc.response.status_code)
 
 
 @router.post("/api/chat")
@@ -79,6 +90,29 @@ async def chat(request: Request):
                 duration_ms=duration,
             )
             return JSONResponse(content=result)
+    except httpx.HTTPStatusError as exc:
+        pm.release(provider.id)
+        duration = (time.monotonic() - start) * 1000
+        logger.warning(
+            "Backend %s returned HTTP %d for /api/chat %s",
+            provider.name,
+            exc.response.status_code,
+            model,
+        )
+        await log_request(
+            db,
+            provider=provider,
+            protocol="ollama",
+            endpoint="/api/chat",
+            request=request,
+            model=model,
+            request_body=body,
+            response_size=0,
+            duration_ms=duration,
+            status="error",
+            error_detail=f"HTTP {exc.response.status_code}: {exc.response.text[:400]}",
+        )
+        return _forward_backend_error(exc)
     except Exception as exc:
         pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000

@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..request_logger import log_request
 from . import deps
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _forward_backend_error(exc: httpx.HTTPStatusError) -> JSONResponse:
+    """Forward an HTTP error from a backend as-is instead of returning 500."""
+    try:
+        body = exc.response.json()
+    except Exception:
+        body = {"error": exc.response.text or str(exc)}
+    return JSONResponse(content=body, status_code=exc.response.status_code)
 
 
 async def _handle_embedding(request: Request, endpoint: str, method: str):
@@ -52,6 +64,29 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
             duration_ms=duration,
         )
         return JSONResponse(content=result)
+    except httpx.HTTPStatusError as exc:
+        duration = (time.monotonic() - start) * 1000
+        logger.warning(
+            "Backend %s returned HTTP %d for %s %s",
+            provider.name,
+            exc.response.status_code,
+            endpoint,
+            model,
+        )
+        await log_request(
+            db,
+            provider=provider,
+            protocol="ollama",
+            endpoint=endpoint,
+            request=request,
+            model=model,
+            request_body=body,
+            response_size=0,
+            duration_ms=duration,
+            status="error",
+            error_detail=f"HTTP {exc.response.status_code}: {exc.response.text[:400]}",
+        )
+        return _forward_backend_error(exc)
     except Exception as exc:
         duration = (time.monotonic() - start) * 1000
         await log_request(

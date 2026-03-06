@@ -6,7 +6,6 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from . import deps
-from .. import __version__
 
 router = APIRouter()
 
