@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 
 from .config import settings
@@ -294,9 +295,13 @@ class ProviderManager:
     async def benchmark_provider(
         self, provider_id: int, model_name: str
     ) -> BenchmarkResult | None:
+        from .request_logger import log_request
+
         provider = await self._db.get_provider(provider_id)
         if not provider:
             return None
+
+        start = time.monotonic()
         try:
             protocol: str | None = None
             metrics: dict[str, float] | None = None
@@ -344,10 +349,34 @@ class ProviderManager:
                 tokens_per_second=metrics["tokens_per_second"],
             )
             await self._db.save_benchmark(result)
+
+            duration = (time.monotonic() - start) * 1000
+            await log_request(
+                self._db,
+                provider=provider,
+                protocol=protocol or "unknown",
+                endpoint="benchmark",
+                model=model_name,
+                duration_ms=duration,
+                source_ip="internal",
+            )
+
             return result
         except Exception:
+            duration = (time.monotonic() - start) * 1000
             logger.exception(
                 "Benchmark failed for provider %d model %s", provider_id, model_name
+            )
+            await log_request(
+                self._db,
+                provider=provider,
+                protocol=protocol or "unknown",
+                endpoint="benchmark",
+                model=model_name,
+                duration_ms=duration,
+                source_ip="internal",
+                status="error",
+                error_detail=f"Benchmark failed for {model_name}",
             )
             return None
 
