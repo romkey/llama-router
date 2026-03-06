@@ -63,6 +63,7 @@ async def dashboard(request: Request):
             all_provider_counts[m.name] = all_provider_counts.get(m.name, 0) + 1
 
     model_request_counts = await db.get_model_request_counts()
+    model_fallbacks = await db.get_all_model_fallbacks()
 
     log_page = int(request.query_params.get("log_page", "1"))
     log_per_page = 50
@@ -86,6 +87,7 @@ async def dashboard(request: Request):
             "model_provider_counts": model_provider_counts,
             "all_provider_counts": all_provider_counts,
             "model_request_counts": model_request_counts,
+            "model_fallbacks": model_fallbacks,
             "log_entries": log_entries,
             "log_page": log_page,
             "log_pages": log_pages,
@@ -486,6 +488,39 @@ async def api_cache_clear():
         raise HTTPException(status_code=400, detail="Cache not enabled")
     cache.clear()
     return JSONResponse({"status": "cleared"})
+
+
+@router.post("/api/fallbacks")
+async def set_fallback(request: Request):
+    """Set or update a model fallback. Body: {model: str, fallback: str}."""
+    body = await request.json()
+    model = body.get("model", "").strip()
+    fallback = body.get("fallback", "").strip()
+    if not model or not fallback:
+        raise HTTPException(status_code=400, detail="model and fallback are required")
+    if model == fallback:
+        raise HTTPException(
+            status_code=400, detail="A model cannot be its own fallback"
+        )
+    db = deps.get_db()
+    await db.set_model_fallback(model, fallback)
+    return JSONResponse({"status": "ok", "model": model, "fallback": fallback})
+
+
+@router.delete("/api/fallbacks/{model_name:path}")
+async def remove_fallback(model_name: str):
+    """Remove a model fallback."""
+    db = deps.get_db()
+    await db.remove_model_fallback(model_name)
+    return JSONResponse({"status": "ok"})
+
+
+@router.get("/api/fallbacks")
+async def list_fallbacks():
+    """Return all configured model fallbacks."""
+    db = deps.get_db()
+    fallbacks = await db.get_all_model_fallbacks()
+    return JSONResponse(fallbacks)
 
 
 @router.post("/models/delete-all")

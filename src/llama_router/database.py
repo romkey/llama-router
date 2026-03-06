@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS request_log (
 
 CREATE INDEX IF NOT EXISTS idx_request_log_created ON request_log(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS model_fallbacks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_name TEXT NOT NULL UNIQUE,
+    fallback_model TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS provider_addresses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
@@ -554,6 +560,59 @@ class Database:
         async with self.db.execute("SELECT COUNT(*) AS cnt FROM request_log") as cursor:
             row = await cursor.fetchone()
             return row["cnt"] if row else 0
+
+    # ── Model fallbacks ───────────────────────────────────────────────
+
+    async def set_model_fallback(self, model_name: str, fallback_model: str) -> None:
+        """Set or replace the fallback for a model."""
+        await self.db.execute(
+            "INSERT INTO model_fallbacks (model_name, fallback_model) "
+            "VALUES (?, ?) ON CONFLICT(model_name) DO UPDATE SET fallback_model = ?",
+            (model_name, fallback_model, fallback_model),
+        )
+        await self.db.commit()
+
+    async def remove_model_fallback(self, model_name: str) -> None:
+        await self.db.execute(
+            "DELETE FROM model_fallbacks WHERE model_name = ?", (model_name,)
+        )
+        await self.db.commit()
+
+    async def get_model_fallback(self, model_name: str) -> str | None:
+        async with self.db.execute(
+            "SELECT fallback_model FROM model_fallbacks WHERE model_name = ?",
+            (model_name,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["fallback_model"] if row else None
+
+    async def get_all_model_fallbacks(self) -> dict[str, str]:
+        """Return {model_name: fallback_model} for all configured fallbacks."""
+        async with self.db.execute(
+            "SELECT model_name, fallback_model FROM model_fallbacks ORDER BY model_name"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {r["model_name"]: r["fallback_model"] for r in rows}
+
+    async def resolve_fallback_chain(
+        self, model_name: str, max_depth: int = 10
+    ) -> list[str]:
+        """Walk the fallback chain starting from model_name.
+
+        Returns the ordered list of models to try (including the original).
+        Stops at max_depth or when there is no further fallback (or a cycle).
+        """
+        chain = [model_name]
+        seen: set[str] = {model_name}
+        current = model_name
+        for _ in range(max_depth):
+            fb = await self.get_model_fallback(current)
+            if fb is None or fb in seen:
+                break
+            chain.append(fb)
+            seen.add(fb)
+            current = fb
+        return chain
 
 
 def _row_to_provider(row: aiosqlite.Row) -> Provider:

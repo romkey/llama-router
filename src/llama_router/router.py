@@ -11,6 +11,16 @@ from .provider_manager import ProviderManager
 logger = logging.getLogger(__name__)
 
 
+class RouteResult:
+    """Wraps a routing decision, including which model was actually resolved."""
+
+    __slots__ = ("provider", "resolved_model")
+
+    def __init__(self, provider: Provider, resolved_model: str):
+        self.provider = provider
+        self.resolved_model = resolved_model
+
+
 class Router:
     def __init__(self, db: Database, provider_manager: ProviderManager):
         self._db = db
@@ -18,15 +28,31 @@ class Router:
 
     async def route(
         self, model_name: str, protocol: str | None = None
-    ) -> Provider | None:
-        """Pick the best provider for the requested model.
+    ) -> RouteResult | None:
+        """Pick the best provider for the requested model, following fallbacks.
 
-        Args:
-            model_name: The model to route for.
-            protocol: Optional filter - "ollama" or "llamacpp". If None, any protocol.
-
-        Strategy: least-busy first, then highest tokens/sec as tiebreaker.
+        Walks the fallback chain if the requested model has no available provider.
+        Returns a RouteResult containing the chosen provider and the model name
+        that was actually resolved (may differ from the original if a fallback
+        was used).
         """
+        chain = await self._db.resolve_fallback_chain(model_name)
+        for candidate_model in chain:
+            result = await self._route_single(candidate_model, protocol)
+            if result is not None:
+                if candidate_model != model_name:
+                    logger.info(
+                        "Model %s unavailable; fell back to %s",
+                        model_name,
+                        candidate_model,
+                    )
+                return RouteResult(result, candidate_model)
+        return None
+
+    async def _route_single(
+        self, model_name: str, protocol: str | None = None
+    ) -> Provider | None:
+        """Pick the best provider for a single model (no fallbacks)."""
         candidates = await self._db.get_providers_for_model(model_name, protocol)
         if not candidates:
             return None

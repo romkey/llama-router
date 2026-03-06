@@ -22,11 +22,15 @@ async def chat_completions(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
 
-    provider = await rt.route(model, protocol="llamacpp")
-    if not provider:
+    result = await rt.route(model, protocol="llamacpp")
+    if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
         )
+
+    provider = result.provider
+    if result.resolved_model != model:
+        body["model"] = result.resolved_model
 
     assert provider.id is not None
     client = pm.get_llamacpp_client(provider.id)

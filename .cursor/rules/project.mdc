@@ -58,6 +58,15 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 - Use benchmark data (tokens/sec, startup time) to rank provider capability
 - Fall back gracefully when preferred provider is unavailable
 
+## Model Fallbacks
+
+- Any model can have an optional fallback model
+- When no provider can serve the requested model, the router walks the fallback chain
+- Fallbacks cascade: model A → model B → model C, etc. (cycle-safe, max depth 10)
+- The backend receives the resolved model name; callers see transparent substitution
+- Fallbacks are configured via the dashboard Models tab or the `/api/fallbacks` API
+- Stored in the `model_fallbacks` database table
+
 ## General Conventions
 
 - Use Python 3.11+

@@ -308,6 +308,7 @@
                         <th>Size</th>
                         <th>Providers</th>
                         <th>Requests</th>
+                        <th>Fallback</th>
                         <th>Modified</th>
                         <th></th>
                     </tr>
@@ -327,8 +328,21 @@
                         <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
                         <td>{{ all_provider_counts.get(m.name, 0) }}</td>
                         <td>{{ model_request_counts.get(m.name, 0) }}</td>
+                        <td class="small" data-fallback-cell="{{ m.name }}">
+                            {% if model_fallbacks.get(m.name) %}
+                            <code>{{ model_fallbacks[m.name] }}</code>
+                            <button class="btn btn-sm btn-link text-danger p-0 ms-1" title="Remove fallback" onclick="removeFallback('{{ m.name }}')">
+                                <i class="bi bi-x-circle"></i>
+                            </button>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
                         <td>{{ m.modified_at or "—" }}</td>
                         <td class="text-end text-nowrap">
+                            <button class="btn btn-sm btn-outline-secondary btn-set-fallback" data-model="{{ m.name }}" title="Set fallback model">
+                                <i class="bi bi-arrow-return-right"></i>
+                            </button>
                             <button class="btn btn-sm btn-outline-primary btn-pull-all" data-model="{{ m.name }}" title="Pull to all Ollama providers" {% if on_all %}disabled{% endif %}>
                                 <i class="bi bi-download me-1"></i>Pull all
                             </button>
@@ -349,6 +363,58 @@
             <i class="bi bi-info-circle me-2"></i>No models available. Add a provider to discover models.
         </div>
         {% endif %}
+
+        <!-- Fallbacks section -->
+        <div class="card mt-4" id="fallbacks-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-arrow-return-right me-2"></i>Model Fallbacks</h5>
+                <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addFallbackModal">
+                    <i class="bi bi-plus-lg me-1"></i>Add Fallback
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <table class="table table-hover mb-0" id="fallbacks-table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th><i class="bi bi-arrow-right me-1"></i>Fallback</th>
+                            <th>Chain</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for model_name, fallback in model_fallbacks.items() %}
+                        <tr data-fallback-row="{{ model_name }}">
+                            <td><code>{{ model_name }}</code></td>
+                            <td><code>{{ fallback }}</code></td>
+                            <td class="small text-muted">
+                                <code>{{ model_name }}</code>
+                                {% set ns = namespace(current=model_name, seen=[model_name]) %}
+                                {% for _ in range(10) %}
+                                    {% if model_fallbacks.get(ns.current) and model_fallbacks[ns.current] not in ns.seen %}
+                                        {% set ns.current = model_fallbacks[ns.current] %}
+                                        {% if ns.seen.append(ns.current) %}{% endif %}
+                                        &rarr; <code>{{ ns.current }}</code>
+                                    {% endif %}
+                                {% endfor %}
+                            </td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-danger" onclick="removeFallback('{{ model_name }}')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr id="no-fallbacks-row">
+                            <td colspan="4" class="text-muted text-center py-3">
+                                No fallbacks configured. When a model is unavailable, the router will try its fallback instead.
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- ==================== LOG TAB ==================== -->
@@ -500,6 +566,33 @@
     </div>
     {% endif %}
 
+</div>
+
+<!-- Set Fallback Modal -->
+<div class="modal fade" id="addFallbackModal" tabindex="-1">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Set Model Fallback</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="fb-model" class="form-label">Model</label>
+                    <input type="text" class="form-control" id="fb-model" placeholder="e.g. llama3:70b" required>
+                </div>
+                <div class="mb-3">
+                    <label for="fb-fallback" class="form-label">Fallback to</label>
+                    <input type="text" class="form-control" id="fb-fallback" placeholder="e.g. llama3:8b" required>
+                    <div class="form-text">When no provider can serve the model, the router will try this model instead.</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="submitFallback()">Save</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Add Provider Modal -->
@@ -828,6 +921,44 @@ function formatBytes(bytes) {
     if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
     if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
     return Math.round(bytes / 1024) + ' KB';
+}
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.btn-set-fallback');
+    if (!btn) return;
+    e.preventDefault();
+    var model = btn.dataset.model;
+    document.getElementById('fb-model').value = model;
+    document.getElementById('fb-fallback').value = '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('addFallbackModal')).show();
+});
+
+function submitFallback() {
+    var model = document.getElementById('fb-model').value.trim();
+    var fallback = document.getElementById('fb-fallback').value.trim();
+    if (!model || !fallback) return;
+    fetch('/api/fallbacks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: model, fallback: fallback})
+    })
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+        return r.json();
+    })
+    .then(function() {
+        bootstrap.Modal.getInstance(document.getElementById('addFallbackModal')).hide();
+        location.reload();
+    })
+    .catch(function(err) { alert(err.message); });
+}
+
+function removeFallback(model) {
+    if (!confirm('Remove fallback for ' + model + '?')) return;
+    fetch('/api/fallbacks/' + encodeURIComponent(model), {method: 'DELETE'})
+        .then(function(r) { return r.json(); })
+        .then(function() { location.reload(); })
+        .catch(function() { alert('Failed to remove fallback'); });
 }
 </script>
 {% endblock %}
