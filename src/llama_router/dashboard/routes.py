@@ -117,6 +117,22 @@ async def dashboard(request: Request):
         cache_stats["enabled"] = settings.cache_enabled
     cached_models = cache.cached_models() if cache else set()
 
+    provider_model_names = {m["name"] for m in all_models}
+    if cache:
+        for detail in cache.cached_model_details():
+            if detail["name"] not in provider_model_names:
+                total_size = sum(b["size"] for b in detail["blobs"])
+                all_models.append(
+                    {
+                        "name": detail["name"],
+                        "size": total_size,
+                        "digest": None,
+                        "modified_at": None,
+                        "details": {},
+                    }
+                )
+        all_models.sort(key=lambda m: m["name"])
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -214,9 +230,27 @@ async def provider_detail(request: Request, provider_id: int):
     all_models = await db.list_all_models()
     missing_models = [m for m in all_models if m["name"] not in local_names]
 
+    cache = deps.get_cache()
+    cached_models: set[str] = set()
+    cached_only_models: list[dict] = []
+    if cache:
+        cached_models = cache.cached_models()
+        provider_and_missing_names = local_names | {m["name"] for m in missing_models}
+        for detail in cache.cached_model_details():
+            if detail["name"] not in provider_and_missing_names:
+                total_size = sum(b["size"] for b in detail["blobs"])
+                cached_only_models.append({"name": detail["name"], "size": total_size})
+        cached_only_models.sort(key=lambda m: m["name"])
+
     return templates.TemplateResponse(
         "provider_detail.html",
-        {"request": request, "info": info, "missing_models": missing_models},
+        {
+            "request": request,
+            "info": info,
+            "missing_models": missing_models,
+            "cached_models": cached_models,
+            "cached_only_models": cached_only_models,
+        },
     )
 
 

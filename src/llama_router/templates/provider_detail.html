@@ -186,8 +186,22 @@
                 <div class="d-flex flex-wrap gap-2" id="missing-models-area">
                     {% for m in missing_models %}
                     {% set m_too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
-                    <button class="btn btn-sm {{ 'btn-outline-warning' if m_too_large else 'btn-outline-primary' }} btn-pull-single" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" {% if m_too_large %}title="Warning: model ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% endif %}>
-                        <i class="bi bi-download me-1"></i>{{ m.name }}
+                    {% set m_cached = m.name in cached_models %}
+                    <button class="btn btn-sm {{ 'btn-outline-warning' if m_too_large else ('btn-success' if m_cached else 'btn-outline-primary') }} btn-pull-single" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" {% if m_too_large %}title="Warning: model ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% elif m_cached %}title="Cached locally — fast pull"{% endif %}>
+                        {% if m_cached %}<i class="bi bi-archive-fill me-1"></i>{% else %}<i class="bi bi-download me-1"></i>{% endif %}{{ m.name }}
+                        {% if m_too_large %}<i class="bi bi-exclamation-triangle-fill text-warning ms-1"></i>{% endif %}
+                    </button>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                {% if cached_only_models %}
+                <hr class="my-3">
+                <p class="text-muted small mb-2"><i class="bi bi-archive-fill text-success me-1"></i>Cached models (not on any provider):</p>
+                <div class="d-flex flex-wrap gap-2">
+                    {% for m in cached_only_models %}
+                    {% set m_too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
+                    <button class="btn btn-sm {{ 'btn-outline-warning' if m_too_large else 'btn-success' }} btn-pull-single" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" {% if m_too_large %}title="Warning: model ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% else %}title="Cached locally — fast pull"{% endif %}>
+                        <i class="bi bi-archive-fill me-1"></i>{{ m.name }}
                         {% if m_too_large %}<i class="bi bi-exclamation-triangle-fill text-warning ms-1"></i>{% endif %}
                     </button>
                     {% endfor %}
