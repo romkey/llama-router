@@ -19,6 +19,10 @@ class BlobCache:
         self._manifest_ttl_seconds = manifest_ttl_hours * 3600
         self._blobs_dir.mkdir(parents=True, exist_ok=True)
         self._manifests_dir.mkdir(parents=True, exist_ok=True)
+        self.blob_hits: int = 0
+        self.blob_misses: int = 0
+        self.manifest_hits: int = 0
+        self.manifest_misses: int = 0
 
     def _blob_path(self, digest: str) -> Path:
         """sha256:abc123... -> blobs/sha256/abc123..."""
@@ -99,6 +103,10 @@ class BlobCache:
             "blob_bytes": blob_bytes,
             "manifest_count": manifest_count,
             "cache_dir": str(self._root),
+            "blob_hits": self.blob_hits,
+            "blob_misses": self.blob_misses,
+            "manifest_hits": self.manifest_hits,
+            "manifest_misses": self.manifest_misses,
         }
 
     def clear(self) -> None:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -11,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..config import settings
-from ..models import ProviderType
+from ..models import ProviderType, RequestLog
 from . import deps
 
 from .. import __version__
@@ -31,9 +33,37 @@ def _cache_registry_url() -> str | None:
     return f"http://{host}:{settings.cache_port}"
 
 
+def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Jinja2 filter: convert a UTC timestamp to the local timezone (honours TZ)."""
+    if value is None:
+        return "—"
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return "—"
+        for pattern in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        ):
+            try:
+                value = datetime.strptime(value, pattern)
+                break
+            except ValueError:
+                continue
+        else:
+            return str(value)
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone().strftime(fmt)
+    return str(value)
+
+
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 templates.env.globals["version"] = __version__
+templates.env.filters["localtime"] = _localtime
 
 router = APIRouter()
 
@@ -66,7 +96,7 @@ async def dashboard(request: Request):
     model_fallbacks = await db.get_all_model_fallbacks()
 
     log_page = int(request.query_params.get("log_page", "1"))
-    log_per_page = 50
+    log_per_page = 100
     log_total = await db.count_request_logs()
     log_entries = await db.get_request_logs(
         limit=log_per_page, offset=(log_page - 1) * log_per_page
@@ -345,20 +375,48 @@ async def api_pull_model(request: Request):
     }
 
     cache_url = _cache_registry_url()
+    db = deps.get_db()
 
     async def _run_pull():
-        entry = _active_pulls[pull_id]
+        pull_entry = _active_pulls[pull_id]
         for pid in provider_ids:
+            provider = await db.get_provider(pid)
+            start = time.monotonic()
             try:
                 client = pm.get_ollama_client(pid)
                 async for _ in client.pull_stream(model, cache_registry_url=cache_url):
                     pass
                 await pm.refresh_provider(pid)
-                entry["completed"].append(pid)
+                pull_entry["completed"].append(pid)
+                duration = (time.monotonic() - start) * 1000
+                await db.save_request_log(
+                    RequestLog(
+                        provider_id=pid,
+                        provider_name=provider.name if provider else str(pid),
+                        protocol="ollama",
+                        endpoint="/api/pull",
+                        model=model,
+                        duration_ms=duration,
+                        status="ok",
+                    )
+                )
             except Exception as exc:
                 logger.warning("Pull %s on provider %d failed: %s", model, pid, exc)
-                entry["failed"].append(pid)
-        entry["status"] = "done"
+                pull_entry["failed"].append(pid)
+                duration = (time.monotonic() - start) * 1000
+                await db.save_request_log(
+                    RequestLog(
+                        provider_id=pid,
+                        provider_name=provider.name if provider else str(pid),
+                        protocol="ollama",
+                        endpoint="/api/pull",
+                        model=model,
+                        duration_ms=duration,
+                        status="error",
+                        error_detail=str(exc)[:500],
+                    )
+                )
+        pull_entry["status"] = "done"
 
     asyncio.create_task(_run_pull())
 
@@ -404,6 +462,7 @@ async def api_pull_status(pull_id: str):
 async def pull_model_legacy(provider_id: int, model: str = Form(...)):
     """Legacy form-based pull — redirects immediately, pull runs in background."""
     pm = deps.get_pm()
+    db = deps.get_db()
     pull_id = str(uuid.uuid4())
     _active_pulls[pull_id] = {
         "model": model,
@@ -415,17 +474,44 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
     cache_url = _cache_registry_url()
 
     async def _run():
-        entry = _active_pulls[pull_id]
+        pull_entry = _active_pulls[pull_id]
+        provider = await db.get_provider(provider_id)
+        start = time.monotonic()
         try:
             client = pm.get_ollama_client(provider_id)
             async for _ in client.pull_stream(model, cache_registry_url=cache_url):
                 pass
             await pm.refresh_provider(provider_id)
-            entry["completed"].append(provider_id)
+            pull_entry["completed"].append(provider_id)
+            duration = (time.monotonic() - start) * 1000
+            await db.save_request_log(
+                RequestLog(
+                    provider_id=provider_id,
+                    provider_name=provider.name if provider else str(provider_id),
+                    protocol="ollama",
+                    endpoint="/api/pull",
+                    model=model,
+                    duration_ms=duration,
+                    status="ok",
+                )
+            )
         except Exception as exc:
             logger.warning("Pull %s on provider %d failed: %s", model, provider_id, exc)
-            entry["failed"].append(provider_id)
-        entry["status"] = "done"
+            pull_entry["failed"].append(provider_id)
+            duration = (time.monotonic() - start) * 1000
+            await db.save_request_log(
+                RequestLog(
+                    provider_id=provider_id,
+                    provider_name=provider.name if provider else str(provider_id),
+                    protocol="ollama",
+                    endpoint="/api/pull",
+                    model=model,
+                    duration_ms=duration,
+                    status="error",
+                    error_detail=str(exc)[:500],
+                )
+            )
+        pull_entry["status"] = "done"
 
     asyncio.create_task(_run())
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
@@ -435,6 +521,7 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
 async def pull_model_all_legacy(model: str = Form(...)):
     """Legacy form-based pull-all — redirects immediately, pull runs in background."""
     pm = deps.get_pm()
+    db = deps.get_db()
     infos = await pm.list_provider_infos()
     provider_ids = [
         i.provider.id
@@ -452,18 +539,45 @@ async def pull_model_all_legacy(model: str = Form(...)):
     cache_url = _cache_registry_url()
 
     async def _run():
-        entry = _active_pulls[pull_id]
+        pull_entry = _active_pulls[pull_id]
         for pid in provider_ids:
+            provider = await db.get_provider(pid)
+            start = time.monotonic()
             try:
                 client = pm.get_ollama_client(pid)
                 async for _ in client.pull_stream(model, cache_registry_url=cache_url):
                     pass
                 await pm.refresh_provider(pid)
-                entry["completed"].append(pid)
+                pull_entry["completed"].append(pid)
+                duration = (time.monotonic() - start) * 1000
+                await db.save_request_log(
+                    RequestLog(
+                        provider_id=pid,
+                        provider_name=provider.name if provider else str(pid),
+                        protocol="ollama",
+                        endpoint="/api/pull",
+                        model=model,
+                        duration_ms=duration,
+                        status="ok",
+                    )
+                )
             except Exception as exc:
                 logger.warning("Pull %s on provider %d failed: %s", model, pid, exc)
-                entry["failed"].append(pid)
-        entry["status"] = "done"
+                pull_entry["failed"].append(pid)
+                duration = (time.monotonic() - start) * 1000
+                await db.save_request_log(
+                    RequestLog(
+                        provider_id=pid,
+                        provider_name=provider.name if provider else str(pid),
+                        protocol="ollama",
+                        endpoint="/api/pull",
+                        model=model,
+                        duration_ms=duration,
+                        status="error",
+                        error_detail=str(exc)[:500],
+                    )
+                )
+        pull_entry["status"] = "done"
 
     asyncio.create_task(_run())
     return RedirectResponse(url="/#models-pane", status_code=303)

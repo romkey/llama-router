@@ -277,7 +277,7 @@
                 {% if info.provider.created_at %}
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Added</span>
-                    <span>{{ info.provider.created_at }}</span>
+                    <span>{{ info.provider.created_at | localtime }}</span>
                 </li>
                 {% endif %}
             </ul>

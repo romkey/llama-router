@@ -48,12 +48,14 @@ async def get_manifest(name: str, reference: str, request: Request):
 
     cached = cache.get_manifest(name, reference)
     if cached is not None:
+        cache.manifest_hits += 1
         logger.debug("Manifest cache hit: %s:%s", name, reference)
         return Response(
             content=cached,
             media_type="application/vnd.docker.distribution.manifest.v2+json",
         )
 
+    cache.manifest_misses += 1
     logger.info("Manifest cache miss: %s:%s — fetching from upstream", name, reference)
     url = f"{UPSTREAM}/v2/{name}/manifests/{reference}"
     async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -107,6 +109,7 @@ async def get_blob(name: str, digest: str):
     cache = _get_cache()
 
     if cache.has_blob(digest):
+        cache.blob_hits += 1
         logger.debug("Blob cache hit: %s", digest[:24])
         path = cache.blob_path(digest)
         size = cache.blob_size(digest)
@@ -128,6 +131,7 @@ async def get_blob(name: str, digest: str):
             },
         )
 
+    cache.blob_misses += 1
     logger.info("Blob cache miss: %s — streaming from upstream", digest[:24])
     url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
 

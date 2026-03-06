@@ -280,7 +280,7 @@
                                     </td>
                                     <td>{{ "%.1f" | format(b.tokens_per_second) if b.tokens_per_second else "—" }}</td>
                                     <td>{{ "%.0f ms" | format(b.startup_time_ms) if b.startup_time_ms else "—" }}</td>
-                                    <td class="text-muted small">{{ b.created_at or "—" }}</td>
+                                    <td class="text-muted small">{{ b.created_at | localtime }}</td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -439,7 +439,7 @@
                 <tbody>
                     {% for entry in log_entries %}
                     <tr class="{% if entry.status == 'error' %}table-danger{% endif %}">
-                        <td class="text-muted small text-nowrap">{{ entry.created_at or "—" }}</td>
+                        <td class="text-muted small text-nowrap">{{ entry.created_at | localtime }}</td>
                         <td class="small"><code>{{ entry.source_ip or "—" }}</code></td>
                         <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
                         <td class="small"><code>{{ entry.endpoint }}</code></td>
@@ -464,11 +464,23 @@
                         <td>
                             {% if entry.status == 'ok' %}
                             <span class="badge bg-success">OK</span>
+                            {% elif entry.error_detail %}
+                            <button class="badge bg-danger border-0" type="button" data-bs-toggle="collapse" data-bs-target="#error-detail-{{ entry.id }}" title="Click to view details">
+                                Error <i class="bi bi-chevron-expand ms-1"></i>
+                            </button>
                             {% else %}
-                            <span class="badge bg-danger" title="{{ entry.error_detail or '' }}">Error</span>
+                            <span class="badge bg-danger">Error</span>
                             {% endif %}
                         </td>
                     </tr>
+                    {% if entry.status != 'ok' and entry.error_detail %}
+                    <tr class="collapse table-danger" id="error-detail-{{ entry.id }}">
+                        <td colspan="10" class="small py-2 px-3">
+                            <strong>Error detail:</strong>
+                            <pre class="mb-0 mt-1 text-wrap" style="white-space:pre-wrap; font-size:.8rem">{{ entry.error_detail }}</pre>
+                        </td>
+                    </tr>
+                    {% endif %}
                     {% endfor %}
                 </tbody>
             </table>
@@ -539,6 +551,18 @@
                         <li class="list-group-item d-flex justify-content-between">
                             <span class="text-muted">Cached Manifests</span>
                             <span>{{ cache_stats.manifest_count }}</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Blob Hits / Misses</span>
+                            <span id="cache-blob-hits-misses">
+                                <span class="text-success">{{ cache_stats.blob_hits }}</span> / <span class="text-danger">{{ cache_stats.blob_misses }}</span>
+                            </span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Manifest Hits / Misses</span>
+                            <span id="cache-manifest-hits-misses">
+                                <span class="text-success">{{ cache_stats.manifest_hits }}</span> / <span class="text-danger">{{ cache_stats.manifest_misses }}</span>
+                            </span>
                         </li>
                         <li class="list-group-item d-flex justify-content-between">
                             <span class="text-muted">Cache Directory</span>
@@ -746,6 +770,10 @@ function updateDashboard(data) {
         setText('cache-blob-count', data.cache.blob_count);
         var sizeEl = document.getElementById('cache-size');
         if (sizeEl) sizeEl.textContent = formatBytes(data.cache.blob_bytes);
+        var blobHM = document.getElementById('cache-blob-hits-misses');
+        if (blobHM) blobHM.innerHTML = '<span class="text-success">' + data.cache.blob_hits + '</span> / <span class="text-danger">' + data.cache.blob_misses + '</span>';
+        var maniHM = document.getElementById('cache-manifest-hits-misses');
+        if (maniHM) maniHM.innerHTML = '<span class="text-success">' + data.cache.manifest_hits + '</span> / <span class="text-danger">' + data.cache.manifest_misses + '</span>';
     }
 
     const byId = {};
