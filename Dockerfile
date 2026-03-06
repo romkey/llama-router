@@ -7,6 +7,6 @@ COPY src/ src/
 
 RUN pip install --no-cache-dir .
 
-EXPOSE 80 8080 11434
+EXPOSE 80 8080 9200 11434
 
 CMD ["llama-router"]

@@ -1,4 +1,4 @@
-"""Entrypoint: runs the dashboard, Ollama API, and llama.cpp API servers concurrently."""
+"""Entrypoint: runs the dashboard, Ollama API, llama.cpp API, and cache servers."""
 
 from __future__ import annotations
 
@@ -57,23 +57,49 @@ async def run() -> None:
         log_level="info",
     )
 
-    dashboard_server = uvicorn.Server(dashboard_config)
-    api_server = uvicorn.Server(api_config)
-    lcpp_server = uvicorn.Server(lcpp_config)
+    servers = [
+        uvicorn.Server(dashboard_config),
+        uvicorn.Server(api_config),
+        uvicorn.Server(lcpp_config),
+    ]
 
-    logger.info(
-        "Starting llama-router: dashboard on :%d, Ollama API on :%d, llama.cpp API on :%d",
-        settings.dashboard_port,
-        settings.api_port,
-        settings.llamacpp_port,
-    )
+    cache_blob_cache = None
+    if settings.cache_enabled:
+        from .registry_cache.cache import BlobCache
+        from .registry_cache.app import app as cache_app, init_cache
+
+        cache_blob_cache = BlobCache(
+            settings.cache_dir, settings.cache_manifest_ttl_hours
+        )
+        init_cache(cache_blob_cache)
+        dash_deps.init_cache(cache_blob_cache)
+
+        cache_config = uvicorn.Config(
+            cache_app,
+            host=settings.cache_host,
+            port=settings.cache_port,
+            log_level="info",
+        )
+        servers.append(uvicorn.Server(cache_config))
+        logger.info(
+            "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
+            "llama.cpp API on :%d, registry cache on :%d",
+            settings.dashboard_port,
+            settings.api_port,
+            settings.llamacpp_port,
+            settings.cache_port,
+        )
+    else:
+        logger.info(
+            "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
+            "llama.cpp API on :%d (cache disabled)",
+            settings.dashboard_port,
+            settings.api_port,
+            settings.llamacpp_port,
+        )
 
     try:
-        await asyncio.gather(
-            dashboard_server.serve(),
-            api_server.serve(),
-            lcpp_server.serve(),
-        )
+        await asyncio.gather(*(s.serve() for s in servers))
     finally:
         await pm.stop()
         await db.close()

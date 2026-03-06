@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     llamacpp_port: int = 8080
     health_check_interval_seconds: int = 30
     benchmark_prompt: str = "Write a short sentence about the weather."
+    cache_enabled: bool = True
+    cache_dir: str = "./model_cache"
+    cache_host: str = "0.0.0.0"
+    cache_port: int = 9200
+    cache_manifest_ttl_hours: int = 240
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 

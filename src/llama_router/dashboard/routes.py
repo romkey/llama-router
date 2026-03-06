@@ -10,6 +10,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..config import settings
 from ..models import ProviderType
 from . import deps
 
@@ -18,6 +19,17 @@ from .. import __version__
 logger = logging.getLogger(__name__)
 
 _active_pulls: dict[str, dict] = {}
+
+
+def _cache_registry_url() -> str | None:
+    """Return the cache registry URL if cache is enabled, else None."""
+    if not settings.cache_enabled:
+        return None
+    host = settings.cache_host
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    return f"http://{host}:{settings.cache_port}"
+
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
@@ -60,6 +72,9 @@ async def dashboard(request: Request):
     )
     log_pages = max(1, (log_total + log_per_page - 1) // log_per_page)
 
+    cache = deps.get_cache()
+    cache_stats = cache.stats() if cache else None
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -75,6 +90,7 @@ async def dashboard(request: Request):
             "log_page": log_page,
             "log_pages": log_pages,
             "log_total": log_total,
+            "cache_stats": cache_stats,
         },
     )
 
@@ -121,6 +137,9 @@ async def api_status():
         if p["status"] == "pulling"
     }
 
+    cache = deps.get_cache()
+    cache_stats = cache.stats() if cache else None
+
     return JSONResponse(
         {
             "provider_count": len(infos),
@@ -132,6 +151,7 @@ async def api_status():
             "log_total": log_total,
             "providers": providers_data,
             "active_pulls": active_pulls,
+            "cache": cache_stats,
         }
     )
 
@@ -322,12 +342,14 @@ async def api_pull_model(request: Request):
         "failed": [],
     }
 
+    cache_url = _cache_registry_url()
+
     async def _run_pull():
         entry = _active_pulls[pull_id]
         for pid in provider_ids:
             try:
                 client = pm.get_ollama_client(pid)
-                async for _ in client.pull_stream(model):
+                async for _ in client.pull_stream(model, cache_registry_url=cache_url):
                     pass
                 await pm.refresh_provider(pid)
                 entry["completed"].append(pid)
@@ -388,12 +410,13 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
         "completed": [],
         "failed": [],
     }
+    cache_url = _cache_registry_url()
 
     async def _run():
         entry = _active_pulls[pull_id]
         try:
             client = pm.get_ollama_client(provider_id)
-            async for _ in client.pull_stream(model):
+            async for _ in client.pull_stream(model, cache_registry_url=cache_url):
                 pass
             await pm.refresh_provider(provider_id)
             entry["completed"].append(provider_id)
@@ -424,13 +447,14 @@ async def pull_model_all_legacy(model: str = Form(...)):
         "completed": [],
         "failed": [],
     }
+    cache_url = _cache_registry_url()
 
     async def _run():
         entry = _active_pulls[pull_id]
         for pid in provider_ids:
             try:
                 client = pm.get_ollama_client(pid)
-                async for _ in client.pull_stream(model):
+                async for _ in client.pull_stream(model, cache_registry_url=cache_url):
                     pass
                 await pm.refresh_provider(pid)
                 entry["completed"].append(pid)
@@ -441,6 +465,27 @@ async def pull_model_all_legacy(model: str = Form(...)):
 
     asyncio.create_task(_run())
     return RedirectResponse(url="/#models-pane", status_code=303)
+
+
+@router.get("/api/cache/status")
+async def api_cache_status():
+    """Return cache statistics."""
+    cache = deps.get_cache()
+    if cache is None:
+        return JSONResponse({"enabled": False})
+    stats = cache.stats()
+    stats["enabled"] = True
+    return JSONResponse(stats)
+
+
+@router.post("/api/cache/clear")
+async def api_cache_clear():
+    """Clear the registry cache."""
+    cache = deps.get_cache()
+    if cache is None:
+        raise HTTPException(status_code=400, detail="Cache not enabled")
+    cache.clear()
+    return JSONResponse({"status": "cleared"})
 
 
 @router.post("/models/delete-all")

@@ -67,6 +67,13 @@
             <span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>
         </button>
     </li>
+    {% if cache_stats %}
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="cache-tab" data-bs-toggle="tab" data-bs-target="#cache-pane" type="button" role="tab" aria-controls="cache-pane" aria-selected="false">
+            <i class="bi bi-archive me-1"></i>Cache
+        </button>
+    </li>
+    {% endif %}
 </ul>
 
 <div class="tab-content">
@@ -430,6 +437,69 @@
         {% endif %}
     </div>
 
+    {% if cache_stats %}
+    <!-- ==================== CACHE TAB ==================== -->
+    <div class="tab-pane fade" id="cache-pane" role="tabpanel" aria-labelledby="cache-tab" tabindex="0">
+        <div class="row g-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0"><i class="bi bi-archive me-2"></i>Registry Cache</h5>
+                        <button class="btn btn-sm btn-outline-danger" id="btn-clear-cache" onclick="clearCache()">
+                            <i class="bi bi-trash me-1"></i>Clear Cache
+                        </button>
+                    </div>
+                    <ul class="list-group list-group-flush">
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Status</span>
+                            <span class="badge bg-success">Enabled</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Cached Blobs</span>
+                            <span id="cache-blob-count">{{ cache_stats.blob_count }}</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Cache Size</span>
+                            <span id="cache-size">
+                                {% if cache_stats.blob_bytes >= 1073741824 %}
+                                {{ "%.1f GB" | format(cache_stats.blob_bytes / 1073741824) }}
+                                {% elif cache_stats.blob_bytes >= 1048576 %}
+                                {{ "%.1f MB" | format(cache_stats.blob_bytes / 1048576) }}
+                                {% else %}
+                                {{ "%.0f KB" | format(cache_stats.blob_bytes / 1024) }}
+                                {% endif %}
+                            </span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Cached Manifests</span>
+                            <span>{{ cache_stats.manifest_count }}</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between">
+                            <span class="text-muted">Cache Directory</span>
+                            <code class="small">{{ cache_stats.cache_dir }}</code>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0">How It Works</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-2">The registry cache acts as a pull-through proxy for the Ollama model registry. When a model is pulled:</p>
+                        <ol class="mb-2 small">
+                            <li>The first pull downloads from <code>registry.ollama.ai</code> and caches the blobs locally</li>
+                            <li>Subsequent pulls on other providers are served from the local cache at LAN speed</li>
+                        </ol>
+                        <p class="text-muted small mb-0">Blobs are content-addressed (SHA256) and never expire. Manifests are cached for 10 days and re-fetched after that.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
 </div>
 
 <!-- Add Provider Modal -->
@@ -579,6 +649,12 @@ function updateDashboard(data) {
         });
     }
 
+    if (data.cache) {
+        setText('cache-blob-count', data.cache.blob_count);
+        var sizeEl = document.getElementById('cache-size');
+        if (sizeEl) sizeEl.textContent = formatBytes(data.cache.blob_bytes);
+    }
+
     const byId = {};
     data.providers.forEach(p => { byId[p.id] = p; });
 
@@ -723,6 +799,35 @@ function pollPull(pullId) {
         .catch(function() {
             setTimeout(function() { pollPull(pullId); }, 3000);
         });
+}
+
+function clearCache() {
+    if (!confirm('Clear the entire model cache? Cached blobs will need to be re-downloaded.')) return;
+    var btn = document.getElementById('btn-clear-cache');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Clearing\u2026';
+    fetch('/api/cache/clear', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function() {
+            btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Cleared';
+            setText('cache-blob-count', '0');
+            var sizeEl = document.getElementById('cache-size');
+            if (sizeEl) sizeEl.textContent = '0 KB';
+            setTimeout(function() {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-trash me-1"></i>Clear Cache';
+            }, 3000);
+        })
+        .catch(function() {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-trash me-1"></i>Clear Cache';
+        });
+}
+
+function formatBytes(bytes) {
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+    if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    return Math.round(bytes / 1024) + ' KB';
 }
 </script>
 {% endblock %}

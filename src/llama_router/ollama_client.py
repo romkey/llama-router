@@ -85,11 +85,25 @@ class OllamaClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def pull_stream(self, model: str) -> AsyncIterator[bytes]:
+    async def pull_stream(
+        self,
+        model: str,
+        cache_registry_url: str | None = None,
+    ) -> AsyncIterator[bytes]:
+        pull_model = model
+        insecure = False
+        if cache_registry_url:
+            base = cache_registry_url.rstrip("/")
+            if "/" not in model or model.startswith("library/"):
+                pull_model = f"{base}/library/{model}"
+            else:
+                pull_model = f"{base}/{model}"
+            insecure = True
+
         async with self._http.stream(
             "POST",
             "/api/pull",
-            json={"model": model, "stream": True},
+            json={"model": pull_model, "stream": True, "insecure": insecure},
             timeout=httpx.Timeout(10.0, read=600.0),
         ) as resp:
             resp.raise_for_status()
