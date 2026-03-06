@@ -127,6 +127,7 @@ class BlobCache:
             "blob_misses": self.blob_misses,
             "manifest_hits": self.manifest_hits,
             "manifest_misses": self.manifest_misses,
+            "cached_models": sorted(self.cached_models()),
         }
 
     def clear(self) -> None:

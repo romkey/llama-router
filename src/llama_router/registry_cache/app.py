@@ -21,13 +21,22 @@ This means:
 
 Strategy:
   - Cached blobs:   return 200 with Location pointing to /cache/blobs/{digest}
-  - Uncached blobs: return 307 with Location pointing to upstream CDN URL,
-                    then background-download the blob to cache for next time
+  - Uncached blobs: return 307 pointing to upstream CDN URL (different hostname,
+                    so Ollama's redirect handler stops and reads it)
+
+Performance:
+  - A persistent httpx.AsyncClient is reused for all upstream requests (avoids
+    a new TLS handshake per request).
+  - Blob sizes are extracted from cached manifests so HEAD requests for known
+    blobs can be answered without contacting upstream at all.
+  - Background cache downloads are queued with bounded concurrency so they don't
+    saturate the link while Ollama is still pulling.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -43,11 +52,14 @@ logger = logging.getLogger(__name__)
 
 UPSTREAM = "https://registry.ollama.ai"
 CHUNK_SIZE = 256 * 1024  # 256 KB
-BACKGROUND_CACHE_DELAY = 120  # seconds to wait before background download
+MAX_BACKGROUND_DOWNLOADS = 1
 
 app = FastAPI(title="llama-router Registry Cache", redirect_slashes=False)
 
 _cache: BlobCache | None = None
+_upstream_client: httpx.AsyncClient | None = None
+_download_semaphore = asyncio.Semaphore(MAX_BACKGROUND_DOWNLOADS)
+_blob_sizes: dict[str, int] = {}
 
 
 def init_cache(cache: BlobCache) -> None:
@@ -58,6 +70,32 @@ def init_cache(cache: BlobCache) -> None:
 def _get_cache() -> BlobCache:
     assert _cache is not None, "Registry cache not initialized"
     return _cache
+
+
+def _get_upstream() -> httpx.AsyncClient:
+    global _upstream_client
+    if _upstream_client is None or _upstream_client.is_closed:
+        _upstream_client = httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=httpx.Timeout(30.0, read=1800.0),
+        )
+    return _upstream_client
+
+
+def _extract_blob_sizes(manifest_bytes: bytes) -> None:
+    """Parse an OCI manifest and cache blob digest→size mappings."""
+    try:
+        manifest = json.loads(manifest_bytes)
+        for layer in manifest.get("layers", []):
+            digest = layer.get("digest")
+            size = layer.get("size")
+            if digest and size:
+                _blob_sizes[digest] = size
+        config = manifest.get("config", {})
+        if config.get("digest") and config.get("size"):
+            _blob_sizes[config["digest"]] = config["size"]
+    except Exception:
+        pass
 
 
 class _RequestLogMiddleware:
@@ -118,6 +156,7 @@ async def get_manifest(name: str, reference: str):
         logger.info(
             "Manifest cache HIT: %s:%s (%d bytes)", name, reference, len(cached)
         )
+        _extract_blob_sizes(cached)
         return Response(
             content=cached,
             media_type="application/vnd.docker.distribution.manifest.v2+json",
@@ -127,8 +166,8 @@ async def get_manifest(name: str, reference: str):
     url = f"{UPSTREAM}/v2/{name}/manifests/{reference}"
     logger.info("Manifest cache MISS: %s:%s — fetching from upstream", name, reference)
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(url, timeout=30.0)
+        client = _get_upstream()
+        resp = await client.get(url, follow_redirects=True, timeout=30.0)
     except Exception as exc:
         logger.error("Manifest upstream fetch failed: %s:%s — %s", name, reference, exc)
         raise HTTPException(status_code=502, detail=f"Upstream fetch error: {exc}")
@@ -142,6 +181,7 @@ async def get_manifest(name: str, reference: str):
 
     data = resp.content
     cache.save_manifest(name, reference, data)
+    _extract_blob_sizes(data)
     logger.info(
         "Manifest fetched and cached: %s:%s (%d bytes)", name, reference, len(data)
     )
@@ -169,11 +209,24 @@ async def head_blob(name: str, digest: str):
             },
         )
 
+    if digest in _blob_sizes:
+        size = _blob_sizes[digest]
+        logger.info(
+            "HEAD blob size from manifest: %s (%s)", digest[:24], _human_bytes(size)
+        )
+        return Response(
+            status_code=200,
+            headers={
+                "Content-Length": str(size),
+                "Docker-Content-Digest": digest,
+            },
+        )
+
     url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
     logger.info("HEAD blob MISS (local), checking upstream: %s", digest[:24])
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.head(url, timeout=30.0)
+        client = _get_upstream()
+        resp = await client.head(url, follow_redirects=True, timeout=30.0)
     except Exception as exc:
         logger.error("HEAD blob upstream failed: %s — %s", digest[:24], exc)
         raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
@@ -187,6 +240,10 @@ async def head_blob(name: str, digest: str):
 
     content_length = resp.headers.get("content-length", "0")
     logger.info("HEAD blob upstream OK: %s (%s bytes)", digest[:24], content_length)
+    try:
+        _blob_sizes[digest] = int(content_length)
+    except ValueError:
+        pass
     return Response(
         status_code=200,
         headers={
@@ -199,11 +256,6 @@ async def head_blob(name: str, digest: str):
 @app.get("/v2/{name:path}/blobs/{digest}")
 async def get_blob(name: str, digest: str, request: Request):
     """Return a response with a Location header for blob downloads.
-
-    Ollama's download.go unconditionally calls resp.Location() after this
-    request.  Its HTTP client follows same-hostname 307 redirects, so a 307
-    to our own /cache/ path is transparently followed and the final 200 has
-    no Location → error.
 
     Cached blobs:   return 200 with Location header pointing to our serve
                     endpoint (Go reads Location regardless of status code).
@@ -220,10 +272,6 @@ async def get_blob(name: str, digest: str, request: Request):
         cache.blob_hits += 1
         size = cache.blob_size(digest)
         logger.info("Blob cache HIT: %s (%s)", digest[:24], _human_bytes(size))
-        # 200 + Location header.  Ollama's resp.Location() reads the header
-        # regardless of status code.  A 200 is NOT treated as a redirect by
-        # Go's HTTP client, so it won't be followed — Ollama gets the 200
-        # and extracts the URL from the header.
         headers["Location"] = f"{base}/cache/blobs/{digest}"
         return Response(status_code=200, content=b"", headers=headers)
 
@@ -233,8 +281,8 @@ async def get_blob(name: str, digest: str, request: Request):
     logger.info("Blob cache MISS: %s — fetching CDN redirect", digest[:24])
 
     try:
-        async with httpx.AsyncClient(follow_redirects=False) as client:
-            resp = await client.get(upstream_url, timeout=30.0)
+        client = _get_upstream()
+        resp = await client.get(upstream_url, timeout=30.0)
     except Exception as exc:
         logger.error("Blob upstream request failed: %s — %s", digest[:24], exc)
         raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
@@ -249,16 +297,10 @@ async def get_blob(name: str, digest: str, request: Request):
         headers["Location"] = cdn_url
         if "content-length" in resp.headers:
             headers["Content-Length"] = resp.headers["content-length"]
-        # Background-download after a delay so we don't compete with the
-        # active pull that's downloading from CDN right now.
-        asyncio.create_task(
-            _delayed_background_cache(cache, name, digest, BACKGROUND_CACHE_DELAY)
-        )
+        asyncio.create_task(_background_cache_blob(cache, name, digest))
         return Response(status_code=307, headers=headers)
 
     if resp.status_code == 200:
-        # Upstream returned data directly (unusual) — cache it, then
-        # return 200 + Location so Ollama can use our serve endpoint.
         logger.info(
             "Blob upstream returned 200 directly: %s (%s)",
             digest[:24],
@@ -295,42 +337,43 @@ async def serve_cached_blob(digest: str):
     )
 
 
-async def _delayed_background_cache(
-    cache: BlobCache, name: str, digest: str, delay: float
-) -> None:
-    """Wait, then download a blob from upstream to populate the cache."""
-    await asyncio.sleep(delay)
-    if cache.has_blob(digest):
-        return
+async def _background_cache_blob(cache: BlobCache, name: str, digest: str) -> None:
+    """Download a blob from upstream to populate the cache (bounded concurrency)."""
+    async with _download_semaphore:
+        if cache.has_blob(digest):
+            return
 
-    url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
-    tmp = cache.temp_blob_path(digest)
-    total_bytes = 0
-    logger.info("Background cache download starting: %s", digest[:24])
-    try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
+        tmp = cache.temp_blob_path(digest)
+        total_bytes = 0
+        logger.info("Background cache download starting: %s", digest[:24])
+        try:
+            client = _get_upstream()
             async with client.stream(
-                "GET", url, timeout=httpx.Timeout(30.0, read=1800.0)
+                "GET",
+                url,
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, read=1800.0),
             ) as resp:
                 resp.raise_for_status()
                 with open(tmp, "wb") as f:
                     async for chunk in resp.aiter_bytes(CHUNK_SIZE):
                         f.write(chunk)
                         total_bytes += len(chunk)
-        cache.commit_blob(digest)
-        logger.info(
-            "Background cache complete: %s (%s)",
-            digest[:24],
-            _human_bytes(total_bytes),
-        )
-    except Exception as exc:
-        cache.remove_temp_blob(digest)
-        logger.error(
-            "Background cache FAILED: %s after %s — %s",
-            digest[:24],
-            _human_bytes(total_bytes),
-            exc,
-        )
+            cache.commit_blob(digest)
+            logger.info(
+                "Background cache complete: %s (%s)",
+                digest[:24],
+                _human_bytes(total_bytes),
+            )
+        except Exception as exc:
+            cache.remove_temp_blob(digest)
+            logger.error(
+                "Background cache FAILED: %s after %s — %s",
+                digest[:24],
+                _human_bytes(total_bytes),
+                exc,
+            )
 
 
 def _human_bytes(n: int) -> str:
