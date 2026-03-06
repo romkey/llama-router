@@ -598,6 +598,21 @@
                 </div>
             </div>
             <div class="col-md-6">
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-download me-2"></i>Cache a Model</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-2">Download a model from the Ollama registry into the local cache without pulling it to any provider.</p>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="cache-model-input" placeholder="e.g. llama3.2:latest" onkeydown="if(event.key==='Enter')cacheModelManual()">
+                            <button class="btn btn-success" id="btn-cache-model-manual" onclick="cacheModelManual()">
+                                <i class="bi bi-archive me-1"></i>Cache
+                            </button>
+                        </div>
+                        <div id="cache-model-status-area" class="mt-2"></div>
+                    </div>
+                </div>
                 <div class="card">
                     <div class="card-header">
                         <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Cached Models</h5>
@@ -1048,6 +1063,65 @@ document.addEventListener('click', function(e) {
         btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache';
     });
 });
+
+function cacheModelManual() {
+    var input = document.getElementById('cache-model-input');
+    var btn = document.getElementById('btn-cache-model-manual');
+    var model = input.value.trim();
+    if (!model) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching\u2026';
+    fetch('/api/cache/model', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: model})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        _trackedPulls[data.pull_id] = {model: model, btn: null};
+        var area = document.getElementById('cache-model-status-area');
+        if (area) {
+            var el = document.createElement('div');
+            el.id = 'cache-manual-banner-' + data.pull_id;
+            el.className = 'alert alert-info py-2 px-3 small d-flex align-items-center mb-1';
+            el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Caching <strong class="ms-1">' + model + '</strong>';
+            area.prepend(el);
+        }
+        pollCacheManual(data.pull_id, model);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache';
+        input.value = '';
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache';
+    });
+}
+
+function pollCacheManual(pullId, model) {
+    fetch('/api/pulls/' + pullId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var el = document.getElementById('cache-manual-banner-' + pullId);
+            if (!el) return;
+            if (data.status === 'pulling') {
+                el.className = 'alert alert-info py-2 px-3 small d-flex align-items-center mb-1';
+                var progress = data.progress || 'caching\u2026';
+                el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span><span>Caching <strong>' + model + '</strong> &mdash; ' + progress + '</span>';
+                setTimeout(function() { pollCacheManual(pullId, model); }, 2000);
+            } else {
+                var ok = data.failed === 0;
+                el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' py-2 px-3 small d-flex align-items-center mb-1';
+                el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
+                    '<strong>' + model + '</strong>&nbsp;' + (ok ? 'cached successfully' : 'cache failed');
+                setTimeout(function() { el.remove(); }, 10000);
+                refreshStatus();
+            }
+        })
+        .catch(function() {
+            setTimeout(function() { pollCacheManual(pullId, model); }, 3000);
+        });
+}
 
 function cacheAllModels() {
     var btn = document.getElementById('btn-cache-all');
