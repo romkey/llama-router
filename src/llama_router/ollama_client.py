@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from .models import ProviderModel
+
+logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(10.0, read=120.0)
 
@@ -85,30 +90,86 @@ class OllamaClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def pull_stream(
+    async def pull_model(
         self,
         model: str,
         cache_registry_url: str | None = None,
-    ) -> AsyncIterator[bytes]:
+    ) -> dict:
+        """Pull a model, streaming NDJSON progress. Returns the final status.
+
+        Raises ``RuntimeError`` if Ollama reports an error in the stream.
+        """
         pull_model = model
         insecure = False
         if cache_registry_url:
-            base = cache_registry_url.rstrip("/")
+            parsed = urlparse(cache_registry_url)
+            host_port = parsed.netloc or parsed.path.rstrip("/")
             if "/" not in model or model.startswith("library/"):
-                pull_model = f"{base}/library/{model}"
+                pull_model = f"{host_port}/library/{model}"
             else:
-                pull_model = f"{base}/{model}"
+                pull_model = f"{host_port}/{model}"
             insecure = True
+
+        logger.info(
+            "Starting pull: model=%s pull_model=%s insecure=%s base_url=%s",
+            model,
+            pull_model,
+            insecure,
+            self._base_url,
+        )
+
+        last_status: dict = {}
+        last_logged_pct: int = -1
 
         async with self._http.stream(
             "POST",
             "/api/pull",
             json={"model": pull_model, "stream": True, "insecure": insecure},
-            timeout=httpx.Timeout(10.0, read=600.0),
+            timeout=httpx.Timeout(30.0, read=1800.0),
         ) as resp:
             resp.raise_for_status()
+            buffer = b""
             async for chunk in resp.aiter_bytes():
-                yield chunk
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning("Pull %s: non-JSON line: %s", model, line[:200])
+                        continue
+
+                    if "error" in msg:
+                        error_msg = msg["error"]
+                        logger.error("Pull %s FAILED: %s", model, error_msg)
+                        raise RuntimeError(f"Ollama pull error: {error_msg}")
+
+                    last_status = msg
+                    status_text = msg.get("status", "")
+
+                    total = msg.get("total", 0)
+                    completed = msg.get("completed", 0)
+                    if total > 0:
+                        pct = int(completed * 100 / total)
+                        if pct >= last_logged_pct + 10:
+                            logger.info(
+                                "Pull %s: %s — %d%% (%s / %s)",
+                                model,
+                                status_text,
+                                pct,
+                                _human_bytes(completed),
+                                _human_bytes(total),
+                            )
+                            last_logged_pct = pct
+                    elif status_text:
+                        logger.info("Pull %s: %s", model, status_text)
+
+        final_status = last_status.get("status", "unknown")
+        logger.info("Pull %s completed: %s", model, final_status)
+        return last_status
 
     async def delete_model(self, model: str) -> None:
         resp = await self._http.request("DELETE", "/api/delete", json={"model": model})
@@ -140,3 +201,11 @@ class OllamaClient:
         tps = (eval_count / eval_duration_ns * 1_000_000_000) if eval_count else 0
 
         return {"startup_time_ms": startup_ms, "tokens_per_second": tps}
+
+
+def _human_bytes(n: int) -> str:
+    if n >= 1 << 30:
+        return f"{n / (1 << 30):.1f} GB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.1f} MB"
+    return f"{n / (1 << 10):.0f} KB"

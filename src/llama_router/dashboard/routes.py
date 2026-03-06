@@ -381,18 +381,25 @@ async def api_pull_model(request: Request):
         pull_entry = _active_pulls[pull_id]
         for pid in provider_ids:
             provider = await db.get_provider(pid)
+            pname = provider.name if provider else str(pid)
+            logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
             start = time.monotonic()
             try:
                 client = pm.get_ollama_client(pid)
-                async for _ in client.pull_stream(model, cache_registry_url=cache_url):
-                    pass
+                await client.pull_model(model, cache_registry_url=cache_url)
                 await pm.refresh_provider(pid)
                 pull_entry["completed"].append(pid)
                 duration = (time.monotonic() - start) * 1000
+                logger.info(
+                    "Pull %s succeeded on provider %s in %.1fs",
+                    model,
+                    pname,
+                    duration / 1000,
+                )
                 await db.save_request_log(
                     RequestLog(
                         provider_id=pid,
-                        provider_name=provider.name if provider else str(pid),
+                        provider_name=pname,
                         protocol="ollama",
                         endpoint="/api/pull",
                         model=model,
@@ -401,13 +408,19 @@ async def api_pull_model(request: Request):
                     )
                 )
             except Exception as exc:
-                logger.warning("Pull %s on provider %d failed: %s", model, pid, exc)
-                pull_entry["failed"].append(pid)
                 duration = (time.monotonic() - start) * 1000
+                logger.error(
+                    "Pull %s FAILED on provider %s after %.1fs: %s",
+                    model,
+                    pname,
+                    duration / 1000,
+                    exc,
+                )
+                pull_entry["failed"].append(pid)
                 await db.save_request_log(
                     RequestLog(
                         provider_id=pid,
-                        provider_name=provider.name if provider else str(pid),
+                        provider_name=pname,
                         protocol="ollama",
                         endpoint="/api/pull",
                         model=model,
@@ -476,18 +489,27 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
     async def _run():
         pull_entry = _active_pulls[pull_id]
         provider = await db.get_provider(provider_id)
+        pname = provider.name if provider else str(provider_id)
+        logger.info(
+            "Pull %s starting on provider %s (id=%d)", model, pname, provider_id
+        )
         start = time.monotonic()
         try:
             client = pm.get_ollama_client(provider_id)
-            async for _ in client.pull_stream(model, cache_registry_url=cache_url):
-                pass
+            await client.pull_model(model, cache_registry_url=cache_url)
             await pm.refresh_provider(provider_id)
             pull_entry["completed"].append(provider_id)
             duration = (time.monotonic() - start) * 1000
+            logger.info(
+                "Pull %s succeeded on provider %s in %.1fs",
+                model,
+                pname,
+                duration / 1000,
+            )
             await db.save_request_log(
                 RequestLog(
                     provider_id=provider_id,
-                    provider_name=provider.name if provider else str(provider_id),
+                    provider_name=pname,
                     protocol="ollama",
                     endpoint="/api/pull",
                     model=model,
@@ -496,13 +518,19 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
                 )
             )
         except Exception as exc:
-            logger.warning("Pull %s on provider %d failed: %s", model, provider_id, exc)
-            pull_entry["failed"].append(provider_id)
             duration = (time.monotonic() - start) * 1000
+            logger.error(
+                "Pull %s FAILED on provider %s after %.1fs: %s",
+                model,
+                pname,
+                duration / 1000,
+                exc,
+            )
+            pull_entry["failed"].append(provider_id)
             await db.save_request_log(
                 RequestLog(
                     provider_id=provider_id,
-                    provider_name=provider.name if provider else str(provider_id),
+                    provider_name=pname,
                     protocol="ollama",
                     endpoint="/api/pull",
                     model=model,
@@ -542,18 +570,25 @@ async def pull_model_all_legacy(model: str = Form(...)):
         pull_entry = _active_pulls[pull_id]
         for pid in provider_ids:
             provider = await db.get_provider(pid)
+            pname = provider.name if provider else str(pid)
+            logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
             start = time.monotonic()
             try:
                 client = pm.get_ollama_client(pid)
-                async for _ in client.pull_stream(model, cache_registry_url=cache_url):
-                    pass
+                await client.pull_model(model, cache_registry_url=cache_url)
                 await pm.refresh_provider(pid)
                 pull_entry["completed"].append(pid)
                 duration = (time.monotonic() - start) * 1000
+                logger.info(
+                    "Pull %s succeeded on provider %s in %.1fs",
+                    model,
+                    pname,
+                    duration / 1000,
+                )
                 await db.save_request_log(
                     RequestLog(
                         provider_id=pid,
-                        provider_name=provider.name if provider else str(pid),
+                        provider_name=pname,
                         protocol="ollama",
                         endpoint="/api/pull",
                         model=model,
@@ -562,13 +597,19 @@ async def pull_model_all_legacy(model: str = Form(...)):
                     )
                 )
             except Exception as exc:
-                logger.warning("Pull %s on provider %d failed: %s", model, pid, exc)
-                pull_entry["failed"].append(pid)
                 duration = (time.monotonic() - start) * 1000
+                logger.error(
+                    "Pull %s FAILED on provider %s after %.1fs: %s",
+                    model,
+                    pname,
+                    duration / 1000,
+                    exc,
+                )
+                pull_entry["failed"].append(pid)
                 await db.save_request_log(
                     RequestLog(
                         provider_id=pid,
-                        provider_name=provider.name if provider else str(pid),
+                        provider_name=pname,
                         protocol="ollama",
                         endpoint="/api/pull",
                         model=model,

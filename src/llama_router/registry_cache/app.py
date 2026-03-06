@@ -37,8 +37,11 @@ def _get_cache() -> BlobCache:
 
 
 @app.get("/v2/")
-async def v2_check():
+async def v2_check(request: Request):
     """OCI version check — Ollama calls this to verify the registry is reachable."""
+    logger.info(
+        "Registry check from %s", request.client.host if request.client else "?"
+    )
     return JSONResponse({})
 
 
@@ -46,26 +49,40 @@ async def v2_check():
 async def get_manifest(name: str, reference: str, request: Request):
     cache = _get_cache()
 
+    logger.info("Manifest request: %s:%s", name, reference)
     cached = cache.get_manifest(name, reference)
     if cached is not None:
         cache.manifest_hits += 1
-        logger.debug("Manifest cache hit: %s:%s", name, reference)
+        logger.info(
+            "Manifest cache HIT: %s:%s (%d bytes)", name, reference, len(cached)
+        )
         return Response(
             content=cached,
             media_type="application/vnd.docker.distribution.manifest.v2+json",
         )
 
     cache.manifest_misses += 1
-    logger.info("Manifest cache miss: %s:%s — fetching from upstream", name, reference)
     url = f"{UPSTREAM}/v2/{name}/manifests/{reference}"
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        resp = await client.get(url, timeout=30.0)
+    logger.info("Manifest cache MISS: %s:%s — fetching from %s", name, reference, url)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(url, timeout=30.0)
+    except Exception as exc:
+        logger.error("Manifest fetch failed for %s:%s — %s", name, reference, exc)
+        raise HTTPException(status_code=502, detail=f"Upstream fetch error: {exc}")
 
     if resp.status_code != 200:
+        logger.error(
+            "Manifest upstream error for %s:%s — HTTP %d",
+            name,
+            reference,
+            resp.status_code,
+        )
         raise HTTPException(status_code=resp.status_code, detail="Upstream error")
 
     data = resp.content
     cache.save_manifest(name, reference, data)
+    logger.info("Manifest cached: %s:%s (%d bytes)", name, reference, len(data))
     return Response(
         content=data,
         media_type=resp.headers.get(
@@ -110,9 +127,9 @@ async def get_blob(name: str, digest: str):
 
     if cache.has_blob(digest):
         cache.blob_hits += 1
-        logger.debug("Blob cache hit: %s", digest[:24])
         path = cache.blob_path(digest)
         size = cache.blob_size(digest)
+        logger.info("Blob cache HIT: %s (%s)", digest[:24], _human_bytes(size))
 
         async def _stream_file() -> AsyncIterator[bytes]:
             with open(path, "rb") as f:
@@ -132,12 +149,13 @@ async def get_blob(name: str, digest: str):
         )
 
     cache.blob_misses += 1
-    logger.info("Blob cache miss: %s — streaming from upstream", digest[:24])
     url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
+    logger.info("Blob cache MISS: %s — streaming from %s", digest[:24], url)
 
     async def _stream_and_cache() -> AsyncIterator[bytes]:
         """Stream the blob to the client while saving it to disk."""
         tmp = cache.temp_blob_path(digest)
+        total_bytes = 0
         try:
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 async with client.stream(
@@ -147,11 +165,18 @@ async def get_blob(name: str, digest: str):
                     with open(tmp, "wb") as f:
                         async for chunk in resp.aiter_bytes(CHUNK_SIZE):
                             f.write(chunk)
+                            total_bytes += len(chunk)
                             yield chunk
             cache.commit_blob(digest)
-            logger.info("Blob cached: %s", digest[:24])
-        except Exception:
+            logger.info("Blob cached: %s (%s)", digest[:24], _human_bytes(total_bytes))
+        except Exception as exc:
             cache.remove_temp_blob(digest)
+            logger.error(
+                "Blob cache FAILED: %s after %s — %s",
+                digest[:24],
+                _human_bytes(total_bytes),
+                exc,
+            )
             raise
 
     return StreamingResponse(
@@ -159,3 +184,11 @@ async def get_blob(name: str, digest: str):
         media_type="application/octet-stream",
         headers={"Docker-Content-Digest": digest},
     )
+
+
+def _human_bytes(n: int) -> str:
+    if n >= 1 << 30:
+        return f"{n / (1 << 30):.1f} GB"
+    if n >= 1 << 20:
+        return f"{n / (1 << 20):.1f} MB"
+    return f"{n / (1 << 10):.0f} KB"
