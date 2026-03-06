@@ -39,6 +39,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -374,6 +375,94 @@ async def _background_cache_blob(cache: BlobCache, name: str, digest: str) -> No
                 _human_bytes(total_bytes),
                 exc,
             )
+
+
+async def precache_model(
+    cache: BlobCache,
+    model: str,
+    progress_callback: Any | None = None,
+) -> None:
+    """Download a model's manifest and all blobs into the cache.
+
+    *model* is in Ollama format, e.g. ``llama3.2:latest`` or ``llama3.2``.
+    """
+    if ":" in model:
+        name_part, tag = model.rsplit(":", 1)
+    else:
+        name_part, tag = model, "latest"
+
+    if "/" not in name_part:
+        oci_name = f"library/{name_part}"
+    else:
+        oci_name = name_part
+
+    if progress_callback:
+        progress_callback(f"fetching manifest for {model}")
+
+    manifest_url = f"{UPSTREAM}/v2/{oci_name}/manifests/{tag}"
+    client = _get_upstream()
+    resp = await client.get(manifest_url, follow_redirects=True, timeout=30.0)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Manifest fetch failed: HTTP {resp.status_code}")
+
+    manifest_data = resp.content
+    cache.save_manifest(oci_name, tag, manifest_data)
+
+    manifest = json.loads(manifest_data)
+    layers = manifest.get("layers", [])
+    config = manifest.get("config")
+    if config and config.get("digest"):
+        layers = [config] + layers
+
+    total = len(layers)
+    cached = 0
+    for i, layer in enumerate(layers, 1):
+        digest = layer.get("digest", "")
+        size = layer.get("size", 0)
+        if not digest:
+            continue
+
+        if cache.has_blob(digest):
+            cached += 1
+            if progress_callback:
+                progress_callback(
+                    f"blob {i}/{total} already cached ({_human_bytes(size)})"
+                )
+            continue
+
+        if progress_callback:
+            progress_callback(f"downloading blob {i}/{total} ({_human_bytes(size)})")
+
+        blob_url = f"{UPSTREAM}/v2/{oci_name}/blobs/{digest}"
+        tmp = cache.temp_blob_path(digest)
+        total_bytes = 0
+        try:
+            async with client.stream(
+                "GET",
+                blob_url,
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, read=3600.0),
+            ) as blob_resp:
+                blob_resp.raise_for_status()
+                with open(tmp, "wb") as f:
+                    async for chunk in blob_resp.aiter_bytes(CHUNK_SIZE):
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+                        if progress_callback and size > 0:
+                            pct = int(total_bytes * 100 / size)
+                            progress_callback(
+                                f"downloading blob {i}/{total} {pct}% ({_human_bytes(total_bytes)}/{_human_bytes(size)})"
+                            )
+            cache.commit_blob(digest)
+            cached += 1
+        except Exception as exc:
+            cache.remove_temp_blob(digest)
+            raise RuntimeError(f"Blob download failed ({digest[:24]}): {exc}") from exc
+
+    if progress_callback:
+        progress_callback(f"cached {model} ({total} blobs)")
+
+    logger.info("Pre-cached model %s: %d blobs", model, total)
 
 
 def _human_bytes(n: int) -> str:

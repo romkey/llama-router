@@ -299,6 +299,13 @@
     <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         <div id="pull-status-area"></div>
         {% if models %}
+        {% if cache_stats %}
+        <div class="mb-3 text-end">
+            <button class="btn btn-sm btn-outline-success" id="btn-cache-all" onclick="cacheAllModels()">
+                <i class="bi bi-archive me-1"></i>Cache all models
+            </button>
+        </div>
+        {% endif %}
         <div class="table-responsive">
             <table class="table table-hover" id="models-table">
                 <thead>
@@ -350,6 +357,11 @@
                             <button class="btn btn-sm btn-outline-secondary btn-set-fallback" data-model="{{ m.name }}" title="Set fallback model">
                                 <i class="bi bi-arrow-return-right"></i>
                             </button>
+                            {% if cache_stats %}
+                            <button class="btn btn-sm btn-outline-success btn-cache-model" data-model="{{ m.name }}" title="Cache model locally" {% if m.name in cached_models %}disabled{% endif %}>
+                                <i class="bi bi-archive me-1"></i>Cache
+                            </button>
+                            {% endif %}
                             <button class="btn btn-sm btn-outline-primary btn-pull-all" data-model="{{ m.name }}" title="Pull to all Ollama providers" {% if on_all %}disabled{% endif %}>
                                 <i class="bi bi-download me-1"></i>Pull all
                             </button>
@@ -535,9 +547,16 @@
                         </button>
                     </div>
                     <ul class="list-group list-group-flush">
-                        <li class="list-group-item d-flex justify-content-between">
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
                             <span class="text-muted">Status</span>
-                            <span class="badge bg-success">Enabled</span>
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" role="switch" id="cache-toggle" {{ "checked" if cache_stats and cache_stats.get("enabled", true) else "" }} onchange="toggleCache()">
+                                <label class="form-check-label" for="cache-toggle" id="cache-toggle-label">
+                                    <span class="badge {{ 'bg-success' if cache_stats and cache_stats.get('enabled', true) else 'bg-secondary' }}" id="cache-status-badge">
+                                        {{ "Enabled" if cache_stats and cache_stats.get("enabled", true) else "Disabled" }}
+                                    </span>
+                                </label>
+                            </div>
                         </li>
                         <li class="list-group-item d-flex justify-content-between">
                             <span class="text-muted">Cached Blobs</span>
@@ -792,6 +811,13 @@ function updateDashboard(data) {
     if (data.cache) {
         setText('cache-blob-count', data.cache.blob_count);
         setText('cache-manifest-count', data.cache.manifest_count);
+        var badge = document.getElementById('cache-status-badge');
+        var toggle = document.getElementById('cache-toggle');
+        if (badge) {
+            badge.className = data.cache.enabled ? 'badge bg-success' : 'badge bg-secondary';
+            badge.textContent = data.cache.enabled ? 'Enabled' : 'Disabled';
+        }
+        if (toggle) toggle.checked = data.cache.enabled;
         var sizeEl = document.getElementById('cache-size');
         if (sizeEl) sizeEl.textContent = formatBytes(data.cache.blob_bytes);
         var blobHM = document.getElementById('cache-blob-hits-misses');
@@ -979,6 +1005,86 @@ function clearCache() {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-trash me-1"></i>Clear Cache';
         });
+}
+
+function toggleCache() {
+    fetch('/api/cache/toggle', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var badge = document.getElementById('cache-status-badge');
+            var toggle = document.getElementById('cache-toggle');
+            if (data.enabled) {
+                badge.className = 'badge bg-success';
+                badge.textContent = 'Enabled';
+                if (toggle) toggle.checked = true;
+            } else {
+                badge.className = 'badge bg-secondary';
+                badge.textContent = 'Disabled';
+                if (toggle) toggle.checked = false;
+            }
+        });
+}
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.btn-cache-model');
+    if (!btn) return;
+    e.preventDefault();
+    var model = btn.dataset.model;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching\u2026';
+    fetch('/api/cache/model', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: model})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        _trackedPulls[data.pull_id] = {model: model, btn: btn};
+        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0, 'caching\u2026');
+        pollPull(data.pull_id);
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache';
+    });
+});
+
+function cacheAllModels() {
+    var btn = document.getElementById('btn-cache-all');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching\u2026';
+    var rows = document.querySelectorAll('#models-table tbody tr[data-model]');
+    var models = [];
+    rows.forEach(function(row) { models.push(row.dataset.model); });
+
+    var idx = 0;
+    function cacheNext() {
+        if (idx >= models.length) {
+            btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Done';
+            setTimeout(function() {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache all models';
+            }, 3000);
+            return;
+        }
+        var model = models[idx++];
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching ' + (idx) + '/' + models.length;
+        fetch('/api/cache/model', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model: model})
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0, 'caching\u2026');
+            _trackedPulls[data.pull_id] = {model: model, btn: null};
+            pollPull(data.pull_id);
+            cacheNext();
+        })
+        .catch(function() { cacheNext(); });
+    }
+    cacheNext();
 }
 
 function formatBytes(bytes) {
