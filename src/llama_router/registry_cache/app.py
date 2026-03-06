@@ -4,28 +4,36 @@ Ollama pulls models by fetching manifests and blobs from an OCI-like registry.
 This app proxies those requests to registry.ollama.ai and caches the responses
 on disk so subsequent pulls are served at LAN speed.
 
-IMPORTANT: Ollama's blob download code makes the initial GET request without
-following redirects, then unconditionally reads the Location header to get the
-real download URL. This means blob GET endpoints MUST return a 307 redirect —
-returning 200 with data directly will fail with "no Location header".
+IMPORTANT — Ollama's blob download flow (see download.go):
+  1. HEAD /v2/{name}/blobs/{digest}  → get Content-Length for partitioning
+  2. GET  /v2/{name}/blobs/{digest}  → get the "direct URL" for downloading
 
-For uncached blobs the redirect points to our own /cache/blobs/ endpoint which
-does a single-pass stream-through: data flows from the upstream CDN through our
-server to Ollama, and is simultaneously saved to disk. This avoids downloading
-the blob twice (once for Ollama, once for the cache).
+For step 2, Ollama uses a custom redirect handler that FOLLOWS same-hostname
+redirects but STOPS at cross-hostname redirects (returning http.ErrUseLastResponse).
+After the request completes, Ollama unconditionally calls resp.Location().
+
+This means:
+  - A 307 to our OWN host is silently followed → Ollama gets the final 200 →
+    Location() fails → "http: no Location header in response"
+  - A 307 to a DIFFERENT host (CDN) stops the redirect → Ollama reads Location
+  - A 200 with a Location header also works — Go's resp.Location() just reads
+    the header regardless of status code
+
+Strategy:
+  - Cached blobs:   return 200 with Location pointing to /cache/blobs/{digest}
+  - Uncached blobs: return 307 with Location pointing to upstream CDN URL,
+                    then background-download the blob to cache for next time
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 import time
-from collections.abc import AsyncIterator
-from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.responses import FileResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -35,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 UPSTREAM = "https://registry.ollama.ai"
 CHUNK_SIZE = 256 * 1024  # 256 KB
+BACKGROUND_CACHE_DELAY = 120  # seconds to wait before background download
 
 app = FastAPI(title="llama-router Registry Cache", redirect_slashes=False)
 
@@ -146,6 +155,7 @@ async def get_manifest(name: str, reference: str):
 
 @app.head("/v2/{name:path}/blobs/{digest}")
 async def head_blob(name: str, digest: str):
+    """Return Content-Length for a blob.  Ollama calls this in Prepare()."""
     cache = _get_cache()
 
     if cache.has_blob(digest):
@@ -188,148 +198,139 @@ async def head_blob(name: str, digest: str):
 
 @app.get("/v2/{name:path}/blobs/{digest}")
 async def get_blob(name: str, digest: str, request: Request):
-    """Return a 307 redirect for blob downloads.
+    """Return a response with a Location header for blob downloads.
 
-    Ollama's downloader expects a redirect — it calls resp.Location()
-    unconditionally on the initial response.
+    Ollama's download.go unconditionally calls resp.Location() after this
+    request.  Its HTTP client follows same-hostname 307 redirects, so a 307
+    to our own /cache/ path is transparently followed and the final 200 has
+    no Location → error.
 
-    Cached blobs redirect to /cache/blobs/{digest} (FileResponse).
-    Uncached blobs also redirect there with a query param so the serve
-    endpoint can stream-through from upstream in a single pass (download
-    once, cache and serve simultaneously).
+    Cached blobs:   return 200 with Location header pointing to our serve
+                    endpoint (Go reads Location regardless of status code).
+    Uncached blobs: return 307 pointing to the upstream CDN URL (different
+                    hostname, so Ollama's redirect handler stops and reads
+                    it).  A background task downloads the blob to cache.
     """
     cache = _get_cache()
-    headers = {"Docker-Content-Digest": digest}
     base = str(request.base_url).rstrip("/")
+    headers = {"Docker-Content-Digest": digest}
 
+    # --- Cached: serve from local disk via /cache/blobs/ endpoint ---
     if cache.has_blob(digest):
         cache.blob_hits += 1
         size = cache.blob_size(digest)
-        logger.info(
-            "Blob cache HIT: %s (%s) — redirecting to local serve",
-            digest[:24],
-            _human_bytes(size),
-        )
-        headers["Content-Length"] = str(size)
+        logger.info("Blob cache HIT: %s (%s)", digest[:24], _human_bytes(size))
+        # 200 + Location header.  Ollama's resp.Location() reads the header
+        # regardless of status code.  A 200 is NOT treated as a redirect by
+        # Go's HTTP client, so it won't be followed — Ollama gets the 200
+        # and extracts the URL from the header.
         headers["Location"] = f"{base}/cache/blobs/{digest}"
+        return Response(status_code=200, content=b"", headers=headers)
+
+    # --- Uncached: redirect to upstream CDN (cross-hostname → stops) ---
+    cache.blob_misses += 1
+    upstream_url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
+    logger.info("Blob cache MISS: %s — fetching CDN redirect", digest[:24])
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            resp = await client.get(upstream_url, timeout=30.0)
+    except Exception as exc:
+        logger.error("Blob upstream request failed: %s — %s", digest[:24], exc)
+        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
+
+    cdn_url = resp.headers.get("location")
+    if resp.is_redirect and cdn_url:
+        logger.info(
+            "Blob upstream redirect: %s → CDN (%s…)",
+            digest[:24],
+            cdn_url[:80],
+        )
+        headers["Location"] = cdn_url
+        if "content-length" in resp.headers:
+            headers["Content-Length"] = resp.headers["content-length"]
+        # Background-download after a delay so we don't compete with the
+        # active pull that's downloading from CDN right now.
+        asyncio.create_task(
+            _delayed_background_cache(cache, name, digest, BACKGROUND_CACHE_DELAY)
+        )
         return Response(status_code=307, headers=headers)
 
-    cache.blob_misses += 1
-
-    # Try HEAD to upstream for Content-Length (progress display only).
-    # This must NEVER prevent the 307 redirect from being returned —
-    # Ollama unconditionally calls resp.Location() and any non-redirect
-    # response causes "http: no Location header in response".
-    upstream_url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
-    try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            head = await client.head(upstream_url, timeout=10.0)
-            if head.status_code == 200:
-                cl = head.headers.get("content-length")
-                if cl:
-                    headers["Content-Length"] = cl
-                    logger.info(
-                        "Blob cache MISS: %s (%s) — redirecting to stream-through",
-                        digest[:24],
-                        _human_bytes(int(cl)),
-                    )
-                else:
-                    logger.info(
-                        "Blob cache MISS: %s — redirecting to stream-through",
-                        digest[:24],
-                    )
-            else:
-                logger.info(
-                    "Blob cache MISS: %s (HEAD upstream %d) — redirecting to stream-through",
-                    digest[:24],
-                    head.status_code,
-                )
-    except Exception as exc:
+    if resp.status_code == 200:
+        # Upstream returned data directly (unusual) — cache it, then
+        # return 200 + Location so Ollama can use our serve endpoint.
         logger.info(
-            "Blob cache MISS: %s (HEAD failed: %s) — redirecting to stream-through",
+            "Blob upstream returned 200 directly: %s (%s)",
             digest[:24],
-            exc,
+            resp.headers.get("content-length", "?"),
         )
+        tmp = cache.temp_blob_path(digest)
+        with open(tmp, "wb") as f:
+            f.write(resp.content)
+        cache.commit_blob(digest)
+        headers["Location"] = f"{base}/cache/blobs/{digest}"
+        return Response(status_code=200, content=b"", headers=headers)
 
-    encoded_name = quote(name, safe="")
-    headers["Location"] = f"{base}/cache/blobs/{digest}?upstream_name={encoded_name}"
-    return Response(status_code=307, headers=headers)
+    logger.error(
+        "Blob upstream unexpected HTTP %d for %s", resp.status_code, digest[:24]
+    )
+    raise HTTPException(status_code=502, detail="Upstream error")
 
 
 @app.get("/cache/blobs/{digest}")
-async def serve_blob(digest: str, upstream_name: str = ""):
-    """Serve a blob — from cache or via single-pass stream-through.
-
-    Cached blobs are served with FileResponse (supports Range requests).
-    Uncached blobs are streamed from upstream while simultaneously being
-    written to disk, so a single download populates the cache and serves
-    the client at the same time.
-    """
+async def serve_cached_blob(digest: str):
+    """Serve a cached blob.  Supports Range requests via FileResponse."""
     cache = _get_cache()
-
-    if cache.has_blob(digest):
-        path = cache.blob_path(digest)
-        size = cache.blob_size(digest)
-        logger.info("Serving cached blob: %s (%s)", digest[:24], _human_bytes(size))
-        return FileResponse(
-            path=str(path),
-            media_type="application/octet-stream",
-            headers={"Docker-Content-Digest": digest},
-        )
-
-    if not upstream_name:
-        logger.warning("Serve blob miss, no upstream_name: %s", digest[:24])
+    if not cache.has_blob(digest):
+        logger.warning("Serve blob miss (not yet cached): %s", digest[:24])
         raise HTTPException(status_code=404, detail="Blob not in cache")
 
-    upstream_url = f"{UPSTREAM}/v2/{upstream_name}/blobs/{digest}"
-    logger.info("Stream-through starting: %s from %s", digest[:24], upstream_name)
-
-    async def _stream_and_cache() -> AsyncIterator[bytes]:
-        # Use pid in temp filename to avoid collisions from concurrent requests
-        tmp = cache.blob_path(digest).with_suffix(f".{os.getpid()}.tmp")
-        total = 0
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream(
-                    "GET",
-                    upstream_url,
-                    timeout=httpx.Timeout(30.0, read=1800.0),
-                ) as resp:
-                    resp.raise_for_status()
-                    with open(tmp, "wb") as f:
-                        async for chunk in resp.aiter_bytes(CHUNK_SIZE):
-                            f.write(chunk)
-                            total += len(chunk)
-                            yield chunk
-            final = cache.blob_path(digest)
-            tmp.rename(final)
-            logger.info(
-                "Stream-through complete, cached: %s (%s)",
-                digest[:24],
-                _human_bytes(total),
-            )
-        except GeneratorExit:
-            tmp.unlink(missing_ok=True)
-            logger.warning(
-                "Stream-through client disconnected: %s after %s",
-                digest[:24],
-                _human_bytes(total),
-            )
-        except Exception as exc:
-            tmp.unlink(missing_ok=True)
-            logger.error(
-                "Stream-through failed: %s after %s — %s",
-                digest[:24],
-                _human_bytes(total),
-                exc,
-            )
-            raise
-
-    return StreamingResponse(
-        _stream_and_cache(),
+    path = cache.blob_path(digest)
+    size = cache.blob_size(digest)
+    logger.info("Serving cached blob: %s (%s)", digest[:24], _human_bytes(size))
+    return FileResponse(
+        path=str(path),
         media_type="application/octet-stream",
         headers={"Docker-Content-Digest": digest},
     )
+
+
+async def _delayed_background_cache(
+    cache: BlobCache, name: str, digest: str, delay: float
+) -> None:
+    """Wait, then download a blob from upstream to populate the cache."""
+    await asyncio.sleep(delay)
+    if cache.has_blob(digest):
+        return
+
+    url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
+    tmp = cache.temp_blob_path(digest)
+    total_bytes = 0
+    logger.info("Background cache download starting: %s", digest[:24])
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with client.stream(
+                "GET", url, timeout=httpx.Timeout(30.0, read=1800.0)
+            ) as resp:
+                resp.raise_for_status()
+                with open(tmp, "wb") as f:
+                    async for chunk in resp.aiter_bytes(CHUNK_SIZE):
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+        cache.commit_blob(digest)
+        logger.info(
+            "Background cache complete: %s (%s)",
+            digest[:24],
+            _human_bytes(total_bytes),
+        )
+    except Exception as exc:
+        cache.remove_temp_blob(digest)
+        logger.error(
+            "Background cache FAILED: %s after %s — %s",
+            digest[:24],
+            _human_bytes(total_bytes),
+            exc,
+        )
 
 
 def _human_bytes(n: int) -> str:
