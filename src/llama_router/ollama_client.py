@@ -94,8 +94,13 @@ class OllamaClient:
         self,
         model: str,
         cache_registry_url: str | None = None,
+        progress_callback: Any | None = None,
     ) -> dict:
         """Pull a model, streaming NDJSON progress. Returns the final status.
+
+        *progress_callback*, if provided, is called with a dict containing
+        ``status``, and optionally ``percent``, ``completed``, ``total`` for
+        each meaningful progress update.
 
         Raises ``RuntimeError`` if Ollama reports an error in the stream.
         """
@@ -120,6 +125,7 @@ class OllamaClient:
 
         last_status: dict = {}
         last_logged_pct: int = -1
+        last_cb_pct: int = -1
 
         async with self._http.stream(
             "POST",
@@ -164,8 +170,20 @@ class OllamaClient:
                                 _human_bytes(total),
                             )
                             last_logged_pct = pct
+                        if progress_callback and pct >= last_cb_pct + 2:
+                            progress_callback(
+                                {
+                                    "status": status_text,
+                                    "percent": pct,
+                                    "completed": completed,
+                                    "total": total,
+                                }
+                            )
+                            last_cb_pct = pct
                     elif status_text:
                         logger.info("Pull %s: %s", model, status_text)
+                        if progress_callback:
+                            progress_callback({"status": status_text})
 
         final_status = last_status.get("status", "unknown")
         logger.info("Pull %s completed: %s", model, final_status)

@@ -380,6 +380,7 @@ async def api_pull_model(request: Request):
         "status": "pulling",
         "completed": [],
         "failed": [],
+        "progress": "",
     }
 
     cache_url = _cache_registry_url()
@@ -387,17 +388,33 @@ async def api_pull_model(request: Request):
 
     async def _run_pull():
         pull_entry = _active_pulls[pull_id]
-        for pid in provider_ids:
+        for idx, pid in enumerate(provider_ids):
             provider = await db.get_provider(pid)
             pname = provider.name if provider else str(pid)
+            prefix = f"[{idx + 1}/{len(provider_ids)}] {pname}"
+            pull_entry["progress"] = f"{prefix}: starting…"
             logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
             start = time.monotonic()
+
+            def _on_progress(info: dict, _pfx: str = prefix) -> None:
+                text = info.get("status", "")
+                pct = info.get("percent")
+                if pct is not None:
+                    pull_entry["progress"] = f"{_pfx}: {text} {pct}%"
+                else:
+                    pull_entry["progress"] = f"{_pfx}: {text}"
+
             try:
                 client = pm.get_ollama_client(pid)
-                await client.pull_model(model, cache_registry_url=cache_url)
+                await client.pull_model(
+                    model,
+                    cache_registry_url=cache_url,
+                    progress_callback=_on_progress,
+                )
                 await pm.refresh_provider(pid)
                 pull_entry["completed"].append(pid)
                 duration = (time.monotonic() - start) * 1000
+                pull_entry["progress"] = f"{prefix}: done ({duration / 1000:.0f}s)"
                 logger.info(
                     "Pull %s succeeded on provider %s in %.1fs",
                     model,
@@ -425,6 +442,7 @@ async def api_pull_model(request: Request):
                     exc,
                 )
                 pull_entry["failed"].append(pid)
+                pull_entry["progress"] = f"{prefix}: FAILED"
                 await db.save_request_log(
                     RequestLog(
                         provider_id=pid,
@@ -455,6 +473,7 @@ async def api_active_pulls():
                 "total": len(p["provider_ids"]),
                 "completed": len(p["completed"]),
                 "failed": len(p["failed"]),
+                "progress": p.get("progress", ""),
             }
             for pid, p in _active_pulls.items()
         }
@@ -475,6 +494,7 @@ async def api_pull_status(pull_id: str):
             "total": len(entry["provider_ids"]),
             "completed": len(entry["completed"]),
             "failed": len(entry["failed"]),
+            "progress": entry.get("progress", ""),
         }
     )
 
@@ -491,6 +511,7 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
         "status": "pulling",
         "completed": [],
         "failed": [],
+        "progress": "",
     }
     cache_url = _cache_registry_url()
 
@@ -498,16 +519,31 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
         pull_entry = _active_pulls[pull_id]
         provider = await db.get_provider(provider_id)
         pname = provider.name if provider else str(provider_id)
+        pull_entry["progress"] = f"{pname}: starting…"
         logger.info(
             "Pull %s starting on provider %s (id=%d)", model, pname, provider_id
         )
         start = time.monotonic()
+
+        def _on_progress(info: dict) -> None:
+            text = info.get("status", "")
+            pct = info.get("percent")
+            if pct is not None:
+                pull_entry["progress"] = f"{pname}: {text} {pct}%"
+            else:
+                pull_entry["progress"] = f"{pname}: {text}"
+
         try:
             client = pm.get_ollama_client(provider_id)
-            await client.pull_model(model, cache_registry_url=cache_url)
+            await client.pull_model(
+                model,
+                cache_registry_url=cache_url,
+                progress_callback=_on_progress,
+            )
             await pm.refresh_provider(provider_id)
             pull_entry["completed"].append(provider_id)
             duration = (time.monotonic() - start) * 1000
+            pull_entry["progress"] = f"{pname}: done ({duration / 1000:.0f}s)"
             logger.info(
                 "Pull %s succeeded on provider %s in %.1fs",
                 model,
@@ -535,6 +571,7 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
                 exc,
             )
             pull_entry["failed"].append(provider_id)
+            pull_entry["progress"] = f"{pname}: FAILED"
             await db.save_request_log(
                 RequestLog(
                     provider_id=provider_id,
@@ -571,22 +608,39 @@ async def pull_model_all_legacy(model: str = Form(...)):
         "status": "pulling",
         "completed": [],
         "failed": [],
+        "progress": "",
     }
     cache_url = _cache_registry_url()
 
     async def _run():
         pull_entry = _active_pulls[pull_id]
-        for pid in provider_ids:
+        for idx, pid in enumerate(provider_ids):
             provider = await db.get_provider(pid)
             pname = provider.name if provider else str(pid)
+            prefix = f"[{idx + 1}/{len(provider_ids)}] {pname}"
+            pull_entry["progress"] = f"{prefix}: starting…"
             logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
             start = time.monotonic()
+
+            def _on_progress(info: dict, _pfx: str = prefix) -> None:
+                text = info.get("status", "")
+                pct = info.get("percent")
+                if pct is not None:
+                    pull_entry["progress"] = f"{_pfx}: {text} {pct}%"
+                else:
+                    pull_entry["progress"] = f"{_pfx}: {text}"
+
             try:
                 client = pm.get_ollama_client(pid)
-                await client.pull_model(model, cache_registry_url=cache_url)
+                await client.pull_model(
+                    model,
+                    cache_registry_url=cache_url,
+                    progress_callback=_on_progress,
+                )
                 await pm.refresh_provider(pid)
                 pull_entry["completed"].append(pid)
                 duration = (time.monotonic() - start) * 1000
+                pull_entry["progress"] = f"{prefix}: done ({duration / 1000:.0f}s)"
                 logger.info(
                     "Pull %s succeeded on provider %s in %.1fs",
                     model,
@@ -614,6 +668,7 @@ async def pull_model_all_legacy(model: str = Form(...)):
                     exc,
                 )
                 pull_entry["failed"].append(pid)
+                pull_entry["progress"] = f"{prefix}: FAILED"
                 await db.save_request_log(
                     RequestLog(
                         provider_id=pid,

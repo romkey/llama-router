@@ -864,7 +864,7 @@ document.addEventListener('click', function(e) {
     .then(function(r) { return r.json(); })
     .then(function(data) {
         _trackedPulls[data.pull_id] = {model: model, btn: btn};
-        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0);
+        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0, '');
         pollPull(data.pull_id);
     })
     .catch(function() {
@@ -873,7 +873,7 @@ document.addEventListener('click', function(e) {
     });
 });
 
-function showPullBanner(pullId, model, status, completed, total, failed) {
+function showPullBanner(pullId, model, status, completed, total, failed, progress) {
     var area = document.getElementById('pull-status-area');
     if (!area) return;
     var el = document.getElementById('pull-banner-' + pullId);
@@ -885,16 +885,17 @@ function showPullBanner(pullId, model, status, completed, total, failed) {
     }
     if (status === 'pulling') {
         el.className = 'alert alert-info d-flex align-items-center mb-2';
+        var detail = progress || (total > 0 ? completed + '/' + total + ' providers' : '');
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
             '<span>Pulling <strong>' + model + '</strong>' +
-            (total > 0 ? ' \u2014 ' + completed + '/' + total + ' providers' : '') +
+            (detail ? ' &mdash; ' + detail : '') +
             '</span>';
     } else {
         var ok = failed === 0;
         el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
         el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
             '<span><strong>' + model + '</strong> pull complete' +
-            (total > 0 ? ' \u2014 ' + completed + '/' + total + ' succeeded' : '') +
+            (total > 0 ? ' &mdash; ' + completed + '/' + total + ' succeeded' : '') +
             (failed > 0 ? ', ' + failed + ' failed' : '') +
             '</span>';
         setTimeout(function() { el.remove(); }, 10000);
@@ -905,7 +906,7 @@ function pollPull(pullId) {
     fetch('/api/pulls/' + pullId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            showPullBanner(pullId, data.model, data.status, data.completed, data.total, data.failed);
+            showPullBanner(pullId, data.model, data.status, data.completed, data.total, data.failed, data.progress || '');
             if (data.status === 'pulling') {
                 setTimeout(function() { pollPull(pullId); }, 2000);
             } else {
