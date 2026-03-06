@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +14,10 @@ from ..models import ProviderType
 from . import deps
 
 from .. import __version__
+
+logger = logging.getLogger(__name__)
+
+_active_pulls: dict[str, dict] = {}
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
@@ -103,6 +109,18 @@ async def api_status():
             }
         )
 
+    active_pulls = {
+        pid: {
+            "model": p["model"],
+            "status": p["status"],
+            "total": len(p["provider_ids"]),
+            "completed": len(p["completed"]),
+            "failed": len(p["failed"]),
+        }
+        for pid, p in _active_pulls.items()
+        if p["status"] == "pulling"
+    }
+
     return JSONResponse(
         {
             "provider_count": len(infos),
@@ -113,6 +131,7 @@ async def api_status():
             "model_count": len(all_models),
             "log_total": log_total,
             "providers": providers_data,
+            "active_pulls": active_pulls,
         }
     )
 
@@ -273,36 +292,154 @@ async def toggle_preferred(provider_id: int, address_id: int):
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
-@router.post("/providers/{provider_id}/pull")
-async def pull_model(provider_id: int, model: str = Form(...)):
+@router.post("/api/pull")
+async def api_pull_model(request: Request):
+    """Start a pull as a background task and return immediately."""
+    body = await request.json()
+    model = body.get("model")
+    provider_id = body.get("provider_id")
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
     pm = deps.get_pm()
-    client = pm.get_client(provider_id)
-    try:
-        async for _ in client.pull_stream(model):
-            pass
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    await pm.refresh_provider(provider_id)
+    pull_id = str(uuid.uuid4())
+
+    if provider_id is not None:
+        provider_ids = [int(provider_id)]
+    else:
+        infos = await pm.list_provider_infos()
+        provider_ids = [
+            i.provider.id
+            for i in infos
+            if i.provider.supports_ollama and i.provider.id is not None
+        ]
+
+    _active_pulls[pull_id] = {
+        "model": model,
+        "provider_ids": provider_ids,
+        "status": "pulling",
+        "completed": [],
+        "failed": [],
+    }
+
+    async def _run_pull():
+        entry = _active_pulls[pull_id]
+        for pid in provider_ids:
+            try:
+                client = pm.get_ollama_client(pid)
+                async for _ in client.pull_stream(model):
+                    pass
+                await pm.refresh_provider(pid)
+                entry["completed"].append(pid)
+            except Exception as exc:
+                logger.warning("Pull %s on provider %d failed: %s", model, pid, exc)
+                entry["failed"].append(pid)
+        entry["status"] = "done"
+
+    asyncio.create_task(_run_pull())
+
+    return JSONResponse({"pull_id": pull_id, "status": "pulling"})
+
+
+@router.get("/api/pulls")
+async def api_active_pulls():
+    """Return all active/recent pull operations."""
+    return JSONResponse(
+        {
+            pid: {
+                "model": p["model"],
+                "status": p["status"],
+                "total": len(p["provider_ids"]),
+                "completed": len(p["completed"]),
+                "failed": len(p["failed"]),
+            }
+            for pid, p in _active_pulls.items()
+        }
+    )
+
+
+@router.get("/api/pulls/{pull_id}")
+async def api_pull_status(pull_id: str):
+    """Check status of a specific pull."""
+    entry = _active_pulls.get(pull_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Pull not found")
+    return JSONResponse(
+        {
+            "pull_id": pull_id,
+            "model": entry["model"],
+            "status": entry["status"],
+            "total": len(entry["provider_ids"]),
+            "completed": len(entry["completed"]),
+            "failed": len(entry["failed"]),
+        }
+    )
+
+
+@router.post("/providers/{provider_id}/pull")
+async def pull_model_legacy(provider_id: int, model: str = Form(...)):
+    """Legacy form-based pull — redirects immediately, pull runs in background."""
+    pm = deps.get_pm()
+    pull_id = str(uuid.uuid4())
+    _active_pulls[pull_id] = {
+        "model": model,
+        "provider_ids": [provider_id],
+        "status": "pulling",
+        "completed": [],
+        "failed": [],
+    }
+
+    async def _run():
+        entry = _active_pulls[pull_id]
+        try:
+            client = pm.get_ollama_client(provider_id)
+            async for _ in client.pull_stream(model):
+                pass
+            await pm.refresh_provider(provider_id)
+            entry["completed"].append(provider_id)
+        except Exception as exc:
+            logger.warning("Pull %s on provider %d failed: %s", model, provider_id, exc)
+            entry["failed"].append(provider_id)
+        entry["status"] = "done"
+
+    asyncio.create_task(_run())
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
 @router.post("/models/pull-all")
-async def pull_model_all_providers(model: str = Form(...)):
+async def pull_model_all_legacy(model: str = Form(...)):
+    """Legacy form-based pull-all — redirects immediately, pull runs in background."""
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
-    ollama_infos = [i for i in infos if i.provider.supports_ollama]
+    provider_ids = [
+        i.provider.id
+        for i in infos
+        if i.provider.supports_ollama and i.provider.id is not None
+    ]
+    pull_id = str(uuid.uuid4())
+    _active_pulls[pull_id] = {
+        "model": model,
+        "provider_ids": provider_ids,
+        "status": "pulling",
+        "completed": [],
+        "failed": [],
+    }
 
-    async def _pull_one(info):
-        assert info.provider.id is not None
-        client = pm.get_ollama_client(info.provider.id)
-        try:
-            async for _ in client.pull_stream(model):
-                pass
-            await pm.refresh_provider(info.provider.id)
-        except Exception:
-            pass
+    async def _run():
+        entry = _active_pulls[pull_id]
+        for pid in provider_ids:
+            try:
+                client = pm.get_ollama_client(pid)
+                async for _ in client.pull_stream(model):
+                    pass
+                await pm.refresh_provider(pid)
+                entry["completed"].append(pid)
+            except Exception as exc:
+                logger.warning("Pull %s on provider %d failed: %s", model, pid, exc)
+                entry["failed"].append(pid)
+        entry["status"] = "done"
 
-    await asyncio.gather(*[_pull_one(i) for i in ollama_infos])
+    asyncio.create_task(_run())
     return RedirectResponse(url="/#models-pane", status_code=303)
 
 

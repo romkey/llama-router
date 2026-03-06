@@ -163,23 +163,21 @@
                 <h5 class="mb-0">Pull Model</h5>
             </div>
             <div class="card-body">
-                <form method="post" action="/providers/{{ info.provider.id }}/pull" class="d-flex gap-2">
-                    <input type="text" class="form-control" name="model" placeholder="e.g. llama3:8b" required>
-                    <button class="btn btn-primary text-nowrap">
+                <div id="pull-status-area"></div>
+                <div class="d-flex gap-2" id="pull-form-inline">
+                    <input type="text" class="form-control" id="pull-model-input" placeholder="e.g. llama3:8b">
+                    <button class="btn btn-primary text-nowrap btn-pull-single" data-provider="{{ info.provider.id }}">
                         <i class="bi bi-download me-1"></i>Pull
                     </button>
-                </form>
+                </div>
                 {% if missing_models %}
                 <hr class="my-3">
                 <p class="text-muted small mb-2">Available on other providers:</p>
-                <div class="d-flex flex-wrap gap-2">
+                <div class="d-flex flex-wrap gap-2" id="missing-models-area">
                     {% for m in missing_models %}
-                    <form method="post" action="/providers/{{ info.provider.id }}/pull" class="d-inline">
-                        <input type="hidden" name="model" value="{{ m.name }}">
-                        <button class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-download me-1"></i>{{ m.name }}
-                        </button>
-                    </form>
+                    <button class="btn btn-sm btn-outline-primary btn-pull-single" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}">
+                        <i class="bi bi-download me-1"></i>{{ m.name }}
+                    </button>
                     {% endfor %}
                 </div>
                 {% endif %}
@@ -415,6 +413,81 @@ function openEditAddress(addrId, url, lcppUrl, preferred) {
     if (lcppField) lcppField.value = lcppUrl;
     document.getElementById('edit-addr-preferred').checked = preferred;
     new bootstrap.Modal(document.getElementById('editAddressModal')).show();
+}
+
+var _trackedPulls = {};
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.btn-pull-single');
+    if (!btn) return;
+    e.preventDefault();
+    var providerId = btn.dataset.provider;
+    var model = btn.dataset.model || document.getElementById('pull-model-input').value.trim();
+    if (!model) return;
+    btn.disabled = true;
+    var origHtml = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Pulling\u2026';
+    fetch('/api/pull', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: model, provider_id: parseInt(providerId)})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        _trackedPulls[data.pull_id] = {model: model, btn: btn, origHtml: origHtml};
+        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0);
+        pollPull(data.pull_id);
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+    });
+});
+
+function showPullBanner(pullId, model, status, completed, total, failed) {
+    var area = document.getElementById('pull-status-area');
+    if (!area) return;
+    var el = document.getElementById('pull-banner-' + pullId);
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'pull-banner-' + pullId;
+        el.className = 'alert alert-info d-flex align-items-center mb-2';
+        area.prepend(el);
+    }
+    if (status === 'pulling') {
+        el.className = 'alert alert-info d-flex align-items-center mb-2';
+        el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
+            '<span>Pulling <strong>' + model + '</strong>\u2026</span>';
+    } else {
+        var ok = failed === 0;
+        el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
+        el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
+            '<span><strong>' + model + '</strong> pull complete' +
+            (failed > 0 ? ' (' + failed + ' failed)' : '') +
+            '</span>';
+        setTimeout(function() { el.remove(); }, 8000);
+    }
+}
+
+function pollPull(pullId) {
+    fetch('/api/pulls/' + pullId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            showPullBanner(pullId, data.model, data.status, data.completed, data.total, data.failed);
+            if (data.status === 'pulling') {
+                setTimeout(function() { pollPull(pullId); }, 2000);
+            } else {
+                var tracked = _trackedPulls[pullId];
+                if (tracked && tracked.btn) {
+                    tracked.btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Done';
+                    setTimeout(function() { location.reload(); }, 2000);
+                }
+                delete _trackedPulls[pullId];
+            }
+        })
+        .catch(function() {
+            setTimeout(function() { pollPull(pullId); }, 3000);
+        });
 }
 </script>
 {% endblock %}
