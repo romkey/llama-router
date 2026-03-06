@@ -618,12 +618,58 @@
                         <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Cached Models</h5>
                     </div>
                     <div class="card-body p-0" id="cache-models-list">
-                        {% if cache_stats.cached_models %}
-                        <ul class="list-group list-group-flush">
-                            {% for m in cache_stats.cached_models %}
-                            <li class="list-group-item"><code>{{ m }}</code></li>
+                        {% if cache_stats.model_details %}
+                        <div class="accordion accordion-flush" id="cache-model-accordion">
+                            {% for md in cache_stats.model_details %}
+                            {% set mid = "cm-" ~ loop.index %}
+                            {% set blob_cached = md.blobs | selectattr("cached") | list | length %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button collapsed py-2 px-3" type="button" data-bs-toggle="collapse" data-bs-target="#{{ mid }}">
+                                        <span class="me-2">
+                                            {% if md.fully_cached %}
+                                            <i class="bi bi-check-circle-fill text-success"></i>
+                                            {% else %}
+                                            <i class="bi bi-exclamation-circle-fill text-warning"></i>
+                                            {% endif %}
+                                        </span>
+                                        <code>{{ md.name }}</code>
+                                        <span class="text-muted small ms-2">({{ blob_cached }}/{{ md.blobs | length }} blobs)</span>
+                                    </button>
+                                </h2>
+                                <div id="{{ mid }}" class="accordion-collapse collapse" data-bs-parent="#cache-model-accordion">
+                                    <div class="accordion-body p-0">
+                                        <table class="table table-sm mb-0 small">
+                                            <thead>
+                                                <tr>
+                                                    <th class="ps-3">Type</th>
+                                                    <th>Digest</th>
+                                                    <th>Size</th>
+                                                    <th class="text-center">Cached</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for b in md.blobs %}
+                                                <tr>
+                                                    <td class="ps-3 text-muted">{{ b.label }}</td>
+                                                    <td><code class="text-muted">{{ b.digest[:19] }}…</code></td>
+                                                    <td>{{ "%.1f GB" | format(b.size / 1073741824) if b.size >= 1073741824 else ("%.1f MB" | format(b.size / 1048576) if b.size >= 1048576 else ("%.0f KB" | format(b.size / 1024))) }}</td>
+                                                    <td class="text-center">
+                                                        {% if b.cached %}
+                                                        <i class="bi bi-check-circle-fill text-success"></i>
+                                                        {% else %}
+                                                        <i class="bi bi-x-circle text-danger"></i>
+                                                        {% endif %}
+                                                    </td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
                             {% endfor %}
-                        </ul>
+                        </div>
                         {% else %}
                         <div class="text-muted p-3">No models cached yet.</div>
                         {% endif %}
@@ -840,12 +886,43 @@ function updateDashboard(data) {
         var maniHM = document.getElementById('cache-manifest-hits-misses');
         if (maniHM) maniHM.innerHTML = '<span class="text-success">' + data.cache.manifest_hits + '</span> / <span class="text-danger">' + data.cache.manifest_misses + '</span>';
         var cmList = document.getElementById('cache-models-list');
-        if (cmList && data.cache.cached_models) {
-            if (data.cache.cached_models.length > 0) {
-                cmList.innerHTML = '<ul class="list-group list-group-flush">' +
-                    data.cache.cached_models.map(function(m) {
-                        return '<li class="list-group-item"><code>' + m + '</code></li>';
-                    }).join('') + '</ul>';
+        if (cmList && data.cache.model_details) {
+            if (data.cache.model_details.length > 0) {
+                var html = '<div class="accordion accordion-flush" id="cache-model-accordion">';
+                data.cache.model_details.forEach(function(md, idx) {
+                    var mid = 'cm-d-' + idx;
+                    var blobCached = md.blobs.filter(function(b) { return b.cached; }).length;
+                    var icon = md.fully_cached
+                        ? '<i class="bi bi-check-circle-fill text-success"></i>'
+                        : '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+                    html += '<div class="accordion-item">' +
+                        '<h2 class="accordion-header">' +
+                        '<button class="accordion-button collapsed py-2 px-3" type="button" data-bs-toggle="collapse" data-bs-target="#' + mid + '">' +
+                        '<span class="me-2">' + icon + '</span>' +
+                        '<code>' + md.name + '</code>' +
+                        '<span class="text-muted small ms-2">(' + blobCached + '/' + md.blobs.length + ' blobs)</span>' +
+                        '</button></h2>' +
+                        '<div id="' + mid + '" class="accordion-collapse collapse" data-bs-parent="#cache-model-accordion">' +
+                        '<div class="accordion-body p-0">' +
+                        '<table class="table table-sm mb-0 small"><thead><tr>' +
+                        '<th class="ps-3">Type</th><th>Digest</th><th>Size</th><th class="text-center">Cached</th>' +
+                        '</tr></thead><tbody>';
+                    md.blobs.forEach(function(b) {
+                        var sizeStr = b.size >= 1073741824 ? (b.size / 1073741824).toFixed(1) + ' GB'
+                            : b.size >= 1048576 ? (b.size / 1048576).toFixed(1) + ' MB'
+                            : Math.round(b.size / 1024) + ' KB';
+                        var cachedIcon = b.cached
+                            ? '<i class="bi bi-check-circle-fill text-success"></i>'
+                            : '<i class="bi bi-x-circle text-danger"></i>';
+                        html += '<tr><td class="ps-3 text-muted">' + b.label + '</td>' +
+                            '<td><code class="text-muted">' + b.digest.substring(0, 19) + '\u2026</code></td>' +
+                            '<td>' + sizeStr + '</td>' +
+                            '<td class="text-center">' + cachedIcon + '</td></tr>';
+                    });
+                    html += '</tbody></table></div></div></div>';
+                });
+                html += '</div>';
+                cmList.innerHTML = html;
             } else {
                 cmList.innerHTML = '<div class="text-muted p-3">No models cached yet.</div>';
             }

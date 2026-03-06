@@ -61,6 +61,7 @@ _cache: BlobCache | None = None
 _upstream_client: httpx.AsyncClient | None = None
 _download_semaphore = asyncio.Semaphore(MAX_BACKGROUND_DOWNLOADS)
 _blob_sizes: dict[str, int] = {}
+_active_downloads: set[str] = set()
 
 
 def init_cache(cache: BlobCache) -> None:
@@ -298,7 +299,8 @@ async def get_blob(name: str, digest: str, request: Request):
         headers["Location"] = cdn_url
         if "content-length" in resp.headers:
             headers["Content-Length"] = resp.headers["content-length"]
-        asyncio.create_task(_background_cache_blob(cache, name, digest))
+        if digest not in _active_downloads:
+            asyncio.create_task(_background_cache_blob(cache, name, digest))
         return Response(status_code=307, headers=headers)
 
     if resp.status_code == 200:
@@ -340,10 +342,17 @@ async def serve_cached_blob(digest: str):
 
 async def _background_cache_blob(cache: BlobCache, name: str, digest: str) -> None:
     """Download a blob from upstream to populate the cache (bounded concurrency)."""
+    if digest in _active_downloads:
+        logger.info(
+            "Skipping background download, already in progress: %s", digest[:24]
+        )
+        return
+
     async with _download_semaphore:
-        if cache.has_blob(digest):
+        if cache.has_blob(digest) or digest in _active_downloads:
             return
 
+        _active_downloads.add(digest)
         url = f"{UPSTREAM}/v2/{name}/blobs/{digest}"
         tmp = cache.temp_blob_path(digest)
         total_bytes = 0
@@ -375,6 +384,8 @@ async def _background_cache_blob(cache: BlobCache, name: str, digest: str) -> No
                 _human_bytes(total_bytes),
                 exc,
             )
+        finally:
+            _active_downloads.discard(digest)
 
 
 async def precache_model(
@@ -430,6 +441,18 @@ async def precache_model(
                 )
             continue
 
+        if digest in _active_downloads:
+            if progress_callback:
+                progress_callback(
+                    f"blob {i}/{total} download already in progress, waiting…"
+                )
+            while digest in _active_downloads:
+                await asyncio.sleep(2)
+            if cache.has_blob(digest):
+                cached += 1
+                continue
+
+        _active_downloads.add(digest)
         if progress_callback:
             progress_callback(f"downloading blob {i}/{total} ({_human_bytes(size)})")
 
@@ -454,15 +477,24 @@ async def precache_model(
                                 f"downloading blob {i}/{total} {pct}% ({_human_bytes(total_bytes)}/{_human_bytes(size)})"
                             )
             cache.commit_blob(digest)
+            if not cache.has_blob(digest):
+                raise RuntimeError("Blob commit failed — file not found after rename")
+            logger.info(
+                "Precache blob complete: %s (%s)",
+                digest[:24],
+                _human_bytes(total_bytes),
+            )
             cached += 1
         except Exception as exc:
             cache.remove_temp_blob(digest)
             raise RuntimeError(f"Blob download failed ({digest[:24]}): {exc}") from exc
+        finally:
+            _active_downloads.discard(digest)
 
     if progress_callback:
         progress_callback(f"cached {model} ({total} blobs)")
 
-    logger.info("Pre-cached model %s: %d blobs", model, total)
+    logger.info("Pre-cached model %s: %d/%d blobs downloaded", model, cached, total)
 
 
 def _human_bytes(n: int) -> str:

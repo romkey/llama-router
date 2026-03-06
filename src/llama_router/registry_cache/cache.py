@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import time
@@ -82,26 +83,115 @@ class BlobCache:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
 
+    def _manifest_blob_digests(self, manifest_bytes: bytes) -> list[str]:
+        """Extract all blob digests from a manifest."""
+        try:
+            manifest = json.loads(manifest_bytes)
+        except Exception:
+            return []
+        digests = []
+        config = manifest.get("config", {})
+        if config.get("digest"):
+            digests.append(config["digest"])
+        for layer in manifest.get("layers", []):
+            if layer.get("digest"):
+                digests.append(layer["digest"])
+        return digests
+
+    def is_model_fully_cached(self, name: str, reference: str) -> bool:
+        """Check that a model's manifest AND all its blobs are present."""
+        manifest_data = self.get_manifest(name, reference)
+        if manifest_data is None:
+            return False
+        for digest in self._manifest_blob_digests(manifest_data):
+            if not self.has_blob(digest):
+                return False
+        return True
+
     def cached_models(self) -> set[str]:
-        """Return set of cached model names in Ollama format (e.g. 'llama3.2:latest')."""
+        """Return model names where the manifest AND all blobs are cached."""
         result: set[str] = set()
         if not self._manifests_dir.exists():
             return result
         for d in self._manifests_dir.iterdir():
             if not d.is_dir():
                 continue
-            name = d.name
-            if name.startswith("library_"):
-                name = name[len("library_") :]
+            oci_name = d.name.replace("_", "/", 1)
+            display_name = d.name
+            if display_name.startswith("library_"):
+                display_name = display_name[len("library_") :]
             else:
-                name = name.replace("_", "/", 1)
+                display_name = display_name.replace("_", "/", 1)
             for f in d.iterdir():
-                if f.is_file():
-                    tag = f.name
-                    age = time.time() - f.stat().st_mtime
-                    if age <= self._manifest_ttl_seconds:
-                        result.add(f"{name}:{tag}")
+                if not f.is_file():
+                    continue
+                tag = f.name
+                age = time.time() - f.stat().st_mtime
+                if age > self._manifest_ttl_seconds:
+                    continue
+                if self.is_model_fully_cached(oci_name, tag):
+                    result.add(f"{display_name}:{tag}")
         return result
+
+    def cached_model_details(self) -> list[dict]:
+        """Return detailed info for each model with a cached manifest.
+
+        Each entry: {name, fully_cached, blobs: [{digest, size, cached}, ...]}
+        """
+        results: list[dict] = []
+        if not self._manifests_dir.exists():
+            return results
+        for d in sorted(self._manifests_dir.iterdir(), key=lambda p: p.name):
+            if not d.is_dir():
+                continue
+            display_name = d.name
+            if display_name.startswith("library_"):
+                display_name = display_name[len("library_") :]
+            else:
+                display_name = display_name.replace("_", "/", 1)
+            for f in sorted(d.iterdir(), key=lambda p: p.name):
+                if not f.is_file():
+                    continue
+                tag = f.name
+                age = time.time() - f.stat().st_mtime
+                if age > self._manifest_ttl_seconds:
+                    continue
+                manifest_data = f.read_bytes()
+                try:
+                    manifest = json.loads(manifest_data)
+                except Exception:
+                    continue
+                blobs: list[dict] = []
+                all_cached = True
+                config = manifest.get("config", {})
+                entries = []
+                if config.get("digest"):
+                    entries.append((config["digest"], config.get("size", 0), "config"))
+                for layer in manifest.get("layers", []):
+                    if layer.get("digest"):
+                        media = layer.get("mediaType", "")
+                        label = media.rsplit(".", 1)[-1] if "." in media else "layer"
+                        entries.append((layer["digest"], layer.get("size", 0), label))
+                for digest, size, label in entries:
+                    cached = self.has_blob(digest)
+                    if not cached:
+                        all_cached = False
+                    blobs.append(
+                        {
+                            "digest": digest,
+                            "size": size,
+                            "cached": cached,
+                            "label": label,
+                        }
+                    )
+                results.append(
+                    {
+                        "name": f"{display_name}:{tag}",
+                        "fully_cached": all_cached,
+                        "blobs": blobs,
+                    }
+                )
+        return results
 
     # --- Stats ---
 
@@ -128,6 +218,7 @@ class BlobCache:
             "manifest_hits": self.manifest_hits,
             "manifest_misses": self.manifest_misses,
             "cached_models": sorted(self.cached_models()),
+            "model_details": self.cached_model_details(),
         }
 
     def clear(self) -> None:
