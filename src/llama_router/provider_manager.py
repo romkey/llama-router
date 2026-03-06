@@ -37,6 +37,10 @@ class ProviderManager:
         for p in providers:
             assert p.id is not None
             await self._rebuild_clients(p)
+            try:
+                await self._discover_provider(p)
+            except Exception:
+                logger.exception("Initial discovery failed for provider %s", p.name)
         self._health_task = asyncio.create_task(self._health_check_loop())
 
     async def stop(self) -> None:
@@ -379,7 +383,15 @@ class ProviderManager:
         request to the backend we must use the raw name the backend recognises.
         """
         raw_map = self._model_raw_names.get(provider_id, {})
-        return raw_map.get(clean_name, clean_name)
+        raw_name = raw_map.get(clean_name, clean_name)
+        if raw_name != clean_name:
+            logger.debug(
+                "Resolved model %r -> %r for provider %d",
+                clean_name,
+                raw_name,
+                provider_id,
+            )
+        return raw_name
 
     async def _discover_provider(self, provider: Provider) -> None:
         assert provider.id is not None
@@ -422,9 +434,19 @@ class ProviderManager:
 
         self._model_raw_names[provider.id] = raw_names
         await self._db.set_provider_models(provider.id, all_models)
-        logger.info(
-            "Discovered %d models on provider %s", len(all_models), provider.name
-        )
+        if raw_names:
+            logger.info(
+                "Discovered %d models on provider %s (%d with cache prefix)",
+                len(all_models),
+                provider.name,
+                len(raw_names),
+            )
+        else:
+            logger.info(
+                "Discovered %d models on provider %s",
+                len(all_models),
+                provider.name,
+            )
 
     async def _health_check_loop(self) -> None:
         while True:
@@ -452,6 +474,8 @@ class ProviderManager:
                 if p.status == ProviderStatus.OFFLINE:
                     logger.info("Provider %s is back online, re-discovering", p.name)
                     await self._rebuild_clients(p)
+                    await self._discover_provider(p)
+                elif p.id not in self._model_raw_names:
                     await self._discover_provider(p)
                 if self._active_requests.get(p.id, 0) > 0:
                     await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
