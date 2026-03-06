@@ -142,12 +142,10 @@
                                     {% endif %}
                                 </td>
                                 <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
-                                <td>
-                                    <form method="post" action="/providers/{{ info.provider.id }}/benchmark/{{ m.name }}" class="d-inline">
-                                        <button class="btn btn-sm btn-outline-info" title="Benchmark">
-                                            <i class="bi bi-speedometer"></i>
-                                        </button>
-                                    </form>
+                                <td class="text-nowrap">
+                                    <button class="btn btn-sm btn-outline-info btn-benchmark" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" title="Benchmark">
+                                        <i class="bi bi-speedometer"></i>
+                                    </button>
                                     {% if info.provider.supports_ollama %}
                                     <form method="post" action="/providers/{{ info.provider.id }}/delete-model/{{ m.name }}" class="d-inline">
                                         <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick="return confirm('Delete {{ m.name }} from this provider?')">
@@ -213,6 +211,7 @@
     </div>
 
     <div class="col-lg-5">
+        <div id="benchmark-status-area" class="mb-2"></div>
         <div class="card">
             <div class="card-header">
                 <h5 class="mb-0">Benchmarks</h5>
@@ -450,8 +449,36 @@ function openEditAddress(addrId, url, lcppUrl, preferred) {
 }
 
 var _trackedPulls = {};
+var _trackedBenchmarks = {};
 
 document.addEventListener('click', function(e) {
+    var benchBtn = e.target.closest('.btn-benchmark');
+    if (benchBtn) {
+        e.preventDefault();
+        var providerId = benchBtn.dataset.provider;
+        var model = benchBtn.dataset.model;
+        if (!model) return;
+        benchBtn.disabled = true;
+        var origHtml = benchBtn.innerHTML;
+        benchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        fetch('/api/benchmark', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({model: model, provider_id: parseInt(providerId)})
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _trackedBenchmarks[data.bench_id] = {model: model, btn: benchBtn, origHtml: origHtml};
+            showBenchBanner(data.bench_id, model, 'running', null, null);
+            pollBenchmark(data.bench_id);
+        })
+        .catch(function() {
+            benchBtn.disabled = false;
+            benchBtn.innerHTML = origHtml;
+        });
+        return;
+    }
+
     var btn = e.target.closest('.btn-pull-single');
     if (!btn) return;
     e.preventDefault();
@@ -521,6 +548,65 @@ function pollPull(pullId) {
         })
         .catch(function() {
             setTimeout(function() { pollPull(pullId); }, 3000);
+        });
+}
+
+function showBenchBanner(benchId, model, status, result, error) {
+    var area = document.getElementById('benchmark-status-area');
+    if (!area) return;
+    var el = document.getElementById('bench-banner-' + benchId);
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'bench-banner-' + benchId;
+        el.className = 'alert alert-info d-flex align-items-center';
+        area.prepend(el);
+    }
+    if (status === 'running') {
+        el.className = 'alert alert-info d-flex align-items-center';
+        el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
+            '<span>Benchmarking <strong>' + model + '</strong>\u2026</span>';
+    } else if (status === 'done' && result) {
+        el.className = 'alert alert-success d-flex align-items-center';
+        el.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i>' +
+            '<span><strong>' + model + '</strong> — ' +
+            result.tokens_per_second.toFixed(1) + ' tok/s, ' +
+            result.startup_time_ms.toFixed(0) + ' ms startup' +
+            (result.protocol ? ' (' + result.protocol + ')' : '') +
+            '</span>';
+        setTimeout(function() { el.remove(); }, 10000);
+    } else {
+        el.className = 'alert alert-danger d-flex align-items-center';
+        el.innerHTML = '<i class="bi bi-x-circle-fill me-2"></i>' +
+            '<span><strong>' + model + '</strong> benchmark failed' +
+            (error ? ': ' + error : '') + '</span>';
+        setTimeout(function() { el.remove(); }, 10000);
+    }
+}
+
+function pollBenchmark(benchId) {
+    fetch('/api/benchmarks/' + benchId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            showBenchBanner(benchId, data.model, data.status, data.result, data.error);
+            if (data.status === 'running') {
+                setTimeout(function() { pollBenchmark(benchId); }, 2000);
+            } else {
+                var tracked = _trackedBenchmarks[benchId];
+                if (tracked && tracked.btn) {
+                    if (data.status === 'done') {
+                        tracked.btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                        tracked.btn.className = 'btn btn-sm btn-success';
+                    } else {
+                        tracked.btn.disabled = false;
+                        tracked.btn.innerHTML = tracked.origHtml;
+                    }
+                    setTimeout(function() { location.reload(); }, 3000);
+                }
+                delete _trackedBenchmarks[benchId];
+            }
+        })
+        .catch(function() {
+            setTimeout(function() { pollBenchmark(benchId); }, 3000);
         });
 }
 </script>

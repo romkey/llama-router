@@ -21,6 +21,7 @@ from .. import __version__
 logger = logging.getLogger(__name__)
 
 _active_pulls: dict[str, dict] = {}
+_active_benchmarks: dict[str, dict] = {}
 
 
 def _cache_registry_url() -> str | None:
@@ -197,6 +198,19 @@ async def api_status():
         if p["status"] == "pulling"
     }
 
+    active_benchmarks = {
+        bid: {
+            "provider_id": b["provider_id"],
+            "provider_name": b["provider_name"],
+            "model": b["model"],
+            "status": b["status"],
+            "result": b["result"],
+            "error": b["error"],
+        }
+        for bid, b in _active_benchmarks.items()
+        if b["status"] == "running"
+    }
+
     cache = deps.get_cache()
     cache_stats = cache.stats() if cache else None
     if cache_stats is not None:
@@ -213,6 +227,7 @@ async def api_status():
             "log_total": log_total,
             "providers": providers_data,
             "active_pulls": active_pulls,
+            "active_benchmarks": active_benchmarks,
             "cache": cache_stats,
         }
     )
@@ -326,12 +341,113 @@ async def refresh_provider(provider_id: int):
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
+@router.post("/api/benchmark")
+async def api_start_benchmark(request: Request):
+    """Start a benchmark as a background task and return immediately."""
+    body = await request.json()
+    provider_id = int(body["provider_id"])
+    model_name = body["model"]
+
+    pm = deps.get_pm()
+    db = deps.get_db()
+    provider = await db.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    bench_id = str(uuid.uuid4())
+    _active_benchmarks[bench_id] = {
+        "provider_id": provider_id,
+        "provider_name": provider.name,
+        "model": model_name,
+        "status": "running",
+        "result": None,
+        "error": None,
+    }
+
+    async def _run_benchmark():
+        entry = _active_benchmarks[bench_id]
+        try:
+            result = await pm.benchmark_provider(provider_id, model_name)
+            if result:
+                entry["status"] = "done"
+                entry["result"] = {
+                    "startup_time_ms": result.startup_time_ms,
+                    "tokens_per_second": result.tokens_per_second,
+                    "protocol": result.protocol,
+                }
+            else:
+                entry["status"] = "failed"
+                entry["error"] = "Benchmark returned no result"
+        except Exception as exc:
+            logger.exception(
+                "Benchmark task failed for %s on %d", model_name, provider_id
+            )
+            entry["status"] = "failed"
+            entry["error"] = str(exc)
+
+    asyncio.create_task(_run_benchmark())
+    return JSONResponse({"bench_id": bench_id, "status": "running"})
+
+
+@router.get("/api/benchmarks/{bench_id}")
+async def api_benchmark_status(bench_id: str):
+    entry = _active_benchmarks.get(bench_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+    return JSONResponse(
+        {
+            "bench_id": bench_id,
+            "provider_id": entry["provider_id"],
+            "provider_name": entry["provider_name"],
+            "model": entry["model"],
+            "status": entry["status"],
+            "result": entry["result"],
+            "error": entry["error"],
+        }
+    )
+
+
 @router.post("/providers/{provider_id}/benchmark/{model_name:path}")
 async def benchmark_model(provider_id: int, model_name: str):
+    """Legacy form-based benchmark start — redirects back to provider page."""
     pm = deps.get_pm()
-    result = await pm.benchmark_provider(provider_id, model_name)
-    if not result:
-        raise HTTPException(status_code=500, detail="Benchmark failed")
+    db = deps.get_db()
+    provider = await db.get_provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    bench_id = str(uuid.uuid4())
+    _active_benchmarks[bench_id] = {
+        "provider_id": provider_id,
+        "provider_name": provider.name,
+        "model": model_name,
+        "status": "running",
+        "result": None,
+        "error": None,
+    }
+
+    async def _run_benchmark():
+        entry = _active_benchmarks[bench_id]
+        try:
+            result = await pm.benchmark_provider(provider_id, model_name)
+            if result:
+                entry["status"] = "done"
+                entry["result"] = {
+                    "startup_time_ms": result.startup_time_ms,
+                    "tokens_per_second": result.tokens_per_second,
+                    "protocol": result.protocol,
+                }
+            else:
+                entry["status"] = "failed"
+                entry["error"] = "Benchmark returned no result"
+        except Exception as exc:
+            logger.exception(
+                "Benchmark task failed for %s on %d", model_name, provider_id
+            )
+            entry["status"] = "failed"
+            entry["error"] = str(exc)
+
+    asyncio.create_task(_run_benchmark())
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
