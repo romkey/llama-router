@@ -136,7 +136,10 @@
                             {% if info.models %}
                             <div class="mt-2">
                                 {% for m in info.models[:5] %}
-                                <span class="badge bg-body-secondary text-body me-1 mb-1">{{ m.name }}</span>
+                                {% set m_too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
+                                <span class="badge {{ 'bg-warning text-dark' if m_too_large else 'bg-body-secondary text-body' }} me-1 mb-1" {% if m_too_large %}title="Exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% endif %}>
+                                    {{ m.name }}{% if m_too_large %} <i class="bi bi-exclamation-triangle-fill"></i>{% endif %}
+                                </span>
                                 {% endfor %}
                                 {% if info.models | length > 5 %}
                                 <span class="badge bg-body-secondary text-body">+{{ info.models | length - 5 }} more</span>

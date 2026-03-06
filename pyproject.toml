@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llama-router"
-version = "0.5.10"
+version = "0.5.11"
 description = "An Ollama router that aggregates multiple Ollama backends behind a single API"
 requires-python = ">=3.11"
 dependencies = [

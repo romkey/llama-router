@@ -129,8 +129,14 @@
                         </thead>
                         <tbody>
                             {% for m in info.models %}
-                            <tr>
-                                <td><code>{{ m.name }}</code></td>
+                            {% set too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
+                            <tr {% if too_large %}class="table-warning"{% endif %}>
+                                <td>
+                                    <code>{{ m.name }}</code>
+                                    {% if too_large %}
+                                    <i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Model size ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"></i>
+                                    {% endif %}
+                                </td>
                                 <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
                                 <td>
                                     <form method="post" action="/providers/{{ info.provider.id }}/benchmark/{{ m.name }}" class="d-inline">
@@ -175,8 +181,10 @@
                 <p class="text-muted small mb-2">Available on other providers:</p>
                 <div class="d-flex flex-wrap gap-2" id="missing-models-area">
                     {% for m in missing_models %}
-                    <button class="btn btn-sm btn-outline-primary btn-pull-single" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}">
+                    {% set m_too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
+                    <button class="btn btn-sm {{ 'btn-outline-warning' if m_too_large else 'btn-outline-primary' }} btn-pull-single" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" {% if m_too_large %}title="Warning: model ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% endif %}>
                         <i class="bi bi-download me-1"></i>{{ m.name }}
+                        {% if m_too_large %}<i class="bi bi-exclamation-triangle-fill text-warning ms-1"></i>{% endif %}
                     </button>
                     {% endfor %}
                 </div>

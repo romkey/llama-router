@@ -40,6 +40,21 @@ class Provider(BaseModel):
     def supports_llamacpp(self) -> bool:
         return self.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
 
+    @property
+    def gpu_ram_bytes(self) -> int | None:
+        """Parse gpu_ram string (e.g. '24 GB', '192GB', '8192 MB') into bytes."""
+        if not self.gpu_ram:
+            return None
+        import re
+
+        m = re.match(r"([\d.]+)\s*(TB|GB|MB)", self.gpu_ram.strip(), re.IGNORECASE)
+        if not m:
+            return None
+        val = float(m.group(1))
+        unit = m.group(2).upper()
+        multipliers = {"TB": 1 << 40, "GB": 1 << 30, "MB": 1 << 20}
+        return int(val * multipliers[unit])
+
 
 class ProviderModel(BaseModel):
     id: int | None = None
