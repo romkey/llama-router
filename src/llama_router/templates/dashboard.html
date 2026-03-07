@@ -40,8 +40,10 @@
     </button>
 </div>
 
-<div class="row mb-4">
-    <div class="col-md-3">
+{% set ns_hot = namespace(count=0) %}
+{% for info in providers %}{% set ns_hot.count = ns_hot.count + info.hot_models | length %}{% endfor %}
+<div class="row mb-4 g-3">
+    <div class="col">
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Providers</h5>
@@ -49,7 +51,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col">
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Online</h5>
@@ -57,7 +59,7 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col">
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Busy</h5>
@@ -65,7 +67,15 @@
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title text-muted"><i class="bi bi-fire"></i> Hot</h5>
+                <p class="display-6 text-danger" id="stat-hot">{{ ns_hot.count }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col">
         <div class="card text-center">
             <div class="card-body">
                 <h5 class="card-title text-muted">Models</h5>
@@ -887,6 +897,9 @@ function updateDashboard(data) {
     setText('stat-providers', data.provider_count);
     setText('stat-online', data.online_count);
     setText('stat-busy', data.busy_count);
+    var hotTotal = 0;
+    data.providers.forEach(function(p) { hotTotal += (p.hot_models ? p.hot_models.length : 0); });
+    setText('stat-hot', hotTotal);
     setText('stat-models', data.model_count);
     const logEl = document.getElementById('stat-log-total');
     if (logEl) logEl.textContent = data.log_total || '';
