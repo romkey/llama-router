@@ -60,10 +60,16 @@ class ProviderModel(BaseModel):
     id: int | None = None
     provider_id: int
     name: str
+    raw_name: str | None = None
     size: int | None = None
     digest: str | None = None
     modified_at: str | None = None
     details: dict | None = None
+
+    @property
+    def backend_name(self) -> str:
+        """The name the backend actually knows this model by."""
+        return self.raw_name or self.name
 
 
 class BenchmarkResult(BaseModel):
@@ -109,3 +115,4 @@ class ProviderInfo(BaseModel):
     benchmarks: list[BenchmarkResult] = []
     addresses: list[ProviderAddress] = []
     active_requests: int = 0
+    hot_models: list[dict] = []

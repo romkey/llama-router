@@ -108,6 +108,12 @@ _MIGRATIONS = [
             "ALTER TABLE providers ADD COLUMN gpu_ram TEXT",
         ],
     ),
+    (
+        "add_model_raw_name",
+        [
+            "ALTER TABLE provider_models ADD COLUMN raw_name TEXT",
+        ],
+    ),
 ]
 
 
@@ -291,28 +297,28 @@ class Database:
     async def get_providers_for_model(
         self, model_name: str, protocol: str | None = None
     ) -> list[Provider]:
-        """Find providers that have a model. Optionally filter by protocol."""
+        """Find providers that have a model. Matches both clean name and raw_name."""
         if protocol == "ollama":
             query = (
                 "SELECT p.* FROM providers p "
                 "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE pm.name = ? AND p.status != 'offline' "
+                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline' "
                 "AND p.provider_type IN ('ollama', 'both')"
             )
         elif protocol == "llamacpp":
             query = (
                 "SELECT p.* FROM providers p "
                 "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE pm.name = ? AND p.status != 'offline' "
+                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline' "
                 "AND p.provider_type IN ('llamacpp', 'both')"
             )
         else:
             query = (
                 "SELECT p.* FROM providers p "
                 "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE pm.name = ? AND p.status != 'offline'"
+                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline'"
             )
-        async with self.db.execute(query, (model_name,)) as cursor:
+        async with self.db.execute(query, (model_name, model_name)) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_provider(r) for r in rows]
 
@@ -410,11 +416,12 @@ class Database:
         )
         for m in models:
             await self.db.execute(
-                "INSERT INTO provider_models (provider_id, name, size, digest, modified_at, details) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO provider_models (provider_id, name, raw_name, size, digest, modified_at, details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     provider_id,
                     m.name,
+                    m.raw_name,
                     m.size,
                     m.digest,
                     m.modified_at,
@@ -422,6 +429,23 @@ class Database:
                 ),
             )
         await self.db.commit()
+
+    async def get_backend_model_name(self, provider_id: int, model_name: str) -> str:
+        """Return the raw backend name for a model on a specific provider.
+
+        Matches on both the clean name and raw_name columns. Returns the
+        raw_name if set, otherwise the clean name.
+        """
+        async with self.db.execute(
+            "SELECT name, raw_name FROM provider_models "
+            "WHERE provider_id = ? AND (name = ? OR raw_name = ?) "
+            "LIMIT 1",
+            (provider_id, model_name, model_name),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return row["raw_name"] or row["name"]
+            return model_name
 
     async def get_provider_models(self, provider_id: int) -> list[ProviderModel]:
         async with self.db.execute(
@@ -654,6 +678,7 @@ def _row_to_model(row: aiosqlite.Row) -> ProviderModel:
         id=row["id"],
         provider_id=row["provider_id"],
         name=row["name"],
+        raw_name=row["raw_name"] if "raw_name" in row.keys() else None,
         size=row["size"],
         digest=row["digest"],
         modified_at=row["modified_at"],

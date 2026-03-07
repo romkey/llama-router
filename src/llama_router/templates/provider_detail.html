@@ -117,8 +117,14 @@
 <div class="row g-4">
     <div class="col-lg-7">
         <div class="card">
+            {% set hot_names = info.hot_models | map(attribute='name') | list %}
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Models ({{ info.models | length }})</h5>
+                <h5 class="mb-0">
+                    Models ({{ info.models | length }})
+                    {% if hot_names %}
+                    <span class="badge bg-danger bg-opacity-75 rounded-pill ms-2"><i class="bi bi-fire me-1"></i>{{ hot_names | length }} hot</span>
+                    {% endif %}
+                </h5>
             </div>
             <div class="card-body p-0">
                 {% if info.models %}
@@ -134,8 +140,10 @@
                         <tbody>
                             {% for m in info.models %}
                             {% set too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
-                            <tr {% if too_large %}class="table-warning"{% endif %}>
+                            {% set is_hot = m.name in hot_names %}
+                            <tr {% if too_large %}class="table-warning"{% elif is_hot %}class="table-danger table-active"{% endif %}>
                                 <td>
+                                    {% if is_hot %}<i class="bi bi-fire text-danger me-1" title="Hot — loaded in VRAM"></i>{% endif %}
                                     <code>{{ m.name }}</code>
                                     {% if too_large %}
                                     <i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Model size ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"></i>
@@ -280,6 +288,16 @@
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Models</span>
                     <span>{{ info.models | length }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Hot Models</span>
+                    <span>
+                        {% if hot_names %}
+                        <span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i>{{ hot_names | length }}</span>
+                        {% else %}
+                        0
+                        {% endif %}
+                    </span>
                 </li>
                 {% if info.provider.machine_type %}
                 <li class="list-group-item d-flex justify-content-between">

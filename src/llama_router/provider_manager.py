@@ -30,8 +30,8 @@ class ProviderManager:
         self._ollama_clients: dict[int, OllamaClient] = {}
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
         self._active_requests: dict[int, int] = defaultdict(int)
+        self._hot_models: dict[int, list[dict]] = {}
         self._health_task: asyncio.Task | None = None
-        self._model_raw_names: dict[int, dict[str, str]] = {}
 
     async def start(self) -> None:
         providers = await self._db.list_providers()
@@ -239,6 +239,7 @@ class ProviderManager:
             benchmarks=benchmarks,
             addresses=addresses,
             active_requests=self._active_requests.get(provider_id, 0),
+            hot_models=self._hot_models.get(provider_id, []),
         )
 
     async def list_provider_infos(self) -> list[ProviderInfo]:
@@ -256,6 +257,7 @@ class ProviderManager:
                     benchmarks=benchmarks,
                     addresses=addresses,
                     active_requests=self._active_requests.get(p.id, 0),
+                    hot_models=self._hot_models.get(p.id, []),
                 )
             )
         return infos
@@ -281,6 +283,32 @@ class ProviderManager:
     def active_requests(self, provider_id: int) -> int:
         return self._active_requests.get(provider_id, 0)
 
+    def get_hot_models(self, provider_id: int) -> list[dict]:
+        return self._hot_models.get(provider_id, [])
+
+    async def _refresh_hot_models(self, provider: Provider) -> None:
+        """Fetch running models via /api/ps for Ollama providers."""
+        assert provider.id is not None
+        if not provider.supports_ollama or provider.id not in self._ollama_clients:
+            self._hot_models[provider.id] = []
+            return
+        try:
+            raw = await self._ollama_clients[provider.id].get_ps()
+            hot: list[dict] = []
+            for m in raw:
+                name = self._strip_cache_prefix(m.get("name", ""))
+                entry: dict = {"name": name}
+                if m.get("size"):
+                    entry["size"] = m["size"]
+                if m.get("size_vram"):
+                    entry["size_vram"] = m["size_vram"]
+                if m.get("expires_at"):
+                    entry["expires_at"] = m["expires_at"]
+                hot.append(entry)
+            self._hot_models[provider.id] = hot
+        except Exception:
+            logger.debug("Failed to fetch /api/ps for provider %s", provider.name)
+
     async def refresh_provider(self, provider_id: int) -> None:
         provider = await self._db.get_provider(provider_id)
         if not provider:
@@ -301,6 +329,8 @@ class ProviderManager:
         if not provider:
             return None
 
+        backend_name = await self._db.get_backend_model_name(provider_id, model_name)
+
         start = time.monotonic()
         try:
             protocol: str | None = None
@@ -311,7 +341,7 @@ class ProviderManager:
                 protocol = "ollama"
                 try:
                     metrics = await client.benchmark_chat(
-                        model_name, settings.benchmark_prompt
+                        backend_name, settings.benchmark_prompt
                     )
                 except Exception:
                     logger.info(
@@ -320,14 +350,14 @@ class ProviderManager:
                         provider_id,
                     )
                     metrics = await client.benchmark_embed(
-                        model_name, settings.benchmark_prompt
+                        backend_name, settings.benchmark_prompt
                     )
             elif provider.supports_llamacpp and provider_id in self._llamacpp_clients:
                 client = self._llamacpp_clients[provider_id]
                 protocol = "llamacpp"
                 try:
                     metrics = await client.benchmark_chat(
-                        model_name, settings.benchmark_prompt
+                        backend_name, settings.benchmark_prompt
                     )
                 except Exception:
                     logger.info(
@@ -336,7 +366,7 @@ class ProviderManager:
                         provider_id,
                     )
                     metrics = await client.benchmark_embed(
-                        model_name, settings.benchmark_prompt
+                        backend_name, settings.benchmark_prompt
                     )
             else:
                 return None
@@ -403,30 +433,11 @@ class ProviderManager:
                 return name[len(pfx) :]
         return name
 
-    def resolve_backend_model_name(self, provider_id: int, clean_name: str) -> str:
-        """Return the raw model name the backend knows for a given clean name.
-
-        If the model was pulled through the cache, Ollama stores it with a
-        prefix (e.g. ``host:9200/library/qwen3.5:9B``).  The router stores
-        and displays the stripped name (``qwen3.5:9B``).  When forwarding a
-        request to the backend we must use the raw name the backend recognises.
-        """
-        raw_map = self._model_raw_names.get(provider_id, {})
-        raw_name = raw_map.get(clean_name, clean_name)
-        if raw_name != clean_name:
-            logger.debug(
-                "Resolved model %r -> %r for provider %d",
-                clean_name,
-                raw_name,
-                provider_id,
-            )
-        return raw_name
-
     async def _discover_provider(self, provider: Provider) -> None:
         assert provider.id is not None
         all_models: list[ProviderModel] = []
         seen_names: set[str] = set()
-        raw_names: dict[str, str] = {}
+        cache_prefixed = 0
 
         if provider.supports_ollama and provider.id in self._ollama_clients:
             tags = await self._ollama_clients[provider.id].get_tags()
@@ -434,12 +445,14 @@ class ProviderManager:
                 clean_name = self._strip_cache_prefix(m.name)
                 if clean_name not in seen_names:
                     seen_names.add(clean_name)
-                    if clean_name != m.name:
-                        raw_names[clean_name] = m.name
+                    raw_name = m.name if clean_name != m.name else None
+                    if raw_name:
+                        cache_prefixed += 1
                     all_models.append(
                         ProviderModel(
                             provider_id=provider.id,
                             name=clean_name,
+                            raw_name=raw_name,
                             size=m.size,
                             digest=m.digest,
                             modified_at=m.modified_at,
@@ -461,14 +474,13 @@ class ProviderManager:
                         )
                     )
 
-        self._model_raw_names[provider.id] = raw_names
         await self._db.set_provider_models(provider.id, all_models)
-        if raw_names:
+        if cache_prefixed:
             logger.info(
                 "Discovered %d models on provider %s (%d with cache prefix)",
                 len(all_models),
                 provider.name,
-                len(raw_names),
+                cache_prefixed,
             )
         else:
             logger.info(
@@ -476,6 +488,8 @@ class ProviderManager:
                 len(all_models),
                 provider.name,
             )
+
+        await self._refresh_hot_models(provider)
 
     async def _health_check_loop(self) -> None:
         while True:
@@ -504,8 +518,8 @@ class ProviderManager:
                     logger.info("Provider %s is back online, re-discovering", p.name)
                     await self._rebuild_clients(p)
                     await self._discover_provider(p)
-                elif p.id not in self._model_raw_names:
-                    await self._discover_provider(p)
+                else:
+                    await self._refresh_hot_models(p)
                 if self._active_requests.get(p.id, 0) > 0:
                     await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
                 else:

@@ -174,6 +174,7 @@ async def api_status():
                 "provider_type": info.provider.provider_type.value,
                 "model_count": len(info.models),
                 "active_requests": info.active_requests,
+                "hot_models": info.hot_models,
                 "addresses": [
                     {
                         "id": a.id,

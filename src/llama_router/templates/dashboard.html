@@ -136,6 +136,10 @@
                             <p class="mb-1" data-card-models>
                                 <i class="bi bi-cpu me-1"></i>{{ info.models | length }} model{{ 's' if info.models | length != 1 }}
                             </p>
+                            {% set hot_names = info.hot_models | map(attribute='name') | list %}
+                            <p class="mb-1" data-card-hot style="{% if not hot_names %}display:none{% endif %}">
+                                <span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i><span data-hot-count>{{ hot_names | length }}</span> hot</span>
+                            </p>
                             <p class="text-warning mb-1" data-card-active style="{% if info.active_requests == 0 %}display:none{% endif %}">
                                 <i class="bi bi-activity me-1"></i><span>{{ info.active_requests }}</span> active request{{ 's' if info.active_requests != 1 }}
                             </p>
@@ -143,8 +147,9 @@
                             <div class="mt-2">
                                 {% for m in info.models[:5] %}
                                 {% set m_too_large = info.provider.gpu_ram_bytes and m.size and m.size > info.provider.gpu_ram_bytes %}
-                                <span class="badge {{ 'bg-warning text-dark' if m_too_large else 'bg-body-secondary text-body' }} me-1 mb-1" {% if m_too_large %}title="Exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% endif %}>
-                                    {{ m.name }}{% if m_too_large %} <i class="bi bi-exclamation-triangle-fill"></i>{% endif %}
+                                {% set m_hot = m.name in hot_names %}
+                                <span class="badge {{ 'bg-warning text-dark' if m_too_large else ('bg-danger bg-opacity-75' if m_hot else 'bg-body-secondary text-body') }} me-1 mb-1" {% if m_too_large %}title="Exceeds GPU RAM ({{ info.provider.gpu_ram }})"{% elif m_hot %}title="Hot — loaded in VRAM"{% endif %}>
+                                    {% if m_hot %}<i class="bi bi-fire me-1"></i>{% endif %}{{ m.name }}{% if m_too_large %} <i class="bi bi-exclamation-triangle-fill"></i>{% endif %}
                                 </span>
                                 {% endfor %}
                                 {% if info.models | length > 5 %}
@@ -186,6 +191,7 @@
                             <th>Hardware</th>
                             <th>Status</th>
                             <th>Models</th>
+                            <th>Hot</th>
                             <th>Active</th>
                             <th></th>
                         </tr>
@@ -216,6 +222,13 @@
                                 </span>
                             </td>
                             <td data-list-models>{{ info.models | length }}</td>
+                            <td data-list-hot>
+                                {% if info.hot_models %}
+                                <span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i>{{ info.hot_models | length }}</span>
+                                {% else %}
+                                0
+                                {% endif %}
+                            </td>
                             <td data-list-active>
                                 {% if info.active_requests > 0 %}
                                 <span class="text-warning">{{ info.active_requests }}</span>
@@ -965,6 +978,18 @@ function updateDashboard(data) {
         const modelsEl = card.querySelector('[data-card-models]');
         if (modelsEl) modelsEl.innerHTML = '<i class="bi bi-cpu me-1"></i>' + p.model_count + ' model' + (p.model_count !== 1 ? 's' : '');
 
+        const hotEl = card.querySelector('[data-card-hot]');
+        if (hotEl) {
+            var hotCount = p.hot_models ? p.hot_models.length : 0;
+            if (hotCount > 0) {
+                hotEl.style.display = '';
+                var countSpan = hotEl.querySelector('[data-hot-count]');
+                if (countSpan) countSpan.textContent = hotCount;
+            } else {
+                hotEl.style.display = 'none';
+            }
+        }
+
         const activeEl = card.querySelector('[data-card-active]');
         if (activeEl) {
             if (p.active_requests > 0) {
@@ -988,6 +1013,14 @@ function updateDashboard(data) {
 
         const modelsEl = row.querySelector('[data-list-models]');
         if (modelsEl) modelsEl.textContent = p.model_count;
+
+        const hotEl = row.querySelector('[data-list-hot]');
+        if (hotEl) {
+            var hotCount = p.hot_models ? p.hot_models.length : 0;
+            hotEl.innerHTML = hotCount > 0
+                ? '<span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i>' + hotCount + '</span>'
+                : '0';
+        }
 
         const activeEl = row.querySelector('[data-list-active]');
         if (activeEl) activeEl.innerHTML = p.active_requests > 0
