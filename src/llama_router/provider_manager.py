@@ -344,54 +344,37 @@ class ProviderManager:
 
     async def benchmark_provider(
         self, provider_id: int, model_name: str
-    ) -> BenchmarkResult | None:
+    ) -> BenchmarkResult:
+        """Run a benchmark. Raises ``RuntimeError`` with a human-readable
+        message on failure so the caller can surface it to the user."""
         from .request_logger import log_request
 
         provider = await self._db.get_provider(provider_id)
         if not provider:
-            return None
+            raise RuntimeError(f"Provider {provider_id} not found")
 
         backend_name = await self._db.get_backend_model_name(provider_id, model_name)
 
         start = time.monotonic()
+        protocol: str | None = None
+
         try:
-            protocol: str | None = None
             metrics: dict[str, float] | None = None
 
             if provider.supports_ollama and provider_id in self._ollama_clients:
                 client = self._ollama_clients[provider_id]
                 protocol = "ollama"
-                try:
-                    metrics = await client.benchmark_chat(
-                        backend_name, settings.benchmark_prompt
-                    )
-                except Exception:
-                    logger.info(
-                        "Chat benchmark failed for %s on provider %d, trying embed",
-                        model_name,
-                        provider_id,
-                    )
-                    metrics = await client.benchmark_embed(
-                        backend_name, settings.benchmark_prompt
-                    )
+                metrics = await self._try_benchmark(
+                    client, backend_name, model_name, provider_id
+                )
             elif provider.supports_llamacpp and provider_id in self._llamacpp_clients:
                 client = self._llamacpp_clients[provider_id]
                 protocol = "llamacpp"
-                try:
-                    metrics = await client.benchmark_chat(
-                        backend_name, settings.benchmark_prompt
-                    )
-                except Exception:
-                    logger.info(
-                        "Chat benchmark failed for %s on provider %d, trying embed",
-                        model_name,
-                        provider_id,
-                    )
-                    metrics = await client.benchmark_embed(
-                        backend_name, settings.benchmark_prompt
-                    )
+                metrics = await self._try_benchmark(
+                    client, backend_name, model_name, provider_id
+                )
             else:
-                return None
+                raise RuntimeError(f"No client available for provider {provider.name}")
 
             result = BenchmarkResult(
                 provider_id=provider_id,
@@ -414,11 +397,8 @@ class ProviderManager:
             )
 
             return result
-        except Exception:
+        except RuntimeError:
             duration = (time.monotonic() - start) * 1000
-            logger.exception(
-                "Benchmark failed for provider %d model %s", provider_id, model_name
-            )
             await log_request(
                 self._db,
                 provider=provider,
@@ -430,7 +410,62 @@ class ProviderManager:
                 status="error",
                 error_detail=f"Benchmark failed for {model_name}",
             )
-            return None
+            raise
+        except Exception as exc:
+            duration = (time.monotonic() - start) * 1000
+            detail = self._format_benchmark_error(exc, model_name, provider)
+            logger.error("Benchmark failed: %s", detail)
+            await log_request(
+                self._db,
+                provider=provider,
+                protocol=protocol or "unknown",
+                endpoint="benchmark",
+                model=model_name,
+                duration_ms=duration,
+                source_ip="internal",
+                status="error",
+                error_detail=detail,
+            )
+            raise RuntimeError(detail) from exc
+
+    async def _try_benchmark(
+        self, client, backend_name: str, display_name: str, provider_id: int
+    ) -> dict[str, float]:
+        """Try chat benchmark first, fall back to embed."""
+        chat_err = None
+        try:
+            return await client.benchmark_chat(backend_name, settings.benchmark_prompt)
+        except Exception as exc:
+            chat_err = exc
+            logger.info(
+                "Chat benchmark failed for %s on provider %d, trying embed",
+                display_name,
+                provider_id,
+            )
+
+        try:
+            return await client.benchmark_embed(backend_name, settings.benchmark_prompt)
+        except Exception as embed_err:
+            raise embed_err from chat_err
+
+    @staticmethod
+    def _format_benchmark_error(
+        exc: Exception, model_name: str, provider: Provider
+    ) -> str:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            try:
+                body = exc.response.json()
+                msg = body.get("error", exc.response.text[:200])
+            except Exception:
+                msg = exc.response.text[:200] if exc.response.text else ""
+            return (
+                f"Backend {provider.name} returned HTTP {status} "
+                f"for {model_name}: {msg}"
+            )
+        return f"Benchmark failed for {model_name} on {provider.name}: {exc}"
 
     @staticmethod
     def _strip_cache_prefix(name: str) -> str:

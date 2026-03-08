@@ -369,20 +369,13 @@ async def api_start_benchmark(request: Request):
         entry = _active_benchmarks[bench_id]
         try:
             result = await pm.benchmark_provider(provider_id, model_name)
-            if result:
-                entry["status"] = "done"
-                entry["result"] = {
-                    "startup_time_ms": result.startup_time_ms,
-                    "tokens_per_second": result.tokens_per_second,
-                    "protocol": result.protocol,
-                }
-            else:
-                entry["status"] = "failed"
-                entry["error"] = "Benchmark returned no result"
+            entry["status"] = "done"
+            entry["result"] = {
+                "startup_time_ms": result.startup_time_ms,
+                "tokens_per_second": result.tokens_per_second,
+                "protocol": result.protocol,
+            }
         except Exception as exc:
-            logger.exception(
-                "Benchmark task failed for %s on %d", model_name, provider_id
-            )
             entry["status"] = "failed"
             entry["error"] = str(exc)
 
@@ -431,20 +424,13 @@ async def benchmark_model(provider_id: int, model_name: str):
         entry = _active_benchmarks[bench_id]
         try:
             result = await pm.benchmark_provider(provider_id, model_name)
-            if result:
-                entry["status"] = "done"
-                entry["result"] = {
-                    "startup_time_ms": result.startup_time_ms,
-                    "tokens_per_second": result.tokens_per_second,
-                    "protocol": result.protocol,
-                }
-            else:
-                entry["status"] = "failed"
-                entry["error"] = "Benchmark returned no result"
+            entry["status"] = "done"
+            entry["result"] = {
+                "startup_time_ms": result.startup_time_ms,
+                "tokens_per_second": result.tokens_per_second,
+                "protocol": result.protocol,
+            }
         except Exception as exc:
-            logger.exception(
-                "Benchmark task failed for %s on %d", model_name, provider_id
-            )
             entry["status"] = "failed"
             entry["error"] = str(exc)
 
