@@ -164,12 +164,34 @@ class ProviderManager:
             await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
     async def delete_remote_model(self, provider_id: int, model_name: str) -> None:
+        """Delete a model from the remote provider and re-discover.
+
+        If the backend returns 404 (model already gone), the local model
+        list is still refreshed and an ``httpx.HTTPStatusError`` is raised
+        so callers can display a notice.
+        """
+        import httpx
+
+        backend_name = await self._db.get_backend_model_name(provider_id, model_name)
         ollama = self._ollama_clients.get(provider_id)
+        not_found = False
         if ollama:
-            await ollama.delete_model(model_name)
+            try:
+                await ollama.delete_model(backend_name)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    not_found = True
+                else:
+                    raise
         provider = await self._db.get_provider(provider_id)
         if provider:
             await self._discover_provider(provider)
+        if not_found:
+            raise httpx.HTTPStatusError(
+                "model not found on backend",
+                request=httpx.Request("DELETE", "/api/delete"),
+                response=httpx.Response(404),
+            )
 
     async def remove_provider(self, provider_id: int) -> None:
         await self._close_clients(provider_id)

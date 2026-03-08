@@ -476,9 +476,18 @@ async def delete_all_benchmarks():
 
 @router.post("/providers/{provider_id}/delete-model/{model_name:path}")
 async def delete_model(provider_id: int, model_name: str):
+    import httpx
+
     pm = deps.get_pm()
     try:
         await pm.delete_remote_model(provider_id, model_name)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return RedirectResponse(
+                url=f"/providers/{provider_id}?error=Model+{model_name}+not+found+on+backend+(removed+from+local+list)",
+                status_code=303,
+            )
+        raise HTTPException(status_code=500, detail=str(exc))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
@@ -989,7 +998,11 @@ async def delete_model_all_providers(model: str = Form(...)):
         try:
             await pm.delete_remote_model(info.provider.id, model)
         except Exception:
-            pass
+            logger.debug(
+                "delete_remote_model failed for provider %d model %s",
+                info.provider.id,
+                model,
+            )
 
     await asyncio.gather(*[_delete_one(i) for i in targets])
     return RedirectResponse(url="/#models-pane", status_code=303)

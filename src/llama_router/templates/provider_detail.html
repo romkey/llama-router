@@ -40,6 +40,13 @@
     </div>
 </div>
 
+{% if request.query_params.get('error') %}
+<div class="alert alert-warning alert-dismissible fade show">
+    <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ request.query_params.get('error') }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
 {% if info.active_requests > 0 %}
 <div class="alert alert-warning">
     <i class="bi bi-activity me-2"></i>{{ info.active_requests }} active request{{ 's' if info.active_requests != 1 }}
