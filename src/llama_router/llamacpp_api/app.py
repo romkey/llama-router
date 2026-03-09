@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+from .. import __version__
 
 from .audio import router as audio_router
 from .chat import router as chat_router
@@ -13,6 +16,12 @@ from .models import router as models_router
 from .responses import router as responses_router
 
 app = FastAPI(title="llama-router llama.cpp API")
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok", "version": __version__})
+
 
 app.include_router(audio_router)
 app.include_router(chat_router)

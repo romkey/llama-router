@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+from .. import __version__
 
 from .chat import router as chat_router
 from .embeddings import router as embeddings_router
@@ -17,6 +20,12 @@ from ..llamacpp_api.models import router as v1_models_router
 from ..llamacpp_api.responses import router as v1_responses_router
 
 app = FastAPI(title="llama-router Ollama API")
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok", "version": __version__})
+
 
 app.include_router(chat_router)
 app.include_router(embeddings_router)

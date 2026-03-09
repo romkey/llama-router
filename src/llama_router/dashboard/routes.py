@@ -77,6 +77,22 @@ templates.env.filters["localtime"] = _localtime
 router = APIRouter()
 
 
+@router.get("/health")
+async def health():
+    """Health check endpoint for container orchestrators."""
+    pm = deps.get_pm()
+    infos = await pm.list_provider_infos()
+    online = sum(1 for i in infos if i.provider.status.value != "offline")
+    return JSONResponse(
+        {
+            "status": "ok",
+            "version": __version__,
+            "providers": len(infos),
+            "providers_online": online,
+        }
+    )
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     pm = deps.get_pm()

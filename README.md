@@ -79,6 +79,16 @@ Use the **Cache** tab on the dashboard, or call the API directly:
 curl -X POST http://localhost/api/cache/clear
 ```
 
+## Health Check
+
+All three API ports expose a `GET /health` endpoint that returns JSON:
+
+```json
+{"status": "ok", "version": "0.7.8", "providers": 3, "providers_online": 2}
+```
+
+The dashboard port (80) includes provider counts; the Ollama (11434) and llama.cpp (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
+
 ## Model Fallbacks
 
 You can configure fallback models so that when a requested model is unavailable (no provider has it or all providers with it are offline), the router transparently tries an alternative model.

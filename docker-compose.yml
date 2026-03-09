@@ -13,6 +13,12 @@ services:
       LLAMA_ROUTER_CACHE_DIR: /app/data/model_cache
       # Set this to the IP/hostname your Ollama backends can reach this host on
       # LLAMA_ROUTER_CACHE_EXTERNAL_HOST: 192.168.1.50
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:
