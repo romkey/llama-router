@@ -22,6 +22,21 @@ logger = logging.getLogger(__name__)
 
 _active_pulls: dict[str, dict] = {}
 _active_benchmarks: dict[str, dict] = {}
+_active_fill_pulls: dict[str, dict] = {}
+_active_fill_benchmarks: dict[str, dict] = {}
+
+
+def _model_in_api(model: object, api: str, provider_type: ProviderType) -> bool:
+    details = getattr(model, "details", None) or {}
+    if api == "ollama":
+        if "_in_ollama" in details:
+            return bool(details.get("_in_ollama"))
+        return provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
+    if api == "llamacpp":
+        if "_in_llamacpp" in details:
+            return bool(details.get("_in_llamacpp"))
+        return provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
+    return False
 
 
 def _cache_registry_url() -> str | None:
@@ -364,6 +379,9 @@ async def api_start_benchmark(request: Request):
     body = await request.json()
     provider_id = int(body["provider_id"])
     model_name = body["model"]
+    benchmark_api = (body.get("benchmark_api") or "auto").strip().lower()
+    if benchmark_api not in {"auto", "ollama", "llamacpp"}:
+        raise HTTPException(status_code=400, detail="Invalid benchmark_api value")
 
     pm = deps.get_pm()
     db = deps.get_db()
@@ -376,6 +394,7 @@ async def api_start_benchmark(request: Request):
         "provider_id": provider_id,
         "provider_name": provider.name,
         "model": model_name,
+        "benchmark_api": benchmark_api,
         "status": "running",
         "result": None,
         "error": None,
@@ -384,7 +403,9 @@ async def api_start_benchmark(request: Request):
     async def _run_benchmark():
         entry = _active_benchmarks[bench_id]
         try:
-            result = await pm.benchmark_provider(provider_id, model_name)
+            result = await pm.benchmark_provider(
+                provider_id, model_name, benchmark_api=benchmark_api
+            )
             entry["status"] = "done"
             entry["result"] = {
                 "startup_time_ms": result.startup_time_ms,
@@ -410,6 +431,7 @@ async def api_benchmark_status(bench_id: str):
             "provider_id": entry["provider_id"],
             "provider_name": entry["provider_name"],
             "model": entry["model"],
+            "benchmark_api": entry.get("benchmark_api", "auto"),
             "status": entry["status"],
             "result": entry["result"],
             "error": entry["error"],
@@ -548,8 +570,16 @@ async def api_pull_model(request: Request):
     body = await request.json()
     model = body.get("model")
     provider_id = body.get("provider_id")
+    pull_api = (body.get("pull_api") or "auto").strip().lower()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
+    if pull_api not in {"auto", "ollama", "llamacpp"}:
+        raise HTTPException(status_code=400, detail="Invalid pull_api value")
+    if pull_api == "llamacpp":
+        raise HTTPException(
+            status_code=400,
+            detail="llama.cpp pull is not supported yet; use ollama",
+        )
 
     pm = deps.get_pm()
     pull_id = str(uuid.uuid4())
@@ -566,6 +596,7 @@ async def api_pull_model(request: Request):
 
     _active_pulls[pull_id] = {
         "model": model,
+        "pull_api": pull_api,
         "provider_ids": provider_ids,
         "status": "pulling",
         "completed": [],
@@ -659,6 +690,7 @@ async def api_active_pulls():
         {
             pid: {
                 "model": p["model"],
+                "pull_api": p.get("pull_api", "auto"),
                 "status": p["status"],
                 "total": len(p["provider_ids"]),
                 "completed": len(p["completed"]),
@@ -680,6 +712,7 @@ async def api_pull_status(pull_id: str):
         {
             "pull_id": pull_id,
             "model": entry["model"],
+            "pull_api": entry.get("pull_api", "auto"),
             "status": entry["status"],
             "total": len(entry["provider_ids"]),
             "completed": len(entry["completed"]),
@@ -687,6 +720,204 @@ async def api_pull_status(pull_id: str):
             "progress": entry.get("progress", ""),
         }
     )
+
+
+@router.post("/api/pulls/fill-missing")
+async def api_fill_missing_pulls():
+    """Pull missing models to all Ollama-capable providers."""
+    pm = deps.get_pm()
+    cache_url = _cache_registry_url()
+
+    infos = await pm.list_provider_infos()
+    all_model_names = sorted({m.name for info in infos for m in info.models})
+
+    provider_missing: dict[int, list[str]] = {}
+    provider_names: dict[int, str] = {}
+    for info in infos:
+        provider = info.provider
+        if not provider.supports_ollama or provider.id is None:
+            continue
+        existing_ollama = {
+            m.name
+            for m in info.models
+            if _model_in_api(m, "ollama", provider.provider_type)
+        }
+        missing = [name for name in all_model_names if name not in existing_ollama]
+        if missing:
+            provider_missing[provider.id] = missing
+            provider_names[provider.id] = provider.name
+
+    job_id = str(uuid.uuid4())
+    total = sum(len(v) for v in provider_missing.values())
+    _active_fill_pulls[job_id] = {
+        "status": "running",
+        "total": total,
+        "completed": 0,
+        "failed": 0,
+        "progress": "starting…",
+        "errors": [],
+    }
+
+    async def _run() -> None:
+        job = _active_fill_pulls[job_id]
+        lock = asyncio.Lock()
+
+        async def _run_provider(pid: int, models: list[str]) -> None:
+            pname = provider_names.get(pid, str(pid))
+            try:
+                client = pm.get_ollama_client(pid)
+            except Exception as exc:
+                async with lock:
+                    job["failed"] += len(models)
+                    job["errors"].append(f"{pname}: no ollama client ({exc})")
+                return
+
+            for idx, model in enumerate(models, start=1):
+                async with lock:
+                    job["progress"] = f"{pname}: pulling {idx}/{len(models)} {model}"
+                try:
+                    await client.pull_model(model, cache_registry_url=cache_url)
+                    async with lock:
+                        job["completed"] += 1
+                except Exception as exc:
+                    async with lock:
+                        job["failed"] += 1
+                        if len(job["errors"]) < 20:
+                            job["errors"].append(f"{pname} {model}: {exc}")
+            try:
+                await pm.refresh_provider(pid)
+            except Exception:
+                logger.exception(
+                    "Refresh failed after bulk pull for provider %s", pname
+                )
+
+        try:
+            await asyncio.gather(
+                *[
+                    _run_provider(pid, models)
+                    for pid, models in provider_missing.items()
+                ]
+            )
+            job["status"] = "done"
+            if total == 0:
+                job["progress"] = "No missing ollama models to pull."
+            else:
+                job["progress"] = (
+                    f"Done: {job['completed']} pulled, {job['failed']} failed."
+                )
+        except Exception as exc:
+            job["status"] = "failed"
+            job["progress"] = "Bulk pull failed."
+            job["errors"].append(str(exc))
+            logger.exception("Bulk fill-missing pull job failed")
+
+    asyncio.create_task(_run())
+    return JSONResponse({"job_id": job_id, "status": "running"})
+
+
+@router.get("/api/pulls/fill-missing/{job_id}")
+async def api_fill_missing_pulls_status(job_id: str):
+    job = _active_fill_pulls.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Pull fill job not found")
+    return JSONResponse({"job_id": job_id, **job})
+
+
+@router.post("/api/benchmarks/fill-missing")
+async def api_fill_missing_benchmarks():
+    """Run missing protocol-specific benchmarks for all providers/models."""
+    pm = deps.get_pm()
+    db = deps.get_db()
+    infos = await pm.list_provider_infos()
+    all_benchmarks = await db.get_all_benchmarks()
+    existing = {
+        (int(b["provider_id"]), b["model_name"], (b.get("protocol") or "").lower())
+        for b in all_benchmarks
+    }
+
+    provider_runs: dict[int, list[tuple[str, str]]] = {}
+    provider_names: dict[int, str] = {}
+    for info in infos:
+        provider = info.provider
+        if provider.id is None:
+            continue
+        runs: list[tuple[str, str]] = []
+        for m in info.models:
+            if provider.supports_ollama and _model_in_api(
+                m, "ollama", provider.provider_type
+            ):
+                key = (provider.id, m.name, "ollama")
+                if key not in existing:
+                    runs.append((m.name, "ollama"))
+            if provider.supports_llamacpp and _model_in_api(
+                m, "llamacpp", provider.provider_type
+            ):
+                key = (provider.id, m.name, "llamacpp")
+                if key not in existing:
+                    runs.append((m.name, "llamacpp"))
+        if runs:
+            provider_runs[provider.id] = runs
+            provider_names[provider.id] = provider.name
+
+    job_id = str(uuid.uuid4())
+    total = sum(len(v) for v in provider_runs.values())
+    _active_fill_benchmarks[job_id] = {
+        "status": "running",
+        "total": total,
+        "completed": 0,
+        "failed": 0,
+        "progress": "starting…",
+        "errors": [],
+    }
+
+    async def _run() -> None:
+        job = _active_fill_benchmarks[job_id]
+        lock = asyncio.Lock()
+
+        async def _run_provider(pid: int, runs: list[tuple[str, str]]) -> None:
+            pname = provider_names.get(pid, str(pid))
+            for idx, (model, protocol) in enumerate(runs, start=1):
+                async with lock:
+                    job["progress"] = (
+                        f"{pname}: benchmark {idx}/{len(runs)} {model} ({protocol})"
+                    )
+                try:
+                    await pm.benchmark_provider(pid, model, benchmark_api=protocol)
+                    async with lock:
+                        job["completed"] += 1
+                except Exception as exc:
+                    async with lock:
+                        job["failed"] += 1
+                        if len(job["errors"]) < 20:
+                            job["errors"].append(f"{pname} {model} ({protocol}): {exc}")
+
+        try:
+            await asyncio.gather(
+                *[_run_provider(pid, runs) for pid, runs in provider_runs.items()]
+            )
+            job["status"] = "done"
+            if total == 0:
+                job["progress"] = "No missing benchmarks."
+            else:
+                job["progress"] = (
+                    f"Done: {job['completed']} benchmarks, {job['failed']} failed."
+                )
+        except Exception as exc:
+            job["status"] = "failed"
+            job["progress"] = "Bulk benchmark job failed."
+            job["errors"].append(str(exc))
+            logger.exception("Bulk fill-missing benchmark job failed")
+
+    asyncio.create_task(_run())
+    return JSONResponse({"job_id": job_id, "status": "running"})
+
+
+@router.get("/api/benchmarks/fill-missing/{job_id}")
+async def api_fill_missing_benchmarks_status(job_id: str):
+    job = _active_fill_benchmarks.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Benchmark fill job not found")
+    return JSONResponse({"job_id": job_id, **job})
 
 
 @router.post("/providers/{provider_id}/pull")

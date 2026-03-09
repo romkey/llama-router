@@ -152,6 +152,12 @@
                                 <td>
                                     {% if is_hot %}<i class="bi bi-fire text-danger me-1" title="Hot — loaded in VRAM"></i>{% endif %}
                                     <code>{{ m.name }}</code>
+                                    {% if m.details and m.details.get('_in_ollama') %}
+                                    <span class="badge bg-primary ms-1" title="Available via Ollama">ollama</span>
+                                    {% endif %}
+                                    {% if m.details and m.details.get('_in_llamacpp') %}
+                                    <span class="badge bg-info text-dark ms-1" title="Available via llama.cpp">llama.cpp</span>
+                                    {% endif %}
                                     {% if too_large %}
                                     <i class="bi bi-exclamation-triangle-fill text-warning ms-1" title="Model size ({{ '%.1f GB' | format(m.size / 1073741824) }}) exceeds GPU RAM ({{ info.provider.gpu_ram }})"></i>
                                     {% endif %}
@@ -187,6 +193,16 @@
             </div>
             <div class="card-body">
                 <div id="pull-status-area"></div>
+                {% if info.provider.supports_ollama and info.provider.supports_llamacpp %}
+                <div class="mb-2 d-flex align-items-center gap-2">
+                    <label for="pull-api" class="small text-muted mb-0">Pull API</label>
+                    <select id="pull-api" class="form-select form-select-sm" style="max-width: 220px;">
+                        <option value="auto" selected>Auto (ollama)</option>
+                        <option value="ollama">Ollama</option>
+                        <option value="llamacpp" disabled>llama.cpp (not supported yet)</option>
+                    </select>
+                </div>
+                {% endif %}
                 <div class="d-flex gap-2" id="pull-form-inline">
                     <input type="text" class="form-control" id="pull-model-input" placeholder="e.g. llama3:8b">
                     <button class="btn btn-primary text-nowrap btn-pull-single" data-provider="{{ info.provider.id }}">
@@ -227,6 +243,20 @@
 
     <div class="col-lg-5">
         <div id="benchmark-status-area" class="mb-2"></div>
+        {% if info.provider.supports_ollama and info.provider.supports_llamacpp %}
+        <div class="card mb-2">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-center gap-2">
+                    <label for="benchmark-api" class="small text-muted mb-0">Benchmark API</label>
+                    <select id="benchmark-api" class="form-select form-select-sm" style="max-width: 180px;">
+                        <option value="auto" selected>Auto</option>
+                        <option value="ollama">Ollama</option>
+                        <option value="llamacpp">llama.cpp</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         <div class="card">
             <div class="card-header">
                 <h5 class="mb-0">Benchmarks</h5>
@@ -482,6 +512,8 @@ document.addEventListener('click', function(e) {
         e.preventDefault();
         var providerId = benchBtn.dataset.provider;
         var model = benchBtn.dataset.model;
+        var apiSel = document.getElementById('benchmark-api');
+        var benchmarkApi = apiSel ? apiSel.value : 'auto';
         if (!model) return;
         benchBtn.disabled = true;
         var origHtml = benchBtn.innerHTML;
@@ -489,12 +521,12 @@ document.addEventListener('click', function(e) {
         fetch('/api/benchmark', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({model: model, provider_id: parseInt(providerId)})
+            body: JSON.stringify({model: model, provider_id: parseInt(providerId), benchmark_api: benchmarkApi})
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            _trackedBenchmarks[data.bench_id] = {model: model, btn: benchBtn, origHtml: origHtml};
-            showBenchBanner(data.bench_id, model, 'running', null, null);
+            _trackedBenchmarks[data.bench_id] = {model: model, btn: benchBtn, origHtml: origHtml, benchmarkApi: benchmarkApi};
+            showBenchBanner(data.bench_id, model, 'running', null, null, benchmarkApi);
             pollBenchmark(data.bench_id);
         })
         .catch(function() {
@@ -509,6 +541,8 @@ document.addEventListener('click', function(e) {
     e.preventDefault();
     var providerId = btn.dataset.provider;
     var model = btn.dataset.model || document.getElementById('pull-model-input').value.trim();
+    var pullApiSel = document.getElementById('pull-api');
+    var pullApi = pullApiSel ? pullApiSel.value : 'auto';
     if (!model) return;
     btn.disabled = true;
     var origHtml = btn.innerHTML;
@@ -516,17 +550,23 @@ document.addEventListener('click', function(e) {
     fetch('/api/pull', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({model: model, provider_id: parseInt(providerId)})
+        body: JSON.stringify({model: model, provider_id: parseInt(providerId), pull_api: pullApi})
     })
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+        if (!r.ok) {
+            return r.json().then(function(d) { throw new Error(d.detail || 'Pull failed'); });
+        }
+        return r.json();
+    })
     .then(function(data) {
         _trackedPulls[data.pull_id] = {model: model, btn: btn, origHtml: origHtml};
         showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0);
         pollPull(data.pull_id);
     })
-    .catch(function() {
+    .catch(function(err) {
         btn.disabled = false;
         btn.innerHTML = origHtml;
+        alert(err.message || 'Pull failed');
     });
 });
 
@@ -576,7 +616,7 @@ function pollPull(pullId) {
         });
 }
 
-function showBenchBanner(benchId, model, status, result, error) {
+function showBenchBanner(benchId, model, status, result, error, benchmarkApi) {
     var area = document.getElementById('benchmark-status-area');
     if (!area) return;
     var el = document.getElementById('bench-banner-' + benchId);
@@ -588,8 +628,9 @@ function showBenchBanner(benchId, model, status, result, error) {
     }
     if (status === 'running') {
         el.className = 'alert alert-info d-flex align-items-center';
+        var apiHint = benchmarkApi && benchmarkApi !== 'auto' ? ' via ' + benchmarkApi : '';
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span>Benchmarking <strong>' + model + '</strong>\u2026</span>';
+            '<span>Benchmarking <strong>' + model + '</strong>' + apiHint + '\u2026</span>';
     } else if (status === 'done' && result) {
         el.className = 'alert alert-success d-flex align-items-center';
         el.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i>' +
@@ -612,11 +653,12 @@ function pollBenchmark(benchId) {
     fetch('/api/benchmarks/' + benchId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            showBenchBanner(benchId, data.model, data.status, data.result, data.error);
+            var tracked = _trackedBenchmarks[benchId];
+            var api = (tracked && tracked.benchmarkApi) || data.benchmark_api || 'auto';
+            showBenchBanner(benchId, data.model, data.status, data.result, data.error, api);
             if (data.status === 'running') {
                 setTimeout(function() { pollBenchmark(benchId); }, 2000);
             } else {
-                var tracked = _trackedBenchmarks[benchId];
                 if (tracked && tracked.btn) {
                     if (data.status === 'done') {
                         tracked.btn.innerHTML = '<i class="bi bi-check-lg"></i>';

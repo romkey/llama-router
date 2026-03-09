@@ -343,7 +343,10 @@ class ProviderManager:
             await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
     async def benchmark_provider(
-        self, provider_id: int, model_name: str
+        self,
+        provider_id: int,
+        model_name: str,
+        benchmark_api: str | None = None,
     ) -> BenchmarkResult:
         """Run a benchmark. Raises ``RuntimeError`` with a human-readable
         message on failure so the caller can surface it to the user."""
@@ -361,7 +364,33 @@ class ProviderManager:
         try:
             metrics: dict[str, float] | None = None
 
-            if provider.supports_ollama and provider_id in self._ollama_clients:
+            api_choice = (benchmark_api or "auto").strip().lower()
+
+            if api_choice == "ollama":
+                if not (
+                    provider.supports_ollama and provider_id in self._ollama_clients
+                ):
+                    raise RuntimeError(
+                        f"Provider {provider.name} does not support ollama benchmarks"
+                    )
+                client = self._ollama_clients[provider_id]
+                protocol = "ollama"
+                metrics = await self._try_benchmark(
+                    client, backend_name, model_name, provider_id
+                )
+            elif api_choice == "llamacpp":
+                if not (
+                    provider.supports_llamacpp and provider_id in self._llamacpp_clients
+                ):
+                    raise RuntimeError(
+                        f"Provider {provider.name} does not support llama.cpp benchmarks"
+                    )
+                client = self._llamacpp_clients[provider_id]
+                protocol = "llamacpp"
+                metrics = await self._try_benchmark(
+                    client, backend_name, model_name, provider_id
+                )
+            elif provider.supports_ollama and provider_id in self._ollama_clients:
                 client = self._ollama_clients[provider_id]
                 protocol = "ollama"
                 metrics = await self._try_benchmark(
@@ -492,45 +521,89 @@ class ProviderManager:
 
     async def _discover_provider(self, provider: Provider) -> None:
         assert provider.id is not None
-        all_models: list[ProviderModel] = []
-        seen_names: set[str] = set()
+        models_by_name: dict[str, ProviderModel] = {}
         cache_prefixed = 0
+
+        def _upsert_model(
+            *,
+            source: str,
+            clean_name: str,
+            raw_name: str | None,
+            size: int | None = None,
+            digest: str | None = None,
+            modified_at: str | None = None,
+            details: dict | None = None,
+        ) -> None:
+            existing = models_by_name.get(clean_name)
+            if existing is None:
+                merged_details = dict(details or {})
+                merged_details["_in_ollama"] = source == "ollama"
+                merged_details["_in_llamacpp"] = source == "llamacpp"
+                models_by_name[clean_name] = ProviderModel(
+                    provider_id=provider.id,
+                    name=clean_name,
+                    raw_name=raw_name,
+                    size=size,
+                    digest=digest,
+                    modified_at=modified_at,
+                    details=merged_details,
+                )
+                return
+
+            merged_details = dict(existing.details or {})
+            if details:
+                merged_details.update(details)
+            merged_details["_in_ollama"] = bool(
+                merged_details.get("_in_ollama", False) or source == "ollama"
+            )
+            merged_details["_in_llamacpp"] = bool(
+                merged_details.get("_in_llamacpp", False) or source == "llamacpp"
+            )
+
+            # Prefer the first non-null raw_name and metadata values.
+            if existing.raw_name is None and raw_name is not None:
+                existing.raw_name = raw_name
+            if existing.size is None and size is not None:
+                existing.size = size
+            if existing.digest is None and digest is not None:
+                existing.digest = digest
+            if existing.modified_at is None and modified_at is not None:
+                existing.modified_at = modified_at
+            existing.details = merged_details
 
         if provider.supports_ollama and provider.id in self._ollama_clients:
             tags = await self._ollama_clients[provider.id].get_tags()
             for m in tags:
                 clean_name = self._strip_cache_prefix(m.name)
-                if clean_name not in seen_names:
-                    seen_names.add(clean_name)
-                    raw_name = m.name if clean_name != m.name else None
-                    if raw_name:
-                        cache_prefixed += 1
-                    all_models.append(
-                        ProviderModel(
-                            provider_id=provider.id,
-                            name=clean_name,
-                            raw_name=raw_name,
-                            size=m.size,
-                            digest=m.digest,
-                            modified_at=m.modified_at,
-                            details=m.details,
-                        )
-                    )
+                raw_name = m.name if clean_name != m.name else None
+                if raw_name:
+                    cache_prefixed += 1
+                _upsert_model(
+                    source="ollama",
+                    clean_name=clean_name,
+                    raw_name=raw_name,
+                    size=m.size,
+                    digest=m.digest,
+                    modified_at=m.modified_at,
+                    details=m.details,
+                )
 
         if provider.supports_llamacpp and provider.id in self._llamacpp_clients:
             lcpp_models = await self._llamacpp_clients[provider.id].get_models()
             for m in lcpp_models:
-                if m.name not in seen_names:
-                    seen_names.add(m.name)
-                    all_models.append(
-                        ProviderModel(
-                            provider_id=provider.id,
-                            name=m.name,
-                            size=m.size,
-                            details=m.details,
-                        )
-                    )
+                clean_name = self._strip_cache_prefix(m.name)
+                raw_name = m.name if clean_name != m.name else None
+                if raw_name:
+                    cache_prefixed += 1
+                _upsert_model(
+                    source="llamacpp",
+                    clean_name=clean_name,
+                    raw_name=raw_name,
+                    size=m.size,
+                    details=m.details,
+                )
 
+        all_models = list(models_by_name.values())
         await self._db.set_provider_models(provider.id, all_models)
         if cache_prefixed:
             logger.info(

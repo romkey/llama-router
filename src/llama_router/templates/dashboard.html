@@ -267,6 +267,12 @@
 
     <!-- ==================== BENCHMARKS TAB ==================== -->
     <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel" aria-labelledby="benchmarks-tab" tabindex="0">
+        <div id="bulk-benchmark-status-area"></div>
+        <div class="d-flex justify-content-start mb-3">
+            <button class="btn btn-sm btn-outline-primary" id="btn-fill-benchmarks" onclick="fillMissingBenchmarks()">
+                <i class="bi bi-lightning-charge me-1"></i>Run Missing Benchmarks
+            </button>
+        </div>
         {% if benchmarks_by_model %}
             <div class="d-flex justify-content-end mb-3">
                 <form method="post" action="/benchmarks/delete-all" class="d-inline">
@@ -342,13 +348,16 @@
     <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         <div id="pull-status-area"></div>
         {% if models %}
-        {% if cache_stats %}
-        <div class="mb-3 text-end">
+        <div class="mb-3 d-flex justify-content-between align-items-center">
+            <button class="btn btn-sm btn-outline-primary" id="btn-fill-pulls" onclick="fillMissingPulls()">
+                <i class="bi bi-diagram-3 me-1"></i>Pull Missing Models Everywhere
+            </button>
+            {% if cache_stats %}
             <button class="btn btn-sm btn-outline-success" id="btn-cache-all" onclick="cacheAllModels()">
                 <i class="bi bi-archive me-1"></i>Cache all models
             </button>
+            {% endif %}
         </div>
-        {% endif %}
         <div class="table-responsive">
             <table class="table table-hover" id="models-table">
                 <thead>
@@ -1067,6 +1076,130 @@ function setText(id, val) {
 }
 
 var _trackedPulls = {};
+var _bulkPullJobId = null;
+var _bulkBenchJobId = null;
+
+function fillMissingPulls() {
+    var btn = document.getElementById('btn-fill-pulls');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Starting…';
+    fetch('/api/pulls/fill-missing', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _bulkPullJobId = data.job_id;
+            pollFillMissingPulls(_bulkPullJobId);
+        })
+        .catch(function() {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-diagram-3 me-1"></i>Pull Missing Models Everywhere';
+        });
+}
+
+function pollFillMissingPulls(jobId) {
+    fetch('/api/pulls/fill-missing/' + jobId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            showBulkPullStatus(data);
+            if (data.status === 'running') {
+                setTimeout(function() { pollFillMissingPulls(jobId); }, 2000);
+            } else {
+                var btn = document.getElementById('btn-fill-pulls');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-diagram-3 me-1"></i>Pull Missing Models Everywhere';
+                }
+                refreshStatus();
+            }
+        })
+        .catch(function() { setTimeout(function() { pollFillMissingPulls(jobId); }, 3000); });
+}
+
+function showBulkPullStatus(data) {
+    var area = document.getElementById('pull-status-area');
+    if (!area) return;
+    var el = document.getElementById('bulk-pull-banner');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'bulk-pull-banner';
+        el.className = 'alert alert-info d-flex align-items-center mb-2';
+        area.prepend(el);
+    }
+    if (data.status === 'running') {
+        el.className = 'alert alert-info d-flex align-items-center mb-2';
+        el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
+            '<span><strong>Pull missing models</strong> — ' + (data.progress || '') +
+            ' (' + data.completed + '/' + data.total + ' complete)</span>';
+    } else {
+        var ok = data.failed === 0;
+        el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
+        el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
+            '<span><strong>Pull missing models</strong> done — ' + data.completed + '/' + data.total +
+            ' complete' + (data.failed > 0 ? ', ' + data.failed + ' failed' : '') + '</span>';
+        setTimeout(function() { el.remove(); }, 12000);
+    }
+}
+
+function fillMissingBenchmarks() {
+    var btn = document.getElementById('btn-fill-benchmarks');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Starting…';
+    fetch('/api/benchmarks/fill-missing', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _bulkBenchJobId = data.job_id;
+            pollFillMissingBenchmarks(_bulkBenchJobId);
+        })
+        .catch(function() {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>Run Missing Benchmarks';
+        });
+}
+
+function pollFillMissingBenchmarks(jobId) {
+    fetch('/api/benchmarks/fill-missing/' + jobId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            showBulkBenchmarkStatus(data);
+            if (data.status === 'running') {
+                setTimeout(function() { pollFillMissingBenchmarks(jobId); }, 2000);
+            } else {
+                var btn = document.getElementById('btn-fill-benchmarks');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-lightning-charge me-1"></i>Run Missing Benchmarks';
+                }
+                setTimeout(function() { location.reload(); }, 2000);
+            }
+        })
+        .catch(function() { setTimeout(function() { pollFillMissingBenchmarks(jobId); }, 3000); });
+}
+
+function showBulkBenchmarkStatus(data) {
+    var area = document.getElementById('bulk-benchmark-status-area');
+    if (!area) return;
+    var el = document.getElementById('bulk-bench-banner');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'bulk-bench-banner';
+        el.className = 'alert alert-info d-flex align-items-center mb-2';
+        area.prepend(el);
+    }
+    if (data.status === 'running') {
+        el.className = 'alert alert-info d-flex align-items-center mb-2';
+        el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
+            '<span><strong>Run missing benchmarks</strong> — ' + (data.progress || '') +
+            ' (' + data.completed + '/' + data.total + ' complete)</span>';
+    } else {
+        var ok = data.failed === 0;
+        el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
+        el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
+            '<span><strong>Run missing benchmarks</strong> done — ' + data.completed + '/' + data.total +
+            ' complete' + (data.failed > 0 ? ', ' + data.failed + ' failed' : '') + '</span>';
+        setTimeout(function() { el.remove(); }, 12000);
+    }
+}
 
 document.addEventListener('click', function(e) {
     var btn = e.target.closest('.btn-pull-all');
