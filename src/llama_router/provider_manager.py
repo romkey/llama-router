@@ -572,7 +572,12 @@ class ProviderManager:
 
             if any_live:
                 if p.status == ProviderStatus.OFFLINE:
-                    logger.info("Provider %s is back online, re-discovering", p.name)
+                    live_urls = [a.url for a in addresses if a.is_live]
+                    logger.info(
+                        "Provider %s is back online (%s), re-discovering",
+                        p.name,
+                        ", ".join(live_urls),
+                    )
                     await self._rebuild_clients(p)
                     await self._discover_provider(p)
                 else:
@@ -583,7 +588,12 @@ class ProviderManager:
                     await self._db.update_provider_status(p.id, ProviderStatus.IDLE)
             else:
                 if p.status != ProviderStatus.OFFLINE:
-                    logger.warning("Provider %s went offline", p.name)
+                    addr_urls = [a.url for a in addresses]
+                    logger.warning(
+                        "Provider %s went offline (%s)",
+                        p.name,
+                        ", ".join(addr_urls),
+                    )
                 await self._db.update_provider_status(p.id, ProviderStatus.OFFLINE)
 
     async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
