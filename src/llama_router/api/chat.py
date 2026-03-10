@@ -7,6 +7,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..auth import routing_preferences_from_request
 from ..request_logger import StreamLogger, log_request
 from . import deps
 
@@ -32,8 +33,9 @@ async def chat(request: Request):
     rt = deps.get_router()
     pm = deps.get_pm()
     db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, protocol="ollama")
+    result = await rt.route(model, protocol="ollama", preferences=prefs)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"

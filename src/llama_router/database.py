@@ -84,6 +84,21 @@ CREATE TABLE IF NOT EXISTS provider_addresses (
     is_live INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_prefix TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    routing_mode TEXT NOT NULL DEFAULT 'latency',
+    allow_fallback INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 _MIGRATIONS = [
@@ -112,6 +127,25 @@ _MIGRATIONS = [
         "add_model_raw_name",
         [
             "ALTER TABLE provider_models ADD COLUMN raw_name TEXT",
+        ],
+    ),
+    (
+        "add_api_keys_and_settings",
+        [
+            "CREATE TABLE IF NOT EXISTS api_keys ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "key_prefix TEXT NOT NULL, "
+            "key_hash TEXT NOT NULL UNIQUE, "
+            "routing_mode TEXT NOT NULL DEFAULT 'latency', "
+            "allow_fallback INTEGER NOT NULL DEFAULT 1, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+            "last_used_at TIMESTAMP"
+            ")",
+            "CREATE TABLE IF NOT EXISTS app_settings ("
+            "key TEXT PRIMARY KEY, "
+            "value TEXT NOT NULL"
+            ")",
+            "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allow_unauthenticated', 'true')",
         ],
     ),
 ]
@@ -493,13 +527,21 @@ class Database:
         await self.db.commit()
 
     async def get_latest_benchmark(
-        self, provider_id: int, model_name: str
+        self, provider_id: int, model_name: str, protocol: str | None = None
     ) -> BenchmarkResult | None:
-        async with self.db.execute(
-            "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (provider_id, model_name),
-        ) as cursor:
+        if protocol:
+            query = (
+                "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? AND protocol = ? "
+                "ORDER BY created_at DESC LIMIT 1"
+            )
+            params = (provider_id, model_name, protocol)
+        else:
+            query = (
+                "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
+                "ORDER BY created_at DESC LIMIT 1"
+            )
+            params = (provider_id, model_name)
+        async with self.db.execute(query, params) as cursor:
             row = await cursor.fetchone()
             return _row_to_benchmark(row) if row else None
 
@@ -655,6 +697,77 @@ class Database:
             seen.add(fb)
             current = fb
         return chain
+
+    # --- API Keys / Auth settings ---
+
+    async def create_api_key(
+        self, key_prefix: str, key_hash: str, routing_mode: str, allow_fallback: bool
+    ) -> int:
+        cursor = await self.db.execute(
+            "INSERT INTO api_keys (key_prefix, key_hash, routing_mode, allow_fallback) VALUES (?, ?, ?, ?)",
+            (key_prefix, key_hash, routing_mode, int(allow_fallback)),
+        )
+        await self.db.commit()
+        return int(cursor.lastrowid)
+
+    async def list_api_keys(self) -> list[dict]:
+        async with self.db.execute(
+            "SELECT id, key_prefix, routing_mode, allow_fallback, created_at, last_used_at "
+            "FROM api_keys ORDER BY created_at DESC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "id": int(r["id"]),
+                    "key_prefix": r["key_prefix"],
+                    "routing_mode": r["routing_mode"],
+                    "allow_fallback": bool(r["allow_fallback"]),
+                    "created_at": r["created_at"],
+                    "last_used_at": r["last_used_at"],
+                }
+                for r in rows
+            ]
+
+    async def delete_api_key(self, key_id: int) -> None:
+        await self.db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+        await self.db.commit()
+
+    async def lookup_api_key(self, key_hash: str) -> dict | None:
+        async with self.db.execute(
+            "SELECT id, key_prefix, routing_mode, allow_fallback FROM api_keys WHERE key_hash = ?",
+            (key_hash,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        await self.db.execute(
+            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (row["id"],),
+        )
+        await self.db.commit()
+        return {
+            "id": int(row["id"]),
+            "key_prefix": row["key_prefix"],
+            "routing_mode": row["routing_mode"],
+            "allow_fallback": bool(row["allow_fallback"]),
+        }
+
+    async def get_allow_unauthenticated(self) -> bool:
+        async with self.db.execute(
+            "SELECT value FROM app_settings WHERE key = 'allow_unauthenticated'"
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return True
+        return str(row["value"]).lower() in ("1", "true", "yes", "on")
+
+    async def set_allow_unauthenticated(self, allow: bool) -> None:
+        await self.db.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('allow_unauthenticated', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            ("true" if allow else "false",),
+        )
+        await self.db.commit()
 
 
 def _row_to_provider(row: aiosqlite.Row) -> Provider:

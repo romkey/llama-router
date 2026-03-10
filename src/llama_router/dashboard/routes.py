@@ -12,6 +12,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..auth import generate_api_key, key_hash, key_prefix
 from ..config import settings
 from ..models import ProviderType, RequestLog
 from . import deps
@@ -134,6 +135,8 @@ async def dashboard(request: Request):
 
     model_request_counts = await db.get_model_request_counts()
     model_fallbacks = await db.get_all_model_fallbacks()
+    api_keys = await db.list_api_keys()
+    allow_unauthenticated = await db.get_allow_unauthenticated()
 
     log_page = int(request.query_params.get("log_page", "1"))
     log_per_page = 100
@@ -177,6 +180,8 @@ async def dashboard(request: Request):
             "all_provider_counts": all_provider_counts,
             "model_request_counts": model_request_counts,
             "model_fallbacks": model_fallbacks,
+            "api_keys": api_keys,
+            "allow_unauthenticated": allow_unauthenticated,
             "log_entries": log_entries,
             "log_page": log_page,
             "log_pages": log_pages,
@@ -263,6 +268,47 @@ async def api_status():
             "cache": cache_stats,
         }
     )
+
+
+@router.post("/api/keys/generate")
+async def api_generate_key(request: Request):
+    db = deps.get_db()
+    body = await request.json()
+    routing_mode = (body.get("routing_mode") or "latency").strip().lower()
+    allow_fallback = bool(body.get("allow_fallback", True))
+    if routing_mode not in {"latency", "throughput"}:
+        raise HTTPException(status_code=400, detail="Invalid routing_mode")
+
+    plaintext = generate_api_key()
+    await db.create_api_key(
+        key_prefix=key_prefix(plaintext),
+        key_hash=key_hash(plaintext),
+        routing_mode=routing_mode,
+        allow_fallback=allow_fallback,
+    )
+    return JSONResponse(
+        {
+            "api_key": plaintext,
+            "routing_mode": routing_mode,
+            "allow_fallback": allow_fallback,
+        }
+    )
+
+
+@router.delete("/api/keys/{key_id}")
+async def api_delete_key(key_id: int):
+    db = deps.get_db()
+    await db.delete_api_key(key_id)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/auth/allow-unauthenticated")
+async def api_set_allow_unauthenticated(request: Request):
+    db = deps.get_db()
+    body = await request.json()
+    allow = bool(body.get("allow", True))
+    await db.set_allow_unauthenticated(allow)
+    return JSONResponse({"allow_unauthenticated": allow})
 
 
 @router.get("/providers/{provider_id}", response_class=HTMLResponse)

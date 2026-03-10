@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from .database import Database
 from .models import Provider, ProviderStatus
@@ -21,13 +22,22 @@ class RouteResult:
         self.resolved_model = resolved_model
 
 
+@dataclass(slots=True)
+class RoutingPreferences:
+    mode: str = "latency"  # "latency" or "throughput"
+    allow_fallback: bool = True
+
+
 class Router:
     def __init__(self, db: Database, provider_manager: ProviderManager):
         self._db = db
         self._pm = provider_manager
 
     async def route(
-        self, model_name: str, protocol: str | None = None
+        self,
+        model_name: str,
+        protocol: str | None = None,
+        preferences: RoutingPreferences | None = None,
     ) -> RouteResult | None:
         """Pick the best provider for the requested model, following fallbacks.
 
@@ -36,9 +46,14 @@ class Router:
         that was actually resolved (may differ from the original if a fallback
         was used).
         """
-        chain = await self._db.resolve_fallback_chain(model_name)
+        if preferences and not preferences.allow_fallback:
+            chain = [model_name]
+        else:
+            chain = await self._db.resolve_fallback_chain(model_name)
         for candidate_model in chain:
-            result = await self._route_single(candidate_model, protocol)
+            result = await self._route_single(
+                candidate_model, protocol, preferences=preferences
+            )
             if result is not None:
                 if candidate_model != model_name:
                     logger.info(
@@ -50,7 +65,10 @@ class Router:
         return None
 
     async def _route_single(
-        self, model_name: str, protocol: str | None = None
+        self,
+        model_name: str,
+        protocol: str | None = None,
+        preferences: RoutingPreferences | None = None,
     ) -> Provider | None:
         """Pick the best provider for a single model (no fallbacks)."""
         candidates = await self._db.get_providers_for_model(model_name, protocol)
@@ -65,9 +83,23 @@ class Router:
         for provider in online:
             assert provider.id is not None
             active = self._pm.active_requests(provider.id)
-            bench = await self._db.get_latest_benchmark(provider.id, model_name)
+            bench = await self._db.get_latest_benchmark(
+                provider.id, model_name, protocol=protocol
+            )
             tps = bench.tokens_per_second if bench and bench.tokens_per_second else 0
-            score = active - (tps / 10000)
+            startup_ms = (
+                bench.startup_time_ms if bench and bench.startup_time_ms else None
+            )
+            mode = preferences.mode if preferences else "latency"
+            if mode == "throughput":
+                # Prefer highest TPS, then lower active queue depth.
+                score = (active * 100.0) - tps
+            else:
+                # Prefer low queue depth and low startup latency.
+                startup_component = (
+                    startup_ms if startup_ms is not None else 1_000_000.0
+                )
+                score = (active * 1000.0) + startup_component
             scored.append((score, provider))
 
         scored.sort(key=lambda x: x[0])

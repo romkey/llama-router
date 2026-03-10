@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 import time
 from collections import defaultdict
 
@@ -603,6 +604,34 @@ class ProviderManager:
                     details=m.details,
                 )
 
+            # Also probe each configured llama.cpp instance for its currently loaded
+            # model via /props; some instances expose active model there even when
+            # /v1/models is sparse.
+            addresses = await self._db.get_addresses(provider.id)
+            for addr in addresses:
+                probe_url = addr.llamacpp_url or addr.url
+                tmp = LlamaCppClient(probe_url)
+                try:
+                    props = await tmp.get_props()
+                finally:
+                    await tmp.close()
+                current = self._extract_llamacpp_current_model(props)
+                if not current:
+                    continue
+                clean_name = self._strip_cache_prefix(current)
+                raw_name = current if clean_name != current else None
+                if raw_name:
+                    cache_prefixed += 1
+                _upsert_model(
+                    source="llamacpp",
+                    clean_name=clean_name,
+                    raw_name=raw_name,
+                    details={
+                        "_from_props": True,
+                        "_llamacpp_source_url": probe_url,
+                    },
+                )
+
         all_models = list(models_by_name.values())
         await self._db.set_provider_models(provider.id, all_models)
         if cache_prefixed:
@@ -620,6 +649,22 @@ class ProviderManager:
             )
 
         await self._refresh_hot_models(provider)
+
+    @staticmethod
+    def _extract_llamacpp_current_model(props: dict | None) -> str | None:
+        if not props:
+            return None
+        for key in ("model_alias", "model", "model_name"):
+            val = props.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        model_path = props.get("model_path")
+        if isinstance(model_path, str) and model_path.strip():
+            name = Path(model_path).name
+            if name.endswith(".gguf"):
+                name = name[: -len(".gguf")]
+            return name
+        return None
 
     async def _health_check_loop(self) -> None:
         while True:
