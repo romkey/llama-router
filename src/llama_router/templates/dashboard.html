@@ -507,6 +507,7 @@
                             <select id="new-key-mode" class="form-select form-select-sm">
                                 <option value="latency" selected>Minimal latency</option>
                                 <option value="throughput">Maximum tokens/sec</option>
+                                <option value="chaos">Chaos mode (random provider/model)</option>
                             </select>
                         </div>
                         <div class="form-check mb-3">
@@ -529,6 +530,65 @@
                             <label class="form-check-label" for="allow-unauthenticated">
                                 Accept requests without a valid API key
                             </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0">Routing Preview</h5>
+                    </div>
+                    <div class="card-body small">
+                        <p class="text-muted mb-2">Likely provider order for new keys, based on live load and benchmark history.</p>
+                        <div class="mb-2">
+                            <div class="fw-semibold mb-1"><i class="bi bi-stopwatch me-1"></i>Minimal latency</div>
+                            {% if key_routing_preview.latency %}
+                            <ol class="mb-2 ps-3">
+                                {% for p in key_routing_preview.latency %}
+                                <li>
+                                    <strong>{{ p.name }}</strong>
+                                    <span class="text-muted">
+                                        — {{ p.active_requests }} active,
+                                        {{ "%.0f ms" | format(p.avg_startup_ms) if p.avg_startup_ms is not none else "no startup data" }}
+                                    </span>
+                                </li>
+                                {% endfor %}
+                            </ol>
+                            {% else %}
+                            <div class="text-muted">No online providers.</div>
+                            {% endif %}
+                        </div>
+                        <div>
+                            <div class="fw-semibold mb-1"><i class="bi bi-lightning-charge me-1"></i>Maximum tokens/sec</div>
+                            {% if key_routing_preview.throughput %}
+                            <ol class="mb-0 ps-3">
+                                {% for p in key_routing_preview.throughput %}
+                                <li>
+                                    <strong>{{ p.name }}</strong>
+                                    <span class="text-muted">
+                                        — {{ "%.1f tok/s" | format(p.avg_tps) if p.avg_tps is not none else "no TPS data" }},
+                                        {{ p.active_requests }} active
+                                    </span>
+                                </li>
+                                {% endfor %}
+                            </ol>
+                            {% else %}
+                            <div class="text-muted">No online providers.</div>
+                            {% endif %}
+                        </div>
+                        <hr class="my-2">
+                        <div>
+                            <div class="fw-semibold mb-1"><i class="bi bi-shuffle me-1"></i>Chaos mode</div>
+                            {% if key_routing_preview.chaos %}
+                            <div class="text-muted">Randomly chooses one online provider and one model from it.</div>
+                            <div class="small mt-1">Current candidate pool:</div>
+                            <ul class="mb-0 ps-3">
+                                {% for p in key_routing_preview.chaos %}
+                                <li><strong>{{ p.name }}</strong> <span class="text-muted">({{ p.model_count }} models)</span></li>
+                                {% endfor %}
+                            </ul>
+                            {% else %}
+                            <div class="text-muted">No online providers.</div>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
@@ -558,8 +618,8 @@
                                     <tr>
                                         <td><code>{{ k.key_prefix }}</code></td>
                                         <td>
-                                            <span class="badge {{ 'bg-primary' if k.routing_mode == 'latency' else 'bg-info text-dark' }}">
-                                                {{ 'minimal latency' if k.routing_mode == 'latency' else 'max tokens/sec' }}
+                                            <span class="badge {{ 'bg-primary' if k.routing_mode == 'latency' else ('bg-info text-dark' if k.routing_mode == 'throughput' else 'bg-warning text-dark') }}">
+                                                {{ 'minimal latency' if k.routing_mode == 'latency' else ('max tokens/sec' if k.routing_mode == 'throughput' else 'chaos') }}
                                             </span>
                                         </td>
                                         <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>

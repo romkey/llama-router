@@ -41,5 +41,7 @@ async def routing_preferences_from_request(
             return None
         raise HTTPException(status_code=401, detail="Invalid API-KEY")
 
-    mode = "throughput" if record["routing_mode"] == "throughput" else "latency"
+    mode = str(record["routing_mode"]).lower()
+    if mode not in {"latency", "throughput", "chaos"}:
+        mode = "latency"
     return RoutingPreferences(mode=mode, allow_fallback=bool(record["allow_fallback"]))

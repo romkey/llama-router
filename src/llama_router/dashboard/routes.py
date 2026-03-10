@@ -138,6 +138,64 @@ async def dashboard(request: Request):
     api_keys = await db.list_api_keys()
     allow_unauthenticated = await db.get_allow_unauthenticated()
 
+    # Preview likely provider preference for each key routing mode.
+    bench_by_provider: dict[int, list[dict]] = {}
+    for b in all_benchmarks:
+        pid = int(b["provider_id"])
+        bench_by_provider.setdefault(pid, []).append(b)
+
+    preview_rows: list[dict] = []
+    for info in infos:
+        pid = info.provider.id
+        if pid is None or info.provider.status.value == "offline":
+            continue
+        pb = bench_by_provider.get(pid, [])
+        startup_vals = [
+            float(b["startup_time_ms"])
+            for b in pb
+            if b.get("startup_time_ms") is not None
+        ]
+        tps_vals = [
+            float(b["tokens_per_second"])
+            for b in pb
+            if b.get("tokens_per_second") is not None
+        ]
+        avg_startup = sum(startup_vals) / len(startup_vals) if startup_vals else None
+        avg_tps = sum(tps_vals) / len(tps_vals) if tps_vals else None
+        preview_rows.append(
+            {
+                "name": info.provider.name,
+                "active_requests": info.active_requests,
+                "avg_startup_ms": avg_startup,
+                "avg_tps": avg_tps,
+                "model_count": len(info.models),
+            }
+        )
+
+    latency_preview = sorted(
+        preview_rows,
+        key=lambda r: (
+            r["active_requests"],
+            r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
+            -r["model_count"],
+        ),
+    )[:5]
+    throughput_preview = sorted(
+        preview_rows,
+        key=lambda r: (
+            -(r["avg_tps"] if r["avg_tps"] is not None else 0.0),
+            r["active_requests"],
+            r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
+        ),
+    )[:5]
+    chaos_preview = sorted(preview_rows, key=lambda r: r["name"])[:5]
+
+    key_routing_preview = {
+        "latency": latency_preview,
+        "throughput": throughput_preview,
+        "chaos": chaos_preview,
+    }
+
     log_page = int(request.query_params.get("log_page", "1"))
     log_per_page = 100
     log_total = await db.count_request_logs()
@@ -182,6 +240,7 @@ async def dashboard(request: Request):
             "model_fallbacks": model_fallbacks,
             "api_keys": api_keys,
             "allow_unauthenticated": allow_unauthenticated,
+            "key_routing_preview": key_routing_preview,
             "log_entries": log_entries,
             "log_page": log_page,
             "log_pages": log_pages,
@@ -276,7 +335,7 @@ async def api_generate_key(request: Request):
     body = await request.json()
     routing_mode = (body.get("routing_mode") or "latency").strip().lower()
     allow_fallback = bool(body.get("allow_fallback", True))
-    if routing_mode not in {"latency", "throughput"}:
+    if routing_mode not in {"latency", "throughput", "chaos"}:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
 
     plaintext = generate_api_key()

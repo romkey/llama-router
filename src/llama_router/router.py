@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 
 from .database import Database
-from .models import Provider, ProviderStatus
+from .models import Provider, ProviderStatus, ProviderType
 from .provider_manager import ProviderManager
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class RouteResult:
 
 @dataclass(slots=True)
 class RoutingPreferences:
-    mode: str = "latency"  # "latency" or "throughput"
+    mode: str = "latency"  # "latency", "throughput", or "chaos"
     allow_fallback: bool = True
 
 
@@ -46,6 +47,9 @@ class Router:
         that was actually resolved (may differ from the original if a fallback
         was used).
         """
+        if preferences and preferences.mode == "chaos":
+            return await self._route_chaos(model_name, protocol)
+
         if preferences and not preferences.allow_fallback:
             chain = [model_name]
         else:
@@ -63,6 +67,66 @@ class Router:
                     )
                 return RouteResult(result, candidate_model)
         return None
+
+    async def _route_chaos(
+        self, requested_model: str, protocol: str | None = None
+    ) -> RouteResult | None:
+        """Chaos mode: pick a random online provider and random eligible model."""
+        providers = await self._db.list_providers()
+        online = [p for p in providers if p.status != ProviderStatus.OFFLINE]
+        if protocol == "ollama":
+            online = [
+                p
+                for p in online
+                if p.provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
+            ]
+        elif protocol == "llamacpp":
+            online = [
+                p
+                for p in online
+                if p.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
+            ]
+        if not online:
+            return None
+
+        candidates: list[tuple[Provider, list[str]]] = []
+        for p in online:
+            if p.id is None:
+                continue
+            models = await self._db.get_provider_models(p.id)
+            eligible: list[str] = []
+            for m in models:
+                details = m.details or {}
+                if protocol == "ollama":
+                    if "_in_ollama" in details:
+                        if details.get("_in_ollama"):
+                            eligible.append(m.name)
+                    elif p.provider_type in (ProviderType.OLLAMA, ProviderType.BOTH):
+                        eligible.append(m.name)
+                elif protocol == "llamacpp":
+                    if "_in_llamacpp" in details:
+                        if details.get("_in_llamacpp"):
+                            eligible.append(m.name)
+                    elif p.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH):
+                        eligible.append(m.name)
+                else:
+                    eligible.append(m.name)
+            if eligible:
+                candidates.append((p, eligible))
+
+        if not candidates:
+            return None
+
+        provider, eligible = random.choice(candidates)
+        resolved_model = random.choice(eligible)
+        logger.info(
+            "Chaos routing requested=%s protocol=%s -> provider=%s model=%s",
+            requested_model,
+            protocol or "any",
+            provider.name,
+            resolved_model,
+        )
+        return RouteResult(provider, resolved_model)
 
     async def _route_single(
         self,
