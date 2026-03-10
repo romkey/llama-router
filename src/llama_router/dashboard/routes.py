@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from ..auth import generate_api_key, key_hash, key_prefix
 from ..config import settings
 from ..models import ProviderType, RequestLog
+from ..request_logger import log_request
 from . import deps
 
 from .. import __version__
@@ -711,6 +712,26 @@ async def api_pull_model(request: Request):
 
     cache_url = _cache_registry_url()
     db = deps.get_db()
+    source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+        request.client.host if request.client else "unknown"
+    )
+    await log_request(
+        db,
+        provider=None,
+        protocol="ollama",
+        endpoint="/api/pull",
+        request=request,
+        source_ip=source_ip,
+        model=model,
+        request_body={
+            "model": model,
+            "provider_id": provider_id,
+            "pull_api": pull_api,
+            "targets": provider_ids,
+        },
+        duration_ms=0.0,
+        status="ok",
+    )
 
     async def _run_pull():
         pull_entry = _active_pulls[pull_id]
@@ -752,8 +773,12 @@ async def api_pull_model(request: Request):
                         provider_id=pid,
                         provider_name=pname,
                         protocol="ollama",
-                        endpoint="/api/pull",
+                        endpoint="/api/pull/provider",
+                        source_ip=source_ip,
                         model=model,
+                        request_size=0,
+                        response_size=0,
+                        request_meta=f"pull_api={pull_api}",
                         duration_ms=duration,
                         status="ok",
                     )
@@ -774,8 +799,12 @@ async def api_pull_model(request: Request):
                         provider_id=pid,
                         provider_name=pname,
                         protocol="ollama",
-                        endpoint="/api/pull",
+                        endpoint="/api/pull/provider",
+                        source_ip=source_ip,
                         model=model,
+                        request_size=0,
+                        response_size=0,
+                        request_meta=f"pull_api={pull_api}",
                         duration_ms=duration,
                         status="error",
                         error_detail=str(exc)[:500],

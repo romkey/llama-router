@@ -115,6 +115,7 @@ async def images_edits(request: Request):
     """Proxy multipart image edit requests."""
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
+    log_body = {"attachments": True, "content_type": content_type}
 
     form = await request.form()
     model = form.get("model")
@@ -147,7 +148,7 @@ async def images_edits(request: Request):
             endpoint="/v1/images/edits",
             request=request,
             model=model,
-            request_body={},
+            request_body=log_body,
             response_size=len(resp.content),
             duration_ms=duration,
         )
@@ -171,7 +172,7 @@ async def images_edits(request: Request):
             endpoint="/v1/images/edits",
             request=request,
             model=model,
-            request_body={},
+            request_body=log_body,
             response_size=0,
             duration_ms=duration,
             status="error",
@@ -187,7 +188,7 @@ async def images_edits(request: Request):
             endpoint="/v1/images/edits",
             request=request,
             model=model,
-            request_body={},
+            request_body=log_body,
             response_size=0,
             duration_ms=duration,
             status="error",

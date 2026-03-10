@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS request_log (
     model TEXT,
     request_size INTEGER NOT NULL DEFAULT 0,
     response_size INTEGER NOT NULL DEFAULT 0,
+    request_meta TEXT,
     duration_ms REAL NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ok',
     streamed INTEGER NOT NULL DEFAULT 0,
@@ -146,6 +147,12 @@ _MIGRATIONS = [
             "value TEXT NOT NULL"
             ")",
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allow_unauthenticated', 'true')",
+        ],
+    ),
+    (
+        "add_request_meta",
+        [
+            "ALTER TABLE request_log ADD COLUMN request_meta TEXT",
         ],
     ),
 ]
@@ -602,8 +609,8 @@ class Database:
         await self.db.execute(
             "INSERT INTO request_log "
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
-            "request_size, response_size, duration_ms, status, streamed, error_detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "request_size, response_size, request_meta, duration_ms, status, streamed, error_detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -613,6 +620,7 @@ class Database:
                 entry.model,
                 entry.request_size,
                 entry.response_size,
+                entry.request_meta,
                 entry.duration_ms,
                 entry.status,
                 int(entry.streamed),
@@ -834,6 +842,7 @@ def _row_to_request_log(row: aiosqlite.Row) -> RequestLog:
         model=row["model"],
         request_size=row["request_size"],
         response_size=row["response_size"],
+        request_meta=row["request_meta"] if "request_meta" in row.keys() else None,
         duration_ms=row["duration_ms"],
         status=row["status"],
         streamed=bool(row["streamed"]),

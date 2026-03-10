@@ -647,8 +647,47 @@
     <!-- ==================== LOG TAB ==================== -->
     <div class="tab-pane fade" id="log-pane" role="tabpanel" aria-labelledby="log-tab" tabindex="0">
         {% if log_entries %}
+        <div class="card mb-3">
+            <div class="card-body py-2">
+                <div class="row g-2 align-items-center">
+                    <div class="col-md-2">
+                        <select class="form-select form-select-sm" id="log-filter-protocol">
+                            <option value="">All protocols</option>
+                            <option value="ollama">Ollama</option>
+                            <option value="llamacpp">llama.cpp</option>
+                            <option value="v1">v1</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <select class="form-select form-select-sm" id="log-filter-status">
+                            <option value="">All statuses</option>
+                            <option value="ok">OK</option>
+                            <option value="error">Error</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <select class="form-select form-select-sm" id="log-filter-meta">
+                            <option value="">Any metadata</option>
+                            <option value="with">With metadata</option>
+                            <option value="attachments">Has attachments</option>
+                            <option value="images">Has images</option>
+                            <option value="audio">Has audio</option>
+                            <option value="tools">Has tools</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <input class="form-control form-control-sm" id="log-filter-endpoint" placeholder="Filter endpoint (e.g. /api/pull)">
+                    </div>
+                    <div class="col-md-3 d-flex gap-2">
+                        <input class="form-control form-control-sm" id="log-filter-model" placeholder="Filter model">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" id="log-filter-clear">Clear</button>
+                    </div>
+                </div>
+                <div class="small text-muted mt-2" id="log-filter-count"></div>
+            </div>
+        </div>
         <div class="table-responsive">
-            <table class="table table-hover table-sm">
+            <table class="table table-hover table-sm" id="log-table">
                 <thead>
                     <tr>
                         <th>Time</th>
@@ -656,6 +695,7 @@
                         <th>Protocol</th>
                         <th>Endpoint</th>
                         <th>Model</th>
+                        <th>Meta</th>
                         <th>Provider</th>
                         <th>Req Size</th>
                         <th>Resp Size</th>
@@ -665,12 +705,21 @@
                 </thead>
                 <tbody>
                     {% for entry in log_entries %}
-                    <tr class="{% if entry.status == 'error' %}table-danger{% endif %}">
+                    <tr
+                        class="log-entry-row {% if entry.status == 'error' %}table-danger{% endif %}"
+                        data-entry-id="{{ entry.id }}"
+                        data-protocol="{{ entry.protocol }}"
+                        data-status="{{ entry.status }}"
+                        data-endpoint="{{ entry.endpoint | lower }}"
+                        data-model="{{ (entry.model or '') | lower }}"
+                        data-meta="{{ (entry.request_meta or '') | lower }}"
+                    >
                         <td class="text-muted small text-nowrap">{{ entry.created_at | localtime }}</td>
                         <td class="small"><code>{{ entry.source_ip or "—" }}</code></td>
                         <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
                         <td class="small"><code>{{ entry.endpoint }}</code></td>
                         <td class="small"><code>{{ entry.model or "—" }}</code></td>
+                        <td class="small text-muted">{{ entry.request_meta or "—" }}</td>
                         <td class="small">
                             {% if entry.provider_id %}
                             <a href="/providers/{{ entry.provider_id }}" class="text-decoration-none">{{ entry.provider_name }}</a>
@@ -701,8 +750,8 @@
                         </td>
                     </tr>
                     {% if entry.status != 'ok' and entry.error_detail %}
-                    <tr class="collapse table-danger" id="error-detail-{{ entry.id }}">
-                        <td colspan="10" class="small py-2 px-3">
+                    <tr class="collapse table-danger log-error-row" id="error-detail-{{ entry.id }}" data-parent-id="{{ entry.id }}">
+                        <td colspan="11" class="small py-2 px-3">
                             <strong>Error detail:</strong>
                             <pre class="mb-0 mt-1 text-wrap" style="white-space:pre-wrap; font-size:.8rem">{{ entry.error_detail }}</pre>
                         </td>
@@ -711,6 +760,9 @@
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+        <div class="alert alert-secondary mt-3 d-none" id="log-no-results">
+            No log entries match the current filters.
         </div>
 
         {% if log_pages > 1 %}
@@ -1041,8 +1093,86 @@ function switchProviderView(view) {
         });
     });
 
+    initLogFilters();
     setInterval(refreshStatus, 5000);
 })();
+
+function initLogFilters() {
+    const rows = document.querySelectorAll('#log-table .log-entry-row');
+    if (!rows.length) return;
+
+    const controls = {
+        protocol: document.getElementById('log-filter-protocol'),
+        status: document.getElementById('log-filter-status'),
+        meta: document.getElementById('log-filter-meta'),
+        endpoint: document.getElementById('log-filter-endpoint'),
+        model: document.getElementById('log-filter-model'),
+        clear: document.getElementById('log-filter-clear'),
+    };
+
+    const apply = function() { applyLogFilters(); };
+    ['protocol', 'status', 'meta'].forEach(function(k) {
+        if (controls[k]) controls[k].addEventListener('change', apply);
+    });
+    ['endpoint', 'model'].forEach(function(k) {
+        if (controls[k]) controls[k].addEventListener('input', apply);
+    });
+    if (controls.clear) {
+        controls.clear.addEventListener('click', function() {
+            if (controls.protocol) controls.protocol.value = '';
+            if (controls.status) controls.status.value = '';
+            if (controls.meta) controls.meta.value = '';
+            if (controls.endpoint) controls.endpoint.value = '';
+            if (controls.model) controls.model.value = '';
+            applyLogFilters();
+        });
+    }
+    applyLogFilters();
+}
+
+function applyLogFilters() {
+    const protocol = (document.getElementById('log-filter-protocol')?.value || '').toLowerCase();
+    const status = (document.getElementById('log-filter-status')?.value || '').toLowerCase();
+    const metaMode = (document.getElementById('log-filter-meta')?.value || '').toLowerCase();
+    const endpoint = (document.getElementById('log-filter-endpoint')?.value || '').trim().toLowerCase();
+    const model = (document.getElementById('log-filter-model')?.value || '').trim().toLowerCase();
+
+    const rows = document.querySelectorAll('#log-table .log-entry-row');
+    let shown = 0;
+    rows.forEach(function(row) {
+        const p = (row.dataset.protocol || '').toLowerCase();
+        const s = (row.dataset.status || '').toLowerCase();
+        const e = (row.dataset.endpoint || '').toLowerCase();
+        const m = (row.dataset.model || '').toLowerCase();
+        const meta = (row.dataset.meta || '').toLowerCase();
+
+        let ok = true;
+        if (protocol && p !== protocol) ok = false;
+        if (status && s !== status) ok = false;
+        if (endpoint && !e.includes(endpoint)) ok = false;
+        if (model && !m.includes(model)) ok = false;
+        if (metaMode === 'with' && !meta) ok = false;
+        if (metaMode && metaMode !== 'with' && !meta.includes(metaMode)) ok = false;
+
+        row.style.display = ok ? '' : 'none';
+        if (ok) shown += 1;
+
+        const parentId = row.dataset.entryId;
+        const errorRow = document.querySelector('.log-error-row[data-parent-id="' + parentId + '"]');
+        if (errorRow && !ok) {
+            errorRow.classList.remove('show');
+            errorRow.style.display = 'none';
+        } else if (errorRow) {
+            errorRow.style.display = '';
+        }
+    });
+
+    const total = rows.length;
+    const countEl = document.getElementById('log-filter-count');
+    if (countEl) countEl.textContent = shown + ' of ' + total + ' entries shown';
+    const emptyEl = document.getElementById('log-no-results');
+    if (emptyEl) emptyEl.classList.toggle('d-none', shown > 0);
+}
 
 const STATUS_CLASSES = {
     idle: 'badge bg-success',

@@ -28,6 +28,71 @@ def _payload_size(body: Any) -> int:
         return 0
 
 
+def _request_meta_summary(body: Any) -> str | None:
+    if body is None:
+        return None
+    if not isinstance(body, (dict, list)):
+        return None
+
+    flags = {
+        "images": False,
+        "attachments": False,
+        "audio": False,
+        "tools": False,
+    }
+    counts = {"messages": 0, "items": 0}
+    stream = None
+
+    if isinstance(body, dict):
+        if isinstance(body.get("messages"), list):
+            counts["messages"] = len(body["messages"])
+        if isinstance(body.get("input"), list):
+            counts["items"] = len(body["input"])
+        elif body.get("input") is not None:
+            counts["items"] = 1
+        if "stream" in body:
+            stream = bool(body.get("stream"))
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                lk = str(k).lower()
+                if "image" in lk:
+                    flags["images"] = True
+                if lk in {"attachments", "files", "file"}:
+                    flags["attachments"] = True
+                if "audio" in lk or "voice" in lk:
+                    flags["audio"] = True
+                if lk in {"tools", "tool_calls"}:
+                    flags["tools"] = True
+                walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(body)
+    parts: list[str] = []
+    if counts["messages"]:
+        parts.append(f"messages={counts['messages']}")
+    if counts["items"]:
+        parts.append(f"input_items={counts['items']}")
+    if stream is not None:
+        parts.append(f"stream={str(stream).lower()}")
+    for k in ("images", "attachments", "audio", "tools"):
+        if flags[k]:
+            parts.append(k)
+    if isinstance(body, dict):
+        if body.get("pull_api"):
+            parts.append(f"pull_api={body.get('pull_api')}")
+        if body.get("benchmark_api"):
+            parts.append(f"benchmark_api={body.get('benchmark_api')}")
+
+    if not parts:
+        return None
+    s = ", ".join(parts)
+    return s[:240]
+
+
 async def log_request(
     db: Database,
     *,
@@ -54,6 +119,7 @@ async def log_request(
         model=model,
         request_size=_payload_size(request_body),
         response_size=response_size,
+        request_meta=_request_meta_summary(request_body),
         duration_ms=duration_ms,
         status=status,
         streamed=streamed,

@@ -102,6 +102,7 @@ class RequestLog(BaseModel):
     model: str | None = None
     request_size: int = 0
     response_size: int = 0
+    request_meta: str | None = None
     duration_ms: float = 0.0
     status: str = "ok"  # "ok" or "error"
     streamed: bool = False

@@ -132,6 +132,7 @@ async def audio_transcriptions(request: Request):
     """Speech-to-text: multipart audio file in, JSON transcript out."""
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
+    log_body = {"audio": True, "attachments": True, "content_type": content_type}
 
     form = await request.form()
     model = form.get("model")
@@ -164,7 +165,7 @@ async def audio_transcriptions(request: Request):
             endpoint="/v1/audio/transcriptions",
             request=request,
             model=model,
-            request_body={},
+            request_body=log_body,
             response_size=len(resp.content),
             duration_ms=duration,
         )
@@ -188,7 +189,7 @@ async def audio_transcriptions(request: Request):
             endpoint="/v1/audio/transcriptions",
             request=request,
             model=model,
-            request_body={},
+            request_body=log_body,
             response_size=0,
             duration_ms=duration,
             status="error",
@@ -204,7 +205,7 @@ async def audio_transcriptions(request: Request):
             endpoint="/v1/audio/transcriptions",
             request=request,
             model=model,
-            request_body={},
+            request_body=log_body,
             response_size=0,
             duration_ms=duration,
             status="error",
