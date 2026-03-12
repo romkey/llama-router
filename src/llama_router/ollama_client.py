@@ -79,6 +79,19 @@ class OllamaClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def generate_stream(self, body: dict) -> AsyncIterator[bytes]:
+        body["stream"] = True
+        async with self._http.stream("POST", "/api/generate", json=body) as resp:
+            resp.raise_for_status()
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+
+    async def generate(self, body: dict) -> dict:
+        body["stream"] = False
+        resp = await self._http.post("/api/generate", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
     async def embeddings(self, body: dict) -> dict:
         resp = await self._http.post("/api/embeddings", json=body)
         resp.raise_for_status()
