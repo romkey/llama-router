@@ -12,6 +12,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 - **Benchmarking** — Measure startup time and tokens/sec per model per provider
 - **Smart Routing** — Routes to the least-busy, most-capable provider based on active requests and benchmark data
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
+- **API Key Routing Policies** — Per-key latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
 - **OCI Registry Cache** — Built-in pull-through cache for Ollama model downloads, serving cached layers at LAN speed
 
 ## Quick Start
@@ -110,6 +111,25 @@ curl http://localhost/api/fallbacks
 
 # Remove a fallback
 curl -X DELETE http://localhost/api/fallbacks/llama3:70b
+```
+
+## API Key Model Pinning
+
+API keys can optionally pin specific models to specific providers. When a pinned model is requested with that key, llama-router always chooses the configured provider for that model (if available), bypassing latency/throughput scoring.
+
+You can configure pins from the **API Keys** tab in the dashboard, or with the REST API:
+
+```bash
+# Pin a model to a provider for API key 1
+curl -X POST http://localhost/api/keys/1/pins \
+  -H 'Content-Type: application/json' \
+  -d '{"model_name":"llama3.2:latest","provider_id":2}'
+
+# List pins for API key 1
+curl http://localhost/api/keys/1/pins
+
+# Remove a pin
+curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 ```
 
 ## Development

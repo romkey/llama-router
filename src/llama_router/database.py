@@ -96,6 +96,15 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_used_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS api_key_model_pins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    model_name TEXT NOT NULL,
+    provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(api_key_id, model_name)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -145,6 +154,14 @@ _MIGRATIONS = [
             "CREATE TABLE IF NOT EXISTS app_settings ("
             "key TEXT PRIMARY KEY, "
             "value TEXT NOT NULL"
+            ")",
+            "CREATE TABLE IF NOT EXISTS api_key_model_pins ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE, "
+            "model_name TEXT NOT NULL, "
+            "provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+            "UNIQUE(api_key_id, model_name)"
             ")",
             "INSERT OR IGNORE INTO app_settings (key, value) VALUES ('allow_unauthenticated', 'true')",
         ],
@@ -720,8 +737,13 @@ class Database:
 
     async def list_api_keys(self) -> list[dict]:
         async with self.db.execute(
-            "SELECT id, key_prefix, routing_mode, allow_fallback, created_at, last_used_at "
-            "FROM api_keys ORDER BY created_at DESC"
+            "SELECT "
+            "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.created_at, k.last_used_at, "
+            "COUNT(p.id) AS pin_count "
+            "FROM api_keys k "
+            "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
+            "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.created_at, k.last_used_at "
+            "ORDER BY k.created_at DESC"
         ) as cursor:
             rows = await cursor.fetchall()
             return [
@@ -732,6 +754,7 @@ class Database:
                     "allow_fallback": bool(r["allow_fallback"]),
                     "created_at": r["created_at"],
                     "last_used_at": r["last_used_at"],
+                    "pin_count": int(r["pin_count"] or 0),
                 }
                 for r in rows
             ]
@@ -759,6 +782,43 @@ class Database:
             "routing_mode": row["routing_mode"],
             "allow_fallback": bool(row["allow_fallback"]),
         }
+
+    async def set_api_key_model_pin(
+        self, key_id: int, model_name: str, provider_id: int
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO api_key_model_pins (api_key_id, model_name, provider_id) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(api_key_id, model_name) DO UPDATE SET provider_id = excluded.provider_id",
+            (key_id, model_name, provider_id),
+        )
+        await self.db.commit()
+
+    async def remove_api_key_model_pin(self, key_id: int, model_name: str) -> None:
+        await self.db.execute(
+            "DELETE FROM api_key_model_pins WHERE api_key_id = ? AND model_name = ?",
+            (key_id, model_name),
+        )
+        await self.db.commit()
+
+    async def list_api_key_model_pins(self, key_id: int) -> list[dict]:
+        async with self.db.execute(
+            "SELECT p.model_name, p.provider_id, pr.name AS provider_name "
+            "FROM api_key_model_pins p "
+            "JOIN providers pr ON pr.id = p.provider_id "
+            "WHERE p.api_key_id = ? "
+            "ORDER BY p.model_name ASC",
+            (key_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [
+                {
+                    "model_name": r["model_name"],
+                    "provider_id": int(r["provider_id"]),
+                    "provider_name": r["provider_name"],
+                }
+                for r in rows
+            ]
 
     async def get_allow_unauthenticated(self) -> bool:
         async with self.db.execute(

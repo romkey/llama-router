@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass
+from dataclasses import field
 
 from .database import Database
 from .models import Provider, ProviderStatus, ProviderType
@@ -27,6 +28,7 @@ class RouteResult:
 class RoutingPreferences:
     mode: str = "latency"  # "latency", "throughput", or "chaos"
     allow_fallback: bool = True
+    pinned_providers: dict[str, int] = field(default_factory=dict)
 
 
 class Router:
@@ -47,7 +49,12 @@ class Router:
         that was actually resolved (may differ from the original if a fallback
         was used).
         """
-        if preferences and preferences.mode == "chaos":
+        has_direct_pin = bool(
+            preferences
+            and preferences.pinned_providers
+            and model_name in preferences.pinned_providers
+        )
+        if preferences and preferences.mode == "chaos" and not has_direct_pin:
             return await self._route_chaos(model_name, protocol)
 
         if preferences and not preferences.allow_fallback:
@@ -55,6 +62,17 @@ class Router:
         else:
             chain = await self._db.resolve_fallback_chain(model_name)
         for candidate_model in chain:
+            pinned_result = await self._route_pinned(
+                candidate_model, protocol, preferences=preferences
+            )
+            if pinned_result is not None:
+                if candidate_model != model_name:
+                    logger.info(
+                        "Model %s unavailable; fell back to pinned model %s",
+                        model_name,
+                        candidate_model,
+                    )
+                return RouteResult(pinned_result, candidate_model)
             result = await self._route_single(
                 candidate_model, protocol, preferences=preferences
             )
@@ -66,6 +84,37 @@ class Router:
                         candidate_model,
                     )
                 return RouteResult(result, candidate_model)
+        return None
+
+    async def _route_pinned(
+        self,
+        model_name: str,
+        protocol: str | None = None,
+        preferences: RoutingPreferences | None = None,
+    ) -> Provider | None:
+        if not preferences or not preferences.pinned_providers:
+            return None
+        provider_id = preferences.pinned_providers.get(model_name)
+        if provider_id is None:
+            return None
+
+        candidates = await self._db.get_providers_for_model(model_name, protocol)
+        for provider in candidates:
+            if provider.id == provider_id and provider.status != ProviderStatus.OFFLINE:
+                logger.info(
+                    "Pinned routing model %s (%s) -> provider %s",
+                    model_name,
+                    protocol or "any",
+                    provider.name,
+                )
+                return provider
+
+        logger.warning(
+            "Pinned route unavailable for model %s (%s) provider_id=%d",
+            model_name,
+            protocol or "any",
+            provider_id,
+        )
         return None
 
     async def _route_chaos(

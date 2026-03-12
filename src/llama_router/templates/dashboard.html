@@ -608,6 +608,7 @@
                                         <th>Prefix</th>
                                         <th>Priority</th>
                                         <th>Fallback</th>
+                                        <th>Pins</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
                                         <th></th>
@@ -623,9 +624,13 @@
                                             </span>
                                         </td>
                                         <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
+                                        <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
                                         <td class="small text-muted">{{ k.created_at | localtime }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | localtime }}</td>
                                         <td class="text-end">
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick="openKeyPins({{ k.id }}, '{{ k.key_prefix }}')" title="Manage pinned routes">
+                                                <i class="bi bi-diagram-3"></i>
+                                            </button>
                                             <button class="btn btn-sm btn-outline-danger" onclick="deleteApiKey({{ k.id }})">
                                                 <i class="bi bi-trash"></i>
                                             </button>
@@ -1037,6 +1042,58 @@
     </div>
 </div>
 
+<!-- API Key Pins Modal -->
+<div class="modal fade" id="apiKeyPinsModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Pinned Routes for API Key</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="small text-muted mb-2">Key: <code id="pins-key-prefix">—</code></div>
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col-6">
+                        <label class="form-label small text-muted mb-1" for="pins-model">Model</label>
+                        <input class="form-control form-control-sm" id="pins-model" placeholder="e.g. llama3.2:latest">
+                    </div>
+                    <div class="col-4">
+                        <label class="form-label small text-muted mb-1" for="pins-provider">Provider</label>
+                        <select class="form-select form-select-sm" id="pins-provider">
+                            {% for info in providers %}
+                            {% if info.provider.id %}
+                            <option value="{{ info.provider.id }}">{{ info.provider.name }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-2">
+                        <button class="btn btn-sm btn-primary w-100" type="button" onclick="addKeyPin()">Add</button>
+                    </div>
+                </div>
+                <div id="pins-status" class="small text-muted mb-2"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th>Model</th>
+                                <th>Provider</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="pins-table-body">
+                            <tr><td colspan="3" class="text-muted text-center">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -1402,6 +1459,98 @@ function deleteApiKey(keyId) {
         .catch(function(err) { alert(err.message || 'Failed to delete key'); });
 }
 
+function openKeyPins(keyId, keyPrefix) {
+    _pinsKeyId = keyId;
+    var prefixEl = document.getElementById('pins-key-prefix');
+    if (prefixEl) prefixEl.textContent = keyPrefix || ('id=' + keyId);
+    var statusEl = document.getElementById('pins-status');
+    if (statusEl) statusEl.textContent = '';
+    var tbody = document.getElementById('pins-table-body');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Loading…</td></tr>';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('apiKeyPinsModal')).show();
+    loadKeyPins();
+}
+
+function loadKeyPins() {
+    if (_pinsKeyId == null) return;
+    fetch('/api/keys/' + _pinsKeyId + '/pins')
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to load pins'); });
+            return r.json();
+        })
+        .then(function(data) { renderKeyPins(data.pins || []); })
+        .catch(function(err) {
+            var tbody = document.getElementById('pins-table-body');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-danger text-center">' + (err.message || 'Failed') + '</td></tr>';
+        });
+}
+
+function renderKeyPins(pins) {
+    var tbody = document.getElementById('pins-table-body');
+    if (!tbody) return;
+    if (!pins.length) {
+        tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">No pinned routes configured.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = pins.map(function(p) {
+        return '<tr>' +
+            '<td><code>' + p.model_name + '</code></td>' +
+            '<td>' + p.provider_name + '</td>' +
+            '<td class="text-end">' +
+            '<button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteKeyPin(\'' + encodeURIComponent(p.model_name) + '\')" title="Remove pin">' +
+            '<i class="bi bi-x-lg"></i></button></td></tr>';
+    }).join('');
+}
+
+function addKeyPin() {
+    if (_pinsKeyId == null) return;
+    var modelInput = document.getElementById('pins-model');
+    var providerInput = document.getElementById('pins-provider');
+    var statusEl = document.getElementById('pins-status');
+    var model = (modelInput.value || '').trim();
+    var providerId = providerInput.value;
+    if (!model || !providerId) {
+        if (statusEl) statusEl.textContent = 'Model and provider are required.';
+        return;
+    }
+    fetch('/api/keys/' + _pinsKeyId + '/pins', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model_name: model, provider_id: parseInt(providerId, 10)})
+    })
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to set pin'); });
+        return r.json();
+    })
+    .then(function() {
+        if (statusEl) statusEl.textContent = 'Pinned route saved.';
+        modelInput.value = '';
+        loadKeyPins();
+        setTimeout(function() { location.reload(); }, 500);
+    })
+    .catch(function(err) {
+        if (statusEl) statusEl.textContent = err.message || 'Failed to set pin';
+    });
+}
+
+function deleteKeyPin(encodedModel) {
+    if (_pinsKeyId == null) return;
+    var statusEl = document.getElementById('pins-status');
+    fetch('/api/keys/' + _pinsKeyId + '/pins/' + encodedModel, {method: 'DELETE'})
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to remove pin'); });
+            return r.json();
+        })
+        .then(function() {
+            if (statusEl) statusEl.textContent = 'Pinned route removed.';
+            loadKeyPins();
+            setTimeout(function() { location.reload(); }, 500);
+        })
+        .catch(function(err) {
+            if (statusEl) statusEl.textContent = err.message || 'Failed to remove pin';
+        });
+}
+
 function setAllowUnauthenticated(allow) {
     fetch('/api/auth/allow-unauthenticated', {
         method: 'POST',
@@ -1413,6 +1562,7 @@ function setAllowUnauthenticated(allow) {
 var _trackedPulls = {};
 var _bulkPullJobId = null;
 var _bulkBenchJobId = null;
+var _pinsKeyId = null;
 
 function fillMissingPulls() {
     var btn = document.getElementById('btn-fill-pulls');

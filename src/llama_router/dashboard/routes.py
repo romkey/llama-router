@@ -28,6 +28,11 @@ _active_fill_pulls: dict[str, dict] = {}
 _active_fill_benchmarks: dict[str, dict] = {}
 
 
+async def _api_key_exists(db, key_id: int) -> bool:
+    keys = await db.list_api_keys()
+    return any(int(k["id"]) == int(key_id) for k in keys)
+
+
 def _model_in_api(model: object, api: str, provider_type: ProviderType) -> bool:
     details = getattr(model, "details", None) or {}
     if api == "ollama":
@@ -359,6 +364,44 @@ async def api_generate_key(request: Request):
 async def api_delete_key(key_id: int):
     db = deps.get_db()
     await db.delete_api_key(key_id)
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/keys/{key_id}/pins")
+async def api_list_key_pins(key_id: int):
+    db = deps.get_db()
+    if not await _api_key_exists(db, key_id):
+        raise HTTPException(status_code=404, detail="API key not found")
+    pins = await db.list_api_key_model_pins(key_id)
+    return JSONResponse({"pins": pins})
+
+
+@router.post("/api/keys/{key_id}/pins")
+async def api_set_key_pin(key_id: int, request: Request):
+    db = deps.get_db()
+    if not await _api_key_exists(db, key_id):
+        raise HTTPException(status_code=404, detail="API key not found")
+    body = await request.json()
+    model_name = str(body.get("model_name") or "").strip()
+    provider_id_raw = body.get("provider_id")
+    if not model_name or provider_id_raw is None:
+        raise HTTPException(
+            status_code=400, detail="model_name and provider_id are required"
+        )
+    provider_id = int(provider_id_raw)
+    provider = await db.get_provider(provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    await db.set_api_key_model_pin(key_id, model_name, provider_id)
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/keys/{key_id}/pins/{model_name:path}")
+async def api_delete_key_pin(key_id: int, model_name: str):
+    db = deps.get_db()
+    if not await _api_key_exists(db, key_id):
+        raise HTTPException(status_code=404, detail="API key not found")
+    await db.remove_api_key_model_pin(key_id, model_name)
     return JSONResponse({"ok": True})
 
 

@@ -208,3 +208,33 @@ async def test_request_log(db: Database):
 
     count = await db.count_request_logs()
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_api_key_model_pins(db: Database):
+    p1 = await db.add_provider("srv1", "http://host1:11434")
+    p2 = await db.add_provider("srv2", "http://host2:11434")
+    key_id = await db.create_api_key(
+        key_prefix="lrk_test",
+        key_hash="deadbeef",
+        routing_mode="latency",
+        allow_fallback=True,
+    )
+
+    await db.set_api_key_model_pin(key_id, "llama3:8b", p1.id)
+    pins = await db.list_api_key_model_pins(key_id)
+    assert len(pins) == 1
+    assert pins[0]["model_name"] == "llama3:8b"
+    assert pins[0]["provider_id"] == p1.id
+    assert pins[0]["provider_name"] == "srv1"
+
+    # Upsert behavior should replace provider for the same model.
+    await db.set_api_key_model_pin(key_id, "llama3:8b", p2.id)
+    pins = await db.list_api_key_model_pins(key_id)
+    assert len(pins) == 1
+    assert pins[0]["provider_id"] == p2.id
+    assert pins[0]["provider_name"] == "srv2"
+
+    await db.remove_api_key_model_pin(key_id, "llama3:8b")
+    pins = await db.list_api_key_model_pins(key_id)
+    assert pins == []

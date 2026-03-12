@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 import pytest_asyncio
 
 from llama_router.database import Database

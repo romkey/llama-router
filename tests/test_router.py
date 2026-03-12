@@ -5,7 +5,7 @@ import pytest
 from llama_router.database import Database
 from llama_router.models import BenchmarkResult, ProviderModel, ProviderStatus
 from llama_router.provider_manager import ProviderManager
-from llama_router.router import Router
+from llama_router.router import Router, RoutingPreferences
 
 
 @pytest.mark.asyncio
@@ -148,3 +148,49 @@ async def test_route_fallback_returns_none_if_chain_exhausted(db: Database):
     rt = Router(db, pm)
     result = await rt.route("modelA")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_route_honors_pinned_provider(db: Database):
+    p1 = await db.add_provider("busy-fast", "http://host1:11434")
+    p2 = await db.add_provider("idle-slow", "http://host2:11434")
+    await db.update_provider_status(p1.id, ProviderStatus.IDLE)
+    await db.update_provider_status(p2.id, ProviderStatus.IDLE)
+
+    await db.set_provider_models(
+        p1.id, [ProviderModel(provider_id=p1.id, name="llama3:8b")]
+    )
+    await db.set_provider_models(
+        p2.id, [ProviderModel(provider_id=p2.id, name="llama3:8b")]
+    )
+
+    # Make p1 look worse by normal routing metrics.
+    pm = ProviderManager(db)
+    pm._active_requests[p1.id] = 5
+    pm._active_requests[p2.id] = 0
+    await db.save_benchmark(
+        BenchmarkResult(
+            provider_id=p1.id,
+            model_name="llama3:8b",
+            tokens_per_second=10.0,
+            startup_time_ms=900.0,
+        )
+    )
+    await db.save_benchmark(
+        BenchmarkResult(
+            provider_id=p2.id,
+            model_name="llama3:8b",
+            tokens_per_second=100.0,
+            startup_time_ms=100.0,
+        )
+    )
+
+    rt = Router(db, pm)
+    prefs = RoutingPreferences(
+        mode="throughput",
+        allow_fallback=True,
+        pinned_providers={"llama3:8b": p1.id},
+    )
+    result = await rt.route("llama3:8b", preferences=prefs)
+    assert result is not None
+    assert result.provider.id == p1.id

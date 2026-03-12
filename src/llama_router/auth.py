@@ -44,4 +44,10 @@ async def routing_preferences_from_request(
     mode = str(record["routing_mode"]).lower()
     if mode not in {"latency", "throughput", "chaos"}:
         mode = "latency"
-    return RoutingPreferences(mode=mode, allow_fallback=bool(record["allow_fallback"]))
+    pins = await db.list_api_key_model_pins(int(record["id"]))
+    pinned_providers = {str(p["model_name"]): int(p["provider_id"]) for p in pins}
+    return RoutingPreferences(
+        mode=mode,
+        allow_fallback=bool(record["allow_fallback"]),
+        pinned_providers=pinned_providers,
+    )
