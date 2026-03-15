@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     cache_port: int = 9200
     cache_external_host: str = ""
     cache_manifest_ttl_hours: int = 240
+    sentry_dsn: str = ""
+    sentry_environment: str = "production"
+    sentry_traces_sample_rate: float = 0.0
+    sentry_profiles_sample_rate: float = 0.0
+    sentry_send_default_pii: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 

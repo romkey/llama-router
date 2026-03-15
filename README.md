@@ -41,6 +41,18 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
 | `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
 
+### Sentry (Optional)
+
+Set a DSN to enable Sentry reporting for unhandled exceptions and performance telemetry.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SENTRY_DSN` | *(empty)* | Sentry DSN. When empty, Sentry is disabled |
+| `SENTRY_ENVIRONMENT` | `production` | Sentry environment name |
+| `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Performance transaction sampling rate (`0.0` to `1.0`) |
+| `SENTRY_PROFILES_SAMPLE_RATE` | `0.0` | Profiling sampling rate (`0.0` to `1.0`) |
+| `SENTRY_SEND_DEFAULT_PII` | `false` | Include user/IP headers where available |
+
 ### OCI Registry Cache
 
 The cache acts as a pull-through proxy for the Ollama model registry (`registry.ollama.ai`). When enabled, model pulls are routed through the cache so that large blob layers are stored locally on first download. Subsequent pulls of the same model — on any provider — are served from the local cache at LAN speed instead of re-downloading from the internet.

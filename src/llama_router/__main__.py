@@ -11,6 +11,7 @@ from .config import settings
 from .database import Database
 from .provider_manager import ProviderManager
 from .router import Router
+from .sentry import init_sentry
 from .api import deps as api_deps
 from .api.app import app as api_app
 from .dashboard import deps as dash_deps
@@ -26,6 +27,8 @@ logger = logging.getLogger("llama_router")
 
 
 async def run() -> None:
+    init_sentry()
+
     db = Database()
     await db.connect()
 
