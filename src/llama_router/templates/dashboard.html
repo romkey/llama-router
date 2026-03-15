@@ -379,12 +379,11 @@
                 </thead>
                 <tbody>
                     {% for m in models %}
-                    {% set base_name = m.name.split(':')[0] %}
                     {% set on_all = model_provider_counts.get(m.name, 0) >= ollama_count and ollama_count > 0 %}
                     <tr data-model="{{ m.name }}">
                         <td>
                             <code>
-                                <a href="https://huggingface.co/{{ base_name }}" target="_blank" rel="noopener" class="text-decoration-none">
+                                <a href="{{ ollama_library_url(m.name) }}" target="_blank" rel="noopener" class="text-decoration-none">
                                     {{ m.name }} <i class="bi bi-box-arrow-up-right small"></i>
                                 </a>
                             </code>

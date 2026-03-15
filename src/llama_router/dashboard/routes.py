@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -64,6 +65,48 @@ def _cache_registry_url() -> str | None:
     return f"http://{host}:{settings.cache_port}"
 
 
+def _ollama_library_slug(model_name: str) -> str:
+    """Extract an Ollama library slug from raw model names/URLs.
+
+    Handles cache/registry-prefixed names like
+    ``host:9200/library/llama3.2:latest`` by removing host and ``library/``
+    prefix, then stripping tag/digest for a stable library page URL.
+    """
+    name = model_name.strip()
+    if not name:
+        return ""
+
+    if "://" in name:
+        name = name.split("://", 1)[1]
+
+    parts = name.split("/")
+    if len(parts) > 1:
+        first = parts[0]
+        if "." in first or ":" in first or first == "localhost":
+            name = "/".join(parts[1:])
+
+    if name.startswith("library/"):
+        name = name[len("library/") :]
+
+    if "@" in name:
+        name = name.split("@", 1)[0]
+
+    slash_idx = name.rfind("/")
+    colon_idx = name.rfind(":")
+    if colon_idx > slash_idx:
+        name = name[:colon_idx]
+
+    return name
+
+
+def _ollama_library_url(model_name: str) -> str:
+    """Build an Ollama model library URL from a model name."""
+    slug = _ollama_library_slug(model_name)
+    if not slug:
+        return "https://ollama.com/library"
+    return f"https://ollama.com/library/{quote(slug, safe='/')}"
+
+
 def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
     """Jinja2 filter: convert a UTC timestamp to the local timezone (honours TZ)."""
     if value is None:
@@ -94,6 +137,7 @@ def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 templates.env.globals["version"] = __version__
+templates.env.globals["ollama_library_url"] = _ollama_library_url
 templates.env.filters["localtime"] = _localtime
 
 router = APIRouter()
