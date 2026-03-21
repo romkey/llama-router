@@ -55,12 +55,13 @@ class ProviderManager:
                         urls,
                     )
                 else:
-                    logger.exception(
+                    logger.error(
                         "Initial model discovery failed for provider %r (id=%s); "
-                        "configured URL(s): %s",
+                        "configured URL(s): %s: %s",
                         p.name,
                         p.id,
                         urls,
+                        exc,
                     )
         self._health_task = asyncio.create_task(self._health_check_loop())
 
@@ -155,11 +156,12 @@ class ProviderManager:
                     urls,
                 )
             else:
-                logger.exception(
-                    "Failed to discover new provider %r (id=%s); URL(s): %s",
+                logger.error(
+                    "Failed to discover new provider %r (id=%s); URL(s): %s: %s",
                     name,
                     provider.id,
                     urls,
+                    exc,
                 )
             await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
             provider.status = ProviderStatus.OFFLINE
@@ -205,11 +207,12 @@ class ProviderManager:
                     urls,
                 )
             else:
-                logger.exception(
-                    "Failed to discover updated provider %r (id=%s); URL(s): %s",
+                logger.error(
+                    "Failed to discover updated provider %r (id=%s); URL(s): %s: %s",
                     provider.name,
                     provider_id,
                     urls,
+                    exc,
                 )
             await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
@@ -382,7 +385,6 @@ class ProviderManager:
                     "Failed to refresh running models (/api/ps) for provider %r: %s",
                     provider.name,
                     describe_httpx_error(exc),
-                    exc_info=exc,
                 )
             else:
                 logger.debug(
@@ -409,11 +411,12 @@ class ProviderManager:
                     urls,
                 )
             else:
-                logger.exception(
-                    "Failed to refresh provider %r (id=%s); URL(s): %s",
+                logger.error(
+                    "Failed to refresh provider %r (id=%s); URL(s): %s: %s",
                     provider.name,
                     provider_id,
                     urls,
+                    exc,
                 )
             await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
@@ -761,14 +764,12 @@ class ProviderManager:
             try:
                 await self._run_health_checks()
             except Exception as exc:
-                logger.exception(
-                    "Health check cycle failed: %s",
-                    (
-                        describe_httpx_error(exc)
-                        if isinstance(exc, httpx.HTTPError)
-                        else str(exc)
-                    ),
+                detail = (
+                    describe_httpx_error(exc)
+                    if isinstance(exc, httpx.HTTPError)
+                    else str(exc)
                 )
+                logger.error("Health check cycle failed: %s", detail)
 
     async def _run_health_checks(self) -> None:
         providers = await self._db.list_providers()

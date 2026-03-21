@@ -35,7 +35,6 @@ class LlamaCppClient:
             method,
             self._upstream_url(path),
             describe_httpx_error(exc),
-            exc_info=exc,
         )
 
     async def _get(self, path: str, *, op: str, **kwargs: Any) -> httpx.Response:

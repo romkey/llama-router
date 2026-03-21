@@ -129,7 +129,6 @@ async def completions(request: Request):
                 model,
                 provider.name,
                 describe_httpx_error(exc),
-                exc_info=exc,
             )
         await log_request(
             db,

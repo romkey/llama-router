@@ -177,7 +177,6 @@ class StreamLogger:
                     self._model,
                     self._provider.name,
                     describe_httpx_error(exc),
-                    exc_info=exc,
                 )
             else:
                 error_detail = str(exc)[:500]

@@ -711,7 +711,6 @@ async def delete_model(provider_id: int, model_name: str):
             provider_id,
             model_name,
             describe_httpx_error(exc),
-            exc_info=exc,
         )
         raise HTTPException(status_code=500, detail=describe_httpx_error(exc))
     except Exception as e:

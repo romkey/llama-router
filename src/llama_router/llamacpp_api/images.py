@@ -101,7 +101,6 @@ async def images_generations(request: Request):
                 model,
                 provider.name,
                 describe_httpx_error(exc),
-                exc_info=exc,
             )
         await log_request(
             db,
@@ -200,7 +199,6 @@ async def images_edits(request: Request):
                 model,
                 provider.name,
                 describe_httpx_error(exc),
-                exc_info=exc,
             )
         await log_request(
             db,
