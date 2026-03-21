@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 from fastapi import Request
 
 from .database import Database
+from .httpx_errors import describe_httpx_error
 from .models import Provider, RequestLog
+
+logger = logging.getLogger(__name__)
 
 
 def _client_ip(request: Request) -> str:
@@ -164,7 +169,18 @@ class StreamLogger:
                 yield chunk
         except Exception as exc:
             status = "error"
-            error_detail = str(exc)[:500]
+            if isinstance(exc, httpx.HTTPError):
+                error_detail = describe_httpx_error(exc)[:500]
+                logger.error(
+                    "Upstream streaming failure on %s (model=%r, provider=%s): %s",
+                    self._endpoint,
+                    self._model,
+                    self._provider.name,
+                    describe_httpx_error(exc),
+                    exc_info=exc,
+                )
+            else:
+                error_detail = str(exc)[:500]
             raise
         finally:
             duration = (time.monotonic() - self._start) * 1000

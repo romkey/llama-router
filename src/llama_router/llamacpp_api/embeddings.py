@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..auth import routing_preferences_from_request
+from ..httpx_errors import describe_httpx_error
 from ..request_logger import log_request
 from ..v1_client import get_v1_client
 from . import deps
@@ -92,6 +93,16 @@ async def embeddings(request: Request):
         return _forward_backend_error(exc)
     except Exception as exc:
         duration = (time.monotonic() - start) * 1000
+        err_detail = str(exc)[:500]
+        if isinstance(exc, httpx.HTTPError):
+            err_detail = describe_httpx_error(exc)[:500]
+            logger.error(
+                "Upstream failure on /v1/embeddings (model=%r, provider=%s): %s",
+                model,
+                provider.name,
+                describe_httpx_error(exc),
+                exc_info=exc,
+            )
         await log_request(
             db,
             provider=provider,
@@ -103,7 +114,7 @@ async def embeddings(request: Request):
             response_size=0,
             duration_ms=duration,
             status="error",
-            error_detail=str(exc)[:500],
+            error_detail=err_detail,
         )
         raise
     finally:

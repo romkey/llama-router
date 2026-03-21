@@ -8,8 +8,11 @@ from pathlib import Path
 import time
 from collections import defaultdict
 
+import httpx
+
 from .config import settings
 from .database import Database
+from .httpx_errors import describe_httpx_error
 from .llamacpp_client import LlamaCppClient
 from .models import (
     BenchmarkResult,
@@ -41,8 +44,24 @@ class ProviderManager:
             await self._rebuild_clients(p)
             try:
                 await self._discover_provider(p)
-            except Exception:
-                logger.exception("Initial discovery failed for provider %s", p.name)
+            except Exception as exc:
+                urls = await self._format_provider_urls(p.id)
+                if isinstance(exc, httpx.HTTPError):
+                    logger.error(
+                        "Initial model discovery failed for provider %r (id=%s); "
+                        "configured URL(s): %s (see prior upstream httpx log for details)",
+                        p.name,
+                        p.id,
+                        urls,
+                    )
+                else:
+                    logger.exception(
+                        "Initial model discovery failed for provider %r (id=%s); "
+                        "configured URL(s): %s",
+                        p.name,
+                        p.id,
+                        urls,
+                    )
         self._health_task = asyncio.create_task(self._health_check_loop())
 
     async def stop(self) -> None:
@@ -125,8 +144,23 @@ class ProviderManager:
             await self._discover_provider(provider)
             await self._db.update_provider_status(provider.id, ProviderStatus.IDLE)
             provider.status = ProviderStatus.IDLE
-        except Exception:
-            logger.exception("Failed to discover provider %s", name)
+        except Exception as exc:
+            urls = await self._format_provider_urls(provider.id)
+            if isinstance(exc, httpx.HTTPError):
+                logger.error(
+                    "Failed to discover new provider %r (id=%s); URL(s): %s "
+                    "(upstream error logged above)",
+                    name,
+                    provider.id,
+                    urls,
+                )
+            else:
+                logger.exception(
+                    "Failed to discover new provider %r (id=%s); URL(s): %s",
+                    name,
+                    provider.id,
+                    urls,
+                )
             await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
             provider.status = ProviderStatus.OFFLINE
 
@@ -160,8 +194,23 @@ class ProviderManager:
         try:
             await self._discover_provider(provider)
             await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
-        except Exception:
-            logger.exception("Failed to discover updated provider %d", provider_id)
+        except Exception as exc:
+            urls = await self._format_provider_urls(provider_id)
+            if isinstance(exc, httpx.HTTPError):
+                logger.error(
+                    "Failed to discover updated provider %r (id=%s); URL(s): %s "
+                    "(upstream error logged above)",
+                    provider.name,
+                    provider_id,
+                    urls,
+                )
+            else:
+                logger.exception(
+                    "Failed to discover updated provider %r (id=%s); URL(s): %s",
+                    provider.name,
+                    provider_id,
+                    urls,
+                )
             await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
     async def delete_remote_model(self, provider_id: int, model_name: str) -> None:
@@ -171,8 +220,6 @@ class ProviderManager:
         list is still refreshed and an ``httpx.HTTPStatusError`` is raised
         so callers can display a notice.
         """
-        import httpx
-
         backend_name = await self._db.get_backend_model_name(provider_id, model_name)
         ollama = self._ollama_clients.get(provider_id)
         not_found = False
@@ -329,8 +376,20 @@ class ProviderManager:
                     entry["expires_at"] = m["expires_at"]
                 hot.append(entry)
             self._hot_models[provider.id] = hot
-        except Exception:
-            logger.debug("Failed to fetch /api/ps for provider %s", provider.name)
+        except Exception as exc:
+            if isinstance(exc, httpx.HTTPError):
+                logger.warning(
+                    "Failed to refresh running models (/api/ps) for provider %r: %s",
+                    provider.name,
+                    describe_httpx_error(exc),
+                    exc_info=exc,
+                )
+            else:
+                logger.debug(
+                    "Failed to fetch /api/ps for provider %s: %s",
+                    provider.name,
+                    exc,
+                )
 
     async def refresh_provider(self, provider_id: int) -> None:
         provider = await self._db.get_provider(provider_id)
@@ -339,8 +398,23 @@ class ProviderManager:
         try:
             await self._discover_provider(provider)
             await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
-        except Exception:
-            logger.exception("Failed to refresh provider %d", provider_id)
+        except Exception as exc:
+            urls = await self._format_provider_urls(provider_id)
+            if isinstance(exc, httpx.HTTPError):
+                logger.error(
+                    "Failed to refresh provider %r (id=%s); URL(s): %s "
+                    "(upstream error logged above)",
+                    provider.name,
+                    provider_id,
+                    urls,
+                )
+            else:
+                logger.exception(
+                    "Failed to refresh provider %r (id=%s); URL(s): %s",
+                    provider.name,
+                    provider_id,
+                    urls,
+                )
             await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
 
     async def benchmark_provider(
@@ -467,10 +541,16 @@ class ProviderManager:
             return await client.benchmark_chat(backend_name, settings.benchmark_prompt)
         except Exception as exc:
             chat_err = exc
+            detail = (
+                describe_httpx_error(exc)
+                if isinstance(exc, httpx.HTTPError)
+                else str(exc)
+            )
             logger.info(
-                "Chat benchmark failed for %s on provider %d, trying embed",
+                "Chat benchmark failed for %s on provider %d (%s), trying embed",
                 display_name,
                 provider_id,
+                detail,
             )
 
         try:
@@ -478,12 +558,16 @@ class ProviderManager:
         except Exception as embed_err:
             raise embed_err from chat_err
 
+    async def _format_provider_urls(self, provider_id: int) -> str:
+        addrs = await self._db.get_addresses(provider_id)
+        if not addrs:
+            return "(no addresses)"
+        return ", ".join(a.url for a in addrs)
+
     @staticmethod
     def _format_benchmark_error(
         exc: Exception, model_name: str, provider: Provider
     ) -> str:
-        import httpx
-
         if isinstance(exc, httpx.HTTPStatusError):
             status = exc.response.status_code
             try:
@@ -494,6 +578,11 @@ class ProviderManager:
             return (
                 f"Backend {provider.name} returned HTTP {status} "
                 f"for {model_name}: {msg}"
+            )
+        if isinstance(exc, httpx.RequestError):
+            return (
+                f"Could not reach backend {provider.name} for {model_name}: "
+                f"{describe_httpx_error(exc)}"
             )
         return f"Benchmark failed for {model_name} on {provider.name}: {exc}"
 
@@ -671,8 +760,15 @@ class ProviderManager:
             await asyncio.sleep(settings.health_check_interval_seconds)
             try:
                 await self._run_health_checks()
-            except Exception:
-                logger.exception("Health check cycle failed")
+            except Exception as exc:
+                logger.exception(
+                    "Health check cycle failed: %s",
+                    (
+                        describe_httpx_error(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else str(exc)
+                    ),
+                )
 
     async def _run_health_checks(self) -> None:
         providers = await self._db.list_providers()
