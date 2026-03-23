@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.0
     sentry_profiles_sample_rate: float = 0.0
     sentry_send_default_pii: bool = False
+    # When set (e.g. /shared/wireguard/wg0.conf in Docker), dashboard saves sync here
+    # for a WireGuard sidecar that shares the same volume.
+    wireguard_config_path: str = ""
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 

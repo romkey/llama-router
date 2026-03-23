@@ -22,6 +22,8 @@ from ..request_logger import log_request
 from . import deps
 
 from .. import __version__
+from ..wireguard_config import generate_wireguard_private_key, is_valid_wg_key_b64
+from ..wireguard_sync import sync_wireguard_config_to_disk
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +280,10 @@ async def dashboard(request: Request):
                 )
         all_models.sort(key=lambda m: m["name"])
 
+    wg_iface = await db.get_wireguard_interface()
+    wg_peers = await db.list_wireguard_peers()
+    wg_path_set = bool((settings.wireguard_config_path or "").strip())
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -299,6 +305,10 @@ async def dashboard(request: Request):
             "log_total": log_total,
             "cache_stats": cache_stats,
             "cached_models": cached_models,
+            "wg_iface": wg_iface,
+            "wg_peers": wg_peers,
+            "wireguard_config_path": settings.wireguard_config_path or "",
+            "wireguard_path_set": wg_path_set,
         },
     )
 
@@ -1468,3 +1478,174 @@ async def delete_model_all_providers(model: str = Form(...)):
 
     await asyncio.gather(*[_delete_one(i) for i in targets])
     return RedirectResponse(url="/#models-pane", status_code=303)
+
+
+def _wg_tab_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/?tab=wireguard", status_code=303)
+
+
+@router.get("/api/wireguard/status")
+async def api_wireguard_status():
+    """Summarize WireGuard settings (no private keys)."""
+    db = deps.get_db()
+    iface = await db.get_wireguard_interface()
+    peers = await db.list_wireguard_peers()
+    return JSONResponse(
+        {
+            "config_path_set": bool((settings.wireguard_config_path or "").strip()),
+            "config_path": settings.wireguard_config_path or "",
+            "enabled": iface["enabled"],
+            "public_key": iface["public_key"],
+            "address_cidr": iface["address_cidr"],
+            "listen_port": iface["listen_port"],
+            "endpoint_public": iface.get("endpoint_public"),
+            "mtu": iface.get("mtu"),
+            "peer_count": len(peers),
+            "active_peers": sum(1 for p in peers if p["enabled"]),
+        }
+    )
+
+
+@router.post("/wireguard/interface")
+async def wireguard_save_interface(
+    listen_port: int = Form(51820),
+    address_cidr: str = Form(...),
+    mtu: str = Form(""),
+    endpoint_public: str = Form(""),
+    private_key: str = Form(""),
+    clear_private_key: Optional[str] = Form(None),
+    enabled: Optional[str] = Form(None),
+):
+    db = deps.get_db()
+    enabled_b = enabled in ("1", "on", "true", "yes")
+    if listen_port < 1 or listen_port > 65535:
+        raise HTTPException(status_code=400, detail="Listen port must be 1–65535")
+    mtu_val: int | None = None
+    if mtu.strip():
+        try:
+            mtu_val = int(mtu.strip())
+            if mtu_val <= 0:
+                raise ValueError("MTU must be positive")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    new_priv: str | None = None
+    if clear_private_key in ("1", "on", "true", "yes"):
+        new_priv = ""
+    elif private_key.strip():
+        pk = private_key.strip()
+        if not is_valid_wg_key_b64(pk):
+            raise HTTPException(status_code=400, detail="Invalid private key format")
+        new_priv = pk
+
+    try:
+        await db.update_wireguard_interface(
+            enabled=enabled_b,
+            listen_port=listen_port,
+            address_cidr=address_cidr.strip(),
+            mtu=mtu_val,
+            endpoint_public=endpoint_public.strip() or None,
+            new_private_key=new_priv,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    if not ok:
+        raise HTTPException(
+            status_code=400, detail=f"Saved settings but config file: {msg}"
+        )
+    return _wg_tab_redirect()
+
+
+@router.post("/wireguard/generate-keys")
+async def wireguard_generate_keys():
+    db = deps.get_db()
+    key = generate_wireguard_private_key()
+    await db.set_wireguard_private_key(key)
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Key saved but config file: {msg}")
+    return _wg_tab_redirect()
+
+
+@router.post("/wireguard/peers/save")
+async def wireguard_peer_save(
+    peer_id: str = Form(""),
+    name: str = Form(""),
+    public_key: str = Form(...),
+    allowed_ips: str = Form(...),
+    preshared_key: str = Form(""),
+    endpoint: str = Form(""),
+    persistent_keepalive: str = Form(""),
+    peer_enabled: str = Form("1"),
+):
+    db = deps.get_db()
+    pk = public_key.strip()
+    if not is_valid_wg_key_b64(pk):
+        raise HTTPException(status_code=400, detail="Invalid peer public key format")
+    psk = preshared_key.strip()
+    if psk and not is_valid_wg_key_b64(psk):
+        raise HTTPException(status_code=400, detail="Invalid preshared key format")
+
+    ka: int | None = None
+    if persistent_keepalive.strip():
+        try:
+            ka = int(persistent_keepalive.strip())
+            if ka < 0:
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Persistent keepalive must be a non-negative integer",
+            )
+        if ka == 0:
+            ka = None
+
+    en = peer_enabled == "1"
+
+    try:
+        if peer_id.strip():
+            pid = int(peer_id.strip())
+            existing = await db.get_wireguard_peer(pid)
+            if not existing:
+                raise HTTPException(status_code=404, detail="Peer not found")
+            await db.update_wireguard_peer(
+                pid,
+                name=name,
+                public_key=pk,
+                allowed_ips=allowed_ips.strip(),
+                preshared_key=psk or None,
+                endpoint=endpoint.strip() or None,
+                persistent_keepalive=ka,
+                enabled=en,
+            )
+        else:
+            await db.add_wireguard_peer(
+                name=name,
+                public_key=pk,
+                allowed_ips=allowed_ips.strip(),
+                preshared_key=psk or None,
+                endpoint=endpoint.strip() or None,
+                persistent_keepalive=ka,
+                enabled=en,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    if not ok:
+        raise HTTPException(
+            status_code=400, detail=f"Peer saved but config file: {msg}"
+        )
+    return _wg_tab_redirect()
+
+
+@router.post("/wireguard/peers/{peer_id}/remove")
+async def wireguard_peer_remove(peer_id: int):
+    db = deps.get_db()
+    await db.remove_wireguard_peer(peer_id)
+    await sync_wireguard_config_to_disk(db)
+    return _wg_tab_redirect()

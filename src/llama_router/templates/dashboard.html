@@ -23,6 +23,11 @@
     </button>
 </li>
 <li class="nav-item" role="presentation">
+    <button class="nav-link" id="wireguard-tab" data-bs-toggle="tab" data-bs-target="#wireguard-pane" type="button" role="tab" aria-controls="wireguard-pane" aria-selected="false">
+        <i class="bi bi-shield-lock me-1"></i>WireGuard
+    </button>
+</li>
+<li class="nav-item" role="presentation">
     <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab" aria-controls="log-pane" aria-selected="false">
         <i class="bi bi-journal-text me-1"></i>Log
         <span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>
@@ -645,6 +650,170 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- ==================== WIREGUARD TAB ==================== -->
+    <div class="tab-pane fade" id="wireguard-pane" role="tabpanel" aria-labelledby="wireguard-tab" tabindex="0">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>WireGuard tunnel</h5>
+            </div>
+            <div class="card-body">
+                {% if not wireguard_path_set %}
+                <div class="alert alert-warning">
+                    <strong>Config file path not set.</strong> Set <code>LLAMA_ROUTER_WIREGUARD_CONFIG_PATH</code> (e.g. <code>/shared/wireguard/wg0.conf</code>) so llama-router can write <code>wg0.conf</code> for the WireGuard sidecar. See <code>docs/wireguard.md</code> and <code>docker-compose.wireguard.yml</code>.
+                </div>
+                {% else %}
+                <p class="text-muted small mb-2">Writing to <code>{{ wireguard_config_path }}</code> (shared volume with the WireGuard container).</p>
+                {% endif %}
+                <p class="small text-muted">Configure the tunnel here; provider URLs can use peer tunnel IPs (e.g. <code>http://10.8.0.2:11434</code>). Share <strong>Public key</strong> and <strong>Endpoint</strong> with remote peers.</p>
+
+                <form method="post" action="/wireguard/interface" class="row g-3 mb-4">
+                    <div class="col-12">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" name="enabled" value="1" id="wg-enabled" {% if wg_iface.enabled %}checked{% endif %}>
+                            <label class="form-check-label" for="wg-enabled">Enable WireGuard (write live <code>[Interface]</code> section)</label>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label" for="wg-listen-port">Listen port (UDP)</label>
+                        <input type="number" class="form-control" id="wg-listen-port" name="listen_port" min="1" max="65535" value="{{ wg_iface.listen_port }}" required>
+                    </div>
+                    <div class="col-md-5">
+                        <label class="form-label" for="wg-address">Tunnel address (CIDR)</label>
+                        <input type="text" class="form-control" id="wg-address" name="address_cidr" value="{{ wg_iface.address_cidr }}" required placeholder="10.8.0.1/24">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label" for="wg-mtu">MTU (optional)</label>
+                        <input type="number" class="form-control" id="wg-mtu" name="mtu" min="576" max="65535" placeholder="1420" value="{{ wg_iface.mtu or '' }}">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label" for="wg-endpoint-pub">Public endpoint (hint for remote configs)</label>
+                        <input type="text" class="form-control" id="wg-endpoint-pub" name="endpoint_public" value="{{ wg_iface.endpoint_public or '' }}" placeholder="vpn.example.com:51820 or 203.0.113.50:51820">
+                        <div class="form-text">Not written to wg0.conf; shown here so you can paste into peer configs.</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label" for="wg-private-key">Private key</label>
+                        <textarea class="form-control font-monospace small" id="wg-private-key" name="private_key" rows="2" placeholder="Leave blank to keep existing key; use Generate below"></textarea>
+                        {% if wg_iface.private_key %}
+                        <div class="form-text text-success"><i class="bi bi-check-circle me-1"></i>A private key is stored.</div>
+                        {% endif %}
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="clear_private_key" value="1" id="wg-clear-key">
+                            <label class="form-check-label text-danger" for="wg-clear-key">Clear stored private key</label>
+                        </div>
+                    </div>
+                    <div class="col-12 d-flex flex-wrap gap-2">
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>Save interface &amp; write config</button>
+                    </div>
+                </form>
+
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6">
+                        <label class="form-label">This router public key</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control font-monospace small" id="wg-public-key-display" readonly value="{{ wg_iface.public_key or '— (generate or set private key)' }}">
+                            <button type="button" class="btn btn-outline-secondary" onclick="var el=document.getElementById('wg-public-key-display'); if(el&&el.value.indexOf('—')!==0) navigator.clipboard.writeText(el.value)" title="Copy" {% if not wg_iface.public_key %}disabled{% endif %}><i class="bi bi-clipboard"></i></button>
+                        </div>
+                    </div>
+                    <div class="col-md-6 d-flex align-items-end gap-2 flex-wrap">
+                        <form method="post" action="/wireguard/generate-keys" class="d-inline" onsubmit="return confirm('Generate a new private key? You must update all peers with the new public key.');">
+                            <button type="submit" class="btn btn-outline-warning"><i class="bi bi-key-fill me-1"></i>Generate new keypair</button>
+                        </form>
+                    </div>
+                </div>
+
+                <h6 class="border-bottom pb-2">Peers</h6>
+                <p class="small text-muted">Add one row per remote router or client. <code>AllowedIPs</code> may be comma-separated (e.g. <code>10.8.0.2/32,192.168.50.0/24</code>).</p>
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm table-hover">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Public key</th>
+                                <th>AllowedIPs</th>
+                                <th>Endpoint</th>
+                                <th>On</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for p in wg_peers %}
+                            <tr>
+                                <td>{{ p.name or "—" }}</td>
+                                <td class="font-monospace small text-truncate" style="max-width:12rem;" title="{{ p.public_key }}">{{ p.public_key[:16] }}…</td>
+                                <td class="small"><code>{{ p.allowed_ips }}</code></td>
+                                <td class="small">{{ p.endpoint or "—" }}</td>
+                                <td>{% if p.enabled %}<span class="badge bg-success">yes</span>{% else %}<span class="badge bg-secondary">no</span>{% endif %}</td>
+                                <td class="text-nowrap">
+                                    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#wgPeerModal" onclick='wgPeerModalOpen({{ p.id }}, {{ (p.name or "")|tojson }}, {{ p.public_key|tojson }}, {{ (p.preshared_key or "")|tojson }}, {{ p.allowed_ips|tojson }}, {{ (p.endpoint or "")|tojson }}, {{ p.persistent_keepalive|tojson }}, {{ p.enabled|tojson }})'><i class="bi bi-pencil"></i></button>
+                                    <form method="post" action="/wireguard/peers/{{ p.id }}/remove" class="d-inline" onsubmit="return confirm('Remove this peer?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-muted">No peers yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#wgPeerModal" onclick="wgPeerModalOpen()"><i class="bi bi-plus-lg me-1"></i>Add peer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Peer modal -->
+    <div class="modal fade" id="wgPeerModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <form method="post" action="/wireguard/peers/save" class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="wgPeerModalTitle">Add WireGuard peer</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" name="peer_id" id="wg-peer-id" value="">
+                    <div class="mb-3">
+                        <label class="form-label" for="wg-peer-name">Name</label>
+                        <input type="text" class="form-control" id="wg-peer-name" name="name" placeholder="office-router">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="wg-peer-pub">Peer public key</label>
+                        <textarea class="form-control font-monospace" id="wg-peer-pub" name="public_key" rows="2" required></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="wg-peer-psk">Preshared key (optional)</label>
+                        <textarea class="form-control font-monospace" id="wg-peer-psk" name="preshared_key" rows="2"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="wg-peer-allowed">AllowedIPs</label>
+                        <input type="text" class="form-control font-monospace" id="wg-peer-allowed" name="allowed_ips" required placeholder="10.8.0.2/32">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="wg-peer-endpoint">Endpoint (optional)</label>
+                        <input type="text" class="form-control" id="wg-peer-endpoint" name="endpoint" placeholder="peer.example.com:51820">
+                        <div class="form-text">Set on the side that knows the peer’s reachable UDP address (often hub for spokes).</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="wg-peer-ka">Persistent keepalive (seconds)</label>
+                        <input type="number" class="form-control" id="wg-peer-ka" name="persistent_keepalive" min="0" placeholder="25">
+                    </div>
+                    <div class="mb-0">
+                        <label class="form-label" for="wg-peer-enabled">Peer state</label>
+                        <select class="form-select" name="peer_enabled" id="wg-peer-enabled">
+                            <option value="1">Enabled</option>
+                            <option value="0">Disabled</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save peer &amp; write config</button>
+                </div>
+            </form>
         </div>
     </div>
 
@@ -1964,5 +2133,43 @@ function removeFallback(model) {
         .then(function() { location.reload(); })
         .catch(function() { alert('Failed to remove fallback'); });
 }
+
+function wgPeerModalOpen(id, name, publicKey, psk, allowed, endpoint, ka, enabled) {
+    if (arguments.length === 0) {
+        id = null;
+        name = '';
+        publicKey = '';
+        psk = '';
+        allowed = '';
+        endpoint = '';
+        ka = null;
+        enabled = true;
+    }
+    document.getElementById('wg-peer-id').value = id != null ? String(id) : '';
+    document.getElementById('wgPeerModalTitle').textContent =
+        id != null ? 'Edit WireGuard peer' : 'Add WireGuard peer';
+    document.getElementById('wg-peer-name').value = name || '';
+    document.getElementById('wg-peer-pub').value = publicKey || '';
+    document.getElementById('wg-peer-psk').value = psk || '';
+    document.getElementById('wg-peer-allowed').value = allowed || '';
+    document.getElementById('wg-peer-endpoint').value = endpoint || '';
+    var kaEl = document.getElementById('wg-peer-ka');
+    if (ka === null || ka === undefined) {
+        kaEl.value = '';
+    } else {
+        kaEl.value = String(ka);
+    }
+    document.getElementById('wg-peer-enabled').value = enabled ? '1' : '0';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'wireguard') {
+        var t = document.getElementById('wireguard-tab');
+        if (t && window.bootstrap && bootstrap.Tab) {
+            bootstrap.Tab.getOrCreateInstance(t).show();
+        }
+    }
+});
 </script>
 {% endblock %}

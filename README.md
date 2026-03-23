@@ -23,6 +23,16 @@ docker compose up -d
 
 Open http://localhost to access the dashboard and add your backends.
 
+### WireGuard (optional)
+
+To run behind a **WireGuard sidecar** with tunnel settings managed in the dashboard, use:
+
+```bash
+docker compose -f docker-compose.wireguard.yml up -d
+```
+
+See [docs/wireguard.md](docs/wireguard.md) for topology, firewall notes, and `LLAMA_ROUTER_CACHE_EXTERNAL_HOST` over the tunnel.
+
 ## Configuration
 
 All settings are configured via environment variables with the prefix `LLAMA_ROUTER_`.
@@ -39,6 +49,7 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
 | `LLAMACPP_PORT` | `8080` | llama.cpp API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
+| `WIREGUARD_CONFIG_PATH` | *(empty)* | If set, dashboard writes `wg0.conf` here for a Docker WireGuard sidecar (see `docker-compose.wireguard.yml`) |
 | `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
 
 ### Sentry (Optional)

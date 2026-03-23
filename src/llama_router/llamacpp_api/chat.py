@@ -26,7 +26,9 @@ def _forward_backend_error(exc: httpx.HTTPStatusError) -> JSONResponse:
 
 
 @router.post("/v1/chat/completions")
+@router.post("/chat/completions")
 async def chat_completions(request: Request):
+    endpoint_path = request.url.path
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -69,7 +71,7 @@ async def chat_completions(request: Request):
                 db=db,
                 provider=provider,
                 protocol="v1",
-                endpoint="/v1/chat/completions",
+                endpoint=endpoint_path,
                 request=request,
                 model=model,
                 request_body=body,
@@ -87,7 +89,7 @@ async def chat_completions(request: Request):
                 db,
                 provider=provider,
                 protocol="v1",
-                endpoint="/v1/chat/completions",
+                endpoint=endpoint_path,
                 request=request,
                 model=model,
                 request_body=body,
@@ -99,16 +101,17 @@ async def chat_completions(request: Request):
         pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         logger.warning(
-            "Backend %s returned HTTP %d for /v1/chat/completions %s",
+            "Backend %s returned HTTP %d for %s %s",
             provider.name,
             exc.response.status_code,
+            endpoint_path,
             model,
         )
         await log_request(
             db,
             provider=provider,
             protocol="v1",
-            endpoint="/v1/chat/completions",
+            endpoint=endpoint_path,
             request=request,
             model=model,
             request_body=body,
@@ -125,7 +128,8 @@ async def chat_completions(request: Request):
         if isinstance(exc, httpx.HTTPError):
             err_detail = describe_httpx_error(exc)[:500]
             logger.error(
-                "Upstream failure on /v1/chat/completions (model=%r, provider=%s): %s",
+                "Upstream failure on %s (model=%r, provider=%s): %s",
+                endpoint_path,
                 model,
                 provider.name,
                 describe_httpx_error(exc),
@@ -134,7 +138,7 @@ async def chat_completions(request: Request):
             db,
             provider=provider,
             protocol="v1",
-            endpoint="/v1/chat/completions",
+            endpoint=endpoint_path,
             request=request,
             model=model,
             request_body=body,

@@ -10,6 +10,7 @@ import uvicorn
 from .config import settings
 from .database import Database
 from .provider_manager import ProviderManager
+from .wireguard_sync import try_sync_wireguard_config_on_startup
 from .router import Router
 from .sentry import init_sentry
 from .api import deps as api_deps
@@ -31,6 +32,7 @@ async def run() -> None:
 
     db = Database()
     await db.connect()
+    await try_sync_wireguard_config_on_startup(db)
 
     pm = ProviderManager(db)
     await pm.start()

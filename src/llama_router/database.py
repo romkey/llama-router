@@ -172,6 +172,33 @@ _MIGRATIONS = [
             "ALTER TABLE request_log ADD COLUMN request_meta TEXT",
         ],
     ),
+    (
+        "add_wireguard_tables",
+        [
+            """CREATE TABLE IF NOT EXISTS wireguard_interface (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                listen_port INTEGER NOT NULL DEFAULT 51820,
+                private_key TEXT NOT NULL DEFAULT '',
+                address_cidr TEXT NOT NULL DEFAULT '10.8.0.1/24',
+                mtu INTEGER,
+                endpoint_public TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            "INSERT OR IGNORE INTO wireguard_interface (id) VALUES (1)",
+            """CREATE TABLE IF NOT EXISTS wireguard_peers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL DEFAULT '',
+                public_key TEXT NOT NULL,
+                preshared_key TEXT,
+                allowed_ips TEXT NOT NULL,
+                endpoint TEXT,
+                persistent_keepalive INTEGER,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+        ],
+    ),
 ]
 
 
@@ -702,6 +729,166 @@ class Database:
         ) as cursor:
             rows = await cursor.fetchall()
             return {r["model_name"]: r["fallback_model"] for r in rows}
+
+    # --- WireGuard (dashboard-managed wg0.conf for Docker sidecar) ---
+
+    async def get_wireguard_interface(self) -> dict:
+        """Return singleton interface row as dict (includes derived public_key)."""
+        from .wireguard_config import public_key_from_private
+
+        async with self.db.execute(
+            "SELECT * FROM wireguard_interface WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            await self.db.execute(
+                "INSERT OR IGNORE INTO wireguard_interface (id) VALUES (1)"
+            )
+            await self.db.commit()
+            return await self.get_wireguard_interface()
+        d = dict(row)
+        priv = (d.get("private_key") or "").strip()
+        if priv:
+            try:
+                d["public_key"] = public_key_from_private(priv)
+            except Exception:
+                d["public_key"] = ""
+        else:
+            d["public_key"] = ""
+        d["enabled"] = bool(d.get("enabled"))
+        return d
+
+    async def update_wireguard_interface(
+        self,
+        *,
+        enabled: bool,
+        listen_port: int,
+        address_cidr: str,
+        mtu: int | None = None,
+        endpoint_public: str | None = None,
+        new_private_key: str | None = None,
+    ) -> None:
+        """Update interface. If ``new_private_key`` is None, keep existing private key."""
+        if new_private_key is not None:
+            await self.db.execute(
+                "UPDATE wireguard_interface SET enabled = ?, listen_port = ?, "
+                "address_cidr = ?, mtu = ?, endpoint_public = ?, private_key = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                (
+                    int(enabled),
+                    listen_port,
+                    address_cidr.strip(),
+                    mtu,
+                    (endpoint_public or "").strip() or None,
+                    new_private_key.strip(),
+                ),
+            )
+        else:
+            await self.db.execute(
+                "UPDATE wireguard_interface SET enabled = ?, listen_port = ?, "
+                "address_cidr = ?, mtu = ?, endpoint_public = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                (
+                    int(enabled),
+                    listen_port,
+                    address_cidr.strip(),
+                    mtu,
+                    (endpoint_public or "").strip() or None,
+                ),
+            )
+        await self.db.commit()
+
+    async def set_wireguard_private_key(self, private_key_b64: str) -> None:
+        await self.db.execute(
+            "UPDATE wireguard_interface SET private_key = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            (private_key_b64.strip(),),
+        )
+        await self.db.commit()
+
+    async def list_wireguard_peers(self) -> list[dict]:
+        async with self.db.execute(
+            "SELECT * FROM wireguard_peers ORDER BY id ASC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["enabled"] = bool(d.get("enabled"))
+            out.append(d)
+        return out
+
+    async def get_wireguard_peer(self, peer_id: int) -> dict | None:
+        async with self.db.execute(
+            "SELECT * FROM wireguard_peers WHERE id = ?", (peer_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["enabled"] = bool(d.get("enabled"))
+        return d
+
+    async def add_wireguard_peer(
+        self,
+        *,
+        name: str,
+        public_key: str,
+        allowed_ips: str,
+        preshared_key: str | None = None,
+        endpoint: str | None = None,
+        persistent_keepalive: int | None = None,
+        enabled: bool = True,
+    ) -> int:
+        cursor = await self.db.execute(
+            "INSERT INTO wireguard_peers "
+            "(name, public_key, preshared_key, allowed_ips, endpoint, "
+            "persistent_keepalive, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                name.strip(),
+                public_key.strip(),
+                (preshared_key or "").strip() or None,
+                allowed_ips.strip(),
+                (endpoint or "").strip() or None,
+                persistent_keepalive,
+                int(enabled),
+            ),
+        )
+        await self.db.commit()
+        return int(cursor.lastrowid)
+
+    async def update_wireguard_peer(
+        self,
+        peer_id: int,
+        *,
+        name: str,
+        public_key: str,
+        allowed_ips: str,
+        preshared_key: str | None = None,
+        endpoint: str | None = None,
+        persistent_keepalive: int | None = None,
+        enabled: bool = True,
+    ) -> None:
+        await self.db.execute(
+            "UPDATE wireguard_peers SET name = ?, public_key = ?, preshared_key = ?, "
+            "allowed_ips = ?, endpoint = ?, persistent_keepalive = ?, enabled = ? "
+            "WHERE id = ?",
+            (
+                name.strip(),
+                public_key.strip(),
+                (preshared_key or "").strip() or None,
+                allowed_ips.strip(),
+                (endpoint or "").strip() or None,
+                persistent_keepalive,
+                int(enabled),
+                peer_id,
+            ),
+        )
+        await self.db.commit()
+
+    async def remove_wireguard_peer(self, peer_id: int) -> None:
+        await self.db.execute("DELETE FROM wireguard_peers WHERE id = ?", (peer_id,))
+        await self.db.commit()
 
     async def resolve_fallback_chain(
         self, model_name: str, max_depth: int = 10
