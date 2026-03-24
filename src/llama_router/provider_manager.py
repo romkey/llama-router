@@ -28,6 +28,26 @@ from .ollama_client import OllamaClient
 logger = logging.getLogger(__name__)
 
 
+def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
+    """Return True if chat benchmark likely failed transiently — do not try embed."""
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+            httpx.LocalProtocolError,
+        ),
+    ):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (408, 425, 429, 500, 502, 503, 504)
+    return False
+
+
 class ProviderManager:
     def __init__(self, db: Database):
         self._db = db
@@ -538,12 +558,20 @@ class ProviderManager:
     async def _try_benchmark(
         self, client, backend_name: str, display_name: str, provider_id: int
     ) -> dict[str, float]:
-        """Try chat benchmark first, fall back to embed."""
-        chat_err = None
+        """Try chat benchmark first, fall back to embed only for non-transient chat errors.
+
+        LLMs that do not implement embeddings often return HTTP 501 on embed. If chat
+        failed for a timeout or 5xx while the model was loading, falling back to embed
+        surfaces that misleading 501 instead of the real chat error — so we skip embed
+        in those cases. If embed returns 501 after a prior chat error, we report both.
+        """
+        chat_err: BaseException | None = None
         try:
             return await client.benchmark_chat(backend_name, settings.benchmark_prompt)
         except Exception as exc:
             chat_err = exc
+            if _transient_chat_benchmark_failure(exc):
+                raise exc
             detail = (
                 describe_httpx_error(exc)
                 if isinstance(exc, httpx.HTTPError)
@@ -559,6 +587,18 @@ class ProviderManager:
         try:
             return await client.benchmark_embed(backend_name, settings.benchmark_prompt)
         except Exception as embed_err:
+            if chat_err is not None and isinstance(embed_err, httpx.HTTPStatusError):
+                if embed_err.response.status_code == 501:
+                    ce = (
+                        describe_httpx_error(chat_err)
+                        if isinstance(chat_err, httpx.HTTPError)
+                        else str(chat_err)
+                    )
+                    raise RuntimeError(
+                        f"Chat benchmark failed ({ce}); this model does not support "
+                        f"embeddings, so there is no fallback. If chat failed while the "
+                        f"model was loading or the GPU was busy, retry the benchmark."
+                    ) from embed_err
             raise embed_err from chat_err
 
     async def _format_provider_urls(self, provider_id: int) -> str:
