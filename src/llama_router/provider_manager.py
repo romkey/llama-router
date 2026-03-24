@@ -27,11 +27,39 @@ from .models import (
     ProviderType,
 )
 from .ollama_client import OllamaClient
+from . import wireguard_manager
 
 if TYPE_CHECKING:
     from .router import Router
 
 logger = logging.getLogger(__name__)
+
+_WG_HANDSHAKE_MAX_AGE_SEC = 180
+
+
+def _wg_pubkey_handshake_map(tunnel: dict) -> dict[str, int | None]:
+    out: dict[str, int | None] = {}
+    for p in tunnel.get("peers") or []:
+        pk = (p.get("public_key") or "").strip()
+        if pk:
+            out[pk] = p.get("last_handshake_seconds_ago")
+    return out
+
+
+def _wireguard_ok_for_peer(
+    peer_row: dict | None, handshake_map: dict[str, int | None]
+) -> bool | None:
+    if not peer_row:
+        return None
+    pk = (peer_row.get("public_key") or "").strip()
+    if not pk:
+        return None
+    if pk not in handshake_map:
+        return False
+    ago = handshake_map[pk]
+    if ago is None:
+        return False
+    return ago < _WG_HANDSHAKE_MAX_AGE_SEC
 
 
 def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
@@ -191,6 +219,7 @@ class ProviderManager:
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
+        wireguard_peer_id: int | None = None,
     ) -> Provider:
         provider = await self._db.add_provider(
             name,
@@ -200,6 +229,7 @@ class ProviderManager:
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
+            wireguard_peer_id=wireguard_peer_id,
         )
         assert provider.id is not None
         await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
@@ -373,6 +403,7 @@ class ProviderManager:
         models = await self._db.get_provider_models(provider_id)
         benchmarks = await self._db.get_benchmarks_for_provider(provider_id)
         addresses = await self._db.get_addresses(provider_id)
+        wg_ok = await self._wireguard_status_for_provider(provider)
         return ProviderInfo(
             provider=provider,
             models=models,
@@ -380,16 +411,38 @@ class ProviderManager:
             addresses=addresses,
             active_requests=self._active_requests.get(provider_id, 0),
             hot_models=self._hot_models.get(provider_id, []),
+            wireguard_ok=wg_ok,
         )
+
+    async def _wireguard_status_for_provider(self, provider: Provider) -> bool | None:
+        if not provider.wireguard_peer_id:
+            return None
+        if not await wireguard_manager.is_wireguard_available():
+            return None
+        tunnel = await wireguard_manager.get_tunnel_status()
+        hm = _wg_pubkey_handshake_map(tunnel)
+        peer_row = await self._db.get_wireguard_peer(provider.wireguard_peer_id)
+        return _wireguard_ok_for_peer(peer_row, hm)
 
     async def list_provider_infos(self) -> list[ProviderInfo]:
         providers = await self._db.list_providers()
+        wg_avail = await wireguard_manager.is_wireguard_available()
+        tunnel = await wireguard_manager.get_tunnel_status() if wg_avail else None
+        hm = _wg_pubkey_handshake_map(tunnel or {"peers": []})
+        peer_cache: dict[int, dict | None] = {}
         infos = []
         for p in providers:
             assert p.id is not None
             models = await self._db.get_provider_models(p.id)
             benchmarks = await self._db.get_benchmarks_for_provider(p.id)
             addresses = await self._db.get_addresses(p.id)
+            wg_ok: bool | None = None
+            if wg_avail and p.wireguard_peer_id:
+                if p.wireguard_peer_id not in peer_cache:
+                    peer_cache[p.wireguard_peer_id] = await self._db.get_wireguard_peer(
+                        p.wireguard_peer_id
+                    )
+                wg_ok = _wireguard_ok_for_peer(peer_cache[p.wireguard_peer_id], hm)
             infos.append(
                 ProviderInfo(
                     provider=p,
@@ -398,6 +451,7 @@ class ProviderManager:
                     addresses=addresses,
                     active_requests=self._active_requests.get(p.id, 0),
                     hot_models=self._hot_models.get(p.id, []),
+                    wireguard_ok=wg_ok,
                 )
             )
         return infos
@@ -870,6 +924,10 @@ class ProviderManager:
                 logger.error("Health check cycle failed: %s", detail)
 
     async def _run_health_checks(self) -> None:
+        wg_avail = await wireguard_manager.is_wireguard_available()
+        tunnel = await wireguard_manager.get_tunnel_status() if wg_avail else None
+        hm = _wg_pubkey_handshake_map(tunnel or {"peers": []})
+
         providers = await self._db.list_providers()
         for p in providers:
             assert p.id is not None
@@ -921,6 +979,22 @@ class ProviderManager:
                     await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
                 else:
                     await self._db.update_provider_status(p.id, ProviderStatus.IDLE)
+                if wg_avail and any_live and p.wireguard_peer_id:
+                    prow = await self._db.get_wireguard_peer(p.wireguard_peer_id)
+                    wok = _wireguard_ok_for_peer(prow, hm)
+                    if wok is False:
+                        pk = (prow or {}).get("public_key") or ""
+                        ago = hm.get(pk.strip()) if pk else None
+                        if ago is None:
+                            detail = "never"
+                        else:
+                            detail = f"{ago}s ago"
+                        logger.warning(
+                            'Provider "%s" is reachable but WireGuard handshake is stale '
+                            "(last seen %s)",
+                            p.name,
+                            detail,
+                        )
             else:
                 if p.status != ProviderStatus.OFFLINE:
                     addr_urls = [a.url for a in addresses]

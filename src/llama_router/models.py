@@ -37,6 +37,7 @@ class Provider(BaseModel):
     machine_type: str | None = None
     gpu_type: str | None = None
     gpu_ram: str | None = None
+    wireguard_peer_id: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -125,3 +126,4 @@ class ProviderInfo(BaseModel):
     addresses: list[ProviderAddress] = []
     active_requests: int = 0
     hot_models: list[HotModel] = []
+    wireguard_ok: bool | None = None

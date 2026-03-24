@@ -25,13 +25,17 @@ Open http://localhost to access the dashboard and add your backends.
 
 ### WireGuard (optional)
 
-To run behind a **WireGuard sidecar** with tunnel settings managed in the dashboard, use:
+**Prerequisites:** `wg-quick` and `wg` on the host (`apt install wireguard-tools` on Debian/Ubuntu, `brew install wireguard-tools` on macOS). In Docker, the container usually needs **`network_mode: host`** (Linux only) and often **`cap_add: [NET_ADMIN]`** so `wg-quick` can manage the interface. On Docker Desktop for macOS/Windows, run llama-router on the host instead, or use **legacy volume mode** (write-only config) and manage WireGuard outside the container.
 
-```bash
-docker compose -f docker-compose.wireguard.yml up -d
-```
+**Defaults:** `LLAMA_ROUTER_WIREGUARD_CONFIG_PATH` defaults to `/etc/wireguard/wg0.conf`. The dashboard renders peers from the database and applies the config with `wg syncconf` when possible (falling back to `wg-quick up`).
 
-See [docs/wireguard.md](docs/wireguard.md) for topology, firewall notes, and `LLAMA_ROUTER_CACHE_EXTERNAL_HOST` over the tunnel.
+**Connecting two routers:** On each host, open the dashboard **WireGuard** tab. On the hub, enable **Inbound peering**, save to obtain a **peering API key**, and share that key with the spoke operator. On the spoke, use **Connect to remote llama-router** with the hub URL, key, and chosen tunnel IPs (or use the peering HTTP API documented below). The flow adds reciprocal WireGuard peers and optional providers in one step.
+
+**Peering API key:** Remote routers must send `X-Peering-Key: <secret>` on `GET /api/wireguard/peer-info` and `POST /api/wireguard/peer-request`. Treat it like a password.
+
+**Legacy sidecar:** Set `LLAMA_ROUTER_WIREGUARD_LEGACY_VOLUME=true` to only write `wg0.conf` and let an external process (or old sidecar layout) apply it.
+
+See [docs/wireguard.md](docs/wireguard.md) for a short pointer on cache access over the tunnel (`LLAMA_ROUTER_CACHE_EXTERNAL_HOST`).
 
 ## Configuration
 
@@ -49,7 +53,9 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
 | `LLAMACPP_PORT` | `8080` | llama.cpp API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
-| `WIREGUARD_CONFIG_PATH` | *(empty)* | If set, dashboard writes `wg0.conf` here for a Docker WireGuard sidecar (see `docker-compose.wireguard.yml`) |
+| `WIREGUARD_CONFIG_PATH` | `/etc/wireguard/wg0.conf` | Path for `wg0.conf`; interface name is the basename without `.conf` |
+| `WIREGUARD_LEGACY_VOLUME` | `false` | If `true`, write config only (no `wg-quick` / `wg` from the app) |
+| `WIREGUARD_ENABLED` | `false` | If `true`, apply WireGuard on process startup when `wg-quick` is available |
 | `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
 
 ### Sentry (Optional)

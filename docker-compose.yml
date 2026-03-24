@@ -1,3 +1,17 @@
+# WireGuard (optional)
+# To use WireGuard from this container, llama-router needs access to the host network.
+# On Linux, uncomment network_mode below. On macOS/Windows Docker Desktop,
+# run llama-router directly on the host instead.
+#
+#   network_mode: host
+#
+# You may also need elevated network privileges:
+#
+#   cap_add:
+#     - NET_ADMIN
+#
+# Install WireGuard tools on the host, e.g. apt install wireguard-tools
+
 services:
   llama-router:
     build: .

@@ -193,6 +193,12 @@
             </div>
             <div class="card-body">
                 <div id="pull-status-area"></div>
+                {% if cache_enabled and not cache_external_host_set %}
+                <div class="alert alert-warning py-2 mb-2 small">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                    <strong>Cache not reachable.</strong> This provider will download from the internet. Set <code>LLAMA_ROUTER_CACHE_EXTERNAL_HOST</code> to this router's address.
+                </div>
+                {% endif %}
                 {% if info.provider.supports_ollama and info.provider.supports_llamacpp %}
                 <div class="mb-2 d-flex align-items-center gap-2">
                     <label for="pull-api" class="small text-muted mb-0">Pull API</label>
@@ -560,7 +566,7 @@ document.addEventListener('click', function(e) {
     })
     .then(function(data) {
         _trackedPulls[data.pull_id] = {model: model, btn: btn, origHtml: origHtml};
-        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0);
+        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0, '');
         pollPull(data.pull_id);
     })
     .catch(function(err) {
@@ -570,7 +576,8 @@ document.addEventListener('click', function(e) {
     });
 });
 
-function showPullBanner(pullId, model, status, completed, total, failed) {
+function showPullBanner(pullId, model, status, completed, total, failed, progress) {
+    progress = progress || '';
     var area = document.getElementById('pull-status-area');
     if (!area) return;
     var el = document.getElementById('pull-banner-' + pullId);
@@ -582,8 +589,9 @@ function showPullBanner(pullId, model, status, completed, total, failed) {
     }
     if (status === 'pulling') {
         el.className = 'alert alert-info d-flex align-items-center mb-2';
+        var prog = progress ? ' &mdash; ' + progress : '';
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span>Pulling <strong>' + model + '</strong>\u2026</span>';
+            '<span>Pulling <strong>' + model + '</strong>\u2026' + prog + '</span>';
     } else {
         var ok = failed === 0;
         el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
@@ -599,7 +607,7 @@ function pollPull(pullId) {
     fetch('/api/pulls/' + pullId)
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            showPullBanner(pullId, data.model, data.status, data.completed, data.total, data.failed);
+            showPullBanner(pullId, data.model, data.status, data.completed, data.total, data.failed, data.progress || '');
             if (data.status === 'pulling') {
                 setTimeout(function() { pollPull(pullId); }, 2000);
             } else {

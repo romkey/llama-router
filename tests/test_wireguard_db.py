@@ -44,3 +44,11 @@ async def test_wireguard_interface_singleton_and_peers(db):
 
     await db.remove_wireguard_peer(pid)
     assert await db.list_wireguard_peers() == []
+
+    cfg = await db.get_wireguard_peering_config()
+    assert "peering_enabled" in cfg
+    assert "peering_api_key" in cfg
+    await db.set_wireguard_peering_config(True, "test-secret-key")
+    cfg2 = await db.get_wireguard_peering_config()
+    assert cfg2["peering_enabled"] is True
+    assert cfg2["peering_api_key"] == "test-secret-key"

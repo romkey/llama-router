@@ -23,9 +23,12 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.0
     sentry_profiles_sample_rate: float = 0.0
     sentry_send_default_pii: bool = False
-    # When set (e.g. /shared/wireguard/wg0.conf in Docker), dashboard saves sync here
-    # for a WireGuard sidecar that shares the same volume.
-    wireguard_config_path: str = ""
+    # Host path for wg-quick config (interface name = basename without .conf).
+    wireguard_config_path: str = "/etc/wireguard/wg0.conf"
+    # If true, only write the file (no wg-quick/wg); for external tunnel management.
+    wireguard_legacy_volume: bool = False
+    # If true, apply WireGuard on process startup when wg-quick is available.
+    wireguard_enabled: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 

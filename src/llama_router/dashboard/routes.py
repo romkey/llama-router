@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
+import socket
 import time
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +13,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -71,14 +74,24 @@ async def _pull_one_ollama(
         pull_entry["progress"] = f"{prefix}: starting…"
     logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
     start = time.monotonic()
+    last_total_bytes: list[int] = [0]
 
     def _on_progress(info: dict, _pfx: str = prefix) -> None:
         text = info.get("status", "")
         pct = info.get("percent")
+        completed = info.get("completed") or 0
+        total = info.get("total") or 0
+        if total:
+            last_total_bytes[0] = total
+        elapsed = time.monotonic() - start
+        speed_str = ""
+        if elapsed > 0 and completed > 0:
+            speed_mbps = (completed / (1024 * 1024)) / elapsed
+            speed_str = f" {speed_mbps:.1f} MB/s"
         if pct is not None:
-            msg = f"{_pfx}: {text} {pct}%"
+            msg = f"{_pfx}: {text} {pct}%{speed_str}"
         else:
-            msg = f"{_pfx}: {text}"
+            msg = f"{_pfx}: {text}{speed_str}"
 
         async def _write() -> None:
             async with progress_lock:
@@ -98,9 +111,19 @@ async def _pull_one_ollama(
         )
         await pm.refresh_provider(pid)
         duration = (time.monotonic() - start) * 1000
+        total_bytes = last_total_bytes[0]
+        speed_mbps = (
+            (total_bytes / (1024 * 1024)) / (duration / 1000)
+            if total_bytes and duration > 0
+            else 0
+        )
+        done_msg = f"{prefix}: done ({duration / 1000:.0f}s"
+        if speed_mbps > 0:
+            done_msg += f", {speed_mbps:.1f} MB/s"
+        done_msg += ")"
         async with progress_lock:
             pull_entry["completed"].append(pid)
-            pull_entry["progress"] = f"{prefix}: done ({duration / 1000:.0f}s)"
+            pull_entry["progress"] = done_msg
         logger.info(
             "Pull %s succeeded on provider %s in %.1fs",
             model,
@@ -120,8 +143,11 @@ async def _pull_one_ollama(
         }
         if source_ip is not None:
             log_kw["source_ip"] = source_ip
-        if request_meta is not None:
-            log_kw["request_meta"] = request_meta
+        meta = request_meta or ""
+        if speed_mbps > 0:
+            meta = f"{meta} {speed_mbps:.1f} MB/s".strip()
+        if meta:
+            log_kw["request_meta"] = meta
         await db.save_request_log(RequestLog(**log_kw))
     except Exception as exc:
         duration = (time.monotonic() - start) * 1000
@@ -222,6 +248,43 @@ def _ollama_library_slug(model_name: str) -> str:
         name = name[:colon_idx]
 
     return name
+
+
+def _tunnel_ip_from_cidr(address_cidr: str) -> str | None:
+    s = (address_cidr or "").strip().split("/")[0].strip()
+    return s or None
+
+
+def _mask_peering_key(api_key: str) -> str:
+    k = (api_key or "").strip()
+    if not k:
+        return ""
+    return k[:8] + "..." if len(k) > 8 else "..."
+
+
+async def _peering_key_matches(request: Request, db: Any) -> bool:
+    hdr = (request.headers.get("x-peering-key") or "").strip()
+    cfg = await db.get_wireguard_peering_config()
+    key = (cfg.get("peering_api_key") or "").strip()
+    if not key or not hdr:
+        return False
+    return secrets.compare_digest(hdr, key)
+
+
+async def _wireguard_peer_info_payload(db: Any) -> dict:
+    iface = await db.get_wireguard_interface()
+    ip = _tunnel_ip_from_cidr(iface.get("address_cidr") or "")
+    out: dict[str, Any] = {
+        "public_key": iface.get("public_key") or "",
+        "name": socket.gethostname(),
+        "ollama_url": f"http://{ip}:{settings.api_port}" if ip else "",
+        "llamacpp_url": f"http://{ip}:{settings.llamacpp_port}" if ip else "",
+        "version": __version__,
+    }
+    ep = (iface.get("endpoint_public") or "").strip()
+    if ep:
+        out["endpoint"] = ep
+    return out
 
 
 def _ollama_library_url(model_name: str) -> str:
@@ -404,6 +467,15 @@ async def dashboard(request: Request):
     wg_iface = await db.get_wireguard_interface()
     wg_peers = await db.list_wireguard_peers()
     wg_path_set = bool((settings.wireguard_config_path or "").strip())
+    wg_peering_key_masked = _mask_peering_key(wg_iface.get("peering_api_key") or "")
+    peer_to_provider: dict[int, dict[str, Any]] = {}
+    for info in infos:
+        pid = info.provider.wireguard_peer_id
+        if pid is not None and info.provider.id is not None:
+            peer_to_provider[pid] = {
+                "id": info.provider.id,
+                "name": info.provider.name,
+            }
 
     return templates.TemplateResponse(
         request,
@@ -426,10 +498,16 @@ async def dashboard(request: Request):
             "log_total": log_total,
             "cache_stats": cache_stats,
             "cached_models": cached_models,
+            "cache_external_host_set": bool(
+                (settings.cache_external_host or "").strip()
+            ),
             "wg_iface": wg_iface,
             "wg_peers": wg_peers,
+            "wg_peer_to_provider": peer_to_provider,
+            "wg_peering_key_masked": wg_peering_key_masked,
             "wireguard_config_path": settings.wireguard_config_path or "",
             "wireguard_path_set": wg_path_set,
+            "wireguard_legacy_volume": settings.wireguard_legacy_volume,
         },
     )
 
@@ -447,6 +525,26 @@ async def api_status():
     all_models = await db.list_all_models()
     log_total = await db.count_request_logs()
 
+    from ..wireguard_manager import get_tunnel_status, is_wireguard_available
+
+    wg_avail = await is_wireguard_available()
+    wg_tun = await get_tunnel_status() if wg_avail else {"running": False, "peers": []}
+    wg_linked: dict[str, dict[str, Any]] = {}
+    for info in infos:
+        if info.provider.wireguard_peer_id and info.provider.id is not None:
+            wg_linked[str(info.provider.wireguard_peer_id)] = {
+                "id": info.provider.id,
+                "name": info.provider.name,
+            }
+
+    wg_status_payload = {
+        "available": wg_avail,
+        "running": bool(wg_tun.get("running")),
+        "peer_count": len(wg_tun.get("peers") or []),
+        "peers": wg_tun.get("peers") or [],
+        "linked_providers": wg_linked,
+    }
+
     providers_data = []
     for info in infos:
         providers_data.append(
@@ -458,6 +556,7 @@ async def api_status():
                 "model_count": len(info.models),
                 "active_requests": info.active_requests,
                 "hot_models": info.hot_models,
+                "wireguard_ok": info.wireguard_ok,
                 "addresses": [
                     {
                         "id": a.id,
@@ -513,6 +612,7 @@ async def api_status():
             "active_pulls": active_pulls,
             "active_benchmarks": active_benchmarks,
             "cache": cache_stats,
+            "wireguard": wg_status_payload,
         }
     )
 
@@ -628,6 +728,10 @@ async def provider_detail(request: Request, provider_id: int):
             "missing_models": missing_models,
             "cached_models": cached_models,
             "cached_only_models": cached_only_models,
+            "cache_external_host_set": bool(
+                (settings.cache_external_host or "").strip()
+            ),
+            "cache_enabled": settings.cache_enabled,
         },
     )
 
@@ -1483,6 +1587,31 @@ def _wg_tab_redirect() -> RedirectResponse:
     return RedirectResponse(url="/?tab=wireguard", status_code=303)
 
 
+class PeeringConfigBody(BaseModel):
+    enabled: bool = False
+    api_key: str = ""
+    regenerate_api_key: bool = False
+
+
+class PeerRequestBody(BaseModel):
+    public_key: str
+    tunnel_ip: str = ""
+    allowed_ips: str
+    endpoint: str = ""
+    name: str = ""
+    ollama_url: str = ""
+    llamacpp_url: str = ""
+    add_as_provider: bool = True
+
+
+class WireGuardConnectBody(BaseModel):
+    remote_url: str
+    remote_api_key: str
+    our_tunnel_ip: str
+    their_tunnel_ip: str
+    add_as_provider: bool = True
+
+
 @router.get("/api/wireguard/status")
 async def api_wireguard_status():
     """Summarize WireGuard settings (no private keys)."""
@@ -1503,6 +1632,305 @@ async def api_wireguard_status():
             "active_peers": sum(1 for p in peers if p["enabled"]),
         }
     )
+
+
+@router.get("/api/wireguard/peering-config")
+async def api_wireguard_peering_config_get():
+    db = deps.get_db()
+    cfg = await db.get_wireguard_peering_config()
+    return JSONResponse(
+        {
+            "enabled": cfg["peering_enabled"],
+            "api_key_masked": _mask_peering_key(cfg["peering_api_key"]),
+        }
+    )
+
+
+@router.post("/api/wireguard/peering-config")
+async def api_wireguard_peering_config_post(body: PeeringConfigBody):
+    db = deps.get_db()
+    if body.regenerate_api_key:
+        key = secrets.token_urlsafe(32)
+    else:
+        new_key = (body.api_key or "").strip()
+        if new_key:
+            key = new_key
+        else:
+            prev = await db.get_wireguard_peering_config()
+            key = (prev.get("peering_api_key") or "").strip()
+            if not key:
+                key = secrets.token_urlsafe(32)
+    await db.set_wireguard_peering_config(body.enabled, key)
+    return JSONResponse(
+        {
+            "enabled": body.enabled,
+            "api_key": key,
+            "api_key_masked": _mask_peering_key(key),
+        }
+    )
+
+
+@router.get("/api/wireguard/peer-info")
+async def api_wireguard_peer_info(request: Request):
+    db = deps.get_db()
+    if not await _peering_key_matches(request, db):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Peering-Key")
+    return JSONResponse(await _wireguard_peer_info_payload(db))
+
+
+@router.post("/api/wireguard/peer-request")
+async def api_wireguard_peer_request(request: Request, body: PeerRequestBody):
+    db = deps.get_db()
+    if not await _peering_key_matches(request, db):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Peering-Key")
+    cfg = await db.get_wireguard_peering_config()
+    if not cfg["peering_enabled"]:
+        raise HTTPException(
+            status_code=403, detail="Peering is not enabled on this router"
+        )
+    pk = body.public_key.strip()
+    if not is_valid_wg_key_b64(pk):
+        raise HTTPException(status_code=400, detail="Invalid public_key")
+
+    existing = await db.find_wireguard_peer_by_public_key(pk)
+    if existing:
+        peer_id = int(existing["id"])
+        await db.update_wireguard_peer(
+            peer_id,
+            name=body.name or existing.get("name") or "",
+            public_key=pk,
+            allowed_ips=body.allowed_ips.strip(),
+            preshared_key=existing.get("preshared_key"),
+            endpoint=body.endpoint.strip() or None,
+            persistent_keepalive=existing.get("persistent_keepalive"),
+            enabled=True,
+        )
+    else:
+        peer_id = await db.add_wireguard_peer(
+            name=(body.name or "peer").strip() or "peer",
+            public_key=pk,
+            allowed_ips=body.allowed_ips.strip(),
+            endpoint=body.endpoint.strip() or None,
+            persistent_keepalive=25,
+            enabled=True,
+        )
+
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    if not ok:
+        logger.warning("peer-request apply config: %s", msg)
+
+    if body.add_as_provider and body.ollama_url.strip():
+        linked = await db.get_providers_by_peer_id(peer_id)
+        if not linked:
+            pm = deps.get_pm()
+            ou = body.ollama_url.strip().rstrip("/")
+            lu = body.llamacpp_url.strip().rstrip("/") if body.llamacpp_url else None
+            if lu and ou:
+                ptype = ProviderType.BOTH
+            elif lu:
+                ptype = ProviderType.LLAMACPP
+            else:
+                ptype = ProviderType.OLLAMA
+            pname = (body.name or f"peer-{peer_id}").strip() or f"peer-{peer_id}"
+            await pm.add_provider(
+                pname,
+                ou if ptype != ProviderType.LLAMACPP else (lu or ou),
+                provider_type=ptype,
+                llamacpp_url=lu if ptype != ProviderType.OLLAMA else None,
+                wireguard_peer_id=peer_id,
+            )
+
+    out = await _wireguard_peer_info_payload(db)
+    out["add_as_provider"] = bool(body.add_as_provider)
+    return JSONResponse(out)
+
+
+@router.post("/api/wireguard/connect")
+async def api_wireguard_connect(body: WireGuardConnectBody):
+    db = deps.get_db()
+    pm = deps.get_pm()
+    base = body.remote_url.strip().rstrip("/")
+    if not base.startswith("http://") and not base.startswith("https://"):
+        raise HTTPException(status_code=400, detail="remote_url must be http(s) URL")
+
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    headers = {"X-Peering-Key": body.remote_api_key.strip()}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.get(f"{base}/api/wireguard/peer-info", headers=headers)
+            if r.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"peer-info failed: HTTP {r.status_code} {r.text[:200]}",
+                )
+            remote = r.json()
+    except HTTPException:
+        raise
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"peer-info unreachable: {exc}"
+        ) from exc
+
+    remote_pk = (remote.get("public_key") or "").strip()
+    if not remote_pk or not is_valid_wg_key_b64(remote_pk):
+        raise HTTPException(
+            status_code=502, detail="Remote returned invalid public_key"
+        )
+
+    our_iface = await db.get_wireguard_interface()
+    our_pub = (our_iface.get("public_key") or "").strip()
+    if not our_pub:
+        raise HTTPException(
+            status_code=400,
+            detail="Local WireGuard public key missing; set private key first",
+        )
+    our_ep = (our_iface.get("endpoint_public") or "").strip()
+    if not our_ep:
+        raise HTTPException(
+            status_code=400,
+            detail="Set Public endpoint on the WireGuard interface so the remote peer can reach you",
+        )
+
+    our_ip = body.our_tunnel_ip.strip()
+    their_ip = body.their_tunnel_ip.strip()
+    allowed_us = f"{our_ip}/32"
+    ollama_us = f"http://{our_ip}:{settings.api_port}"
+    lcpp_us = f"http://{our_ip}:{settings.llamacpp_port}"
+
+    existing_remote = await db.find_wireguard_peer_by_public_key(remote_pk)
+    registered = False
+    remote_added_us = False
+    if not existing_remote:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                pr = await client.post(
+                    f"{base}/api/wireguard/peer-request",
+                    headers=headers,
+                    json={
+                        "public_key": our_pub,
+                        "tunnel_ip": our_ip,
+                        "allowed_ips": allowed_us,
+                        "endpoint": our_ep,
+                        "name": socket.gethostname(),
+                        "ollama_url": ollama_us,
+                        "llamacpp_url": lcpp_us,
+                        "add_as_provider": body.add_as_provider,
+                    },
+                )
+                if pr.status_code != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"peer-request failed: HTTP {pr.status_code} {pr.text[:200]}",
+                    )
+                registered = True
+                try:
+                    remote_added_us = bool(pr.json().get("add_as_provider"))
+                except Exception:
+                    remote_added_us = body.add_as_provider
+        except HTTPException:
+            raise
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"peer-request unreachable: {exc}"
+            ) from exc
+
+    remote_endpoint = (remote.get("endpoint") or "").strip()
+    peer_row = await db.find_wireguard_peer_by_public_key(remote_pk)
+    if peer_row:
+        peer_id = int(peer_row["id"])
+        await db.update_wireguard_peer(
+            peer_id,
+            name=(remote.get("name") or peer_row.get("name") or "remote").strip(),
+            public_key=remote_pk,
+            allowed_ips=f"{their_ip}/32",
+            preshared_key=peer_row.get("preshared_key"),
+            endpoint=remote_endpoint or None,
+            persistent_keepalive=peer_row.get("persistent_keepalive") or 25,
+            enabled=True,
+        )
+    else:
+        peer_id = await db.add_wireguard_peer(
+            name=(remote.get("name") or "remote").strip() or "remote",
+            public_key=remote_pk,
+            allowed_ips=f"{their_ip}/32",
+            endpoint=remote_endpoint or None,
+            persistent_keepalive=25,
+            enabled=True,
+        )
+
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    if not ok:
+        logger.warning("connect apply config: %s", msg)
+
+    added_local_provider = False
+
+    if body.add_as_provider:
+        ro = (remote.get("ollama_url") or "").strip().rstrip("/")
+        rl = (remote.get("llamacpp_url") or "").strip().rstrip("/")
+        linked = await db.get_providers_by_peer_id(peer_id)
+        if not linked and ro:
+            if rl and ro:
+                ptype = ProviderType.BOTH
+            elif rl:
+                ptype = ProviderType.LLAMACPP
+            else:
+                ptype = ProviderType.OLLAMA
+            pname = (remote.get("name") or "remote-router").strip() or "remote-router"
+            await pm.add_provider(
+                pname,
+                ro if ptype != ProviderType.LLAMACPP else (rl or ro),
+                provider_type=ptype,
+                llamacpp_url=rl if ptype != ProviderType.OLLAMA else None,
+                wireguard_peer_id=peer_id,
+            )
+            added_local_provider = True
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "peer_id": peer_id,
+            "registered_on_remote": registered,
+            "remote_added_us_as_provider": remote_added_us,
+            "added_local_provider": added_local_provider,
+            "message": msg if not ok else "connected",
+        }
+    )
+
+
+@router.post("/api/wireguard/peers/{peer_id}/remove")
+async def api_wireguard_peer_remove(peer_id: int, request: Request):
+    db = deps.get_db()
+    pm = deps.get_pm()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    remove_providers = bool(body.get("remove_providers"))
+    peer = await db.get_wireguard_peer(peer_id)
+    if not peer:
+        raise HTTPException(status_code=404, detail="Peer not found")
+
+    linked = await db.get_providers_by_peer_id(peer_id)
+    if linked and not remove_providers:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "peer_has_linked_providers",
+                "providers": [{"id": p.id, "name": p.name} for p in linked],
+                "message": "Remove linked providers too?",
+            },
+        )
+
+    if linked and remove_providers:
+        for p in linked:
+            assert p.id is not None
+            await pm.remove_provider(p.id)
+    elif linked:
+        await db.unlink_providers_from_wireguard_peer(peer_id)
+
+    await db.remove_wireguard_peer(peer_id)
+    await sync_wireguard_config_to_disk(db)
+    return JSONResponse({"ok": True})
 
 
 @router.post("/wireguard/interface")
@@ -1578,8 +2006,14 @@ async def wireguard_peer_save(
     endpoint: str = Form(""),
     persistent_keepalive: str = Form(""),
     peer_enabled: str = Form("1"),
+    link_provider: Optional[str] = Form(None),
+    provider_name: str = Form(""),
+    provider_type: str = Form("ollama"),
+    ollama_url: str = Form(""),
+    llamacpp_url: str = Form(""),
 ):
     db = deps.get_db()
+    pm = deps.get_pm()
     pk = public_key.strip()
     if not is_valid_wg_key_b64(pk):
         raise HTTPException(status_code=400, detail="Invalid peer public key format")
@@ -1602,6 +2036,8 @@ async def wireguard_peer_save(
             ka = None
 
     en = peer_enabled == "1"
+    do_link = link_provider in ("1", "on", "true", "yes")
+    pid: int
 
     try:
         if peer_id.strip():
@@ -1620,7 +2056,7 @@ async def wireguard_peer_save(
                 enabled=en,
             )
         else:
-            await db.add_wireguard_peer(
+            pid = await db.add_wireguard_peer(
                 name=name,
                 public_key=pk,
                 allowed_ips=allowed_ips.strip(),
@@ -1634,17 +2070,39 @@ async def wireguard_peer_save(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    if do_link:
+        ou = ollama_url.strip().rstrip("/")
+        lu = llamacpp_url.strip().rstrip("/") if llamacpp_url.strip() else None
+        linked = await db.get_providers_by_peer_id(pid)
+        if not linked and ou:
+            pt_raw = (provider_type or "ollama").strip().lower()
+            if pt_raw == "both" or (lu and ou):
+                ptype = ProviderType.BOTH
+            elif pt_raw == "llamacpp" or (lu and not ou):
+                ptype = ProviderType.LLAMACPP
+            else:
+                ptype = ProviderType.OLLAMA
+            pname = provider_name.strip() or name.strip() or f"peer-{pid}"
+            await pm.add_provider(
+                pname,
+                ou if ptype != ProviderType.LLAMACPP else (lu or ou),
+                provider_type=ptype,
+                llamacpp_url=lu if ptype != ProviderType.OLLAMA else None,
+                wireguard_peer_id=pid,
+            )
+        elif not linked and lu and not ou:
+            pname = provider_name.strip() or name.strip() or f"peer-{pid}"
+            await pm.add_provider(
+                pname,
+                lu,
+                provider_type=ProviderType.LLAMACPP,
+                llamacpp_url=None,
+                wireguard_peer_id=pid,
+            )
+
     ok, msg = await sync_wireguard_config_to_disk(db)
     if not ok:
         raise HTTPException(
             status_code=400, detail=f"Peer saved but config file: {msg}"
         )
-    return _wg_tab_redirect()
-
-
-@router.post("/wireguard/peers/{peer_id}/remove")
-async def wireguard_peer_remove(peer_id: int):
-    db = deps.get_db()
-    await db.remove_wireguard_peer(peer_id)
-    await sync_wireguard_config_to_disk(db)
     return _wg_tab_redirect()

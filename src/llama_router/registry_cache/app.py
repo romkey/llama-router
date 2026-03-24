@@ -401,6 +401,8 @@ async def precache_model(
     total = len(layers)
     sem = _blob_semaphore
     assert sem is not None, "blob semaphore not initialized"
+    precache_start = time.monotonic()
+    total_downloaded: list[int] = [0]
 
     async def _fetch_one_blob(i: int, layer: dict) -> None:
         digest = layer.get("digest", "")
@@ -427,6 +429,7 @@ async def precache_model(
             blob_url = f"{UPSTREAM}/v2/{oci_name}/blobs/{digest}"
             tmp = cache.temp_blob_path(digest)
             total_bytes = 0
+            blob_start = time.monotonic()
             try:
                 async with client.stream(
                     "GET",
@@ -440,15 +443,21 @@ async def precache_model(
                             total_bytes += len(chunk)
                             if progress_callback and size > 0:
                                 pct = int(total_bytes * 100 / size)
+                                elapsed = time.monotonic() - blob_start
+                                speed_str = ""
+                                if elapsed > 0 and total_bytes > 0:
+                                    speed_mbps = (total_bytes / (1024 * 1024)) / elapsed
+                                    speed_str = f" {speed_mbps:.1f} MB/s"
                                 progress_callback(
                                     f"downloading blob {i}/{total} {pct}% "
-                                    f"({_human_bytes(total_bytes)}/{_human_bytes(size)})"
+                                    f"({_human_bytes(total_bytes)}/{_human_bytes(size)}){speed_str}"
                                 )
                 cache.commit_blob(digest)
                 if not cache.has_blob(digest):
                     raise RuntimeError(
                         "Blob commit failed — file not found after rename"
                     )
+                total_downloaded[0] += total_bytes
                 logger.info(
                     "Precache blob complete: %s (%s)",
                     digest[:24],
@@ -468,7 +477,12 @@ async def precache_model(
     )
 
     if progress_callback:
-        progress_callback(f"cached {model} ({total} blobs)")
+        elapsed = time.monotonic() - precache_start
+        speed_str = ""
+        if elapsed > 0 and total_downloaded[0] > 0:
+            speed_mbps = (total_downloaded[0] / (1024 * 1024)) / elapsed
+            speed_str = f", {speed_mbps:.1f} MB/s"
+        progress_callback(f"cached {model} ({total} blobs{speed_str})")
 
     logger.info("Pre-cached model %s: %d/%d blobs present", model, cached, total)
 

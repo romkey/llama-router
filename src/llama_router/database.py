@@ -199,6 +199,19 @@ _MIGRATIONS = [
             )""",
         ],
     ),
+    (
+        "add_wireguard_peer_id_to_providers",
+        [
+            "ALTER TABLE providers ADD COLUMN wireguard_peer_id INTEGER REFERENCES wireguard_peers(id) ON DELETE SET NULL",
+        ],
+    ),
+    (
+        "add_wireguard_peering_fields",
+        [
+            "ALTER TABLE wireguard_interface ADD COLUMN peering_api_key TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE wireguard_interface ADD COLUMN peering_enabled INTEGER NOT NULL DEFAULT 0",
+        ],
+    ),
 ]
 
 
@@ -279,13 +292,14 @@ class Database:
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
+        wireguard_peer_id: int | None = None,
     ) -> Provider:
         url = url.rstrip("/")
         if llamacpp_url:
             llamacpp_url = llamacpp_url.rstrip("/")
         cursor = await self.db.execute(
-            "INSERT INTO providers (name, url, llamacpp_url, provider_type, machine_type, gpu_type, gpu_ram) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO providers (name, url, llamacpp_url, provider_type, machine_type, gpu_type, gpu_ram, wireguard_peer_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 url,
@@ -294,6 +308,7 @@ class Database:
                 machine_type,
                 gpu_type,
                 gpu_ram,
+                wireguard_peer_id,
             ),
         )
         await self.db.commit()
@@ -306,6 +321,7 @@ class Database:
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
+            wireguard_peer_id=wireguard_peer_id,
         )
 
     async def remove_provider(self, provider_id: int) -> None:
@@ -747,6 +763,8 @@ class Database:
             await self.db.commit()
             return await self.get_wireguard_interface()
         d = dict(row)
+        d["peering_enabled"] = bool(d.get("peering_enabled"))
+        d["peering_api_key"] = d.get("peering_api_key") or ""
         priv = (d.get("private_key") or "").strip()
         if priv:
             try:
@@ -888,6 +906,58 @@ class Database:
 
     async def remove_wireguard_peer(self, peer_id: int) -> None:
         await self.db.execute("DELETE FROM wireguard_peers WHERE id = ?", (peer_id,))
+        await self.db.commit()
+
+    async def set_provider_wireguard_peer(
+        self, provider_id: int, peer_id: int | None
+    ) -> None:
+        await self.db.execute(
+            "UPDATE providers SET wireguard_peer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (peer_id, provider_id),
+        )
+        await self.db.commit()
+
+    async def get_providers_by_peer_id(self, peer_id: int) -> list[Provider]:
+        async with self.db.execute(
+            "SELECT * FROM providers WHERE wireguard_peer_id = ? ORDER BY name",
+            (peer_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [_row_to_provider(r) for r in rows]
+
+    async def get_wireguard_peering_config(self) -> dict:
+        iface = await self.get_wireguard_interface()
+        return {
+            "peering_enabled": bool(iface.get("peering_enabled")),
+            "peering_api_key": iface.get("peering_api_key") or "",
+        }
+
+    async def set_wireguard_peering_config(self, enabled: bool, api_key: str) -> None:
+        await self.db.execute(
+            "UPDATE wireguard_interface SET peering_enabled = ?, peering_api_key = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            (int(enabled), api_key.strip()),
+        )
+        await self.db.commit()
+
+    async def find_wireguard_peer_by_public_key(self, public_key: str) -> dict | None:
+        key = public_key.strip()
+        async with self.db.execute(
+            "SELECT * FROM wireguard_peers WHERE public_key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["enabled"] = bool(d.get("enabled"))
+        return d
+
+    async def unlink_providers_from_wireguard_peer(self, peer_id: int) -> None:
+        await self.db.execute(
+            "UPDATE providers SET wireguard_peer_id = NULL, updated_at = CURRENT_TIMESTAMP "
+            "WHERE wireguard_peer_id = ?",
+            (peer_id,),
+        )
         await self.db.commit()
 
     async def resolve_fallback_chain(
@@ -1037,6 +1107,7 @@ class Database:
 
 
 def _row_to_provider(row: aiosqlite.Row) -> Provider:
+    wgid = row["wireguard_peer_id"] if "wireguard_peer_id" in row.keys() else None
     return Provider(
         id=row["id"],
         name=row["name"],
@@ -1047,6 +1118,7 @@ def _row_to_provider(row: aiosqlite.Row) -> Provider:
         machine_type=row["machine_type"],
         gpu_type=row["gpu_type"],
         gpu_ram=row["gpu_ram"],
+        wireguard_peer_id=int(wgid) if wgid is not None else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
