@@ -898,16 +898,27 @@ class Database:
         Returns the ordered list of models to try (including the original).
         Stops at max_depth or when there is no further fallback (or a cycle).
         """
-        chain = [model_name]
-        seen: set[str] = {model_name}
-        current = model_name
-        for _ in range(max_depth):
-            fb = await self.get_model_fallback(current)
-            if fb is None or fb in seen:
+        query = """
+        WITH RECURSIVE chain(depth, resolved_name) AS (
+            SELECT 0, ?
+            UNION ALL
+            SELECT c.depth + 1, mf.fallback_model
+            FROM chain c
+            INNER JOIN model_fallbacks mf ON mf.model_name = c.resolved_name
+            WHERE c.depth < ? AND mf.fallback_model IS NOT NULL
+        )
+        SELECT resolved_name FROM chain ORDER BY depth
+        """
+        async with self.db.execute(query, (model_name, max_depth)) as cursor:
+            rows = await cursor.fetchall()
+        chain: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            name = row["resolved_name"]
+            if name in seen:
                 break
-            chain.append(fb)
-            seen.add(fb)
-            current = fb
+            seen.add(name)
+            chain.append(name)
         return chain
 
     # --- API Keys / Auth settings ---

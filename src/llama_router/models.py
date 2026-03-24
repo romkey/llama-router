@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import TypedDict
 
 from pydantic import BaseModel
+
+
+class HotModel(TypedDict, total=False):
+    name: str
+    size: int
+    size_vram: int
+    expires_at: str
 
 
 class ProviderStatus(str, Enum):
@@ -116,4 +124,4 @@ class ProviderInfo(BaseModel):
     benchmarks: list[BenchmarkResult] = []
     addresses: list[ProviderAddress] = []
     active_requests: int = 0
-    hot_models: list[dict] = []
+    hot_models: list[HotModel] = []

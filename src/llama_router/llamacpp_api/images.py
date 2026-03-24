@@ -52,23 +52,23 @@ async def images_generations(request: Request):
     body["model"] = await db.get_backend_model_name(provider.id, body["model"])
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
-    pm.acquire(provider.id)
     try:
-        resp = await client.images_generations(body)
-        resp_size = len(json.dumps(resp).encode())
-        duration = (time.monotonic() - start) * 1000
-        await log_request(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/images/generations",
-            request=request,
-            model=model,
-            request_body=body,
-            response_size=resp_size,
-            duration_ms=duration,
-        )
-        return JSONResponse(content=resp)
+        async with pm.acquire_provider(provider.id):
+            resp = await client.images_generations(body)
+            resp_size = len(json.dumps(resp).encode())
+            duration = (time.monotonic() - start) * 1000
+            await log_request(
+                db,
+                provider=provider,
+                protocol="v1",
+                endpoint="/v1/images/generations",
+                request=request,
+                model=model,
+                request_body=body,
+                response_size=resp_size,
+                duration_ms=duration,
+            )
+            return JSONResponse(content=resp)
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
@@ -116,8 +116,6 @@ async def images_generations(request: Request):
             error_detail=err_detail,
         )
         raise
-    finally:
-        pm.release(provider.id)
 
 
 @router.post("/v1/images/edits")
@@ -147,26 +145,26 @@ async def images_edits(request: Request):
     assert provider.id is not None
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
-    pm.acquire(provider.id)
     try:
-        resp = await client.images_edits(raw_body, content_type)
-        duration = (time.monotonic() - start) * 1000
-        await log_request(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/images/edits",
-            request=request,
-            model=model,
-            request_body=log_body,
-            response_size=len(resp.content),
-            duration_ms=duration,
-        )
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            media_type=resp.headers.get("content-type", "application/json"),
-        )
+        async with pm.acquire_provider(provider.id):
+            resp = await client.images_edits(raw_body, content_type)
+            duration = (time.monotonic() - start) * 1000
+            await log_request(
+                db,
+                provider=provider,
+                protocol="v1",
+                endpoint="/v1/images/edits",
+                request=request,
+                model=model,
+                request_body=log_body,
+                response_size=len(resp.content),
+                duration_ms=duration,
+            )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
@@ -214,5 +212,3 @@ async def images_edits(request: Request):
             error_detail=err_detail,
         )
         raise
-    finally:
-        pm.release(provider.id)

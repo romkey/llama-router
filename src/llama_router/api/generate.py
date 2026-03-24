@@ -52,50 +52,46 @@ async def generate(request: Request):
     stream = body.get("stream", True)
     start = time.monotonic()
 
-    pm.acquire(provider.id)
-    try:
-        if stream:
+    if stream:
 
-            async def generate_chunks():
-                try:
-                    async for chunk in client.generate_stream(body):
-                        yield chunk
-                finally:
-                    pm.release(provider.id)
+        async def generate_chunks():
+            async with pm.acquire_provider(provider.id):
+                async for chunk in client.generate_stream(body):
+                    yield chunk
 
-            logged = StreamLogger(
-                generate_chunks(),
-                db=db,
-                provider=provider,
-                protocol="ollama",
-                endpoint="/api/generate",
-                request=request,
-                model=model,
-                request_body=body,
-                start_time=start,
-            )
-            return StreamingResponse(logged, media_type="application/x-ndjson")
-
-        payload = await client.generate(body)
-        pm.release(provider.id)
-        import json as _json
-
-        resp_size = len(_json.dumps(payload).encode())
-        duration = (time.monotonic() - start) * 1000
-        await log_request(
-            db,
+        logged = StreamLogger(
+            generate_chunks(),
+            db=db,
             provider=provider,
             protocol="ollama",
             endpoint="/api/generate",
             request=request,
             model=model,
             request_body=body,
-            response_size=resp_size,
-            duration_ms=duration,
+            start_time=start,
         )
-        return JSONResponse(content=payload)
+        return StreamingResponse(logged, media_type="application/x-ndjson")
+
+    try:
+        async with pm.acquire_provider(provider.id):
+            payload = await client.generate(body)
+            import json as _json
+
+            resp_size = len(_json.dumps(payload).encode())
+            duration = (time.monotonic() - start) * 1000
+            await log_request(
+                db,
+                provider=provider,
+                protocol="ollama",
+                endpoint="/api/generate",
+                request=request,
+                model=model,
+                request_body=body,
+                response_size=resp_size,
+                duration_ms=duration,
+            )
+            return JSONResponse(content=payload)
     except httpx.HTTPStatusError as exc:
-        pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         logger.warning(
             "Backend %s returned HTTP %d for /api/generate %s",
@@ -118,7 +114,6 @@ async def generate(request: Request):
         )
         return _forward_backend_error(exc)
     except Exception as exc:
-        pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         err_detail = str(exc)[:500]
         if isinstance(exc, httpx.HTTPError):

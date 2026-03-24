@@ -182,12 +182,19 @@ class OllamaClient:
         if cache_registry_url:
             parsed = urlparse(cache_registry_url)
             host_port = parsed.netloc or parsed.path.rstrip("/")
-            if "/" not in model or model.startswith("library/"):
-                pull_model = f"{host_port}/library/{model}"
+            base_name = model.split("@", 1)[0] if "@" in model else model
+            if "/" not in base_name:
+                pull_model = f"{host_port}/library/{base_name}"
             else:
-                pull_model = f"{host_port}/{model}"
+                pull_model = f"{host_port}/{base_name}"
             insecure = True
 
+        logger.debug(
+            "Pull rewrite: original=%r pull_model=%r insecure=%s",
+            model,
+            pull_model,
+            insecure,
+        )
         logger.info(
             "Starting pull: model=%s pull_model=%s insecure=%s base_url=%s",
             model,

@@ -55,32 +55,29 @@ async def chat_completions(request: Request):
     stream = body.get("stream", False)
     start = time.monotonic()
 
-    pm.acquire(provider.id)
+    if stream:
+
+        async def generate():
+            async with pm.acquire_provider(provider.id):
+                async for chunk in client.chat_completions_stream(body):
+                    yield chunk
+
+        logged = StreamLogger(
+            generate(),
+            db=db,
+            provider=provider,
+            protocol="v1",
+            endpoint=endpoint_path,
+            request=request,
+            model=model,
+            request_body=body,
+            start_time=start,
+        )
+        return StreamingResponse(logged, media_type="text/event-stream")
+
     try:
-        if stream:
-
-            async def generate():
-                try:
-                    async for chunk in client.chat_completions_stream(body):
-                        yield chunk
-                finally:
-                    pm.release(provider.id)
-
-            logged = StreamLogger(
-                generate(),
-                db=db,
-                provider=provider,
-                protocol="v1",
-                endpoint=endpoint_path,
-                request=request,
-                model=model,
-                request_body=body,
-                start_time=start,
-            )
-            return StreamingResponse(logged, media_type="text/event-stream")
-        else:
+        async with pm.acquire_provider(provider.id):
             resp = await client.chat_completions(body)
-            pm.release(provider.id)
             import json as _json
 
             resp_size = len(_json.dumps(resp).encode())
@@ -98,7 +95,6 @@ async def chat_completions(request: Request):
             )
             return JSONResponse(content=resp)
     except httpx.HTTPStatusError as exc:
-        pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         logger.warning(
             "Backend %s returned HTTP %d for %s %s",
@@ -122,7 +118,6 @@ async def chat_completions(request: Request):
         )
         return _forward_backend_error(exc)
     except Exception as exc:
-        pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         err_detail = str(exc)[:500]
         if isinstance(exc, httpx.HTTPError):

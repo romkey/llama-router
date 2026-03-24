@@ -53,27 +53,23 @@ async def audio_speech(request: Request):
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
 
-    pm.acquire(provider.id)
+    async def generate():
+        async with pm.acquire_provider(provider.id):
+            async for chunk in client.audio_speech(body):
+                yield chunk
+
+    response_format = body.get("response_format", "mp3")
+    media_types = {
+        "mp3": "audio/mpeg",
+        "opus": "audio/opus",
+        "aac": "audio/aac",
+        "flac": "audio/flac",
+        "wav": "audio/wav",
+        "pcm": "audio/pcm",
+    }
+    media_type = media_types.get(response_format, "audio/mpeg")
+
     try:
-
-        async def generate():
-            try:
-                async for chunk in client.audio_speech(body):
-                    yield chunk
-            finally:
-                pm.release(provider.id)
-
-        response_format = body.get("response_format", "mp3")
-        media_types = {
-            "mp3": "audio/mpeg",
-            "opus": "audio/opus",
-            "aac": "audio/aac",
-            "flac": "audio/flac",
-            "wav": "audio/wav",
-            "pcm": "audio/pcm",
-        }
-        media_type = media_types.get(response_format, "audio/mpeg")
-
         logged = StreamLogger(
             generate(),
             db=db,
@@ -87,7 +83,6 @@ async def audio_speech(request: Request):
         )
         return StreamingResponse(logged, media_type=media_type)
     except httpx.HTTPStatusError as exc:
-        pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         logger.warning(
             "Backend %s returned HTTP %d for /v1/audio/speech %s",
@@ -110,7 +105,6 @@ async def audio_speech(request: Request):
         )
         return _forward_backend_error(exc)
     except Exception as exc:
-        pm.release(provider.id)
         duration = (time.monotonic() - start) * 1000
         err_detail = str(exc)[:500]
         if isinstance(exc, httpx.HTTPError):
@@ -164,26 +158,26 @@ async def audio_transcriptions(request: Request):
     assert provider.id is not None
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
-    pm.acquire(provider.id)
     try:
-        resp = await client.audio_transcriptions(raw_body, content_type)
-        duration = (time.monotonic() - start) * 1000
-        await log_request(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/audio/transcriptions",
-            request=request,
-            model=model,
-            request_body=log_body,
-            response_size=len(resp.content),
-            duration_ms=duration,
-        )
-        return Response(
-            content=resp.content,
-            status_code=resp.status_code,
-            media_type=resp.headers.get("content-type", "application/json"),
-        )
+        async with pm.acquire_provider(provider.id):
+            resp = await client.audio_transcriptions(raw_body, content_type)
+            duration = (time.monotonic() - start) * 1000
+            await log_request(
+                db,
+                provider=provider,
+                protocol="v1",
+                endpoint="/v1/audio/transcriptions",
+                request=request,
+                model=model,
+                request_body=log_body,
+                response_size=len(resp.content),
+                duration_ms=duration,
+            )
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                media_type=resp.headers.get("content-type", "application/json"),
+            )
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
@@ -231,8 +225,6 @@ async def audio_transcriptions(request: Request):
             error_detail=err_detail,
         )
         raise
-    finally:
-        pm.release(provider.id)
 
 
 @router.get("/v1/audio/voices")

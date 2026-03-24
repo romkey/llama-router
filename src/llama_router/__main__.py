@@ -38,6 +38,7 @@ async def run() -> None:
     await pm.start()
 
     rt = Router(db, pm)
+    pm.attach_router(rt)
 
     api_deps.init(db, pm, rt)
     dash_deps.init(db, pm)

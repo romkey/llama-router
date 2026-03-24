@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
 import time
-from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -16,6 +18,7 @@ from .httpx_errors import describe_httpx_error
 from .llamacpp_client import LlamaCppClient
 from .models import (
     BenchmarkResult,
+    HotModel,
     Provider,
     ProviderAddress,
     ProviderInfo,
@@ -24,6 +27,9 @@ from .models import (
     ProviderType,
 )
 from .ollama_client import OllamaClient
+
+if TYPE_CHECKING:
+    from .router import Router
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +55,49 @@ def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
 
 
 class ProviderManager:
+    _cached_prefixes: list[str] | None = None
+
     def __init__(self, db: Database):
         self._db = db
         self._ollama_clients: dict[int, OllamaClient] = {}
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
         self._active_requests: dict[int, int] = defaultdict(int)
-        self._hot_models: dict[int, list[dict]] = {}
+        self._hot_models: dict[int, list[HotModel]] = {}
+        self._active_urls: dict[int, tuple[str, str]] = {}
+        self._router: Router | None = None
         self._health_task: asyncio.Task | None = None
+
+    def attach_router(self, router: Router) -> None:
+        self._router = router
+
+    def _notify_model_routing_cache(self, provider_id: int) -> None:
+        rt = self._router
+        if rt is None:
+            return
+        rt.invalidate_providers_for_model_cache()
+        rt.invalidate_benchmark_cache_for_provider(provider_id)
+
+    @classmethod
+    def _get_cache_prefixes(cls) -> list[str]:
+        if cls._cached_prefixes is None:
+            host = settings.cache_external_host
+            port = str(settings.cache_port)
+            raw = [
+                f"{host}:{port}/library/" if host else None,
+                f"{host}:{port}/" if host else None,
+                f"127.0.0.1:{port}/library/",
+                f"127.0.0.1:{port}/",
+            ]
+            cls._cached_prefixes = [p for p in raw if p]
+        return cls._cached_prefixes
+
+    @staticmethod
+    def _address_url_sig(provider: Provider, addr: ProviderAddress) -> tuple[str, str]:
+        o = addr.url.rstrip("/") if provider.supports_ollama else ""
+        lcpp = ""
+        if provider.supports_llamacpp:
+            lcpp = (addr.llamacpp_url or addr.url).rstrip("/")
+        return (o, lcpp)
 
     async def start(self) -> None:
         providers = await self._db.list_providers()
@@ -121,12 +163,14 @@ class ProviderManager:
         addresses = await self._db.get_addresses(provider.id)
         addr = self._best_address(addresses)
         if not addr:
+            self._active_urls.pop(provider.id, None)
             return
         if provider.supports_ollama:
             self._ollama_clients[provider.id] = OllamaClient(addr.url)
         if provider.supports_llamacpp:
             url = addr.llamacpp_url or addr.url
             self._llamacpp_clients[provider.id] = LlamaCppClient(url)
+        self._active_urls[provider.id] = self._address_url_sig(provider, addr)
 
     async def _close_clients(self, provider_id: int) -> None:
         if provider_id in self._ollama_clients:
@@ -267,7 +311,10 @@ class ProviderManager:
     async def remove_provider(self, provider_id: int) -> None:
         await self._close_clients(provider_id)
         self._active_requests.pop(provider_id, None)
+        self._active_urls.pop(provider_id, None)
+        self._hot_models.pop(provider_id, None)
         await self._db.remove_provider(provider_id)
+        self._notify_model_routing_cache(provider_id)
 
     # --- Address CRUD ---
 
@@ -369,14 +416,28 @@ class ProviderManager:
         self._active_requests[provider_id] += 1
 
     def release(self, provider_id: int) -> None:
-        self._active_requests[provider_id] = max(
-            0, self._active_requests[provider_id] - 1
-        )
+        current = self._active_requests[provider_id]
+        if current <= 0:
+            logger.warning(
+                "release() called on provider %d but active_requests=%d — possible double-release",
+                provider_id,
+                current,
+            )
+            return
+        self._active_requests[provider_id] = current - 1
+
+    @asynccontextmanager
+    async def acquire_provider(self, provider_id: int):
+        self.acquire(provider_id)
+        try:
+            yield
+        finally:
+            self.release(provider_id)
 
     def active_requests(self, provider_id: int) -> int:
         return self._active_requests.get(provider_id, 0)
 
-    def get_hot_models(self, provider_id: int) -> list[dict]:
+    def get_hot_models(self, provider_id: int) -> list[HotModel]:
         return self._hot_models.get(provider_id, [])
 
     async def _refresh_hot_models(self, provider: Provider) -> None:
@@ -387,10 +448,10 @@ class ProviderManager:
             return
         try:
             raw = await self._ollama_clients[provider.id].get_ps()
-            hot: list[dict] = []
+            hot: list[HotModel] = []
             for m in raw:
                 name = self._strip_cache_prefix(m.get("name", ""))
-                entry: dict = {"name": name}
+                entry: HotModel = {"name": name}
                 if m.get("size"):
                     entry["size"] = m["size"]
                 if m.get("size_vram"):
@@ -511,6 +572,8 @@ class ProviderManager:
                 tokens_per_second=metrics["tokens_per_second"],
             )
             await self._db.save_benchmark(result)
+            if self._router:
+                self._router.invalidate_benchmark_cache_for_provider(provider_id)
 
             duration = (time.monotonic() - start) * 1000
             await log_request(
@@ -639,15 +702,7 @@ class ProviderManager:
         """
         if "/" not in name:
             return name
-        host = settings.cache_external_host
-        port = str(settings.cache_port)
-        prefixes = []
-        if host:
-            prefixes.append(f"{host}:{port}/library/")
-            prefixes.append(f"{host}:{port}/")
-        prefixes.append(f"127.0.0.1:{port}/library/")
-        prefixes.append(f"127.0.0.1:{port}/")
-        for pfx in prefixes:
+        for pfx in self._get_cache_prefixes():
             if name.startswith(pfx):
                 return name[len(pfx) :]
         return name
@@ -740,29 +795,31 @@ class ProviderManager:
             # model via /props; some instances expose active model there even when
             # /v1/models is sparse.
             addresses = await self._db.get_addresses(provider.id)
-            for addr in addresses:
-                probe_url = addr.llamacpp_url or addr.url
-                tmp = LlamaCppClient(probe_url)
-                try:
-                    props = await tmp.get_props()
-                finally:
-                    await tmp.close()
-                current = self._extract_llamacpp_current_model(props)
-                if not current:
-                    continue
-                clean_name = self._strip_cache_prefix(current)
-                raw_name = current if clean_name != current else None
-                if raw_name:
-                    cache_prefixed += 1
-                _upsert_model(
-                    source="llamacpp",
-                    clean_name=clean_name,
-                    raw_name=raw_name,
-                    details={
-                        "_from_props": True,
-                        "_llamacpp_source_url": probe_url,
-                    },
-                )
+            timeout = httpx.Timeout(10.0)
+            async with httpx.AsyncClient(timeout=timeout) as probe_client:
+                for addr in addresses:
+                    probe_url = (addr.llamacpp_url or addr.url).rstrip("/")
+                    try:
+                        resp = await probe_client.get(f"{probe_url}/props")
+                        props = resp.json() if resp.status_code == 200 else None
+                    except httpx.HTTPError:
+                        props = None
+                    current = self._extract_llamacpp_current_model(props)
+                    if not current:
+                        continue
+                    clean_name = self._strip_cache_prefix(current)
+                    raw_name = current if clean_name != current else None
+                    if raw_name:
+                        cache_prefixed += 1
+                    _upsert_model(
+                        source="llamacpp",
+                        clean_name=clean_name,
+                        raw_name=raw_name,
+                        details={
+                            "_from_props": True,
+                            "_llamacpp_source_url": probe_url,
+                        },
+                    )
 
         all_models = list(models_by_name.values())
         await self._db.set_provider_models(provider.id, all_models)
@@ -781,6 +838,7 @@ class ProviderManager:
             )
 
         await self._refresh_hot_models(provider)
+        self._notify_model_routing_cache(provider.id)
 
     @staticmethod
     def _extract_llamacpp_current_model(props: dict | None) -> str | None:
@@ -825,6 +883,7 @@ class ProviderManager:
                 if reachable:
                     any_live = True
 
+            addresses = await self._db.get_addresses(p.id)
             if any_live:
                 if p.status == ProviderStatus.OFFLINE:
                     live_urls = [a.url for a in addresses if a.is_live]
@@ -833,7 +892,28 @@ class ProviderManager:
                         p.name,
                         ", ".join(live_urls),
                     )
-                    await self._rebuild_clients(p)
+                    best = self._best_address(addresses)
+                    new_sig = (
+                        self._address_url_sig(p, best) if best is not None else ("", "")
+                    )
+                    has_clients = (
+                        p.id in self._ollama_clients or p.id in self._llamacpp_clients
+                    )
+                    prev_sig = self._active_urls.get(p.id)
+                    need_rebuild = best is not None and (
+                        not has_clients or new_sig != prev_sig
+                    )
+                    if need_rebuild:
+                        in_flight = self._active_requests.get(p.id, 0)
+                        if in_flight > 0:
+                            logger.info(
+                                "Skipping client rebuild for provider %d — "
+                                "%d requests in flight",
+                                p.id,
+                                in_flight,
+                            )
+                        else:
+                            await self._rebuild_clients(p)
                     await self._discover_provider(p)
                 else:
                     await self._refresh_hot_models(p)

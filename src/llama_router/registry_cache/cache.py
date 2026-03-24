@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,21 @@ class BlobCache:
         p = self._manifest_path(name, reference)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(data)
+
+    def all_cached_manifests(self) -> Iterator[bytes]:
+        """Yield raw bytes of every non-expired cached manifest."""
+        if not self._manifests_dir.exists():
+            return
+        for d in self._manifests_dir.iterdir():
+            if not d.is_dir():
+                continue
+            for f in d.iterdir():
+                if not f.is_file():
+                    continue
+                age = time.time() - f.stat().st_mtime
+                if age > self._manifest_ttl_seconds:
+                    continue
+                yield f.read_bytes()
 
     def _manifest_blob_digests(self, manifest_bytes: bytes) -> list[str]:
         """Extract all blob digests from a manifest."""

@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 import httpx
@@ -31,6 +31,127 @@ _active_pulls: dict[str, dict] = {}
 _active_benchmarks: dict[str, dict] = {}
 _active_fill_pulls: dict[str, dict] = {}
 _active_fill_benchmarks: dict[str, dict] = {}
+
+
+def _prune_completed(store: dict, max_age_seconds: float = 600) -> None:
+    now = time.monotonic()
+    stale = [
+        k
+        for k, v in store.items()
+        if v.get("status") in ("done", "failed")
+        and v.get("completed_at") is not None
+        and now - v["completed_at"] > max_age_seconds
+    ]
+    for k in stale:
+        del store[k]
+
+
+async def _pull_one_ollama(
+    *,
+    pid: int,
+    idx: int,
+    total: int,
+    model: str,
+    pull_api: str,
+    cache_url: str | None,
+    pm: Any,
+    db: Any,
+    pull_entry: dict,
+    progress_lock: asyncio.Lock,
+    source_ip: str | None = None,
+    log_endpoint: str = "/api/pull/provider",
+    request_meta: str | None = None,
+) -> None:
+    """Pull *model* on a single Ollama provider; updates *pull_entry* under *progress_lock*."""
+    provider = await db.get_provider(pid)
+    pname = provider.name if provider else str(pid)
+    prefix = f"[{idx + 1}/{total}] {pname}" if total > 1 else pname
+
+    async with progress_lock:
+        pull_entry["progress"] = f"{prefix}: starting…"
+    logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
+    start = time.monotonic()
+
+    def _on_progress(info: dict, _pfx: str = prefix) -> None:
+        text = info.get("status", "")
+        pct = info.get("percent")
+        if pct is not None:
+            msg = f"{_pfx}: {text} {pct}%"
+        else:
+            msg = f"{_pfx}: {text}"
+
+        async def _write() -> None:
+            async with progress_lock:
+                pull_entry["progress"] = msg
+
+        try:
+            asyncio.get_running_loop().create_task(_write())
+        except RuntimeError:
+            pull_entry["progress"] = msg
+
+    try:
+        client = pm.get_ollama_client(pid)
+        await client.pull_model(
+            model,
+            cache_registry_url=cache_url,
+            progress_callback=_on_progress,
+        )
+        await pm.refresh_provider(pid)
+        duration = (time.monotonic() - start) * 1000
+        async with progress_lock:
+            pull_entry["completed"].append(pid)
+            pull_entry["progress"] = f"{prefix}: done ({duration / 1000:.0f}s)"
+        logger.info(
+            "Pull %s succeeded on provider %s in %.1fs",
+            model,
+            pname,
+            duration / 1000,
+        )
+        log_kw: dict[str, Any] = {
+            "provider_id": pid,
+            "provider_name": pname,
+            "protocol": "ollama",
+            "endpoint": log_endpoint,
+            "model": model,
+            "request_size": 0,
+            "response_size": 0,
+            "duration_ms": duration,
+            "status": "ok",
+        }
+        if source_ip is not None:
+            log_kw["source_ip"] = source_ip
+        if request_meta is not None:
+            log_kw["request_meta"] = request_meta
+        await db.save_request_log(RequestLog(**log_kw))
+    except Exception as exc:
+        duration = (time.monotonic() - start) * 1000
+        logger.error(
+            "Pull %s FAILED on provider %s after %.1fs: %s",
+            model,
+            pname,
+            duration / 1000,
+            exc,
+        )
+        async with progress_lock:
+            pull_entry["failed"].append(pid)
+            pull_entry["progress"] = f"{prefix}: FAILED"
+        log_kw = {
+            "provider_id": pid,
+            "provider_name": pname,
+            "protocol": "ollama",
+            "endpoint": log_endpoint,
+            "model": model,
+            "request_size": 0,
+            "response_size": 0,
+            "duration_ms": duration,
+            "status": "error",
+            "error_detail": str(exc)[:500],
+        }
+        if source_ip is not None:
+            log_kw["source_ip"] = source_ip
+        if request_meta is not None:
+            log_kw["request_meta"] = request_meta
+        await db.save_request_log(RequestLog(**log_kw))
 
 
 async def _api_key_exists(db, key_id: int) -> bool:
@@ -315,6 +436,11 @@ async def dashboard(request: Request):
 
 @router.get("/api/status")
 async def api_status():
+    _prune_completed(_active_pulls)
+    _prune_completed(_active_benchmarks)
+    _prune_completed(_active_fill_pulls)
+    _prune_completed(_active_fill_benchmarks)
+
     pm = deps.get_pm()
     db = deps.get_db()
     infos = await pm.list_provider_infos()
@@ -612,6 +738,7 @@ async def api_start_benchmark(request: Request):
                 provider_id, model_name, benchmark_api=benchmark_api
             )
             entry["status"] = "done"
+            entry["completed_at"] = time.monotonic()
             entry["result"] = {
                 "startup_time_ms": result.startup_time_ms,
                 "tokens_per_second": result.tokens_per_second,
@@ -619,6 +746,7 @@ async def api_start_benchmark(request: Request):
             }
         except Exception as exc:
             entry["status"] = "failed"
+            entry["completed_at"] = time.monotonic()
             entry["error"] = str(exc)
 
     asyncio.create_task(_run_benchmark())
@@ -668,6 +796,7 @@ async def benchmark_model(provider_id: int, model_name: str):
         try:
             result = await pm.benchmark_provider(provider_id, model_name)
             entry["status"] = "done"
+            entry["completed_at"] = time.monotonic()
             entry["result"] = {
                 "startup_time_ms": result.startup_time_ms,
                 "tokens_per_second": result.tokens_per_second,
@@ -675,6 +804,7 @@ async def benchmark_model(provider_id: int, model_name: str):
             }
         except Exception as exc:
             entry["status"] = "failed"
+            entry["completed_at"] = time.monotonic()
             entry["error"] = str(exc)
 
     asyncio.create_task(_run_benchmark())
@@ -838,84 +968,36 @@ async def api_pull_model(request: Request):
         status="ok",
     )
 
+    progress_lock = asyncio.Lock()
+
     async def _run_pull():
         pull_entry = _active_pulls[pull_id]
-        for idx, pid in enumerate(provider_ids):
-            provider = await db.get_provider(pid)
-            pname = provider.name if provider else str(pid)
-            prefix = f"[{idx + 1}/{len(provider_ids)}] {pname}"
-            pull_entry["progress"] = f"{prefix}: starting…"
-            logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
-            start = time.monotonic()
-
-            def _on_progress(info: dict, _pfx: str = prefix) -> None:
-                text = info.get("status", "")
-                pct = info.get("percent")
-                if pct is not None:
-                    pull_entry["progress"] = f"{_pfx}: {text} {pct}%"
-                else:
-                    pull_entry["progress"] = f"{_pfx}: {text}"
-
-            try:
-                client = pm.get_ollama_client(pid)
-                await client.pull_model(
-                    model,
-                    cache_registry_url=cache_url,
-                    progress_callback=_on_progress,
-                )
-                await pm.refresh_provider(pid)
-                pull_entry["completed"].append(pid)
-                duration = (time.monotonic() - start) * 1000
-                pull_entry["progress"] = f"{prefix}: done ({duration / 1000:.0f}s)"
-                logger.info(
-                    "Pull %s succeeded on provider %s in %.1fs",
-                    model,
-                    pname,
-                    duration / 1000,
-                )
-                await db.save_request_log(
-                    RequestLog(
-                        provider_id=pid,
-                        provider_name=pname,
-                        protocol="ollama",
-                        endpoint="/api/pull/provider",
-                        source_ip=source_ip,
+        n = len(provider_ids)
+        try:
+            await asyncio.gather(
+                *[
+                    _pull_one_ollama(
+                        pid=pid,
+                        idx=i,
+                        total=n,
                         model=model,
-                        request_size=0,
-                        response_size=0,
-                        request_meta=f"pull_api={pull_api}",
-                        duration_ms=duration,
-                        status="ok",
-                    )
-                )
-            except Exception as exc:
-                duration = (time.monotonic() - start) * 1000
-                logger.error(
-                    "Pull %s FAILED on provider %s after %.1fs: %s",
-                    model,
-                    pname,
-                    duration / 1000,
-                    exc,
-                )
-                pull_entry["failed"].append(pid)
-                pull_entry["progress"] = f"{prefix}: FAILED"
-                await db.save_request_log(
-                    RequestLog(
-                        provider_id=pid,
-                        provider_name=pname,
-                        protocol="ollama",
-                        endpoint="/api/pull/provider",
+                        pull_api=pull_api,
+                        cache_url=cache_url,
+                        pm=pm,
+                        db=db,
+                        pull_entry=pull_entry,
+                        progress_lock=progress_lock,
                         source_ip=source_ip,
-                        model=model,
-                        request_size=0,
-                        response_size=0,
+                        log_endpoint="/api/pull/provider",
                         request_meta=f"pull_api={pull_api}",
-                        duration_ms=duration,
-                        status="error",
-                        error_detail=str(exc)[:500],
                     )
-                )
-        pull_entry["status"] = "done"
+                    for i, pid in enumerate(provider_ids)
+                ]
+            )
+        finally:
+            async with progress_lock:
+                pull_entry["status"] = "done"
+                pull_entry["completed_at"] = time.monotonic()
 
     asyncio.create_task(_run_pull())
 
@@ -1038,6 +1120,7 @@ async def api_fill_missing_pulls():
                 ]
             )
             job["status"] = "done"
+            job["completed_at"] = time.monotonic()
             if total == 0:
                 job["progress"] = "No missing ollama models to pull."
             else:
@@ -1046,6 +1129,7 @@ async def api_fill_missing_pulls():
                 )
         except Exception as exc:
             job["status"] = "failed"
+            job["completed_at"] = time.monotonic()
             job["progress"] = "Bulk pull failed."
             job["errors"].append(str(exc))
             logger.exception("Bulk fill-missing pull job failed")
@@ -1135,6 +1219,7 @@ async def api_fill_missing_benchmarks():
                 *[_run_provider(pid, runs) for pid, runs in provider_runs.items()]
             )
             job["status"] = "done"
+            job["completed_at"] = time.monotonic()
             if total == 0:
                 job["progress"] = "No missing benchmarks."
             else:
@@ -1143,6 +1228,7 @@ async def api_fill_missing_benchmarks():
                 )
         except Exception as exc:
             job["status"] = "failed"
+            job["completed_at"] = time.monotonic()
             job["progress"] = "Bulk benchmark job failed."
             job["errors"].append(str(exc))
             logger.exception("Bulk fill-missing benchmark job failed")
@@ -1174,77 +1260,30 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
         "progress": "",
     }
     cache_url = _cache_registry_url()
+    progress_lock = asyncio.Lock()
 
     async def _run():
         pull_entry = _active_pulls[pull_id]
-        provider = await db.get_provider(provider_id)
-        pname = provider.name if provider else str(provider_id)
-        pull_entry["progress"] = f"{pname}: starting…"
-        logger.info(
-            "Pull %s starting on provider %s (id=%d)", model, pname, provider_id
-        )
-        start = time.monotonic()
-
-        def _on_progress(info: dict) -> None:
-            text = info.get("status", "")
-            pct = info.get("percent")
-            if pct is not None:
-                pull_entry["progress"] = f"{pname}: {text} {pct}%"
-            else:
-                pull_entry["progress"] = f"{pname}: {text}"
-
         try:
-            client = pm.get_ollama_client(provider_id)
-            await client.pull_model(
-                model,
-                cache_registry_url=cache_url,
-                progress_callback=_on_progress,
+            await _pull_one_ollama(
+                pid=provider_id,
+                idx=0,
+                total=1,
+                model=model,
+                pull_api="auto",
+                cache_url=cache_url,
+                pm=pm,
+                db=db,
+                pull_entry=pull_entry,
+                progress_lock=progress_lock,
+                source_ip=None,
+                log_endpoint="/api/pull",
+                request_meta=None,
             )
-            await pm.refresh_provider(provider_id)
-            pull_entry["completed"].append(provider_id)
-            duration = (time.monotonic() - start) * 1000
-            pull_entry["progress"] = f"{pname}: done ({duration / 1000:.0f}s)"
-            logger.info(
-                "Pull %s succeeded on provider %s in %.1fs",
-                model,
-                pname,
-                duration / 1000,
-            )
-            await db.save_request_log(
-                RequestLog(
-                    provider_id=provider_id,
-                    provider_name=pname,
-                    protocol="ollama",
-                    endpoint="/api/pull",
-                    model=model,
-                    duration_ms=duration,
-                    status="ok",
-                )
-            )
-        except Exception as exc:
-            duration = (time.monotonic() - start) * 1000
-            logger.error(
-                "Pull %s FAILED on provider %s after %.1fs: %s",
-                model,
-                pname,
-                duration / 1000,
-                exc,
-            )
-            pull_entry["failed"].append(provider_id)
-            pull_entry["progress"] = f"{pname}: FAILED"
-            await db.save_request_log(
-                RequestLog(
-                    provider_id=provider_id,
-                    provider_name=pname,
-                    protocol="ollama",
-                    endpoint="/api/pull",
-                    model=model,
-                    duration_ms=duration,
-                    status="error",
-                    error_detail=str(exc)[:500],
-                )
-            )
-        pull_entry["status"] = "done"
+        finally:
+            async with progress_lock:
+                pull_entry["status"] = "done"
+                pull_entry["completed_at"] = time.monotonic()
 
     asyncio.create_task(_run())
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
@@ -1271,77 +1310,36 @@ async def pull_model_all_legacy(model: str = Form(...)):
         "progress": "",
     }
     cache_url = _cache_registry_url()
+    progress_lock = asyncio.Lock()
 
     async def _run():
         pull_entry = _active_pulls[pull_id]
-        for idx, pid in enumerate(provider_ids):
-            provider = await db.get_provider(pid)
-            pname = provider.name if provider else str(pid)
-            prefix = f"[{idx + 1}/{len(provider_ids)}] {pname}"
-            pull_entry["progress"] = f"{prefix}: starting…"
-            logger.info("Pull %s starting on provider %s (id=%d)", model, pname, pid)
-            start = time.monotonic()
-
-            def _on_progress(info: dict, _pfx: str = prefix) -> None:
-                text = info.get("status", "")
-                pct = info.get("percent")
-                if pct is not None:
-                    pull_entry["progress"] = f"{_pfx}: {text} {pct}%"
-                else:
-                    pull_entry["progress"] = f"{_pfx}: {text}"
-
-            try:
-                client = pm.get_ollama_client(pid)
-                await client.pull_model(
-                    model,
-                    cache_registry_url=cache_url,
-                    progress_callback=_on_progress,
-                )
-                await pm.refresh_provider(pid)
-                pull_entry["completed"].append(pid)
-                duration = (time.monotonic() - start) * 1000
-                pull_entry["progress"] = f"{prefix}: done ({duration / 1000:.0f}s)"
-                logger.info(
-                    "Pull %s succeeded on provider %s in %.1fs",
-                    model,
-                    pname,
-                    duration / 1000,
-                )
-                await db.save_request_log(
-                    RequestLog(
-                        provider_id=pid,
-                        provider_name=pname,
-                        protocol="ollama",
-                        endpoint="/api/pull",
+        n = len(provider_ids)
+        try:
+            await asyncio.gather(
+                *[
+                    _pull_one_ollama(
+                        pid=pid,
+                        idx=i,
+                        total=n,
                         model=model,
-                        duration_ms=duration,
-                        status="ok",
+                        pull_api="auto",
+                        cache_url=cache_url,
+                        pm=pm,
+                        db=db,
+                        pull_entry=pull_entry,
+                        progress_lock=progress_lock,
+                        source_ip=None,
+                        log_endpoint="/api/pull",
+                        request_meta=None,
                     )
-                )
-            except Exception as exc:
-                duration = (time.monotonic() - start) * 1000
-                logger.error(
-                    "Pull %s FAILED on provider %s after %.1fs: %s",
-                    model,
-                    pname,
-                    duration / 1000,
-                    exc,
-                )
-                pull_entry["failed"].append(pid)
-                pull_entry["progress"] = f"{prefix}: FAILED"
-                await db.save_request_log(
-                    RequestLog(
-                        provider_id=pid,
-                        provider_name=pname,
-                        protocol="ollama",
-                        endpoint="/api/pull",
-                        model=model,
-                        duration_ms=duration,
-                        status="error",
-                        error_detail=str(exc)[:500],
-                    )
-                )
-        pull_entry["status"] = "done"
+                    for i, pid in enumerate(provider_ids)
+                ]
+            )
+        finally:
+            async with progress_lock:
+                pull_entry["status"] = "done"
+                pull_entry["completed_at"] = time.monotonic()
 
     asyncio.create_task(_run())
     return RedirectResponse(url="/#models-pane", status_code=303)
@@ -1417,6 +1415,7 @@ async def api_cache_model(request: Request):
             pull_entry["failed"].append(0)
             pull_entry["progress"] = f"FAILED: {exc}"
         pull_entry["status"] = "done"
+        pull_entry["completed_at"] = time.monotonic()
 
     asyncio.create_task(_run())
     return JSONResponse({"pull_id": pull_id, "status": "pulling"})

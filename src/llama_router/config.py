@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     cache_port: int = 9200
     cache_external_host: str = ""
     cache_manifest_ttl_hours: int = 240
+    cache_max_concurrent_blobs: int = 4
     sentry_dsn: str = ""
     sentry_environment: str = "production"
     sentry_traces_sample_rate: float = 0.0

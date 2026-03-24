@@ -7,8 +7,9 @@ import random
 from dataclasses import dataclass
 from dataclasses import field
 
+from .cache import TTLCache
 from .database import Database
-from .models import Provider, ProviderStatus, ProviderType
+from .models import BenchmarkResult, Provider, ProviderStatus, ProviderType
 from .provider_manager import ProviderManager
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,41 @@ class Router:
     def __init__(self, db: Database, provider_manager: ProviderManager):
         self._db = db
         self._pm = provider_manager
+        self._providers_cache: TTLCache[list[Provider]] = TTLCache(5.0)
+        self._benchmark_cache: TTLCache[list[BenchmarkResult | None]] = TTLCache(60.0)
+
+    def invalidate_providers_for_model_cache(self) -> None:
+        self._providers_cache.clear()
+
+    def invalidate_benchmark_cache_for_provider(self, provider_id: int) -> None:
+        self._benchmark_cache.invalidate_prefix(f"{provider_id}:")
+
+    async def _get_providers_for_model_cached(
+        self, model_name: str, protocol: str | None
+    ) -> list[Provider]:
+        key = f"{model_name}:{protocol or ''}"
+        hit = self._providers_cache.get(key)
+        if hit is not None:
+            return hit
+        providers = await self._db.get_providers_for_model(model_name, protocol)
+        self._providers_cache.set(key, providers)
+        return providers
+
+    async def _get_latest_benchmark_cached(
+        self,
+        provider_id: int,
+        model_name: str,
+        protocol: str | None,
+    ) -> BenchmarkResult | None:
+        key = f"{provider_id}:{model_name}:{protocol or ''}"
+        hit = self._benchmark_cache.get(key)
+        if hit is not None:
+            return hit[0]
+        bench = await self._db.get_latest_benchmark(
+            provider_id, model_name, protocol=protocol
+        )
+        self._benchmark_cache.set(key, [bench])
+        return bench
 
     async def route(
         self,
@@ -98,7 +134,7 @@ class Router:
         if provider_id is None:
             return None
 
-        candidates = await self._db.get_providers_for_model(model_name, protocol)
+        candidates = await self._get_providers_for_model_cached(model_name, protocol)
         for provider in candidates:
             if provider.id == provider_id and provider.status != ProviderStatus.OFFLINE:
                 logger.info(
@@ -184,7 +220,7 @@ class Router:
         preferences: RoutingPreferences | None = None,
     ) -> Provider | None:
         """Pick the best provider for a single model (no fallbacks)."""
-        candidates = await self._db.get_providers_for_model(model_name, protocol)
+        candidates = await self._get_providers_for_model_cached(model_name, protocol)
         if not candidates:
             return None
 
@@ -196,9 +232,15 @@ class Router:
         for provider in online:
             assert provider.id is not None
             active = self._pm.active_requests(provider.id)
-            bench = await self._db.get_latest_benchmark(
-                provider.id, model_name, protocol=protocol
+            bench = await self._get_latest_benchmark_cached(
+                provider.id, model_name, protocol
             )
+            hot_names = {
+                hm.get("name")
+                for hm in self._pm.get_hot_models(provider.id)
+                if hm.get("name")
+            }
+            is_hot = model_name in hot_names
             tps = bench.tokens_per_second if bench and bench.tokens_per_second else 0
             startup_ms = (
                 bench.startup_time_ms if bench and bench.startup_time_ms else None
@@ -208,10 +250,14 @@ class Router:
                 # Prefer highest TPS, then lower active queue depth.
                 score = (active * 100.0) - tps
             else:
-                # Prefer low queue depth and low startup latency.
-                startup_component = (
-                    startup_ms if startup_ms is not None else 1_000_000.0
-                )
+                # Prefer low queue depth and low startup latency; hot models ignore
+                # benchmark startup so they sort ahead of cold starts.
+                if is_hot:
+                    startup_component = 0.0
+                else:
+                    startup_component = (
+                        startup_ms if startup_ms is not None else 1_000_000.0
+                    )
                 score = (active * 1000.0) + startup_component
             scored.append((score, provider))
 
