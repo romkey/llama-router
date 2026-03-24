@@ -285,9 +285,9 @@ async def dashboard(request: Request):
     wg_path_set = bool((settings.wireguard_config_path or "").strip())
 
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
         {
-            "request": request,
             "providers": infos,
             "models": all_models,
             "benchmarks_by_model": benchmarks_by_model,
@@ -495,9 +495,9 @@ async def provider_detail(request: Request, provider_id: int):
         cached_only_models.sort(key=lambda m: m["name"])
 
     return templates.TemplateResponse(
+        request,
         "provider_detail.html",
         {
-            "request": request,
             "info": info,
             "missing_models": missing_models,
             "cached_models": cached_models,
