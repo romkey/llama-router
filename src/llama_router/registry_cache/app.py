@@ -335,7 +335,10 @@ async def get_blob(name: str, digest: str, request: Request):
     return StreamingResponse(
         stream_and_cache(),
         media_type="application/octet-stream",
-        headers={"Docker-Content-Digest": digest},
+        headers={
+            "Docker-Content-Digest": digest,
+            "Location": f"{base}/cache/blobs/{digest}",
+        },
     )
 
 
