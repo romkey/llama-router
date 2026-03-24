@@ -9,7 +9,10 @@ This stack runs **two containers**: a small **WireGuard sidecar** (privileged, r
 
 ## Quick start
 
+The `wireguard` service image is built in CI and published to **GHCR** as `ghcr.io/romkey/llama-router-wireguard` (tags `latest`, git SHA, and semver on releases). Forks should change the `image:` line in `docker-compose.wireguard.yml` or build locally from `docker/wireguard-sidecar`.
+
 ```bash
+docker compose -f docker-compose.wireguard.yml pull
 docker compose -f docker-compose.wireguard.yml up -d
 ```
 

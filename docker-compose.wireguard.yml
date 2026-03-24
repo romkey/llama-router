@@ -11,7 +11,9 @@
 
 services:
   wireguard:
-    build: ./docker/wireguard-sidecar
+    # Published by GitHub Actions to GHCR (see .github/workflows/ci.yml).
+    # Override for forks: image: ghcr.io/<owner>/<repo>-wireguard:latest
+    image: ghcr.io/romkey/llama-router-wireguard:latest
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
