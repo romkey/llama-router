@@ -357,6 +357,16 @@
     <!-- ==================== MODELS TAB ==================== -->
     <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         <div id="pull-status-area"></div>
+        {% if cache_stats %}
+        <div class="mb-3">
+            <div class="input-group input-group-sm d-inline-flex" style="max-width: 400px;">
+                <input type="text" class="form-control" id="models-cache-input" placeholder="Cache model by name (e.g. llama3.2:latest) — no pull to provider" onkeydown="if(event.key==='Enter')cacheModelByName()">
+                <button class="btn btn-outline-success" id="btn-models-cache" onclick="cacheModelByName()" title="Download to registry cache only, no pull to any provider">
+                    <i class="bi bi-archive me-1"></i>Cache
+                </button>
+            </div>
+        </div>
+        {% endif %}
         {% if models %}
         <div class="mb-3 d-flex justify-content-between align-items-center">
             <button class="btn btn-sm btn-outline-primary" id="btn-fill-pulls" onclick="fillMissingPulls()">
@@ -1992,6 +2002,30 @@ document.addEventListener('click', function(e) {
         btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache';
     });
 });
+
+function cacheModelByName() {
+    var input = document.getElementById('models-cache-input');
+    var btn = document.getElementById('btn-models-cache');
+    var model = input ? input.value.trim() : '';
+    if (!model) return;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching\u2026'; }
+    fetch('/api/cache/model', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: model})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        _trackedPulls[data.pull_id] = {model: model, btn: null};
+        showPullBanner(data.pull_id, model, 'pulling', 0, 0, 0, 'caching\u2026');
+        pollPull(data.pull_id);
+        if (input) input.value = '';
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache'; }
+    })
+    .catch(function() {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-archive me-1"></i>Cache'; }
+    });
+}
 
 function cacheModelManual() {
     var input = document.getElementById('cache-model-input');

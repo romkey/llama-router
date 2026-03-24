@@ -702,7 +702,7 @@ class ProviderManager:
         """
         if "/" not in name:
             return name
-        for pfx in self._get_cache_prefixes():
+        for pfx in ProviderManager._get_cache_prefixes():
             if name.startswith(pfx):
                 return name[len(pfx) :]
         return name
