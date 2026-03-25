@@ -23,6 +23,28 @@ docker compose up -d
 
 Open http://localhost to access the dashboard and add your backends.
 
+### Dashboard login lockout (forgot password)
+
+After you create at least one account under **Users**, the dashboard requires sign-in. Passwords are stored hashed; they cannot be read back. If you lose the password, clear the dashboard user table and start over (you will briefly have an open dashboard until you create a new user).
+
+**Docker Compose** (default database path from `docker-compose.yml`):
+
+```bash
+docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users'); c.commit(); c.close()"
+docker compose restart llama-router
+```
+
+The first command removes **all** dashboard accounts. The restart clears the in-process user-count cache so the UI immediately returns to bootstrap mode (no login required). Then open **Users** and create a new administrator.
+
+If you set `LLAMA_ROUTER_DATABASE_PATH` to something else, use that path inside the `sqlite3.connect(...)` call. For a local SQLite file (no Docker), run the same `DELETE FROM dashboard_users` against your database file with any SQLite client.
+
+To remove a single user by name instead of wiping everyone:
+
+```bash
+docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users WHERE username = ?', ('myuser',)); c.commit(); c.close()"
+docker compose restart llama-router
+```
+
 ### WireGuard (optional)
 
 **Prerequisites:** `wg-quick` and `wg` wherever llama-router applies config (`apt install wireguard-tools` on Debian/Ubuntu). The **default** `Dockerfile` does not install WireGuard tools; add them in a derived image if you want `wg-quick` inside the container, or use **legacy volume mode** and run WireGuard on the host.
@@ -49,7 +71,8 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_PATH` | `llama_router.db` | Path to SQLite database |
+| `DATABASE_PATH` | `llama_router.db` | Path to SQLite database when `DATABASE_URL` is unset |
+| `DATABASE_URL` | *(empty)* | Async SQLAlchemy URL (e.g. `sqlite+aiosqlite:///…`, `postgresql+asyncpg://…`, `mysql+asyncmy://…`). When set, overrides `DATABASE_PATH`. Use optional install extras `postgres` or `mysql` for drivers; Alembic migrations use matching sync drivers (`psycopg`, `pymysql`) automatically. |
 | `DASHBOARD_HOST` | `0.0.0.0` | Dashboard bind address |
 | `DASHBOARD_PORT` | `80` | Dashboard port |
 | `API_HOST` | `0.0.0.0` | Ollama API bind address |

@@ -38,6 +38,12 @@ services:
       LLAMA_ROUTER_CACHE_DIR: /app/data/model_cache
       # Set this to the IP/hostname your Ollama backends can reach this host on
       # LLAMA_ROUTER_CACHE_EXTERNAL_HOST: 192.168.1.50
+      #
+      # Forgotten dashboard password: delete all dashboard user rows, restart, then
+      # open the UI (no login until you add a user under Users). If you changed
+      # LLAMA_ROUTER_DATABASE_PATH, use that path instead of /app/data/llama_router.db.
+      #   docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users'); c.commit(); c.close()"
+      #   docker compose restart llama-router
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/health')"]
       interval: 30s

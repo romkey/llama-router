@@ -1,8 +1,16 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import make_url
+from sqlalchemy.engine.url import URL
 
 
 class Settings(BaseSettings):
     database_path: str = "llama_router.db"
+    """Used when ``database_url`` is empty: SQLite file path for the default async URL."""
+
+    database_url: str = ""
+    """Async SQLAlchemy URL, e.g. ``sqlite+aiosqlite:///...``, ``postgresql+asyncpg://...``."""
     dashboard_host: str = "0.0.0.0"
     dashboard_port: int = 80
     api_host: str = "0.0.0.0"
@@ -35,6 +43,30 @@ class Settings(BaseSettings):
     dashboard_cookie_secure: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
+
+    def effective_database_url(self) -> str:
+        """URL used by the app’s async SQLAlchemy engine."""
+        u = (self.database_url or "").strip()
+        if u:
+            return u
+        path = Path(self.database_path).expanduser().resolve()
+        return URL.create("sqlite+aiosqlite", database=str(path)).render_as_string(
+            hide_password=False
+        )
+
+    def sync_database_url_for_alembic(self, async_url: str | None = None) -> str:
+        """Synchronous driver URL for Alembic (no nested asyncio)."""
+        u = make_url(async_url or self.effective_database_url())
+        dn = u.drivername
+        if dn == "sqlite+aiosqlite":
+            return str(u.set(drivername="sqlite"))
+        if dn == "postgresql+asyncpg":
+            return str(u.set(drivername="postgresql+psycopg"))
+        if dn in ("mysql+asyncmy", "mysql+aiomysql"):
+            return str(u.set(drivername="mysql+pymysql"))
+        if dn.startswith("mariadb+"):
+            return str(u.set(drivername="mysql+pymysql"))
+        return str(u)
 
 
 settings = Settings()
