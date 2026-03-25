@@ -212,6 +212,18 @@ _MIGRATIONS = [
             "ALTER TABLE wireguard_interface ADD COLUMN peering_enabled INTEGER NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        "add_dashboard_users",
+        [
+            """CREATE TABLE IF NOT EXISTS dashboard_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+        ],
+    ),
 ]
 
 
@@ -1104,6 +1116,107 @@ class Database:
             ("true" if allow else "false",),
         )
         await self.db.commit()
+
+    async def get_app_setting(self, key: str) -> str | None:
+        async with self.db.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["value"]) if row else None
+
+    async def set_app_setting(self, key: str, value: str) -> None:
+        await self.db.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await self.db.commit()
+
+    async def count_dashboard_users(self) -> int:
+        async with self.db.execute(
+            "SELECT COUNT(*) AS c FROM dashboard_users"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["c"]) if row else 0
+
+    async def list_dashboard_users(self) -> list[dict]:
+        async with self.db.execute(
+            "SELECT id, username, is_admin, created_at FROM dashboard_users "
+            "ORDER BY username COLLATE NOCASE ASC"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [
+            {
+                "id": int(r["id"]),
+                "username": r["username"],
+                "is_admin": bool(r["is_admin"]),
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+    async def get_dashboard_user_by_username(self, username: str) -> dict | None:
+        async with self.db.execute(
+            "SELECT id, username, password_hash, is_admin, created_at "
+            "FROM dashboard_users WHERE username = ? COLLATE NOCASE",
+            (username.strip(),),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "username": row["username"],
+            "password_hash": row["password_hash"],
+            "is_admin": bool(row["is_admin"]),
+            "created_at": row["created_at"],
+        }
+
+    async def get_dashboard_user_by_id(self, user_id: int) -> dict | None:
+        async with self.db.execute(
+            "SELECT id, username, password_hash, is_admin, created_at "
+            "FROM dashboard_users WHERE id = ?",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "username": row["username"],
+            "password_hash": row["password_hash"],
+            "is_admin": bool(row["is_admin"]),
+            "created_at": row["created_at"],
+        }
+
+    async def create_dashboard_user(
+        self, username: str, password_hash: str, is_admin: bool
+    ) -> int:
+        cursor = await self.db.execute(
+            "INSERT INTO dashboard_users (username, password_hash, is_admin) "
+            "VALUES (?, ?, ?)",
+            (username.strip(), password_hash, int(is_admin)),
+        )
+        await self.db.commit()
+        return int(cursor.lastrowid)
+
+    async def update_dashboard_user_password(self, user_id: int, password_hash: str) -> None:
+        await self.db.execute(
+            "UPDATE dashboard_users SET password_hash = ? WHERE id = ?",
+            (password_hash, user_id),
+        )
+        await self.db.commit()
+
+    async def delete_dashboard_user(self, user_id: int) -> None:
+        await self.db.execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
+        await self.db.commit()
+
+    async def count_dashboard_admins(self) -> int:
+        async with self.db.execute(
+            "SELECT COUNT(*) AS c FROM dashboard_users WHERE is_admin = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row["c"]) if row else 0
 
 
 def _row_to_provider(row: aiosqlite.Row) -> Provider:

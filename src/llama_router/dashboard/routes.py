@@ -27,6 +27,16 @@ from .. import __version__
 from ..wireguard_config import generate_wireguard_private_key, is_valid_wg_key_b64
 from ..wireguard_sync import sync_wireguard_config_to_disk
 
+from .auth_core import (
+    AUTH_COOKIE,
+    SESSION_MAX_AGE,
+    hash_password,
+    normalize_username,
+    sign_session,
+    verify_password,
+)
+from .middleware import invalidate_dashboard_user_count_cache
+
 logger = logging.getLogger(__name__)
 
 _active_pulls: dict[str, dict] = {}
@@ -330,6 +340,70 @@ templates.env.filters["localtime"] = _localtime
 router = APIRouter()
 
 
+def template_auth_ctx(request: Request) -> dict[str, Any]:
+    if getattr(request.state, "auth_bootstrap", False):
+        return {
+            "auth_bootstrap": True,
+            "read_only": False,
+            "show_api_keys": True,
+            "show_wireguard": True,
+            "show_log": True,
+            "show_cache": True,
+            "show_users_tab": True,
+            "dash_user": None,
+        }
+    user = getattr(request.state, "dashboard_user", None)
+    if user is None:
+        return {
+            "auth_bootstrap": False,
+            "read_only": True,
+            "show_api_keys": False,
+            "show_wireguard": False,
+            "show_log": False,
+            "show_cache": False,
+            "show_users_tab": False,
+            "dash_user": None,
+        }
+    adm = user.is_admin
+    return {
+        "auth_bootstrap": False,
+        "read_only": not adm,
+        "show_api_keys": adm,
+        "show_wireguard": adm,
+        "show_log": adm,
+        "show_cache": adm,
+        "show_users_tab": adm,
+        "dash_user": user,
+    }
+
+
+def merge_dash_template_ctx(request: Request, ctx: dict[str, Any]) -> dict[str, Any]:
+    merged = template_auth_ctx(request)
+    merged.update(ctx)
+    return merged
+
+
+def _minimal_wg_iface() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "public_key": "",
+        "address_cidr": "",
+        "listen_port": 51820,
+        "endpoint_public": None,
+        "mtu": None,
+        "private_key": "",
+        "peering_enabled": False,
+        "peering_api_key": "",
+    }
+
+
+def _safe_next_url(next_raw: str | None) -> str:
+    n = (next_raw or "/").strip()
+    if not n.startswith("/") or n.startswith("//"):
+        return "/"
+    return n
+
+
 @router.get("/health")
 async def health():
     """Health check endpoint for container orchestrators."""
@@ -346,6 +420,158 @@ async def health():
     )
 
 
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    db = deps.get_db()
+    if await db.count_dashboard_users() == 0:
+        return RedirectResponse(url="/", status_code=302)
+    err = request.query_params.get("error")
+    next_url = _safe_next_url(request.query_params.get("next"))
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "error": err,
+            "next_url": next_url,
+            "dash_user": None,
+            "show_users_tab": False,
+        },
+    )
+
+
+@router.post("/login")
+async def login_submit(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/"),
+):
+    db = deps.get_db()
+    if await db.count_dashboard_users() == 0:
+        return RedirectResponse(url="/", status_code=302)
+    try:
+        un = normalize_username(username)
+    except ValueError:
+        return RedirectResponse(url="/login?error=invalid", status_code=303)
+    row = await db.get_dashboard_user_by_username(un)
+    if not row or not verify_password(password, row["password_hash"]):
+        return RedirectResponse(url="/login?error=invalid", status_code=303)
+    secret = await deps.get_dashboard_session_secret()
+    token = sign_session(row["id"], secret)
+    dest = _safe_next_url(next)
+    resp = RedirectResponse(url=dest, status_code=303)
+    resp.set_cookie(
+        AUTH_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_MAX_AGE,
+        secure=settings.dashboard_cookie_secure,
+    )
+    return resp
+
+
+@router.post("/logout")
+async def logout_post():
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie(AUTH_COOKIE)
+    return resp
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_page(request: Request):
+    db = deps.get_db()
+    n = await db.count_dashboard_users()
+    bootstrap = getattr(request.state, "auth_bootstrap", False)
+    user = getattr(request.state, "dashboard_user", None)
+    if n > 0 and not bootstrap and (not user or not user.is_admin):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    users = await db.list_dashboard_users() if n else []
+    return templates.TemplateResponse(
+        request,
+        "users.html",
+        merge_dash_template_ctx(
+            request,
+            {
+                "dashboard_users": users,
+                "users_exist": n > 0,
+                "query_error": request.query_params.get("error"),
+                "query_created": request.query_params.get("created"),
+                "query_updated": request.query_params.get("updated"),
+            },
+        ),
+    )
+
+
+@router.post("/users/add")
+async def users_add(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    is_admin: str = Form("0"),
+):
+    db = deps.get_db()
+    n = await db.count_dashboard_users()
+    bootstrap = getattr(request.state, "auth_bootstrap", False)
+    user = getattr(request.state, "dashboard_user", None)
+    if n > 0 and not bootstrap and (not user or not user.is_admin):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        un = normalize_username(username)
+    except ValueError as e:
+        q = quote(str(e))
+        return RedirectResponse(url=f"/users?error={q}", status_code=303)
+    if await db.get_dashboard_user_by_username(un):
+        return RedirectResponse(url="/users?error=exists", status_code=303)
+    if len(password) < 8:
+        return RedirectResponse(url="/users?error=password", status_code=303)
+    make_admin = is_admin in ("1", "on", "true", "yes")
+    if n == 0:
+        make_admin = True
+    await db.create_dashboard_user(un, hash_password(password), make_admin)
+    invalidate_dashboard_user_count_cache()
+    return RedirectResponse(url="/users?created=1", status_code=303)
+
+
+@router.post("/users/{user_id}/delete")
+async def users_delete(request: Request, user_id: int):
+    db = deps.get_db()
+    n = await db.count_dashboard_users()
+    bootstrap = getattr(request.state, "auth_bootstrap", False)
+    user = getattr(request.state, "dashboard_user", None)
+    if n > 0 and not bootstrap and (not user or not user.is_admin):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    target = await db.get_dashboard_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target["is_admin"] and await db.count_dashboard_admins() <= 1:
+        return RedirectResponse(url="/users?error=last-admin", status_code=303)
+    await db.delete_dashboard_user(user_id)
+    invalidate_dashboard_user_count_cache()
+    return RedirectResponse(url="/users", status_code=303)
+
+
+@router.post("/users/{user_id}/password")
+async def users_set_password(
+    request: Request,
+    user_id: int,
+    new_password: str = Form(...),
+):
+    db = deps.get_db()
+    n = await db.count_dashboard_users()
+    bootstrap = getattr(request.state, "auth_bootstrap", False)
+    user = getattr(request.state, "dashboard_user", None)
+    if n > 0 and not bootstrap and (not user or not user.is_admin):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    target = await db.get_dashboard_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if len(new_password) < 8:
+        return RedirectResponse(url="/users?error=password", status_code=303)
+    await db.update_dashboard_user_password(user_id, hash_password(new_password))
+    return RedirectResponse(url="/users?updated=1", status_code=303)
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     pm = deps.get_pm()
@@ -353,6 +579,8 @@ async def dashboard(request: Request):
     infos = await pm.list_provider_infos()
     all_models = await db.list_all_models()
     all_benchmarks = await db.get_all_benchmarks()
+    dash = template_auth_ctx(request)
+    read_only = dash["read_only"]
 
     benchmarks_by_model: dict[str, list[dict]] = {}
     for b in all_benchmarks:
@@ -372,147 +600,169 @@ async def dashboard(request: Request):
 
     model_request_counts = await db.get_model_request_counts()
     model_fallbacks = await db.get_all_model_fallbacks()
-    api_keys = await db.list_api_keys()
-    allow_unauthenticated = await db.get_allow_unauthenticated()
 
-    # Preview likely provider preference for each key routing mode.
-    bench_by_provider: dict[int, list[dict]] = {}
-    for b in all_benchmarks:
-        pid = int(b["provider_id"])
-        bench_by_provider.setdefault(pid, []).append(b)
+    if read_only:
+        api_keys: list[Any] = []
+        allow_unauthenticated = False
+        key_routing_preview = {"latency": [], "throughput": [], "chaos": []}
+        log_page = 1
+        log_pages = 1
+        log_total = 0
+        log_entries: list[Any] = []
+        cache_stats = None
+        cached_models: set[str] = set()
+        wg_iface = _minimal_wg_iface()
+        wg_peers: list[Any] = []
+        wg_path_set = bool((settings.wireguard_config_path or "").strip())
+        wg_peering_key_masked = ""
+        peer_to_provider: dict[int, dict[str, Any]] = {}
+    else:
+        api_keys = await db.list_api_keys()
+        allow_unauthenticated = await db.get_allow_unauthenticated()
+        bench_by_provider: dict[int, list[dict]] = {}
+        for b in all_benchmarks:
+            pid = int(b["provider_id"])
+            bench_by_provider.setdefault(pid, []).append(b)
 
-    preview_rows: list[dict] = []
-    for info in infos:
-        pid = info.provider.id
-        if pid is None or info.provider.status.value == "offline":
-            continue
-        pb = bench_by_provider.get(pid, [])
-        startup_vals = [
-            float(b["startup_time_ms"])
-            for b in pb
-            if b.get("startup_time_ms") is not None
-        ]
-        tps_vals = [
-            float(b["tokens_per_second"])
-            for b in pb
-            if b.get("tokens_per_second") is not None
-        ]
-        avg_startup = sum(startup_vals) / len(startup_vals) if startup_vals else None
-        avg_tps = sum(tps_vals) / len(tps_vals) if tps_vals else None
-        preview_rows.append(
-            {
-                "name": info.provider.name,
-                "active_requests": info.active_requests,
-                "avg_startup_ms": avg_startup,
-                "avg_tps": avg_tps,
-                "model_count": len(info.models),
-            }
+        preview_rows: list[dict] = []
+        for info in infos:
+            pid = info.provider.id
+            if pid is None or info.provider.status.value == "offline":
+                continue
+            pb = bench_by_provider.get(pid, [])
+            startup_vals = [
+                float(b["startup_time_ms"])
+                for b in pb
+                if b.get("startup_time_ms") is not None
+            ]
+            tps_vals = [
+                float(b["tokens_per_second"])
+                for b in pb
+                if b.get("tokens_per_second") is not None
+            ]
+            avg_startup = (
+                sum(startup_vals) / len(startup_vals) if startup_vals else None
+            )
+            avg_tps = sum(tps_vals) / len(tps_vals) if tps_vals else None
+            preview_rows.append(
+                {
+                    "name": info.provider.name,
+                    "active_requests": info.active_requests,
+                    "avg_startup_ms": avg_startup,
+                    "avg_tps": avg_tps,
+                    "model_count": len(info.models),
+                }
+            )
+
+        latency_preview = sorted(
+            preview_rows,
+            key=lambda r: (
+                r["active_requests"],
+                r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
+                -r["model_count"],
+            ),
+        )[:5]
+        throughput_preview = sorted(
+            preview_rows,
+            key=lambda r: (
+                -(r["avg_tps"] if r["avg_tps"] is not None else 0.0),
+                r["active_requests"],
+                r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
+            ),
+        )[:5]
+        chaos_preview = sorted(preview_rows, key=lambda r: r["name"])[:5]
+
+        key_routing_preview = {
+            "latency": latency_preview,
+            "throughput": throughput_preview,
+            "chaos": chaos_preview,
+        }
+
+        log_page = int(request.query_params.get("log_page", "1"))
+        log_per_page = 100
+        log_total = await db.count_request_logs()
+        log_entries = await db.get_request_logs(
+            limit=log_per_page, offset=(log_page - 1) * log_per_page
         )
+        log_pages = max(1, (log_total + log_per_page - 1) // log_per_page)
 
-    latency_preview = sorted(
-        preview_rows,
-        key=lambda r: (
-            r["active_requests"],
-            r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
-            -r["model_count"],
-        ),
-    )[:5]
-    throughput_preview = sorted(
-        preview_rows,
-        key=lambda r: (
-            -(r["avg_tps"] if r["avg_tps"] is not None else 0.0),
-            r["active_requests"],
-            r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
-        ),
-    )[:5]
-    chaos_preview = sorted(preview_rows, key=lambda r: r["name"])[:5]
+        cache = deps.get_cache()
+        cache_stats = cache.stats() if cache else None
+        if cache_stats is not None:
+            cache_stats["enabled"] = settings.cache_enabled
+        cached_models = cache.cached_models() if cache else set()
 
-    key_routing_preview = {
-        "latency": latency_preview,
-        "throughput": throughput_preview,
-        "chaos": chaos_preview,
-    }
-
-    log_page = int(request.query_params.get("log_page", "1"))
-    log_per_page = 100
-    log_total = await db.count_request_logs()
-    log_entries = await db.get_request_logs(
-        limit=log_per_page, offset=(log_page - 1) * log_per_page
-    )
-    log_pages = max(1, (log_total + log_per_page - 1) // log_per_page)
-
-    cache = deps.get_cache()
-    cache_stats = cache.stats() if cache else None
-    if cache_stats is not None:
-        cache_stats["enabled"] = settings.cache_enabled
-    cached_models = cache.cached_models() if cache else set()
+        wg_iface = await db.get_wireguard_interface()
+        wg_peers = await db.list_wireguard_peers()
+        wg_path_set = bool((settings.wireguard_config_path or "").strip())
+        wg_peering_key_masked = _mask_peering_key(wg_iface.get("peering_api_key") or "")
+        peer_to_provider = {}
+        for info in infos:
+            pid = info.provider.wireguard_peer_id
+            if pid is not None and info.provider.id is not None:
+                peer_to_provider[pid] = {
+                    "id": info.provider.id,
+                    "name": info.provider.name,
+                }
 
     provider_model_names = {m["name"] for m in all_models}
-    if cache:
-        for detail in cache.cached_model_details():
-            if detail["name"] not in provider_model_names:
-                total_size = sum(b["size"] for b in detail["blobs"])
-                all_models.append(
-                    {
-                        "name": detail["name"],
-                        "size": total_size,
-                        "digest": None,
-                        "modified_at": None,
-                        "details": {},
-                    }
-                )
-        all_models.sort(key=lambda m: m["name"])
-
-    wg_iface = await db.get_wireguard_interface()
-    wg_peers = await db.list_wireguard_peers()
-    wg_path_set = bool((settings.wireguard_config_path or "").strip())
-    wg_peering_key_masked = _mask_peering_key(wg_iface.get("peering_api_key") or "")
-    peer_to_provider: dict[int, dict[str, Any]] = {}
-    for info in infos:
-        pid = info.provider.wireguard_peer_id
-        if pid is not None and info.provider.id is not None:
-            peer_to_provider[pid] = {
-                "id": info.provider.id,
-                "name": info.provider.name,
-            }
+    if not read_only:
+        cache = deps.get_cache()
+        if cache:
+            for detail in cache.cached_model_details():
+                if detail["name"] not in provider_model_names:
+                    total_size = sum(b["size"] for b in detail["blobs"])
+                    all_models.append(
+                        {
+                            "name": detail["name"],
+                            "size": total_size,
+                            "digest": None,
+                            "modified_at": None,
+                            "details": {},
+                        }
+                    )
+            all_models.sort(key=lambda m: m["name"])
 
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {
-            "providers": infos,
-            "models": all_models,
-            "benchmarks_by_model": benchmarks_by_model,
-            "ollama_count": ollama_count,
-            "model_provider_counts": model_provider_counts,
-            "all_provider_counts": all_provider_counts,
-            "model_request_counts": model_request_counts,
-            "model_fallbacks": model_fallbacks,
-            "api_keys": api_keys,
-            "allow_unauthenticated": allow_unauthenticated,
-            "key_routing_preview": key_routing_preview,
-            "log_entries": log_entries,
-            "log_page": log_page,
-            "log_pages": log_pages,
-            "log_total": log_total,
-            "cache_stats": cache_stats,
-            "cached_models": cached_models,
-            "cache_external_host_set": bool(
-                (settings.cache_external_host or "").strip()
-            ),
-            "wg_iface": wg_iface,
-            "wg_peers": wg_peers,
-            "wg_peer_to_provider": peer_to_provider,
-            "wg_peering_key_masked": wg_peering_key_masked,
-            "wireguard_config_path": settings.wireguard_config_path or "",
-            "wireguard_path_set": wg_path_set,
-            "wireguard_legacy_volume": settings.wireguard_legacy_volume,
-        },
+        merge_dash_template_ctx(
+            request,
+            {
+                "providers": infos,
+                "models": all_models,
+                "benchmarks_by_model": benchmarks_by_model,
+                "ollama_count": ollama_count,
+                "model_provider_counts": model_provider_counts,
+                "all_provider_counts": all_provider_counts,
+                "model_request_counts": model_request_counts,
+                "model_fallbacks": model_fallbacks,
+                "api_keys": api_keys,
+                "allow_unauthenticated": allow_unauthenticated,
+                "key_routing_preview": key_routing_preview,
+                "log_entries": log_entries,
+                "log_page": log_page,
+                "log_pages": log_pages,
+                "log_total": log_total,
+                "cache_stats": cache_stats,
+                "cached_models": cached_models,
+                "cache_external_host_set": bool(
+                    (settings.cache_external_host or "").strip()
+                ),
+                "wg_iface": wg_iface,
+                "wg_peers": wg_peers,
+                "wg_peer_to_provider": peer_to_provider,
+                "wg_peering_key_masked": wg_peering_key_masked,
+                "wireguard_config_path": settings.wireguard_config_path or "",
+                "wireguard_path_set": wg_path_set,
+                "wireguard_legacy_volume": settings.wireguard_legacy_volume,
+            },
+        ),
     )
 
 
 @router.get("/api/status")
-async def api_status():
+async def api_status(request: Request):
     _prune_completed(_active_pulls)
     _prune_completed(_active_benchmarks)
     _prune_completed(_active_fill_pulls)
@@ -520,29 +770,36 @@ async def api_status():
 
     pm = deps.get_pm()
     db = deps.get_db()
+    dash_user = getattr(request.state, "dashboard_user", None)
+    bootstrap = getattr(request.state, "auth_bootstrap", False)
+    admin_payload = bootstrap or (dash_user is not None and dash_user.is_admin)
     infos = await pm.list_provider_infos()
     all_models = await db.list_all_models()
-    log_total = await db.count_request_logs()
+    log_total = await db.count_request_logs() if admin_payload else 0
 
-    from ..wireguard_manager import get_tunnel_status, is_wireguard_available
+    wg_status_payload: dict[str, Any] | None = None
+    if admin_payload:
+        from ..wireguard_manager import get_tunnel_status, is_wireguard_available
 
-    wg_avail = await is_wireguard_available()
-    wg_tun = await get_tunnel_status() if wg_avail else {"running": False, "peers": []}
-    wg_linked: dict[str, dict[str, Any]] = {}
-    for info in infos:
-        if info.provider.wireguard_peer_id and info.provider.id is not None:
-            wg_linked[str(info.provider.wireguard_peer_id)] = {
-                "id": info.provider.id,
-                "name": info.provider.name,
-            }
+        wg_avail = await is_wireguard_available()
+        wg_tun = (
+            await get_tunnel_status() if wg_avail else {"running": False, "peers": []}
+        )
+        wg_linked: dict[str, dict[str, Any]] = {}
+        for info in infos:
+            if info.provider.wireguard_peer_id and info.provider.id is not None:
+                wg_linked[str(info.provider.wireguard_peer_id)] = {
+                    "id": info.provider.id,
+                    "name": info.provider.name,
+                }
 
-    wg_status_payload = {
-        "available": wg_avail,
-        "running": bool(wg_tun.get("running")),
-        "peer_count": len(wg_tun.get("peers") or []),
-        "peers": wg_tun.get("peers") or [],
-        "linked_providers": wg_linked,
-    }
+        wg_status_payload = {
+            "available": wg_avail,
+            "running": bool(wg_tun.get("running")),
+            "peer_count": len(wg_tun.get("peers") or []),
+            "peers": wg_tun.get("peers") or [],
+            "linked_providers": wg_linked,
+        }
 
     providers_data = []
     for info in infos:
@@ -593,27 +850,31 @@ async def api_status():
         if b["status"] == "running"
     }
 
-    cache = deps.get_cache()
-    cache_stats = cache.stats() if cache else None
-    if cache_stats is not None:
-        cache_stats["enabled"] = settings.cache_enabled
+    if not admin_payload:
+        active_pulls = {}
+        active_benchmarks = {}
 
-    return JSONResponse(
-        {
-            "provider_count": len(infos),
-            "online_count": sum(
-                1 for i in infos if i.provider.status.value != "offline"
-            ),
-            "busy_count": sum(1 for i in infos if i.active_requests > 0),
-            "model_count": len(all_models),
-            "log_total": log_total,
-            "providers": providers_data,
-            "active_pulls": active_pulls,
-            "active_benchmarks": active_benchmarks,
-            "cache": cache_stats,
-            "wireguard": wg_status_payload,
-        }
-    )
+    cache = deps.get_cache()
+    cache_stats = None
+    if admin_payload and cache:
+        cache_stats = cache.stats()
+        if cache_stats is not None:
+            cache_stats["enabled"] = settings.cache_enabled
+
+    payload: dict[str, Any] = {
+        "provider_count": len(infos),
+        "online_count": sum(1 for i in infos if i.provider.status.value != "offline"),
+        "busy_count": sum(1 for i in infos if i.active_requests > 0),
+        "model_count": len(all_models),
+        "log_total": log_total,
+        "providers": providers_data,
+        "active_pulls": active_pulls,
+        "active_benchmarks": active_benchmarks,
+    }
+    if admin_payload:
+        payload["cache"] = cache_stats
+        payload["wireguard"] = wg_status_payload
+    return JSONResponse(payload)
 
 
 @router.post("/api/keys/generate")
@@ -722,16 +983,19 @@ async def provider_detail(request: Request, provider_id: int):
     return templates.TemplateResponse(
         request,
         "provider_detail.html",
-        {
-            "info": info,
-            "missing_models": missing_models,
-            "cached_models": cached_models,
-            "cached_only_models": cached_only_models,
-            "cache_external_host_set": bool(
-                (settings.cache_external_host or "").strip()
-            ),
-            "cache_enabled": settings.cache_enabled,
-        },
+        merge_dash_template_ctx(
+            request,
+            {
+                "info": info,
+                "missing_models": missing_models,
+                "cached_models": cached_models,
+                "cached_only_models": cached_only_models,
+                "cache_external_host_set": bool(
+                    (settings.cache_external_host or "").strip()
+                ),
+                "cache_enabled": settings.cache_enabled,
+            },
+        ),
     )
 
 

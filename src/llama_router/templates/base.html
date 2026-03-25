@@ -16,11 +16,32 @@
     </style>
 </head>
 <body>
-    <nav class="navbar navbar-expand-lg bg-body-tertiary">
+    <nav class="navbar navbar-expand-md bg-body-tertiary">
         <div class="container">
             <a class="navbar-brand" href="/">
                 <i class="bi bi-diagram-3-fill me-2"></i>llama-router
             </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topNav" aria-controls="topNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="topNav">
+                <ul class="navbar-nav ms-auto align-items-md-center gap-md-2">
+                    {% if dash_user %}
+                    <li class="nav-item">
+                        <span class="navbar-text small">{{ dash_user.username }}{% if dash_user.is_admin %} <span class="badge bg-secondary">admin</span>{% endif %}</span>
+                    </li>
+                    <li class="nav-item">
+                        <form method="post" action="/logout" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary">Log out</button>
+                        </form>
+                    </li>
+                    {% elif auth_bootstrap %}
+                    <li class="nav-item">
+                        <span class="navbar-text small text-warning"><i class="bi bi-unlock me-1"></i>Set up a user under <strong>Users</strong> to require sign-in.</span>
+                    </li>
+                    {% endif %}
+                </ul>
+            </div>
         </div>
     </nav>
     <div class="container mt-3">

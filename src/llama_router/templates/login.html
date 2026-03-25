@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Sign in - llama-router{% endblock %}
+
+{% block nav_tabs %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-5 col-lg-4">
+        <div class="card shadow-sm">
+            <div class="card-body p-4">
+                <h2 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Sign in</h2>
+                {% if error == 'invalid' %}
+                <div class="alert alert-danger py-2">Invalid username or password.</div>
+                {% endif %}
+                <form method="post" action="/login">
+                    <input type="hidden" name="next" value="{{ next_url }}">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required autocomplete="username" autofocus>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required autocomplete="current-password">
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">Sign in</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

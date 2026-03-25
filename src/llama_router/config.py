@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     wireguard_legacy_volume: bool = False
     # If true, apply WireGuard on process startup when wg-quick is available.
     wireguard_enabled: bool = False
+    # If set, used to sign dashboard session cookies; otherwise persisted in app_settings.
+    session_secret: str = ""
+    # Set true behind HTTPS so session cookies are only sent over TLS.
+    dashboard_cookie_secure: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 

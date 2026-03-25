@@ -17,23 +17,34 @@
         <i class="bi bi-cpu me-1"></i>Models
     </button>
 </li>
+{% if show_users_tab %}
+<li class="nav-item" role="presentation">
+    <a class="nav-link" href="/users"><i class="bi bi-people me-1"></i>Users</a>
+</li>
+{% endif %}
+{% if show_api_keys %}
 <li class="nav-item" role="presentation">
     <button class="nav-link" id="keys-tab" data-bs-toggle="tab" data-bs-target="#keys-pane" type="button" role="tab" aria-controls="keys-pane" aria-selected="false">
         <i class="bi bi-key me-1"></i>API Keys
     </button>
 </li>
+{% endif %}
+{% if show_wireguard %}
 <li class="nav-item" role="presentation">
     <button class="nav-link" id="wireguard-tab" data-bs-toggle="tab" data-bs-target="#wireguard-pane" type="button" role="tab" aria-controls="wireguard-pane" aria-selected="false">
         <i class="bi bi-shield-lock me-1"></i>WireGuard
     </button>
 </li>
+{% endif %}
+{% if show_log %}
 <li class="nav-item" role="presentation">
     <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab" aria-controls="log-pane" aria-selected="false">
         <i class="bi bi-journal-text me-1"></i>Log
         <span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>
     </button>
 </li>
-{% if cache_stats %}
+{% endif %}
+{% if cache_stats and show_cache %}
 <li class="nav-item" role="presentation">
     <button class="nav-link" id="cache-tab" data-bs-toggle="tab" data-bs-target="#cache-pane" type="button" role="tab" aria-controls="cache-pane" aria-selected="false">
         <i class="bi bi-archive me-1"></i>Cache
@@ -43,11 +54,16 @@
 {% endblock %}
 
 {% block content %}
+{% if request.query_params.get('error') == 'forbidden' %}
+<div class="alert alert-danger py-2"><i class="bi bi-slash-circle me-2"></i>You do not have permission for that.</div>
+{% endif %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
+    {% if not read_only %}
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProviderModal">
         <i class="bi bi-plus-lg me-1"></i>Add Provider
     </button>
+    {% endif %}
 </div>
 
 {% set ns_hot = namespace(count=0) %}
@@ -181,9 +197,11 @@
                         <div class="card-footer bg-transparent border-top-0">
                             <div class="d-flex gap-2">
                                 <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary flex-fill">Details</a>
+                                {% if not read_only %}
                                 <form method="post" action="/providers/{{ info.provider.id }}/remove" class="flex-fill">
                                     <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Remove this provider?')">Remove</button>
                                 </form>
+                                {% endif %}
                             </div>
                         </div>
                     </div>
@@ -258,9 +276,11 @@
                             </td>
                             <td class="text-end">
                                 <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary me-1">Details</a>
+                                {% if not read_only %}
                                 <form method="post" action="/providers/{{ info.provider.id }}/remove" class="d-inline">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this provider?')">Remove</button>
                                 </form>
+                                {% endif %}
                             </td>
                         </tr>
                         {% endfor %}
@@ -278,12 +298,15 @@
     <!-- ==================== BENCHMARKS TAB ==================== -->
     <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel" aria-labelledby="benchmarks-tab" tabindex="0">
         <div id="bulk-benchmark-status-area"></div>
+        {% if not read_only %}
         <div class="d-flex justify-content-start mb-3">
             <button class="btn btn-sm btn-outline-primary" id="btn-fill-benchmarks" onclick="fillMissingBenchmarks()">
                 <i class="bi bi-lightning-charge me-1"></i>Run Missing Benchmarks
             </button>
         </div>
+        {% endif %}
         {% if benchmarks_by_model %}
+            {% if not read_only %}
             <div class="d-flex justify-content-end mb-3">
                 <form method="post" action="/benchmarks/delete-all" class="d-inline">
                     <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete ALL benchmark results?')">
@@ -291,15 +314,18 @@
                     </button>
                 </form>
             </div>
+            {% endif %}
             {% for model_name, benchmarks in benchmarks_by_model | dictsort %}
             <div class="card mb-3">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><code>{{ model_name }}</code></h5>
+                    {% if not read_only %}
                     <form method="post" action="/benchmarks/delete-model/{{ model_name }}" class="d-inline">
                         <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete all benchmarks for {{ model_name }}?')" title="Delete all benchmarks for this model">
                             <i class="bi bi-trash"></i>
                         </button>
                     </form>
+                    {% endif %}
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
@@ -333,11 +359,15 @@
                                     <td>{{ "%.0f ms" | format(b.startup_time_ms) if b.startup_time_ms else "—" }}</td>
                                     <td class="text-muted small">{{ b.created_at | localtime }}</td>
                                     <td class="text-end">
+                                        {% if not read_only %}
                                         <form method="post" action="/benchmarks/{{ b.id }}/delete" class="d-inline">
                                             <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="return confirm('Delete this benchmark result?')" title="Delete">
                                                 <i class="bi bi-x-lg"></i>
                                             </button>
                                         </form>
+                                        {% else %}
+                                        <span class="text-muted">—</span>
+                                        {% endif %}
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -357,7 +387,7 @@
     <!-- ==================== MODELS TAB ==================== -->
     <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         <div id="pull-status-area"></div>
-        {% if cache_stats %}
+        {% if cache_stats and not read_only %}
         {% if cache_stats.get("enabled", true) and not cache_external_host_set %}
         <div class="alert alert-warning py-2 mb-2 small">
             <i class="bi bi-exclamation-triangle-fill me-1"></i>
@@ -374,6 +404,7 @@
         </div>
         {% endif %}
         {% if models %}
+        {% if not read_only %}
         <div class="mb-3 d-flex justify-content-between align-items-center">
             <button class="btn btn-sm btn-outline-primary" id="btn-fill-pulls" onclick="fillMissingPulls()">
                 <i class="bi bi-diagram-3 me-1"></i>Pull Missing Models Everywhere
@@ -384,6 +415,7 @@
             </button>
             {% endif %}
         </div>
+        {% endif %}
         <div class="table-responsive">
             <table class="table table-hover" id="models-table">
                 <thead>
@@ -395,7 +427,7 @@
                         <th>Cached</th>
                         <th>Fallback</th>
                         <th>Modified</th>
-                        <th></th>
+                        {% if not read_only %}<th></th>{% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -422,14 +454,17 @@
                         <td class="small" data-fallback-cell="{{ m.name }}">
                             {% if model_fallbacks.get(m.name) %}
                             <code>{{ model_fallbacks[m.name] }}</code>
+                            {% if not read_only %}
                             <button class="btn btn-sm btn-link text-danger p-0 ms-1" title="Remove fallback" onclick="removeFallback('{{ m.name }}')">
                                 <i class="bi bi-x-circle"></i>
                             </button>
+                            {% endif %}
                             {% else %}
                             <span class="text-muted">—</span>
                             {% endif %}
                         </td>
                         <td>{{ m.modified_at or "—" }}</td>
+                        {% if not read_only %}
                         <td class="text-end text-nowrap">
                             <button class="btn btn-sm btn-outline-secondary btn-set-fallback" data-model="{{ m.name }}" title="Set fallback model">
                                 <i class="bi bi-arrow-return-right"></i>
@@ -449,6 +484,7 @@
                                 </button>
                             </form>
                         </td>
+                        {% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -461,6 +497,7 @@
         {% endif %}
 
         <!-- Fallbacks section -->
+        {% if not read_only %}
         <div class="card mt-4" id="fallbacks-card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0"><i class="bi bi-arrow-return-right me-2"></i>Model Fallbacks</h5>
@@ -511,9 +548,11 @@
                 </table>
             </div>
         </div>
+        {% endif %}
     </div>
 
     <!-- ==================== API KEYS TAB ==================== -->
+    {% if show_api_keys %}
     <div class="tab-pane fade" id="keys-pane" role="tabpanel" aria-labelledby="keys-tab" tabindex="0">
         <div class="row g-3">
             <div class="col-lg-5">
@@ -668,8 +707,10 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
     <!-- ==================== WIREGUARD TAB ==================== -->
+    {% if show_wireguard %}
     <div class="tab-pane fade" id="wireguard-pane" role="tabpanel" aria-labelledby="wireguard-tab" tabindex="0">
         <div class="card mb-3">
             <div class="card-header">
@@ -933,8 +974,10 @@
             </form>
         </div>
     </div>
+    {% endif %}
 
     <!-- ==================== LOG TAB ==================== -->
+    {% if show_log %}
     <div class="tab-pane fade" id="log-pane" role="tabpanel" aria-labelledby="log-tab" tabindex="0">
         {% if log_entries %}
         <div class="card mb-3">
@@ -1083,8 +1126,9 @@
         </div>
         {% endif %}
     </div>
+    {% endif %}
 
-    {% if cache_stats %}
+    {% if cache_stats and show_cache %}
     <!-- ==================== CACHE TAB ==================== -->
     <div class="tab-pane fade" id="cache-pane" role="tabpanel" aria-labelledby="cache-tab" tabindex="0">
         {% if cache_stats.get("enabled", true) and not cache_external_host_set %}
@@ -1253,6 +1297,7 @@
 
 </div>
 
+{% if not read_only %}
 <!-- Set Fallback Modal -->
 <div class="modal fade" id="addFallbackModal" tabindex="-1">
     <div class="modal-dialog modal-sm">
@@ -1386,11 +1431,16 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 {% endblock %}
 
 {% block scripts %}
 <script>
+const DASH_READ_ONLY = {{ read_only | tojson }};
+function dashRequireWrite() {
+    return !DASH_READ_ONLY;
+}
 function toggleUrlFields() {
     const ptype = document.getElementById('provider_type').value;
     const urlHelp = document.getElementById('url-help');
@@ -1752,6 +1802,7 @@ function setText(id, val) {
 }
 
 function generateApiKey() {
+    if (!dashRequireWrite()) return;
     var mode = document.getElementById('new-key-mode').value;
     var allowFallback = document.getElementById('new-key-fallback').checked;
     fetch('/api/keys/generate', {
@@ -1783,6 +1834,7 @@ function copyGeneratedKey() {
 }
 
 function deleteApiKey(keyId) {
+    if (!dashRequireWrite()) return;
     if (!confirm('Delete this API key?')) return;
     fetch('/api/keys/' + keyId, {method: 'DELETE'})
         .then(function(r) {
@@ -1793,6 +1845,7 @@ function deleteApiKey(keyId) {
 }
 
 function openKeyPins(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
     _pinsKeyId = keyId;
     var prefixEl = document.getElementById('pins-key-prefix');
     if (prefixEl) prefixEl.textContent = keyPrefix || ('id=' + keyId);
@@ -1836,6 +1889,7 @@ function renderKeyPins(pins) {
 }
 
 function addKeyPin() {
+    if (!dashRequireWrite()) return;
     if (_pinsKeyId == null) return;
     var modelInput = document.getElementById('pins-model');
     var providerInput = document.getElementById('pins-provider');
@@ -1867,6 +1921,7 @@ function addKeyPin() {
 }
 
 function deleteKeyPin(encodedModel) {
+    if (!dashRequireWrite()) return;
     if (_pinsKeyId == null) return;
     var statusEl = document.getElementById('pins-status');
     fetch('/api/keys/' + _pinsKeyId + '/pins/' + encodedModel, {method: 'DELETE'})
@@ -1885,6 +1940,7 @@ function deleteKeyPin(encodedModel) {
 }
 
 function setAllowUnauthenticated(allow) {
+    if (!dashRequireWrite()) return;
     fetch('/api/auth/allow-unauthenticated', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1898,6 +1954,7 @@ var _bulkBenchJobId = null;
 var _pinsKeyId = null;
 
 function fillMissingPulls() {
+    if (!dashRequireWrite()) return;
     var btn = document.getElementById('btn-fill-pulls');
     if (!btn) return;
     btn.disabled = true;
@@ -1959,6 +2016,7 @@ function showBulkPullStatus(data) {
 }
 
 function fillMissingBenchmarks() {
+    if (!dashRequireWrite()) return;
     var btn = document.getElementById('btn-fill-benchmarks');
     if (!btn) return;
     btn.disabled = true;
@@ -2022,6 +2080,7 @@ function showBulkBenchmarkStatus(data) {
 document.addEventListener('click', function(e) {
     var btn = e.target.closest('.btn-pull-all');
     if (!btn) return;
+    if (!dashRequireWrite()) return;
     e.preventDefault();
     var model = btn.dataset.model;
     btn.disabled = true;
@@ -2094,6 +2153,7 @@ function pollPull(pullId) {
 }
 
 function clearCache() {
+    if (!dashRequireWrite()) return;
     if (!confirm('Clear the entire model cache? Cached blobs will need to be re-downloaded.')) return;
     var btn = document.getElementById('btn-clear-cache');
     btn.disabled = true;
@@ -2117,6 +2177,7 @@ function clearCache() {
 }
 
 function toggleCache() {
+    if (!dashRequireWrite()) return;
     fetch('/api/cache/toggle', {method: 'POST'})
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -2137,6 +2198,7 @@ function toggleCache() {
 document.addEventListener('click', function(e) {
     var btn = e.target.closest('.btn-cache-model');
     if (!btn) return;
+    if (!dashRequireWrite()) return;
     e.preventDefault();
     var model = btn.dataset.model;
     btn.disabled = true;
@@ -2159,6 +2221,7 @@ document.addEventListener('click', function(e) {
 });
 
 function cacheModelByName() {
+    if (!dashRequireWrite()) return;
     var input = document.getElementById('models-cache-input');
     var btn = document.getElementById('btn-models-cache');
     var model = input ? input.value.trim() : '';
@@ -2183,6 +2246,7 @@ function cacheModelByName() {
 }
 
 function cacheModelManual() {
+    if (!dashRequireWrite()) return;
     var input = document.getElementById('cache-model-input');
     var btn = document.getElementById('btn-cache-model-manual');
     var model = input.value.trim();
@@ -2242,6 +2306,7 @@ function pollCacheManual(pullId, model) {
 }
 
 function cacheAllModels() {
+    if (!dashRequireWrite()) return;
     var btn = document.getElementById('btn-cache-all');
     if (!btn) return;
     btn.disabled = true;
@@ -2288,6 +2353,7 @@ function formatBytes(bytes) {
 document.addEventListener('click', function(e) {
     var btn = e.target.closest('.btn-set-fallback');
     if (!btn) return;
+    if (!dashRequireWrite()) return;
     e.preventDefault();
     var model = btn.dataset.model;
     document.getElementById('fb-model').value = model;
@@ -2296,6 +2362,7 @@ document.addEventListener('click', function(e) {
 });
 
 function submitFallback() {
+    if (!dashRequireWrite()) return;
     var model = document.getElementById('fb-model').value.trim();
     var fallback = document.getElementById('fb-fallback').value.trim();
     if (!model || !fallback) return;
@@ -2316,6 +2383,7 @@ function submitFallback() {
 }
 
 function removeFallback(model) {
+    if (!dashRequireWrite()) return;
     if (!confirm('Remove fallback for ' + model + '?')) return;
     fetch('/api/fallbacks/' + encodeURIComponent(model), {method: 'DELETE'})
         .then(function(r) { return r.json(); })
@@ -2370,6 +2438,7 @@ function wgShowBanner(elId, kind, text) {
 }
 
 function wgRemovePeer(peerId) {
+    if (!dashRequireWrite()) return;
     if (!confirm('Remove this WireGuard peer?')) return;
     function doRemove(rmProv) {
         fetch('/api/wireguard/peers/' + peerId + '/remove', {
