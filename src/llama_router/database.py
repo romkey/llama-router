@@ -1200,7 +1200,9 @@ class Database:
         await self.db.commit()
         return int(cursor.lastrowid)
 
-    async def update_dashboard_user_password(self, user_id: int, password_hash: str) -> None:
+    async def update_dashboard_user_password(
+        self, user_id: int, password_hash: str
+    ) -> None:
         await self.db.execute(
             "UPDATE dashboard_users SET password_hash = ? WHERE id = ?",
             (password_hash, user_id),
