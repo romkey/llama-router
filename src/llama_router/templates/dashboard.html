@@ -815,7 +815,7 @@
                 </div>
 
                 <h6 class="border-bottom pb-2">Peers</h6>
-                <p class="small text-muted">Add one row per remote router or client. <code>AllowedIPs</code> may be comma-separated (e.g. <code>10.8.0.2/32,192.168.50.0/24</code>).</p>
+                <p class="small text-muted">Add one row per remote peer. Prefer <strong>only that peer’s tunnel address</strong>, e.g. <code>10.8.0.2/32</code> — so traffic stays on the VPN overlay and you do <strong>not</strong> pull your LAN into the tunnel. Comma-separate only if you intend multiple narrow routes; <strong>avoid</strong> site LAN subnets (e.g. <code>192.168.0.0/24</code>) unless you mean to expose them to the peer.</p>
                 <div class="table-responsive mb-3">
                     <table class="table table-sm table-hover">
                         <thead>
@@ -881,6 +881,7 @@
                     <div class="mb-3">
                         <label class="form-label" for="wg-peer-allowed">AllowedIPs</label>
                         <input type="text" class="form-control font-monospace" id="wg-peer-allowed" name="allowed_ips" required placeholder="10.8.0.2/32">
+                        <div class="form-text">Use <code>/32</code> for the peer’s tunnel IP only to keep access to this router’s services, not your whole LAN.</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label" for="wg-peer-endpoint">Endpoint (optional)</label>

@@ -25,13 +25,17 @@ Open http://localhost to access the dashboard and add your backends.
 
 ### WireGuard (optional)
 
-**Prerequisites:** `wg-quick` and `wg` on the host (`apt install wireguard-tools` on Debian/Ubuntu, `brew install wireguard-tools` on macOS). In Docker, the container usually needs **`network_mode: host`** (Linux only) and often **`cap_add: [NET_ADMIN]`** so `wg-quick` can manage the interface. On Docker Desktop for macOS/Windows, run llama-router on the host instead, or use **legacy volume mode** (write-only config) and manage WireGuard outside the container.
+**Prerequisites:** `wg-quick` and `wg` wherever llama-router applies config (`apt install wireguard-tools` on Debian/Ubuntu). The **default** `Dockerfile` does not install WireGuard tools; add them in a derived image if you want `wg-quick` inside the container, or use **legacy volume mode** and run WireGuard on the host.
+
+**Docker networking:** You do **not** need `network_mode: host` if everything that must use the VPN (llama-router APIs, backends you configure with tunnel URLs, etc.) runs **inside the same container** and remote peers only need to reach that container. Use **`cap_add: [NET_ADMIN]`**, map **`51820:51820/udp`** (or your listen port), and set the dashboard **Public endpoint** to whatever address:port peers use to reach the host (Docker forwards UDP into the container). Use **`network_mode: host`** when you want the WireGuard interface and service ports on the **host** network namespace (typical when the tunnel must behave like a bare-metal router on the LAN). Docker Desktop for macOS/Windows is awkward for in-container kernel WG; use a Linux host, **legacy volume mode** with WG outside the container, or run llama-router on the host.
 
 **Defaults:** `LLAMA_ROUTER_WIREGUARD_CONFIG_PATH` defaults to `/etc/wireguard/wg0.conf`. The dashboard renders peers from the database and applies the config with `wg syncconf` when possible (falling back to `wg-quick up`).
 
 **Connecting two routers:** On each host, open the dashboard **WireGuard** tab. On the hub, enable **Inbound peering**, save to obtain a **peering API key**, and share that key with the spoke operator. On the spoke, use **Connect to remote llama-router** with the hub URL, key, and chosen tunnel IPs (or use the peering HTTP API documented below). The flow adds reciprocal WireGuard peers and optional providers in one step.
 
 **Peering API key:** Remote routers must send `X-Peering-Key: <secret>` on `GET /api/wireguard/peer-info` and `POST /api/wireguard/peer-request`. Treat it like a password.
+
+**Isolation (peers vs your LAN):** WireGuard only carries traffic you route into the tunnel. To **not** give the remote side access to your site network, keep **`AllowedIPs` minimal**: typically the peer’s **tunnel address only** (e.g. `10.8.0.2/32` on your side for that peer). **Do not** add office/home LAN subnets (e.g. `192.168.0.0/24`) to `AllowedIPs` unless you intend to expose them. The built-in connect/peering flow uses `/32` tunnel addresses. On the **remote** peer, they should likewise aim `AllowedIPs` at **your** llama-router tunnel IP (and ports), not `0.0.0.0/0`, unless you explicitly want full tunnel routing. Avoid `PostUp`/`iptables` in `wg0.conf` that forward or NAT arbitrary traffic from `wg0` into other interfaces unless you have reviewed it. With **Docker bridge** networking and no host routing tricks, peers still only reach what the tunnel and your published ports allow—but **narrow `AllowedIPs` remains your main control**.
 
 **Legacy sidecar:** Set `LLAMA_ROUTER_WIREGUARD_LEGACY_VOLUME=true` to only write `wg0.conf` and let an external process (or old sidecar layout) apply it.
 

@@ -21,7 +21,6 @@ from ..auth import generate_api_key, key_hash, key_prefix
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
 from ..models import ProviderType, RequestLog
-from ..request_logger import log_request
 from . import deps
 
 from .. import __version__
@@ -1054,23 +1053,6 @@ async def api_pull_model(request: Request):
     source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
         request.client.host if request.client else "unknown"
     )
-    await log_request(
-        db,
-        provider=None,
-        protocol="ollama",
-        endpoint="/api/pull",
-        request=request,
-        source_ip=source_ip,
-        model=model,
-        request_body={
-            "model": model,
-            "provider_id": provider_id,
-            "pull_api": pull_api,
-            "targets": provider_ids,
-        },
-        duration_ms=0.0,
-        status="ok",
-    )
 
     progress_lock = asyncio.Lock()
 
@@ -1092,7 +1074,7 @@ async def api_pull_model(request: Request):
                         pull_entry=pull_entry,
                         progress_lock=progress_lock,
                         source_ip=source_ip,
-                        log_endpoint="/api/pull/provider",
+                        log_endpoint="/api/pull",
                         request_meta=f"pull_api={pull_api}",
                     )
                     for i, pid in enumerate(provider_ids)

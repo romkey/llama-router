@@ -1,16 +1,27 @@
 # WireGuard (optional)
-# To use WireGuard from this container, llama-router needs access to the host network.
-# On Linux, uncomment network_mode below. On macOS/Windows Docker Desktop,
-# run llama-router directly on the host instead.
-#
-#   network_mode: host
-#
-# You may also need elevated network privileges:
+# Image must include wireguard-tools. Add NET_ADMIN so wg-quick can create wg0
+# inside the container:
 #
 #   cap_add:
 #     - NET_ADMIN
 #
-# Install WireGuard tools on the host, e.g. apt install wireguard-tools
+# If remote peers only need to reach llama-router (and backends) inside this
+# container, publish WireGuard UDP and set dashboard "Public endpoint" to
+# <host>:51820 (or your mapped port):
+#
+#   ports:
+#     - "51820:51820/udp"
+#
+# Use host network instead if you want the tunnel IP and ports on the host
+# stack (simpler when other machines must use the VPN like bare metal):
+#
+#   network_mode: host
+#
+# Docker Desktop (macOS/Windows): prefer running on a Linux host/VM or legacy
+# volume mode; kernel networking differs from Linux.
+#
+# In the dashboard, keep each peer's AllowedIPs to their tunnel /32 so remote
+# peers cannot reach your LAN through WireGuard unless you add those routes.
 
 services:
   llama-router:
