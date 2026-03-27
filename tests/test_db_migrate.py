@@ -29,3 +29,30 @@ def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) 
         )
     finally:
         con.close()
+
+
+def test_run_upgrade_sync_after_dropped_alembic_version_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Schema present but no revision (e.g. lost alembic_version) must not loop on CREATE."""
+    dbfile = tmp_path / "legacy_no_revision.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    sync_url = config.settings.sync_database_url_for_alembic()
+    run_upgrade_sync(sync_url)
+    con = sqlite3.connect(dbfile)
+    try:
+        con.execute("DROP TABLE alembic_version")
+        con.commit()
+    finally:
+        con.close()
+
+    run_upgrade_sync(sync_url)
+
+    con = sqlite3.connect(dbfile)
+    try:
+        ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
+        assert ver is not None
+        assert ver[0] == "001_initial"
+    finally:
+        con.close()

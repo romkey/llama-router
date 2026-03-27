@@ -85,6 +85,23 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `WIREGUARD_ENABLED` | `false` | If `true`, apply WireGuard on process startup when `wg-quick` is available |
 | `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
 
+### Migrating data from SQLite to PostgreSQL
+
+Use the bundled CLI after creating an empty PostgreSQL database and granting a user DDL rights (Alembic will create tables).
+
+1. Install the Postgres extra: `pip install 'llama-router[postgres]'` (provides `psycopg` for this tool and optional runtime use).
+2. Run:
+
+```bash
+llama-router-migrate-sqlite-pg \
+  --sqlite /path/to/llama_router.db \
+  --postgres postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
+```
+
+The tool applies Alembic on the target, truncates all application tables (not `alembic_version`), copies rows in foreign-key order so IDs stay stable, then resets sequences. Your SQLite file should already match the current schema (run the app against SQLite once so migrations are applied there, or use a backup from a recent version).
+
+You can pass `postgresql+asyncpg://…` and it will be rewritten to `postgresql+psycopg://…` for the sync copy step.
+
 ### Sentry (Optional)
 
 Set a DSN to enable Sentry reporting for unhandled exceptions and performance telemetry.
