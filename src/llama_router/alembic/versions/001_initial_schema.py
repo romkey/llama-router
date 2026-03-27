@@ -37,6 +37,7 @@ def upgrade() -> None:
         sa.Column("peering_api_key", sa.Text(), nullable=False, server_default=""),
         sa.Column("peering_enabled", sa.Integer(), nullable=False, server_default="0"),
         sa.CheckConstraint("id = 1", name="ck_wireguard_interface_singleton"),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -52,6 +53,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -78,6 +80,7 @@ def upgrade() -> None:
             ondelete="SET NULL",
         ),
         sa.UniqueConstraint("name", name="uq_providers_name"),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -98,6 +101,7 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "provider_id", "name", name="uq_provider_models_provider_name"
         ),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -116,6 +120,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -137,8 +142,14 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
+        if_not_exists=True,
     )
-    op.create_index("idx_request_log_created", "request_log", ["created_at"])
+    op.create_index(
+        "idx_request_log_created",
+        "request_log",
+        ["created_at"],
+        if_not_exists=True,
+    )
 
     op.create_table(
         "model_fallbacks",
@@ -146,6 +157,7 @@ def upgrade() -> None:
         sa.Column("model_name", sa.Text(), nullable=False),
         sa.Column("fallback_model", sa.Text(), nullable=False),
         sa.UniqueConstraint("model_name", name="uq_model_fallbacks_model_name"),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -164,6 +176,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -178,6 +191,7 @@ def upgrade() -> None:
         ),
         sa.Column("last_used_at", sa.TIMESTAMP(), nullable=True),
         sa.UniqueConstraint("key_hash", name="uq_api_keys_key_hash"),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -202,12 +216,14 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "api_key_id", "model_name", name="uq_api_key_model_pins_key_model"
         ),
+        if_not_exists=True,
     )
 
     op.create_table(
         "app_settings",
         sa.Column("key", sa.Text(), primary_key=True),
         sa.Column("value", sa.Text(), nullable=False),
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -220,14 +236,33 @@ def upgrade() -> None:
             "created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
         sa.UniqueConstraint("username", name="uq_dashboard_users_username"),
+        if_not_exists=True,
     )
 
-    op.execute(sa.text("INSERT INTO wireguard_interface (id) VALUES (1)"))
+    dialect = bind.dialect.name
+    if dialect == "sqlite":
+        op.execute(sa.text("INSERT OR IGNORE INTO wireguard_interface (id) VALUES (1)"))
+    elif is_mysql:
+        op.execute(sa.text("INSERT IGNORE INTO wireguard_interface (id) VALUES (1)"))
+    else:
+        op.execute(
+            sa.text(
+                "INSERT INTO wireguard_interface (id) VALUES (1) "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+        )
 
     if is_mysql:
         op.execute(
             sa.text(
                 "INSERT IGNORE INTO app_settings (key, value) "
+                "VALUES ('allow_unauthenticated', 'true')"
+            )
+        )
+    elif dialect == "sqlite":
+        op.execute(
+            sa.text(
+                'INSERT OR IGNORE INTO app_settings ("key", value) '
                 "VALUES ('allow_unauthenticated', 'true')"
             )
         )
@@ -242,16 +277,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("dashboard_users")
-    op.drop_table("app_settings")
-    op.drop_table("api_key_model_pins")
-    op.drop_table("api_keys")
-    op.drop_table("provider_addresses")
-    op.drop_table("model_fallbacks")
-    op.drop_index("idx_request_log_created", table_name="request_log")
-    op.drop_table("request_log")
-    op.drop_table("benchmarks")
-    op.drop_table("provider_models")
-    op.drop_table("providers")
-    op.drop_table("wireguard_peers")
-    op.drop_table("wireguard_interface")
+    op.drop_table("dashboard_users", if_exists=True)
+    op.drop_table("app_settings", if_exists=True)
+    op.drop_table("api_key_model_pins", if_exists=True)
+    op.drop_table("api_keys", if_exists=True)
+    op.drop_table("provider_addresses", if_exists=True)
+    op.drop_table("model_fallbacks", if_exists=True)
+    op.drop_index("idx_request_log_created", table_name="request_log", if_exists=True)
+    op.drop_table("request_log", if_exists=True)
+    op.drop_table("benchmarks", if_exists=True)
+    op.drop_table("provider_models", if_exists=True)
+    op.drop_table("providers", if_exists=True)
+    op.drop_table("wireguard_peers", if_exists=True)
+    op.drop_table("wireguard_interface", if_exists=True)

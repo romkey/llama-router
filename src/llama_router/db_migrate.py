@@ -16,12 +16,68 @@ logger = logging.getLogger(__name__)
 # Must match revision in alembic/versions/001_initial_schema.py
 _INITIAL_REVISION = "001_initial"
 
+# All tables created by 001_initial (lowercase names as returned by SQLite inspect).
+_INITIAL_SCHEMA_TABLES = frozenset(
+    {
+        "wireguard_interface",
+        "wireguard_peers",
+        "providers",
+        "provider_models",
+        "benchmarks",
+        "request_log",
+        "model_fallbacks",
+        "provider_addresses",
+        "api_keys",
+        "api_key_model_pins",
+        "app_settings",
+        "dashboard_users",
+    }
+)
 
-def _stamp_if_schema_exists_without_alembic_revision(
+
+def _clear_revision_if_marked_head_but_schema_incomplete(
+    sync_database_url: str,
+) -> None:
+    """Remove a false ``001_initial`` stamp when new tables were added after a legacy DB.
+
+    Older releases stamped ``001_initial`` whenever *any* app table existed, which
+    skipped migration and left newer tables (e.g. ``dashboard_users``) missing.
+    """
+    engine = create_engine(sync_database_url)
+    try:
+        insp = inspect(engine)
+        table_names = {t.lower() for t in insp.get_table_names()}
+        if "alembic_version" not in table_names:
+            return
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT version_num FROM alembic_version LIMIT 1")
+            ).fetchone()
+            if not row or row[0] != _INITIAL_REVISION:
+                return
+        missing = sorted(_INITIAL_SCHEMA_TABLES - table_names)
+        if not missing:
+            return
+        logger.warning(
+            "Alembic revision is %s but expected tables are missing: %s. "
+            "Clearing the revision so the migration can create missing objects "
+            "(existing tables use IF NOT EXISTS).",
+            _INITIAL_REVISION,
+            ", ".join(missing),
+        )
+        with engine.connect() as conn:
+            conn.execute(text("DELETE FROM alembic_version"))
+            conn.commit()
+    finally:
+        engine.dispose()
+
+
+def _stamp_if_full_schema_exists_without_alembic_revision(
     cfg: Config, sync_database_url: str
 ) -> None:
-    """If the DB was created outside Alembic (or alembic_version was lost), stamping
-    avoids re-running the initial migration and ``table already exists`` errors.
+    """If every 001 table already exists (e.g. restored dump) but ``alembic_version`` is empty, stamp.
+
+    Partial legacy schemas must *not* be stamped: ``upgrade`` runs with IF NOT EXISTS and fills gaps.
     """
     engine = create_engine(sync_database_url)
     try:
@@ -34,14 +90,10 @@ def _stamp_if_schema_exists_without_alembic_revision(
                 has_revision_row = (result.scalar_one() or 0) > 0
         if has_revision_row:
             return
-        schema_present = (
-            "wireguard_interface" in table_names or "providers" in table_names
-        )
-        if not schema_present:
+        if _INITIAL_SCHEMA_TABLES - table_names:
             return
-        logger.warning(
-            "Database has application tables but no Alembic revision recorded; "
-            "stamping %s. If the schema is incomplete, repair or recreate the database.",
+        logger.info(
+            "Full application schema detected without Alembic revision; stamping %s.",
             _INITIAL_REVISION,
         )
         command.stamp(cfg, _INITIAL_REVISION)
@@ -56,5 +108,6 @@ def run_upgrade_sync(sync_database_url: str) -> None:
     cfg = Config(str(ini) if ini.exists() else None)
     cfg.set_main_option("script_location", str(pkg / "alembic"))
     cfg.set_main_option("sqlalchemy.url", sync_database_url)
-    _stamp_if_schema_exists_without_alembic_revision(cfg, sync_database_url)
+    _clear_revision_if_marked_head_but_schema_incomplete(sync_database_url)
+    _stamp_if_full_schema_exists_without_alembic_revision(cfg, sync_database_url)
     command.upgrade(cfg, "head")

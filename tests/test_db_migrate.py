@@ -56,3 +56,37 @@ def test_run_upgrade_sync_after_dropped_alembic_version_table(
         assert ver[0] == "001_initial"
     finally:
         con.close()
+
+
+def test_clear_false_stamp_when_table_missing_then_recreate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Stale 001_initial stamp with a missing new-era table is repaired on startup."""
+    dbfile = tmp_path / "false_stamp.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    sync_url = config.settings.sync_database_url_for_alembic()
+    run_upgrade_sync(sync_url)
+    con = sqlite3.connect(dbfile)
+    try:
+        con.execute("DROP TABLE dashboard_users")
+        con.commit()
+    finally:
+        con.close()
+
+    run_upgrade_sync(sync_url)
+
+    con = sqlite3.connect(dbfile)
+    try:
+        assert (
+            con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='dashboard_users'"
+            ).fetchone()
+            is not None
+        )
+        ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
+        assert ver is not None
+        assert ver[0] == "001_initial"
+    finally:
+        con.close()
