@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -621,6 +622,9 @@ class Database:
         d = dict(row)
         d["peering_enabled"] = bool(d.get("peering_enabled"))
         d["peering_api_key"] = d.get("peering_api_key") or ""
+        d["peering_key_use_count"] = int(d.get("peering_key_use_count") or 0)
+        max_u = d.get("peering_key_max_uses")
+        d["peering_key_max_uses"] = int(max_u) if max_u is not None else None
         priv = (d.get("private_key") or "").strip()
         if priv:
             try:
@@ -771,17 +775,88 @@ class Database:
 
     async def get_wireguard_peering_config(self) -> dict:
         iface = await self.get_wireguard_interface()
+        max_u = iface.get("peering_key_max_uses")
         return {
             "peering_enabled": bool(iface.get("peering_enabled")),
             "peering_api_key": iface.get("peering_api_key") or "",
+            "peering_key_expires_at": self._coerce_peering_expiry(
+                iface.get("peering_key_expires_at")
+            ),
+            "peering_key_use_count": int(iface.get("peering_key_use_count") or 0),
+            "peering_key_max_uses": int(max_u) if max_u is not None else None,
         }
 
-    async def set_wireguard_peering_config(self, enabled: bool, api_key: str) -> None:
-        await self._execute(
-            "UPDATE wireguard_interface SET peering_enabled = ?, peering_api_key = ?, "
-            "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-            (int(enabled), api_key.strip()),
-        )
+    @staticmethod
+    def _coerce_peering_expiry(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None) if value.tzinfo else value
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None
+            if s.endswith("Z"):
+                s = s[:-1]
+            try:
+                dt = datetime.fromisoformat(s)
+                return dt.replace(tzinfo=None) if dt.tzinfo else dt
+            except ValueError:
+                return None
+        return None
+
+    async def set_wireguard_peering_config(
+        self,
+        enabled: bool,
+        api_key: str,
+        *,
+        peering_key_expires_at: datetime | None = None,
+        peering_key_max_uses: int | None = None,
+        reset_peering_key_use_count: bool = False,
+    ) -> None:
+        if reset_peering_key_use_count:
+            await self._execute(
+                "UPDATE wireguard_interface SET peering_enabled = ?, peering_api_key = ?, "
+                "peering_key_expires_at = ?, peering_key_max_uses = ?, "
+                "peering_key_use_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                (
+                    int(enabled),
+                    api_key.strip(),
+                    peering_key_expires_at,
+                    peering_key_max_uses,
+                ),
+            )
+        else:
+            await self._execute(
+                "UPDATE wireguard_interface SET peering_enabled = ?, peering_api_key = ?, "
+                "peering_key_expires_at = ?, peering_key_max_uses = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                (
+                    int(enabled),
+                    api_key.strip(),
+                    peering_key_expires_at,
+                    peering_key_max_uses,
+                ),
+            )
+
+    async def increment_peering_key_use_count(self) -> int:
+        """Atomically increment peering API key use count; return new total."""
+        sf = self._require_session_factory()
+        async with sf() as session:
+            async with session.begin():
+                stmt, bind = qmark(
+                    "UPDATE wireguard_interface SET peering_key_use_count = "
+                    "peering_key_use_count + 1 WHERE id = 1"
+                )
+                await session.execute(stmt, bind)
+                stmt2, bind2 = qmark(
+                    "SELECT peering_key_use_count FROM wireguard_interface WHERE id = 1"
+                )
+                r = await session.execute(stmt2, bind2)
+                row = result_first(r)
+                if not row:
+                    return 0
+                return int(row["peering_key_use_count"] or 0)
 
     async def find_wireguard_peer_by_public_key(self, public_key: str) -> dict | None:
         key = public_key.strip()

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import secrets
 import socket
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -277,7 +278,18 @@ async def _peering_key_matches(request: Request, db: Any) -> bool:
     key = (cfg.get("peering_api_key") or "").strip()
     if not key or not hdr:
         return False
-    return secrets.compare_digest(hdr, key)
+    if not secrets.compare_digest(hdr, key):
+        return False
+    expires = cfg.get("peering_key_expires_at")
+    if expires is not None:
+        if datetime.utcnow() > expires:
+            return False
+    max_uses = cfg.get("peering_key_max_uses")
+    if max_uses is not None:
+        use_count = await db.increment_peering_key_use_count()
+        if use_count > max_uses:
+            return False
+    return True
 
 
 async def _wireguard_peer_info_payload(db: Any) -> dict:
@@ -1837,6 +1849,14 @@ class PeeringConfigBody(BaseModel):
     enabled: bool = False
     api_key: str = ""
     regenerate_api_key: bool = False
+    expires_hours: int | None = None
+    max_uses: int | None = None
+
+
+class PeerImportBody(BaseModel):
+    peer_config: dict[str, Any]
+    our_tunnel_ip: str
+    add_as_provider: bool = True
 
 
 class PeerRequestBody(BaseModel):
@@ -1884,10 +1904,14 @@ async def api_wireguard_status():
 async def api_wireguard_peering_config_get():
     db = deps.get_db()
     cfg = await db.get_wireguard_peering_config()
+    exp = cfg.get("peering_key_expires_at")
     return JSONResponse(
         {
             "enabled": cfg["peering_enabled"],
             "api_key_masked": _mask_peering_key(cfg["peering_api_key"]),
+            "peering_key_expires_at": exp.isoformat() + "Z" if exp else None,
+            "peering_key_use_count": cfg.get("peering_key_use_count", 0),
+            "peering_key_max_uses": cfg.get("peering_key_max_uses"),
         }
     )
 
@@ -1895,6 +1919,9 @@ async def api_wireguard_peering_config_get():
 @router.post("/api/wireguard/peering-config")
 async def api_wireguard_peering_config_post(body: PeeringConfigBody):
     db = deps.get_db()
+    prev = await db.get_wireguard_peering_config()
+    prev_key = (prev.get("peering_api_key") or "").strip()
+
     if body.regenerate_api_key:
         key = secrets.token_urlsafe(32)
     else:
@@ -1902,16 +1929,151 @@ async def api_wireguard_peering_config_post(body: PeeringConfigBody):
         if new_key:
             key = new_key
         else:
-            prev = await db.get_wireguard_peering_config()
-            key = (prev.get("peering_api_key") or "").strip()
+            key = prev_key
             if not key:
                 key = secrets.token_urlsafe(32)
-    await db.set_wireguard_peering_config(body.enabled, key)
+
+    data = body.model_dump(exclude_unset=True)
+    if "expires_hours" in data:
+        eh = data["expires_hours"]
+        if eh is not None and eh > 0:
+            peering_key_expires_at = datetime.utcnow() + timedelta(hours=int(eh))
+        else:
+            peering_key_expires_at = None
+    else:
+        peering_key_expires_at = prev.get("peering_key_expires_at")
+
+    if "max_uses" in data:
+        mu = data["max_uses"]
+        peering_key_max_uses = int(mu) if mu is not None and int(mu) > 0 else None
+    else:
+        peering_key_max_uses = prev.get("peering_key_max_uses")
+
+    reset_uc = body.regenerate_api_key
+    submitted_key = (body.api_key or "").strip()
+    if not reset_uc and submitted_key and submitted_key != prev_key:
+        reset_uc = True
+    if "expires_hours" in data or "max_uses" in data:
+        reset_uc = True
+
+    await db.set_wireguard_peering_config(
+        body.enabled,
+        key,
+        peering_key_expires_at=peering_key_expires_at,
+        peering_key_max_uses=peering_key_max_uses,
+        reset_peering_key_use_count=reset_uc,
+    )
     return JSONResponse(
         {
             "enabled": body.enabled,
             "api_key": key,
             "api_key_masked": _mask_peering_key(key),
+        }
+    )
+
+
+def _parse_tunnel_ip(label: str, raw: str) -> str:
+    s = raw.strip()
+    if not s:
+        raise HTTPException(status_code=400, detail=f"{label} is required")
+    try:
+        ipaddress.ip_address(s)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} must be a valid IPv4 or IPv6 address",
+        ) from e
+    return s
+
+
+@router.get("/api/wireguard/export-peer-config")
+async def api_wireguard_export_peer_config():
+    """Return a JSON blob the operator can share out-of-band (session auth)."""
+    db = deps.get_db()
+    iface = await db.get_wireguard_interface()
+    payload = await _wireguard_peer_info_payload(db)
+    tip = _tunnel_ip_from_cidr(iface.get("address_cidr") or "")
+    payload["tunnel_ip"] = tip or ""
+    payload["allowed_ips"] = f"{tip}/32" if tip else ""
+    payload["exported_at"] = datetime.utcnow().isoformat() + "Z"
+    return JSONResponse(payload)
+
+
+@router.post("/api/wireguard/import-peer-config")
+async def api_wireguard_import_peer_config(body: PeerImportBody):
+    """Apply a peer blob from another router; no outbound HTTP (session auth)."""
+    _parse_tunnel_ip("our_tunnel_ip", body.our_tunnel_ip)
+
+    db = deps.get_db()
+    pm = deps.get_pm()
+
+    remote_pk = (body.peer_config.get("public_key") or "").strip()
+    if not remote_pk or not is_valid_wg_key_b64(remote_pk):
+        raise HTTPException(
+            status_code=400, detail="Invalid or missing public_key in peer config"
+        )
+
+    name = (body.peer_config.get("name") or "remote").strip() or "remote"
+    endpoint = (body.peer_config.get("endpoint") or "").strip() or None
+    allowed_ips = (body.peer_config.get("allowed_ips") or "").strip()
+    if not allowed_ips:
+        tunnel_ip = (body.peer_config.get("tunnel_ip") or "").strip()
+        if tunnel_ip:
+            allowed_ips = f"{tunnel_ip}/32"
+    if not allowed_ips:
+        raise HTTPException(
+            status_code=400, detail="Cannot determine AllowedIPs from peer config"
+        )
+
+    existing = await db.find_wireguard_peer_by_public_key(remote_pk)
+    if existing:
+        peer_id = int(existing["id"])
+        await db.update_wireguard_peer(
+            peer_id,
+            name=name,
+            public_key=remote_pk,
+            allowed_ips=allowed_ips,
+            preshared_key=existing.get("preshared_key"),
+            endpoint=endpoint,
+            persistent_keepalive=existing.get("persistent_keepalive") or 25,
+            enabled=True,
+        )
+    else:
+        peer_id = await db.add_wireguard_peer(
+            name=name,
+            public_key=remote_pk,
+            allowed_ips=allowed_ips,
+            endpoint=endpoint,
+            persistent_keepalive=25,
+            enabled=True,
+        )
+
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    if not ok:
+        logger.warning("import-peer-config apply: %s", msg)
+
+    added_provider = False
+    if body.add_as_provider:
+        ro = (body.peer_config.get("ollama_url") or "").strip().rstrip("/")
+        rl = (body.peer_config.get("llamacpp_url") or "").strip().rstrip("/")
+        linked = await db.get_providers_by_peer_id(peer_id)
+        if not linked and ro:
+            ptype = ProviderType.BOTH if rl else ProviderType.OLLAMA
+            await pm.add_provider(
+                name,
+                ro,
+                provider_type=ptype,
+                llamacpp_url=rl or None,
+                wireguard_peer_id=peer_id,
+            )
+            added_provider = True
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "peer_id": peer_id,
+            "added_provider": added_provider,
+            "message": msg if not ok else "peer imported",
         }
     )
 
@@ -1996,8 +2158,14 @@ async def api_wireguard_connect(body: WireGuardConnectBody):
     db = deps.get_db()
     pm = deps.get_pm()
     base = body.remote_url.strip().rstrip("/")
-    if not base.startswith("http://") and not base.startswith("https://"):
-        raise HTTPException(status_code=400, detail="remote_url must be http(s) URL")
+    if not base.startswith("https://"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "remote_url must use HTTPS to protect the peering API key in transit. "
+                "Use the manual peer exchange workflow for HTTP-only remotes."
+            ),
+        )
 
     timeout = httpx.Timeout(30.0, connect=10.0)
     headers = {"X-Peering-Key": body.remote_api_key.strip()}
@@ -2037,8 +2205,8 @@ async def api_wireguard_connect(body: WireGuardConnectBody):
             detail="Set Public endpoint on the WireGuard interface so the remote peer can reach you",
         )
 
-    our_ip = body.our_tunnel_ip.strip()
-    their_ip = body.their_tunnel_ip.strip()
+    our_ip = _parse_tunnel_ip("our_tunnel_ip", body.our_tunnel_ip)
+    their_ip = _parse_tunnel_ip("their_tunnel_ip", body.their_tunnel_ip)
     allowed_us = f"{our_ip}/32"
     ollama_us = f"http://{our_ip}:{settings.api_port}"
     lcpp_us = f"http://{our_ip}:{settings.llamacpp_port}"

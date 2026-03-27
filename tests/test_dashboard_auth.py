@@ -192,6 +192,65 @@ async def test_after_users_exist_api_returns_401_json(dash_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_wireguard_peer_info_bypasses_session_with_peering_key(
+    dash_client,
+) -> None:
+    client, db = dash_client
+    await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    await db.set_wireguard_peering_config(False, "peer-secret-test")
+
+    r = await client.get(
+        "/api/wireguard/peer-info",
+        headers={"X-Peering-Key": "peer-secret-test"},
+    )
+    assert r.status_code == 200
+    assert "public_key" in r.json()
+
+
+@pytest.mark.asyncio
+async def test_peering_max_uses_exceeded_returns_401(dash_client) -> None:
+    client, db = dash_client
+    await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    await db.set_wireguard_peering_config(
+        True,
+        "limited-key",
+        peering_key_max_uses=2,
+        reset_peering_key_use_count=True,
+    )
+    hdr = {"X-Peering-Key": "limited-key"}
+    assert (
+        await client.get("/api/wireguard/peer-info", headers=hdr)
+    ).status_code == 200
+    assert (
+        await client.get("/api/wireguard/peer-info", headers=hdr)
+    ).status_code == 200
+    r3 = await client.get("/api/wireguard/peer-info", headers=hdr)
+    assert r3.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_wireguard_connect_rejects_http_url(dash_client) -> None:
+    client, db = dash_client
+    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    r = await client.post(
+        "/api/wireguard/connect",
+        headers=_session_cookie_header(uid),
+        json={
+            "remote_url": "http://router.example",
+            "remote_api_key": "k",
+            "our_tunnel_ip": "10.8.0.1",
+            "their_tunnel_ip": "10.8.0.2",
+            "add_as_provider": True,
+        },
+    )
+    assert r.status_code == 400
+    assert "HTTPS" in (r.json().get("detail") or "")
+
+
+@pytest.mark.asyncio
 async def test_login_success_allows_dashboard_html(dash_client) -> None:
     client, db = dash_client
     await db.create_dashboard_user("alice", hash_password("password-12345"), True)

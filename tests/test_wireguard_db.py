@@ -52,3 +52,17 @@ async def test_wireguard_interface_singleton_and_peers(db):
     cfg2 = await db.get_wireguard_peering_config()
     assert cfg2["peering_enabled"] is True
     assert cfg2["peering_api_key"] == "test-secret-key"
+    assert cfg2.get("peering_key_use_count") == 0
+    assert "peering_key_expires_at" in cfg2
+
+
+@pytest.mark.asyncio
+async def test_increment_peering_key_use_count(db) -> None:
+    await db.set_wireguard_peering_config(
+        True,
+        "k",
+        peering_key_max_uses=99,
+        reset_peering_key_use_count=True,
+    )
+    assert await db.increment_peering_key_use_count() == 1
+    assert await db.increment_peering_key_use_count() == 2

@@ -53,7 +53,7 @@ def test_run_upgrade_sync_after_dropped_alembic_version_table(
     try:
         ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
         assert ver is not None
-        assert ver[0] == "001_initial"
+        assert ver[0] == "002_peering_key_expiry"
     finally:
         con.close()
 
@@ -87,6 +87,6 @@ def test_clear_false_stamp_when_table_missing_then_recreate(
         )
         ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
         assert ver is not None
-        assert ver[0] == "001_initial"
+        assert ver[0] == "002_peering_key_expiry"
     finally:
         con.close()

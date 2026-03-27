@@ -19,6 +19,13 @@ from .auth_core import (
 _USER_COUNT_CACHE: tuple[int, float] | None = None
 _USER_COUNT_TTL = 5.0
 
+_PEERING_PATHS = frozenset(
+    {
+        "/api/wireguard/peer-info",
+        "/api/wireguard/peer-request",
+    }
+)
+
 
 def _cached_user_count() -> int | None:
     global _USER_COUNT_CACHE
@@ -63,6 +70,9 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if path == "/login" or path.startswith("/login"):
+            return await call_next(request)
+
+        if path in _PEERING_PATHS:
             return await call_next(request)
 
         db = deps.get_db()

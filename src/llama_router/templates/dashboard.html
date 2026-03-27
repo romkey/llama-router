@@ -736,6 +736,16 @@
                     <div class="col-md-3">
                         <button type="button" class="btn btn-primary" id="wg-peering-save"><i class="bi bi-save me-1"></i>Save</button>
                     </div>
+                    <div class="col-md-4">
+                        <label class="form-label" for="wg-peering-expires-hours">Key expires after (hours)</label>
+                        <input type="number" class="form-control" id="wg-peering-expires-hours" min="0" step="1" placeholder="Optional — leave blank to keep current">
+                        <div class="form-text">Set from save time; blank does not change expiry.</div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label" for="wg-peering-max-uses">Max inbound API uses</label>
+                        <input type="number" class="form-control" id="wg-peering-max-uses" min="0" step="1" placeholder="Unlimited" value="{{ wg_iface.peering_key_max_uses or '' }}">
+                        <div class="form-text">Blank does not change. <code id="wg-peering-use-hint">Uses: {{ wg_iface.peering_key_use_count|default(0) }}{% if wg_iface.peering_key_max_uses is not none %}/{{ wg_iface.peering_key_max_uses }}{% endif %}</code></div>
+                    </div>
                 </div>
                 <div class="mb-2">
                     <label class="form-label small text-muted">Share with remote operators (requires API key to view)</label>
@@ -750,9 +760,48 @@
 
         <div class="card mb-3">
             <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-arrow-left-right me-2"></i>Manual peer exchange</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted">When dashboards cannot reach each other (firewalls, HTTP-only, etc.), exchange JSON out-of-band, then import locally. No peering key on export — you must be logged into this dashboard.</p>
+                <div class="row g-3">
+                    <div class="col-lg-6">
+                        <h6 class="text-secondary">Share your config</h6>
+                        <button type="button" class="btn btn-outline-primary btn-sm mb-2" id="wg-manual-export-btn"><i class="bi bi-download me-1"></i>Generate export</button>
+                        <div class="input-group">
+                            <textarea class="form-control font-monospace small" id="wg-manual-export-text" rows="8" readonly placeholder="Click Generate export"></textarea>
+                            <button type="button" class="btn btn-outline-secondary" id="wg-manual-export-copy" title="Copy"><i class="bi bi-clipboard"></i></button>
+                        </div>
+                        <div class="form-text">Share this JSON with the remote operator. They paste it into their Import panel.</div>
+                        <div id="wg-manual-export-banner" class="alert d-none mt-2 mb-0" role="alert"></div>
+                    </div>
+                    <div class="col-lg-6">
+                        <h6 class="text-secondary">Import remote config</h6>
+                        <label class="form-label small" for="wg-manual-import-text">Remote exported JSON</label>
+                        <textarea class="form-control font-monospace small mb-2" id="wg-manual-import-text" rows="5" placeholder="{ &quot;public_key&quot;: &quot;…&quot;, … }"></textarea>
+                        <label class="form-label small" for="wg-manual-import-our-ip">Our tunnel IP</label>
+                        <input type="text" class="form-control font-monospace mb-2" id="wg-manual-import-our-ip" placeholder="10.8.0.1" value="{{ wg_iface.address_cidr.split('/')[0] if wg_iface.address_cidr else '' }}">
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="wg-manual-import-add-provider" checked>
+                            <label class="form-check-label" for="wg-manual-import-add-provider">Also add as provider</label>
+                        </div>
+                        <button type="button" class="btn btn-success" id="wg-manual-import-btn"><i class="bi bi-box-arrow-in-down me-1"></i>Import peer</button>
+                        <div id="wg-manual-import-banner" class="alert d-none mt-2 mb-0" role="alert"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
                 <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Connect to remote llama-router</h5>
             </div>
             <div class="card-body">
+                <div id="wg-connect-http-warn" class="alert alert-warning py-2 small d-none" role="alert">
+                    HTTP remotes are not supported — the peering key would be sent in cleartext.
+                    If the remote dashboard is not reachable or only available over HTTP, use
+                    <strong>Manual peer exchange</strong> above.
+                </div>
                 <div class="row g-3">
                     <div class="col-md-6">
                         <label class="form-label" for="wg-connect-url">Remote router URL</label>
@@ -2472,6 +2521,21 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    function wgPeeringBody(en, key, regen) {
+        var body = {enabled: en, api_key: key, regenerate_api_key: !!regen};
+        var eh = document.getElementById('wg-peering-expires-hours');
+        if (eh && eh.value.trim() !== '') {
+            var n = parseInt(eh.value, 10);
+            if (!isNaN(n)) body.expires_hours = n;
+        }
+        var mu = document.getElementById('wg-peering-max-uses');
+        if (mu && mu.value.trim() !== '') {
+            var m = parseInt(mu.value, 10);
+            if (!isNaN(m)) body.max_uses = m;
+        }
+        return body;
+    }
+
     var ps = document.getElementById('wg-peering-save');
     if (ps) ps.addEventListener('click', function() {
         var en = document.getElementById('wg-peering-enabled').checked;
@@ -2479,7 +2543,7 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/wireguard/peering-config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({enabled: en, api_key: key, regenerate_api_key: false})
+            body: JSON.stringify(wgPeeringBody(en, key, false))
         }).then(function(r) {
             if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
             return r.json();
@@ -2505,7 +2569,7 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/wireguard/peering-config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({enabled: en, api_key: '', regenerate_api_key: true})
+            body: JSON.stringify(wgPeeringBody(en, '', true))
         }).then(function(r) {
             if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
             return r.json();
@@ -2527,6 +2591,77 @@ document.addEventListener('DOMContentLoaded', function() {
     if (pc) pc.addEventListener('click', function() {
         var ta = document.getElementById('wg-peer-info-json');
         if (ta && ta.value) navigator.clipboard.writeText(ta.value);
+    });
+
+    function wgConnectHttpWarnSync() {
+        var u = document.getElementById('wg-connect-url');
+        var w = document.getElementById('wg-connect-http-warn');
+        if (!u || !w) return;
+        var v = (u.value || '').trim().toLowerCase();
+        w.classList.toggle('d-none', !v.startsWith('http://'));
+    }
+    var cu = document.getElementById('wg-connect-url');
+    if (cu) {
+        cu.addEventListener('input', wgConnectHttpWarnSync);
+        cu.addEventListener('change', wgConnectHttpWarnSync);
+        wgConnectHttpWarnSync();
+    }
+
+    var meb = document.getElementById('wg-manual-export-btn');
+    if (meb) meb.addEventListener('click', function() {
+        fetch('/api/wireguard/export-peer-config')
+            .then(function(r) {
+                if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
+                return r.json();
+            })
+            .then(function(d) {
+                var ta = document.getElementById('wg-manual-export-text');
+                if (ta) ta.value = JSON.stringify(d, null, 2);
+                wgShowBanner('wg-manual-export-banner', 'success', 'Export generated. Copy and send to the remote operator.');
+            })
+            .catch(function(e) { wgShowBanner('wg-manual-export-banner', 'danger', e.message || 'Export failed'); });
+    });
+    var mec = document.getElementById('wg-manual-export-copy');
+    if (mec) mec.addEventListener('click', function() {
+        var ta = document.getElementById('wg-manual-export-text');
+        if (ta && ta.value) navigator.clipboard.writeText(ta.value);
+    });
+    var mib = document.getElementById('wg-manual-import-btn');
+    if (mib) mib.addEventListener('click', function() {
+        var raw = (document.getElementById('wg-manual-import-text') || {}).value || '';
+        var ourIp = (document.getElementById('wg-manual-import-our-ip') || {}).value || '';
+        var addP = document.getElementById('wg-manual-import-add-provider');
+        var peer_config;
+        try {
+            peer_config = JSON.parse(raw.trim());
+        } catch (e) {
+            wgShowBanner('wg-manual-import-banner', 'danger', 'Invalid JSON');
+            return;
+        }
+        fetch('/api/wireguard/import-peer-config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                peer_config: peer_config,
+                our_tunnel_ip: ourIp.trim(),
+                add_as_provider: addP ? addP.checked : true
+            })
+        }).then(function(r) {
+            if (!r.ok) {
+                return r.json().catch(function() { return {}; }).then(function(j) {
+                    var d = j.detail;
+                    if (typeof d === 'string') throw new Error(d);
+                    if (Array.isArray(d)) d = d.map(function(x) { return x.msg || x; }).join('; ');
+                    throw new Error(d || j.message || 'Import failed');
+                });
+            }
+            return r.json();
+        }).then(function(res) {
+            wgShowBanner('wg-manual-import-banner', 'success', res.message || 'Imported.');
+            setTimeout(function() { location.reload(); }, 1500);
+        }).catch(function(e) {
+            wgShowBanner('wg-manual-import-banner', 'danger', e.message || 'Import failed');
+        });
     });
 
     var cb = document.getElementById('wg-connect-btn');

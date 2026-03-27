@@ -53,8 +53,9 @@ def _clear_revision_if_marked_head_but_schema_incomplete(
             row = conn.execute(
                 text("SELECT version_num FROM alembic_version LIMIT 1")
             ).fetchone()
-            if not row or row[0] != _INITIAL_REVISION:
+            if not row:
                 return
+        revision = row[0]
         missing = sorted(_INITIAL_SCHEMA_TABLES - table_names)
         if not missing:
             return
@@ -62,7 +63,7 @@ def _clear_revision_if_marked_head_but_schema_incomplete(
             "Alembic revision is %s but expected tables are missing: %s. "
             "Clearing the revision so the migration can create missing objects "
             "(existing tables use IF NOT EXISTS).",
-            _INITIAL_REVISION,
+            revision,
             ", ".join(missing),
         )
         with engine.connect() as conn:
