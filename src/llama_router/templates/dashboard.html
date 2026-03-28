@@ -1024,6 +1024,16 @@
                         <label class="form-label" for="wg-prov-lcpp">llama.cpp base URL (optional)</label>
                         <input type="url" class="form-control font-monospace" name="llamacpp_url" id="wg-prov-lcpp" placeholder="http://10.8.0.2:8080">
                     </div>
+                    <hr class="mt-3">
+                    <div class="mb-0">
+                        <div class="small fw-semibold mb-2">Live tunnel &amp; debugging</div>
+                        <p class="small text-muted mb-2">Apply writes <code>wg0.conf</code> from the database and runs <code>wg-quick</code> / <code>wg syncconf</code> when tools are available. Checks use <code>ping</code>, <code>curl</code> (Ollama <code>/api/tags</code> on the peer tunnel IP), and <code>host</code> on the peer endpoint hostname when present.</p>
+                        <div class="d-flex flex-wrap gap-2 mb-2">
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="wg-peer-apply-btn"><i class="bi bi-lightning-charge me-1"></i>Apply WireGuard</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="wg-peer-debug-btn" disabled><i class="bi bi-bug me-1"></i>Run connectivity checks</button>
+                        </div>
+                        <pre class="small mb-0 bg-white border rounded p-2 text-body-secondary" id="wg-peer-debug-out" style="max-height:14rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem;"></pre>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -2475,6 +2485,10 @@ function wgPeerModalOpen(id, name, publicKey, psk, allowed, endpoint, ka, enable
         kaEl.value = String(ka);
     }
     document.getElementById('wg-peer-enabled').value = enabled ? '1' : '0';
+    var dbgBtn = document.getElementById('wg-peer-debug-btn');
+    if (dbgBtn) dbgBtn.disabled = id == null;
+    var dbgOut = document.getElementById('wg-peer-debug-out');
+    if (dbgOut) dbgOut.textContent = '';
     var lp = document.getElementById('wg-link-provider');
     if (lp) lp.checked = false;
     var pn = document.getElementById('wg-prov-name');
@@ -2688,6 +2702,49 @@ document.addEventListener('DOMContentLoaded', function() {
             setTimeout(function() { location.reload(); }, 1500);
         }).catch(function(e) {
             wgShowBanner('wg-manual-import-banner', 'danger', e.message || 'Import failed');
+        });
+    });
+
+    var wga = document.getElementById('wg-peer-apply-btn');
+    if (wga) wga.addEventListener('click', function() {
+        if (typeof dashRequireWrite === 'function' && !dashRequireWrite()) return;
+        fetch('/api/wireguard/apply', {method: 'POST'})
+            .then(function(r) {
+                return r.json().then(function(j) {
+                    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'Apply failed'));
+                    return j;
+                });
+            })
+            .then(function(j) {
+                var o = document.getElementById('wg-peer-debug-out');
+                if (o) o.textContent = (j.ok ? 'OK: ' : 'Problem: ') + (j.message || JSON.stringify(j));
+            })
+            .catch(function(e) {
+                var o = document.getElementById('wg-peer-debug-out');
+                if (o) o.textContent = 'Error: ' + (e.message || e);
+            });
+    });
+    var wgd = document.getElementById('wg-peer-debug-btn');
+    if (wgd) wgd.addEventListener('click', function() {
+        if (typeof dashRequireWrite === 'function' && !dashRequireWrite()) return;
+        var pid = (document.getElementById('wg-peer-id') || {}).value || '';
+        pid = pid.trim();
+        if (!pid) return;
+        fetch('/api/wireguard/debug-peer', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({peer_id: parseInt(pid, 10)})
+        }).then(function(r) {
+            return r.json().then(function(j) {
+                if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail || j));
+                return j;
+            });
+        }).then(function(j) {
+            var o = document.getElementById('wg-peer-debug-out');
+            if (o) o.textContent = JSON.stringify(j, null, 2);
+        }).catch(function(e) {
+            var o = document.getElementById('wg-peer-debug-out');
+            if (o) o.textContent = 'Error: ' + (e.message || e);
         });
     });
 

@@ -26,6 +26,7 @@ from . import deps
 
 from .. import __version__
 from ..wireguard_config import generate_wireguard_private_key, is_valid_wg_key_b64
+from ..wireguard_manager import debug_peer_connectivity
 from ..wireguard_sync import sync_wireguard_config_to_disk
 
 from .auth_core import (
@@ -1878,6 +1879,10 @@ class WireGuardConnectBody(BaseModel):
     add_as_provider: bool = True
 
 
+class WireGuardPeerDebugBody(BaseModel):
+    peer_id: int
+
+
 @router.get("/api/wireguard/status")
 async def api_wireguard_status():
     """Summarize WireGuard settings (no private keys)."""
@@ -1898,6 +1903,24 @@ async def api_wireguard_status():
             "active_peers": sum(1 for p in peers if p["enabled"]),
         }
     )
+
+
+@router.post("/api/wireguard/apply")
+async def api_wireguard_apply():
+    """Render WireGuard config from the database, write the file, and sync the tunnel."""
+    db = deps.get_db()
+    ok, msg = await sync_wireguard_config_to_disk(db)
+    return JSONResponse({"ok": ok, "message": msg})
+
+
+@router.post("/api/wireguard/debug-peer")
+async def api_wireguard_debug_peer(body: WireGuardPeerDebugBody):
+    """Run ping / curl / host diagnostics toward a peer (admin session)."""
+    db = deps.get_db()
+    result = await debug_peer_connectivity(db, body.peer_id)
+    if result.get("error") == "peer_not_found":
+        raise HTTPException(status_code=404, detail="Peer not found")
+    return JSONResponse(result)
 
 
 @router.get("/api/wireguard/peering-config")

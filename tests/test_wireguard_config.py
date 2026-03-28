@@ -8,6 +8,10 @@ from llama_router.wireguard_config import (
     public_key_from_private,
     render_wg_quick_config,
 )
+from llama_router.wireguard_manager import (
+    endpoint_hostname_for_dns,
+    first_ip_from_allowed_ips,
+)
 
 
 def test_generate_and_derive_public_roundtrip() -> None:
@@ -96,3 +100,17 @@ def test_render_peer_keepalive_and_endpoint() -> None:
     assert "MTU = 1280" in text
     assert "Endpoint = peer.example:51820" in text
     assert "PersistentKeepalive = 25" in text
+
+
+def test_first_ip_from_allowed_ips() -> None:
+    assert first_ip_from_allowed_ips("10.8.0.2/32") == "10.8.0.2"
+    assert first_ip_from_allowed_ips("10.8.0.3/32, 10.9.0.1/32") == "10.8.0.3"
+    assert first_ip_from_allowed_ips("2001:db8::2/128") == "2001:db8::2"
+    assert first_ip_from_allowed_ips("") is None
+    assert first_ip_from_allowed_ips("not-an-ip/32") is None
+
+
+def test_endpoint_hostname_for_dns() -> None:
+    assert endpoint_hostname_for_dns("vpn.example.com:51820") == "vpn.example.com"
+    assert endpoint_hostname_for_dns("203.0.113.5:51820") is None
+    assert endpoint_hostname_for_dns("") is None
