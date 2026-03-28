@@ -1,41 +1,41 @@
-# WireGuard (optional)
-# Image must include wireguard-tools. Add NET_ADMIN so wg-quick can create wg0
-# inside the container:
+# WireGuard in Docker (Linux): UDP publish + NET_ADMIN + TUN device so wg-quick
+# can bring up wg0 inside the container. In the dashboard, set "Public endpoint"
+# to <host-or-IP>:51820 (or whatever you map HostPort:51820 below).
 #
-#   cap_add:
-#     - NET_ADMIN
+# Docker Desktop (macOS/Windows): kernel networking differs; use a Linux host/VM
+# or host network mode if you need a real tunnel.
 #
-# If remote peers only need to reach llama-router (and backends) inside this
-# container, publish WireGuard UDP and set dashboard "Public endpoint" to
-# <host>:51820 (or your mapped port):
+# Alternative: network_mode: host (drop custom port mappings; use host ports).
 #
-#   ports:
-#     - "51820:51820/udp"
+# In the dashboard, keep each peer's AllowedIPs to their tunnel /32 unless you
+# intend to expose LAN routes.
 #
-# Use host network instead if you want the tunnel IP and ports on the host
-# stack (simpler when other machines must use the VPN like bare metal):
-#
-#   network_mode: host
-#
-# Docker Desktop (macOS/Windows): prefer running on a Linux host/VM or legacy
-# volume mode; kernel networking differs from Linux.
-#
-# In the dashboard, keep each peer's AllowedIPs to their tunnel /32 so remote
-# peers cannot reach your LAN through WireGuard unless you add those routes.
+# Every router must enable the tunnel on the WireGuard tab: turn ON "Enable
+# WireGuard", set Address/Listen port/Endpoint, and have a private key (Generate
+# or paste). Peering only adds DB peers; without that, wg0.conf is a comment stub
+# and nothing listens. The config file name is wg0.conf (not wg0).
 
 services:
   llama-router:
     build: .
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
     ports:
       - "80:80"
       - "8080:8080"
       - "9200:9200"
       - "11434:11434"
+      - "51820:51820/udp"
     volumes:
       - llama-router-data:/app/data
+      - llama-router-wg:/shared/wireguard
     environment:
       LLAMA_ROUTER_DATABASE_PATH: /app/data/llama_router.db
       LLAMA_ROUTER_CACHE_DIR: /app/data/model_cache
+      LLAMA_ROUTER_WIREGUARD_CONFIG_PATH: /shared/wireguard/wg0.conf
+      LLAMA_ROUTER_WIREGUARD_ENABLED: "true"
       # Set this to the IP/hostname your Ollama backends can reach this host on
       # LLAMA_ROUTER_CACHE_EXTERNAL_HOST: 192.168.1.50
       #
@@ -54,3 +54,4 @@ services:
 
 volumes:
   llama-router-data:
+  llama-router-wg:

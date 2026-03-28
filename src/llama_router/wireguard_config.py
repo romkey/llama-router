@@ -67,24 +67,38 @@ def render_wg_quick_config(
 ) -> str:
     """Build wg-quick(8) configuration text.
 
-    When disabled or missing private key, returns a comment-only file so the
-    sidecar can tear down the interface.
+    When there is no private key, or the tunnel is off and there are no peers,
+    returns a comment-only file so nothing is configured.
+
+    If peering (or manual peers) added rows but **Enable WireGuard** is still
+    unchecked, we still emit a full ``[Interface]`` plus ``[Peer]`` stanzas so
+    ``wg0.conf`` matches the database after an inbound peer-request.
     """
     enabled = bool(interface.get("enabled"))
     priv = (interface.get("private_key") or "").strip()
-    if not enabled or not priv:
+    active_peers = [p for p in peers if p.get("enabled", True)]
+
+    if not priv:
         return (
-            "# llama-router: WireGuard is disabled or no private key is set.\n"
-            "# Add a key in the dashboard and enable the tunnel to generate "
-            "a full configuration.\n"
+            "# llama-router: No WireGuard private key is set.\n"
+            "# Generate or paste a key in the dashboard to build wg0.conf.\n"
         )
 
     if not is_valid_wg_key_b64(priv):
         raise ValueError("Invalid interface private key (expected 32-byte base64 key)")
 
+    if not enabled and not active_peers:
+        return (
+            "# llama-router: WireGuard tunnel is disabled and there are no peers.\n"
+            "# Enable the tunnel and/or add peers in the dashboard to generate "
+            "a full configuration.\n"
+        )
+
     address = (interface.get("address_cidr") or "").strip()
     if not address:
-        raise ValueError("Tunnel address (CIDR) is required when WireGuard is enabled")
+        raise ValueError(
+            "Tunnel address (CIDR) is required when WireGuard is enabled or peers exist"
+        )
 
     listen_port = int(interface.get("listen_port") or 51820)
     if listen_port < 1 or listen_port > 65535:

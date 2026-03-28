@@ -32,6 +32,34 @@ def test_render_disabled_is_comment_only() -> None:
     assert "llama-router" in text
 
 
+def test_render_disabled_with_peer_still_writes_config() -> None:
+    """Inbound peering adds DB peers; wg0.conf must list them even if unchecked."""
+    priv = generate_wireguard_private_key()
+    priv_peer = generate_wireguard_private_key()
+    pub_peer = public_key_from_private(priv_peer)
+    text = render_wg_quick_config(
+        {
+            "enabled": False,
+            "private_key": priv,
+            "address_cidr": "10.8.0.2/24",
+            "listen_port": 51820,
+        },
+        [
+            {
+                "enabled": True,
+                "public_key": pub_peer,
+                "allowed_ips": "10.8.0.1/32",
+                "endpoint": "a.example:51820",
+                "persistent_keepalive": 25,
+            }
+        ],
+    )
+    assert "[Interface]" in text
+    assert f"PrivateKey = {priv}" in text
+    assert "[Peer]" in text
+    assert f"PublicKey = {pub_peer}" in text
+
+
 def test_render_enabled_minimal_peer() -> None:
     priv = generate_wireguard_private_key()
     priv_peer = generate_wireguard_private_key()

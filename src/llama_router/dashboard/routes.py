@@ -2131,6 +2131,25 @@ async def api_wireguard_peer_request(request: Request, body: PeerRequestBody):
     if not is_valid_wg_key_b64(pk):
         raise HTTPException(status_code=400, detail="Invalid public_key")
 
+    iface_row = await db.get_wireguard_interface()
+    loc_priv = (iface_row.get("private_key") or "").strip()
+    if not loc_priv or not is_valid_wg_key_b64(loc_priv):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Configure a WireGuard private key on this router (dashboard "
+                "WireGuard tab) before accepting remote peers"
+            ),
+        )
+    if not (iface_row.get("address_cidr") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Configure a tunnel address (CIDR) on this router before "
+                "accepting remote peers so wg0.conf can be written"
+            ),
+        )
+
     existing = await db.find_wireguard_peer_by_public_key(pk)
     if existing:
         peer_id = int(existing["id"])
