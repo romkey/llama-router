@@ -35,6 +35,8 @@
 <div class="alert alert-warning py-2">Password must be at least 8 characters.</div>
 {% elif query_error == 'last-admin' %}
 <div class="alert alert-warning py-2">Cannot remove the last administrator.</div>
+{% elif query_error == 'invalid_username' %}
+<div class="alert alert-warning py-2">Username is not valid.</div>
 {% elif query_error %}
 <div class="alert alert-warning py-2">{{ query_error }}</div>
 {% endif %}

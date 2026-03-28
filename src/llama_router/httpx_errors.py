@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import httpx
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 
 def describe_httpx_error(exc: BaseException) -> str:
@@ -29,3 +35,29 @@ def describe_httpx_error(exc: BaseException) -> str:
     if isinstance(exc, httpx.HTTPError):
         return f"{type(exc).__name__}: {exc}"
     return f"{type(exc).__name__}: {exc}"
+
+
+def forward_upstream_http_error(exc: httpx.HTTPStatusError) -> JSONResponse:
+    """Return the upstream JSON body when safe; never echo exception text to clients."""
+    status_code = exc.response.status_code
+    try:
+        payload: Any = exc.response.json()
+    except ValueError:
+        logger.warning("Upstream returned HTTP %s with non-JSON body", status_code)
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": "upstream service returned an error"},
+        )
+    except Exception:
+        logger.warning("Upstream returned HTTP %s; failed to read body", status_code)
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": "upstream service returned an error"},
+        )
+
+    if isinstance(payload, dict):
+        return JSONResponse(status_code=status_code, content=payload)
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": "upstream service returned an error"},
+    )

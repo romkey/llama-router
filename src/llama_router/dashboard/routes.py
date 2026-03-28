@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -186,7 +186,7 @@ async def _pull_one_ollama(
             "response_size": 0,
             "duration_ms": duration,
             "status": "error",
-            "error_detail": str(exc)[:500],
+            "error_detail": "pull failed",
         }
         if source_ip is not None:
             log_kw["source_ip"] = source_ip
@@ -415,10 +415,53 @@ def _minimal_wg_iface() -> dict[str, Any]:
 
 
 def _safe_next_url(next_raw: str | None) -> str:
+    """Reject absolute URLs and scheme-relative paths; allow same-site relative paths only."""
     n = (next_raw or "/").strip()
-    if not n.startswith("/") or n.startswith("//"):
+    if not n or "\n" in n or "\r" in n:
         return "/"
-    return n
+    parsed = urlparse(n)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    path = parsed.path or "/"
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return "/"
+    out = path
+    if parsed.query:
+        out += "?" + parsed.query
+    if parsed.fragment:
+        out += "#" + parsed.fragment
+    return out
+
+
+def _same_origin_referer_path(request: Request, fallback: str) -> str:
+    raw = (request.headers.get("referer") or "").strip()
+    if not raw:
+        return fallback
+    try:
+        ref = urlparse(raw)
+        base = urlparse(str(request.base_url))
+    except ValueError:
+        return fallback
+    if ref.scheme.lower() not in ("http", "https"):
+        return fallback
+
+    def _host_port(u) -> tuple[str, int]:
+        host = (u.hostname or "").lower()
+        port = u.port
+        if port is None:
+            port = 443 if u.scheme.lower() == "https" else 80
+        return host, port
+
+    rh, rp = _host_port(ref)
+    bh, bp = _host_port(base)
+    if not rh or rh != bh or rp != bp:
+        return fallback
+    path = ref.path or "/"
+    if not path.startswith("/") or path.startswith("//"):
+        return fallback
+    if ref.query:
+        return f"{path}?{ref.query}"
+    return path
 
 
 @router.get("/health")
@@ -535,9 +578,8 @@ async def users_add(
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         un = normalize_username(username)
-    except ValueError as e:
-        q = quote(str(e))
-        return RedirectResponse(url=f"/users?error={q}", status_code=303)
+    except ValueError:
+        return RedirectResponse(url="/users?error=invalid_username", status_code=303)
     if await db.get_dashboard_user_by_username(un):
         return RedirectResponse(url="/users?error=exists", status_code=303)
     if len(password) < 8:
@@ -1039,8 +1081,9 @@ async def add_provider(
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("add_provider failed")
+        raise HTTPException(status_code=400, detail="Could not add provider")
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -1069,8 +1112,9 @@ async def edit_provider(
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("update_provider failed (provider_id=%s)", provider_id)
+        raise HTTPException(status_code=400, detail="Could not update provider")
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
@@ -1199,8 +1243,8 @@ async def benchmark_model(provider_id: int, model_name: str):
 async def delete_benchmark(request: Request, benchmark_id: int):
     db = deps.get_db()
     await db.delete_benchmark(benchmark_id)
-    referer = request.headers.get("referer", "/")
-    return RedirectResponse(url=referer, status_code=303)
+    dest = _same_origin_referer_path(request, "/#benchmarks-pane")
+    return RedirectResponse(url=dest, status_code=303)
 
 
 @router.post("/benchmarks/delete-model/{model_name:path}")
@@ -1228,7 +1272,13 @@ async def delete_model(provider_id: int, model_name: str):
                 url=f"/providers/{provider_id}?error=Model+{model_name}+not+found+on+backend+(removed+from+local+list)",
                 status_code=303,
             )
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.error(
+            "Delete model: backend HTTP %s for provider_id=%s model=%r",
+            exc.response.status_code,
+            provider_id,
+            model_name,
+        )
+        raise HTTPException(status_code=500, detail="Could not delete model on backend")
     except httpx.HTTPError as exc:
         logger.error(
             "Delete model failed (provider_id=%s, model=%r): %s",
@@ -1236,9 +1286,14 @@ async def delete_model(provider_id: int, model_name: str):
             model_name,
             describe_httpx_error(exc),
         )
-        raise HTTPException(status_code=500, detail=describe_httpx_error(exc))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Could not delete model on backend")
+    except Exception:
+        logger.exception(
+            "Delete model failed (provider_id=%s, model=%r)",
+            provider_id,
+            model_name,
+        )
+        raise HTTPException(status_code=500, detail="Could not delete model on backend")
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
@@ -1253,8 +1308,9 @@ async def add_address(
     lcpp = llamacpp_url if llamacpp_url else None
     try:
         await pm.add_address(provider_id, url, lcpp, is_preferred=bool(is_preferred))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("add_address failed (provider_id=%s)", provider_id)
+        raise HTTPException(status_code=400, detail="Could not add address")
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
@@ -1270,8 +1326,13 @@ async def edit_address(
     lcpp = llamacpp_url if llamacpp_url else None
     try:
         await pm.update_address(address_id, url, lcpp, is_preferred=bool(is_preferred))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception(
+            "update_address failed (provider_id=%s address_id=%s)",
+            provider_id,
+            address_id,
+        )
+        raise HTTPException(status_code=400, detail="Could not update address")
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
@@ -1918,7 +1979,20 @@ async def api_wireguard_apply():
     """Render WireGuard config from the database, write the file, and sync the tunnel."""
     db = deps.get_db()
     ok, msg = await sync_wireguard_config_to_disk(db)
-    return JSONResponse({"ok": ok, "message": msg})
+    if ok:
+        logger.info("WireGuard apply: %s", msg)
+    else:
+        logger.warning("WireGuard apply failed: %s", msg)
+    return JSONResponse(
+        {
+            "ok": ok,
+            "message": (
+                "WireGuard configuration applied."
+                if ok
+                else "WireGuard configuration could not be applied."
+            ),
+        }
+    )
 
 
 @router.post("/api/wireguard/debug-peer")
@@ -2104,7 +2178,11 @@ async def api_wireguard_import_peer_config(body: PeerImportBody):
             "ok": True,
             "peer_id": peer_id,
             "added_provider": added_provider,
-            "message": msg if not ok else "peer imported",
+            "message": (
+                "peer imported"
+                if ok
+                else "peer imported but WireGuard config could not be applied"
+            ),
         }
     )
 
@@ -2223,17 +2301,21 @@ async def api_wireguard_connect(body: WireGuardConnectBody):
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(f"{base}/api/wireguard/peer-info", headers=headers)
             if r.status_code != 200:
+                logger.warning(
+                    "peer-info failed: HTTP %s body_prefix=%r",
+                    r.status_code,
+                    (r.text or "")[:200],
+                )
                 raise HTTPException(
                     status_code=502,
-                    detail=f"peer-info failed: HTTP {r.status_code} {r.text[:200]}",
+                    detail="peer-info request failed on remote router",
                 )
             remote = r.json()
     except HTTPException:
         raise
     except httpx.RequestError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"peer-info unreachable: {exc}"
-        ) from exc
+        logger.warning("peer-info unreachable: %s", exc)
+        raise HTTPException(status_code=502, detail="peer-info unreachable") from exc
 
     remote_pk = (remote.get("public_key") or "").strip()
     if not remote_pk or not is_valid_wg_key_b64(remote_pk):
@@ -2282,9 +2364,14 @@ async def api_wireguard_connect(body: WireGuardConnectBody):
                     },
                 )
                 if pr.status_code != 200:
+                    logger.warning(
+                        "peer-request failed: HTTP %s body_prefix=%r",
+                        pr.status_code,
+                        (pr.text or "")[:200],
+                    )
                     raise HTTPException(
                         status_code=502,
-                        detail=f"peer-request failed: HTTP {pr.status_code} {pr.text[:200]}",
+                        detail="peer-request failed on remote router",
                     )
                 registered = True
                 try:
@@ -2294,8 +2381,9 @@ async def api_wireguard_connect(body: WireGuardConnectBody):
         except HTTPException:
             raise
         except httpx.RequestError as exc:
+            logger.warning("peer-request unreachable: %s", exc)
             raise HTTPException(
-                status_code=502, detail=f"peer-request unreachable: {exc}"
+                status_code=502, detail="peer-request unreachable"
             ) from exc
 
     remote_endpoint = (remote.get("endpoint") or "").strip()
@@ -2356,7 +2444,11 @@ async def api_wireguard_connect(body: WireGuardConnectBody):
             "registered_on_remote": registered,
             "remote_added_us_as_provider": remote_added_us,
             "added_local_provider": added_local_provider,
-            "message": msg if not ok else "connected",
+            "message": (
+                "connected"
+                if ok
+                else "connected but WireGuard config could not be applied"
+            ),
         }
     )
 
@@ -2416,9 +2508,12 @@ async def wireguard_save_interface(
         try:
             mtu_val = int(mtu.strip())
             if mtu_val <= 0:
-                raise ValueError("MTU must be positive")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="MTU must be a positive integer",
+            )
 
     new_priv: str | None = None
     if clear_private_key in ("1", "on", "true", "yes"):
@@ -2438,13 +2533,18 @@ async def wireguard_save_interface(
             endpoint_public=endpoint_public.strip() or None,
             new_private_key=new_priv,
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("WireGuard interface save failed")
+        raise HTTPException(
+            status_code=400, detail="Could not save WireGuard interface settings"
+        )
 
     ok, msg = await sync_wireguard_config_to_disk(db)
     if not ok:
+        logger.warning("WireGuard interface saved but config apply failed: %s", msg)
         raise HTTPException(
-            status_code=400, detail=f"Saved settings but config file: {msg}"
+            status_code=400,
+            detail="Saved settings but could not write WireGuard config file",
         )
     return _wg_tab_redirect()
 
@@ -2456,7 +2556,11 @@ async def wireguard_generate_keys():
     await db.set_wireguard_private_key(key)
     ok, msg = await sync_wireguard_config_to_disk(db)
     if not ok:
-        raise HTTPException(status_code=400, detail=f"Key saved but config file: {msg}")
+        logger.warning("WireGuard key saved but config apply failed: %s", msg)
+        raise HTTPException(
+            status_code=400,
+            detail="Key saved but could not write WireGuard config file",
+        )
     return _wg_tab_redirect()
 
 
@@ -2531,8 +2635,9 @@ async def wireguard_peer_save(
             )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("wireguard_peer_save failed")
+        raise HTTPException(status_code=400, detail="Could not save WireGuard peer")
 
     if do_link:
         ou = ollama_url.strip().rstrip("/")

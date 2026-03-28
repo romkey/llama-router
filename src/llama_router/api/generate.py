@@ -8,20 +8,12 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import routing_preferences_from_request
-from ..httpx_errors import describe_httpx_error
+from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import StreamLogger, log_request
 from . import deps
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-
-def _forward_backend_error(exc: httpx.HTTPStatusError) -> JSONResponse:
-    try:
-        body = exc.response.json()
-    except Exception:
-        body = {"error": exc.response.text or str(exc)}
-    return JSONResponse(content=body, status_code=exc.response.status_code)
 
 
 @router.post("/api/generate")
@@ -112,7 +104,7 @@ async def generate(request: Request):
             status="error",
             error_detail=f"HTTP {exc.response.status_code}: {exc.response.text[:400]}",
         )
-        return _forward_backend_error(exc)
+        return forward_upstream_http_error(exc)
     except Exception as exc:
         duration = (time.monotonic() - start) * 1000
         err_detail = str(exc)[:500]
