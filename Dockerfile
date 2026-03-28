@@ -7,6 +7,7 @@ RUN apt-get update \
         bind9-host \
         curl \
         iputils-ping \
+        wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .

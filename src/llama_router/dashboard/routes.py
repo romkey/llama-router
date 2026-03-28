@@ -26,7 +26,11 @@ from . import deps
 
 from .. import __version__
 from ..wireguard_config import generate_wireguard_private_key, is_valid_wg_key_b64
-from ..wireguard_manager import debug_peer_connectivity
+from ..wireguard_manager import (
+    debug_peer_connectivity,
+    get_tunnel_status,
+    wireguard_tools_status,
+)
 from ..wireguard_sync import sync_wireguard_config_to_disk
 
 from .auth_core import (
@@ -1885,10 +1889,12 @@ class WireGuardPeerDebugBody(BaseModel):
 
 @router.get("/api/wireguard/status")
 async def api_wireguard_status():
-    """Summarize WireGuard settings (no private keys)."""
+    """Summarize WireGuard settings (no private keys), tool paths, and live tunnel."""
     db = deps.get_db()
     iface = await db.get_wireguard_interface()
     peers = await db.list_wireguard_peers()
+    tools = wireguard_tools_status()
+    tunnel = await get_tunnel_status()
     return JSONResponse(
         {
             "config_path_set": bool((settings.wireguard_config_path or "").strip()),
@@ -1901,6 +1907,8 @@ async def api_wireguard_status():
             "mtu": iface.get("mtu"),
             "peer_count": len(peers),
             "active_peers": sum(1 for p in peers if p["enabled"]),
+            "tools": tools,
+            "tunnel": tunnel,
         }
     )
 

@@ -854,6 +854,14 @@
                 {% else %}
                 <p class="text-muted small mb-2">Writing to <code>{{ wireguard_config_path }}</code>{% if wireguard_legacy_volume %} (legacy volume mode — file only, no <code>wg-quick</code>){% endif %}.</p>
                 {% endif %}
+                <div class="mb-3 rounded border border-secondary p-2">
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                        <span class="small fw-semibold text-body-secondary">Runtime status</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="wg-runtime-refresh" title="Tools on PATH, live tunnel from wg"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                    </div>
+                    <p class="small text-muted mb-2 mb-lg-1">Shows whether <code>wg-quick</code> / <code>wg</code> are available in this process (e.g. in the container) and the current kernel interface from <code>wg show</code>. Use after <strong>Apply WireGuard</strong> or saving the interface.</p>
+                    <pre class="small mb-0 rounded p-2 border font-monospace text-body bg-body-secondary" id="wg-runtime-pre" style="max-height:16rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem;"></pre>
+                </div>
                 <p class="small text-muted">Configure the tunnel here; provider URLs can use peer tunnel IPs (e.g. <code>http://10.8.0.2:11434</code>). Share <strong>Public key</strong> and <strong>Endpoint</strong> with remote peers.</p>
 
                 <form method="post" action="/wireguard/interface" class="row g-3 mb-4">
@@ -1032,7 +1040,7 @@
                             <button type="button" class="btn btn-sm btn-outline-primary" id="wg-peer-apply-btn"><i class="bi bi-lightning-charge me-1"></i>Apply WireGuard</button>
                             <button type="button" class="btn btn-sm btn-outline-secondary" id="wg-peer-debug-btn" disabled><i class="bi bi-bug me-1"></i>Run connectivity checks</button>
                         </div>
-                        <pre class="small mb-0 bg-white border rounded p-2 text-body-secondary" id="wg-peer-debug-out" style="max-height:14rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem;"></pre>
+                        <pre class="small mb-0 border rounded p-2 font-monospace text-body bg-body-secondary" id="wg-peer-debug-out" style="max-height:14rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem;"></pre>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -2543,6 +2551,26 @@ document.addEventListener('DOMContentLoaded', function() {
             bootstrap.Tab.getOrCreateInstance(t).show();
         }
     }
+
+    function wgRefreshRuntimePre() {
+        var pre = document.getElementById('wg-runtime-pre');
+        if (!pre) return;
+        pre.textContent = 'Loading…';
+        fetch('/api/wireguard/status')
+            .then(function(r) {
+                return r.json().then(function(j) {
+                    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : 'Request failed');
+                    return j;
+                });
+            })
+            .then(function(d) { pre.textContent = JSON.stringify(d, null, 2); })
+            .catch(function(e) { pre.textContent = 'Error: ' + (e.message || e); });
+    }
+    var wgr = document.getElementById('wg-runtime-refresh');
+    if (wgr) wgr.addEventListener('click', wgRefreshRuntimePre);
+    var wgtab = document.getElementById('wireguard-tab');
+    if (wgtab) wgtab.addEventListener('shown.bs.tab', wgRefreshRuntimePre);
+    if (params.get('tab') === 'wireguard') setTimeout(wgRefreshRuntimePre, 300);
 
     function wgShowPeeringKeyFull(apiKey) {
         var wrap = document.getElementById('wg-peering-key-reveal-wrap');

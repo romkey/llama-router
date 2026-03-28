@@ -19,6 +19,18 @@ logger = logging.getLogger(__name__)
 _WG_QUICK = shutil.which("wg-quick")
 _WG = shutil.which("wg")
 _PING = shutil.which("ping")
+
+
+def wireguard_tools_status() -> dict[str, bool | str | None]:
+    """Whether WireGuard userland tools are on PATH (for dashboards / diagnostics)."""
+    return {
+        "wg_quick_available": _WG_QUICK is not None,
+        "wg_available": _WG is not None,
+        "wg_quick_path": _WG_QUICK,
+        "wg_path": _WG,
+    }
+
+
 _CURL = shutil.which("curl")
 _HOST = shutil.which("host")
 
