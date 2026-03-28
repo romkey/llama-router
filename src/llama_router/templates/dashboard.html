@@ -731,7 +731,16 @@
                             <input type="password" class="form-control font-monospace small" id="wg-peering-key" autocomplete="off" placeholder="{{ wg_peering_key_masked or 'Generate on save' }}" value="">
                             <button type="button" class="btn btn-outline-secondary" id="wg-peering-regen" title="Regenerate"><i class="bi bi-arrow-clockwise"></i></button>
                         </div>
-                        <div class="form-text">Stored value: <code id="wg-peering-masked-display">{{ wg_peering_key_masked or '(not set)' }}</code></div>
+                        <div class="form-text"><strong>Stored value</strong> (masked) is the key <em>already saved on the server</em>. The box above is only for typing a <em>new</em> key before you click Save—until then, the first characters may not match.</div>
+                        <div class="form-text">Saved key prefix: <code id="wg-peering-masked-display">{{ wg_peering_key_masked or '(not set)' }}</code></div>
+                        <div id="wg-peering-key-reveal-wrap" class="mt-2 d-none">
+                            <label class="form-label small mb-1" for="wg-peering-key-reveal">Full peering API key (copy for <code>X-Peering-Key</code> — not shown after page reload)</label>
+                            <div class="input-group input-group-sm">
+                                <input type="text" class="form-control font-monospace small" id="wg-peering-key-reveal" readonly autocomplete="off">
+                                <button type="button" class="btn btn-outline-secondary" id="wg-peering-key-reveal-copy" title="Copy key"><i class="bi bi-clipboard"></i></button>
+                            </div>
+                            <div class="form-text">After reload, click <strong>Save</strong> again (leave the key box empty) to fetch the current key here, or use <strong>Regenerate</strong> for a new one.</div>
+                        </div>
                     </div>
                     <div class="col-md-3">
                         <button type="button" class="btn btn-primary" id="wg-peering-save"><i class="bi bi-save me-1"></i>Save</button>
@@ -2521,6 +2530,22 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    function wgShowPeeringKeyFull(apiKey) {
+        var wrap = document.getElementById('wg-peering-key-reveal-wrap');
+        var inp = document.getElementById('wg-peering-key-reveal');
+        if (!wrap || !inp || !apiKey) return;
+        inp.value = apiKey;
+        wrap.classList.remove('d-none');
+    }
+
+    var pkrc = document.getElementById('wg-peering-key-reveal-copy');
+    if (pkrc) pkrc.addEventListener('click', function() {
+        var inp = document.getElementById('wg-peering-key-reveal');
+        if (inp && inp.value) {
+            navigator.clipboard.writeText(inp.value);
+        }
+    });
+
     function wgPeeringBody(en, key, regen) {
         var body = {enabled: en, api_key: key, regenerate_api_key: !!regen};
         var eh = document.getElementById('wg-peering-expires-hours');
@@ -2551,6 +2576,7 @@ document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('wg-peering-key').value = '';
             var md = document.getElementById('wg-peering-masked-display');
             if (md) md.textContent = d.api_key_masked || '(set)';
+            wgShowPeeringKeyFull(d.api_key);
             return fetch('/api/wireguard/peer-info', {headers: {'X-Peering-Key': d.api_key}});
         }).then(function(r) {
             if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
@@ -2576,6 +2602,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }).then(function(d) {
             var md = document.getElementById('wg-peering-masked-display');
             if (md) md.textContent = d.api_key_masked || '(set)';
+            wgShowPeeringKeyFull(d.api_key);
             return fetch('/api/wireguard/peer-info', {headers: {'X-Peering-Key': d.api_key}});
         }).then(function(r) {
             if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
