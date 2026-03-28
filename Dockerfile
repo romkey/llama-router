@@ -6,6 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bind9-host \
         curl \
+        iproute2 \
         iputils-ping \
         wireguard-tools \
     && rm -rf /var/lib/apt/lists/*
