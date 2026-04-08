@@ -399,6 +399,52 @@ async def test_viewer_get_dashboard_and_provider_detail_allowed(dash_client) -> 
 
 
 @pytest.mark.asyncio
+async def test_admin_save_provider_address_add_and_edit(dash_client) -> None:
+    """Address modals must POST to /addresses/save, not to GET-only /providers/{id}."""
+    client, db = dash_client
+    uid = await db.create_dashboard_user("admin", hash_password("password-12345"), True)
+    p = await db.add_provider("p1", "http://127.0.0.1:11434")
+    invalidate_dashboard_user_count_cache()
+    hdr = _session_cookie_header(uid)
+
+    bad = await client.post(
+        f"/providers/{p.id}",
+        headers=hdr,
+        data={"url": "http://oops:11434"},
+        follow_redirects=False,
+    )
+    assert bad.status_code == 405
+
+    add = await client.post(
+        f"/providers/{p.id}/addresses/save",
+        headers=hdr,
+        data={"url": "http://10.0.0.2:11434"},
+        follow_redirects=False,
+    )
+    assert add.status_code == 303
+    assert add.headers.get("location", "").endswith(f"/providers/{p.id}")
+    rows = await db.get_addresses(p.id)
+    assert len(rows) == 1
+    aid = rows[0].id
+
+    edit = await client.post(
+        f"/providers/{p.id}/addresses/save",
+        headers=hdr,
+        data={
+            "address_id": str(aid),
+            "url": "http://10.0.0.3:11434",
+            "is_preferred": "1",
+        },
+        follow_redirects=False,
+    )
+    assert edit.status_code == 303
+    updated = await db.get_address(aid)
+    assert updated is not None
+    assert updated.url == "http://10.0.0.3:11434"
+    assert updated.is_preferred is True
+
+
+@pytest.mark.asyncio
 async def test_admin_can_open_users_page(dash_client) -> None:
     client, db = dash_client
     uid = await db.create_dashboard_user("admin", hash_password("password-12345"), True)

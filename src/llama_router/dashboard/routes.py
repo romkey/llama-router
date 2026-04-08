@@ -1314,6 +1314,43 @@ async def add_address(
     return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
 
 
+@router.post("/providers/{provider_id}/addresses/save")
+async def save_provider_address(
+    provider_id: int,
+    url: str = Form(...),
+    llamacpp_url: Optional[str] = Form(None),
+    is_preferred: Optional[str] = Form(None),
+    address_id: Optional[str] = Form(None),
+):
+    """Add or update an address; used by dashboard forms with a stable action URL."""
+    db = deps.get_db()
+    pm = deps.get_pm()
+    lcpp = llamacpp_url if llamacpp_url else None
+    pref = bool(is_preferred)
+    raw_id = (address_id or "").strip()
+    try:
+        if not raw_id:
+            await pm.add_address(provider_id, url, lcpp, is_preferred=pref)
+        else:
+            aid = int(raw_id)
+            addr = await db.get_address(aid)
+            if addr is None or addr.provider_id != provider_id:
+                raise HTTPException(status_code=400, detail="Invalid address")
+            await pm.update_address(aid, url, lcpp, is_preferred=pref)
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid address")
+    except Exception:
+        logger.exception(
+            "save_provider_address failed (provider_id=%s address_id=%r)",
+            provider_id,
+            raw_id or None,
+        )
+        raise HTTPException(status_code=400, detail="Could not save address")
+    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+
+
 @router.post("/providers/{provider_id}/addresses/{address_id}/edit")
 async def edit_address(
     provider_id: int,

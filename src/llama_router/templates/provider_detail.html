@@ -124,8 +124,8 @@
                         </td>
                         {% if not read_only %}
                         <td class="text-end text-nowrap">
-                            <button class="btn btn-sm btn-outline-secondary" title="Edit"
-                                onclick="openEditAddress({{ addr.id }}, '{{ addr.url }}', '{{ addr.llamacpp_url or '' }}', {{ 'true' if addr.is_preferred else 'false' }})">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" title="Edit"
+                                onclick="openEditAddress({{ addr.id | tojson }}, {{ addr.url | tojson }}, {{ (addr.llamacpp_url or '') | tojson }}, {{ addr.is_preferred | tojson }})">
                                 <i class="bi bi-pencil"></i>
                             </button>
                             <form method="post" action="/providers/{{ info.provider.id }}/addresses/{{ addr.id }}/remove" class="d-inline">
@@ -460,7 +460,7 @@
 <!-- Add Address Modal -->
 <div class="modal fade" id="addAddressModal" tabindex="-1">
     <div class="modal-dialog">
-        <form method="post" action="/providers/{{ info.provider.id }}/addresses/add" class="modal-content">
+        <form method="post" action="/providers/{{ info.provider.id }}/addresses/save" class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Add Address</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -492,7 +492,8 @@
 <!-- Edit Address Modal -->
 <div class="modal fade" id="editAddressModal" tabindex="-1">
     <div class="modal-dialog">
-        <form id="editAddressForm" method="post" class="modal-content">
+        <form id="editAddressForm" method="post" action="/providers/{{ info.provider.id }}/addresses/save" class="modal-content">
+            <input type="hidden" name="address_id" id="edit-addr-id" value="">
             <div class="modal-header">
                 <h5 class="modal-title">Edit Address</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -534,8 +535,7 @@ function toggleEditUrlFields() {
 }
 
 function openEditAddress(addrId, url, lcppUrl, preferred) {
-    document.getElementById('editAddressForm').action =
-        '/providers/{{ info.provider.id }}/addresses/' + addrId + '/edit';
+    document.getElementById('edit-addr-id').value = String(addrId);
     document.getElementById('edit-addr-url').value = url;
     const lcppField = document.getElementById('edit-addr-lcpp');
     if (lcppField) lcppField.value = lcppUrl;
