@@ -669,8 +669,11 @@ class ProviderManager:
         detail: str | None = None
         if not live:
             status = ProviderStatus.OFFLINE
-            urls = ", ".join(a.url for a in addresses) or "no addresses"
-            detail = f"no address responded ({urls})"
+            if provider.is_worker and not self.worker_hub.is_connected(pid):
+                detail = "worker is not connected"
+            else:
+                urls = ", ".join(a.url for a in addresses) or "no addresses"
+                detail = f"no address responded ({urls})"
             self._hot_models[pid] = []
         else:
             await self._maybe_rebuild_clients(provider, addresses)
