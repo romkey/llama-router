@@ -147,3 +147,27 @@ async def test_bad_header_rejects_edit_without_partial_write(db) -> None:
     )
     assert after.api_key_enc is None
     await pm.stop()
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+async def test_check_uses_key_saved_after_the_cycle_listed_providers(
+    db, httpx_mock
+) -> None:
+    def strict(request: httpx.Request) -> httpx.Response:
+        # Every endpoint, including the probe, needs the key.
+        if request.headers.get("Authorization") != f"Bearer {KEY}":
+            return httpx.Response(401)
+        return _keyed_ollama({})(request)
+
+    httpx_mock.add_callback(strict, is_reusable=True)
+    pm = ProviderManager(db)
+    p = await pm.add_provider("locked", "http://locked:11434")
+    stale = await db.get_provider(p.id)  # a cycle's snapshot: no key yet
+    await pm.update_provider(p.id, "locked", ProviderType.OLLAMA, api_key=KEY)
+    assert (await db.get_provider(p.id)).status == ProviderStatus.IDLE
+
+    # The in-flight cycle now checks its stale snapshot; it must use the key.
+    status = await pm.check_provider(stale)
+    assert status == ProviderStatus.IDLE
+    assert all(a.is_live for a in await db.get_addresses(p.id))
+    await pm.stop()
