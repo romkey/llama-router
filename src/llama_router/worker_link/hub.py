@@ -367,8 +367,10 @@ class WorkerTransport(httpx.AsyncBaseTransport):
         return await conn.open(self._target, request)
 
 
-ConnectCallback = Callable[[int, list[str]], Awaitable[None]]
-DisconnectCallback = Callable[[int], Awaitable[None]]
+# Callbacks receive the connection itself so a handler that runs late can tell
+# whether its socket is still the provider's current one.
+ConnectCallback = Callable[[WorkerConnection], Awaitable[None]]
+DisconnectCallback = Callable[[WorkerConnection], Awaitable[None]]
 
 
 class WorkerHub:
@@ -498,7 +500,7 @@ class WorkerHub:
             except Exception as exc:
                 logger.debug("Could not record worker connect time: %s", exc)
             if self._on_connect is not None:
-                self._spawn(self._on_connect(provider_id, protocols))
+                self._spawn(self._on_connect(conn))
             await conn.read_loop()
         except WebSocketDisconnect:
             pass
@@ -510,4 +512,4 @@ class WorkerHub:
                 del self._conns[provider_id]
                 logger.info("Worker %s disconnected", name)
                 if self._on_disconnect is not None:
-                    self._spawn(self._on_disconnect(provider_id))
+                    self._spawn(self._on_disconnect(conn))

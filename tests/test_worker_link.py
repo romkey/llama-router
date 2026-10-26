@@ -421,3 +421,45 @@ async def test_requests_fail_fast_when_worker_offline(link) -> None:
     with pytest.raises(httpx.ConnectError):
         await client.chat({"model": "tiny:1b", "messages": []})
     assert not await client.is_reachable()
+
+
+async def test_stale_handlers_from_replaced_socket_do_not_change_status(link) -> None:
+    """A late connect/disconnect handler for an old socket must not undo the new one."""
+    w1 = await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    old_conn = pm.worker_hub.get(pid)
+
+    w2 = link["make_worker"]()
+    link["workers"].append(w2)
+    w2.start()
+    await _wait_for(lambda: w2.state == "connected")
+    await _wait_for(lambda: pm.worker_hub.get(pid) not in (None, old_conn))
+
+    async def idle():
+        return (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    await _wait_for(idle)
+    await w1.stop()
+
+    # Replay the old session's handlers after the new session is established.
+    await pm._on_worker_disconnected(old_conn)
+    assert (await db.get_provider(pid)).status == ProviderStatus.IDLE
+    assert all(a.is_live for a in await db.get_addresses(pid))
+
+    await db.update_provider_status(pid, ProviderStatus.BUSY)
+    await pm._on_worker_connected(old_conn)
+    assert (await db.get_provider(pid)).status == ProviderStatus.BUSY
+
+
+async def test_disconnect_handler_still_marks_offline_when_no_newer_socket(
+    link,
+) -> None:
+    w = await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    conn = pm.worker_hub.get(pid)
+    await w.stop()
+    await _wait_for(lambda: not pm.worker_hub.is_connected(pid))
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    await pm._on_worker_disconnected(conn)
+    assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+    assert not any(a.is_live for a in await db.get_addresses(pid))

@@ -28,7 +28,7 @@ from .models import (
     WORKER_URL_SCHEME,
 )
 from .ollama_client import OllamaClient
-from .worker_link.hub import WorkerHub
+from .worker_link.hub import WorkerConnection, WorkerHub
 
 if TYPE_CHECKING:
     from .router import Router
@@ -62,6 +62,7 @@ class ProviderManager:
     def __init__(self, db: Database, hub: WorkerHub | None = None):
         self._db = db
         self.worker_hub = hub if hub is not None else WorkerHub()
+        self._worker_locks: dict[int, asyncio.Lock] = {}
         self.worker_hub.set_callbacks(
             self._on_worker_connected, self._on_worker_disconnected
         )
@@ -113,7 +114,7 @@ class ProviderManager:
             if p.is_worker:
                 # Workers come online when they dial in, not at startup.
                 if not self.worker_hub.is_connected(p.id):
-                    await self._on_worker_disconnected(p.id)
+                    await self._mark_worker_offline(p.id)
                 continue
             try:
                 await self._discover_provider(p)
@@ -1046,56 +1047,89 @@ class ProviderManager:
         provider.status = ProviderStatus.OFFLINE
         return provider
 
-    async def _on_worker_connected(
-        self, provider_id: int, protocols: list[str]
-    ) -> None:
-        provider = await self._db.get_provider(provider_id)
-        if provider is None or not provider.is_worker:
-            return
-        if "ollama" in protocols and "llamacpp" in protocols:
-            ptype = ProviderType.BOTH
-        elif "llamacpp" in protocols:
-            ptype = ProviderType.LLAMACPP
-        else:
-            ptype = ProviderType.OLLAMA
-        if ptype != provider.provider_type:
-            await self._db.update_provider(
-                provider_id,
-                provider.name,
-                provider.url,
-                ptype,
-                None,
-                machine_type=provider.machine_type,
-                gpu_type=provider.gpu_type,
-                gpu_ram=provider.gpu_ram,
+    def _worker_lock(self, provider_id: int) -> asyncio.Lock:
+        lock = self._worker_locks.get(provider_id)
+        if lock is None:
+            lock = self._worker_locks[provider_id] = asyncio.Lock()
+        return lock
+
+    def _is_current_worker(self, conn: WorkerConnection) -> bool:
+        return self.worker_hub.get(conn.provider_id) is conn and not conn.closed
+
+    async def _on_worker_connected(self, conn: WorkerConnection) -> None:
+        """Bring a freshly connected worker online.
+
+        Connect and disconnect handlers for one provider run one at a time, and
+        each re-checks that its socket is still current before writing status,
+        so a handler from an older session cannot undo a newer one.
+        """
+        provider_id = conn.provider_id
+        async with self._worker_lock(provider_id):
+            if not self._is_current_worker(conn):
+                return
+            provider = await self._db.get_provider(provider_id)
+            if provider is None or not provider.is_worker:
+                return
+            protocols = conn.protocols
+            if "ollama" in protocols and "llamacpp" in protocols:
+                ptype = ProviderType.BOTH
+            elif "llamacpp" in protocols:
+                ptype = ProviderType.LLAMACPP
+            else:
+                ptype = ProviderType.OLLAMA
+            if ptype != provider.provider_type:
+                await self._db.update_provider(
+                    provider_id,
+                    provider.name,
+                    provider.url,
+                    ptype,
+                    None,
+                    machine_type=provider.machine_type,
+                    gpu_type=provider.gpu_type,
+                    gpu_ram=provider.gpu_ram,
+                )
+                provider.provider_type = ptype
+            await self._rebuild_clients(provider)
+            try:
+                await self._discover_provider(provider)
+                ok = True
+            except Exception as exc:
+                ok = False
+                detail = (
+                    describe_httpx_error(exc)
+                    if isinstance(exc, httpx.HTTPError)
+                    else str(exc)
+                )
+                if self._is_current_worker(conn):
+                    logger.warning(
+                        "Worker %s connected but model discovery failed: %s",
+                        provider.name,
+                        detail,
+                    )
+            if not self._is_current_worker(conn):
+                return
+            await self._set_worker_addresses_live(provider_id, ok)
+            await self._db.update_provider_status(
+                provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
             )
-            provider.provider_type = ptype
-        await self._rebuild_clients(provider)
+
+    async def _on_worker_disconnected(self, conn: WorkerConnection) -> None:
+        provider_id = conn.provider_id
+        async with self._worker_lock(provider_id):
+            if self.worker_hub.is_connected(provider_id):
+                # A newer session already took over; its handler owns status.
+                return
+            await self._mark_worker_offline(provider_id)
+
+    async def _set_worker_addresses_live(self, provider_id: int, live: bool) -> None:
         for addr in await self._db.get_addresses(provider_id):
             if addr.id is not None:
-                await self._db.set_address_live(addr.id, True)
-        try:
-            await self._discover_provider(provider)
-            await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
-        except Exception as exc:
-            detail = (
-                describe_httpx_error(exc)
-                if isinstance(exc, httpx.HTTPError)
-                else str(exc)
-            )
-            logger.warning(
-                "Worker %s connected but model discovery failed: %s",
-                provider.name,
-                detail,
-            )
-            await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
+                await self._db.set_address_live(addr.id, live)
 
-    async def _on_worker_disconnected(self, provider_id: int) -> None:
+    async def _mark_worker_offline(self, provider_id: int) -> None:
         provider = await self._db.get_provider(provider_id)
         if provider is None:
             return
-        for addr in await self._db.get_addresses(provider_id):
-            if addr.id is not None:
-                await self._db.set_address_live(addr.id, False)
+        await self._set_worker_addresses_live(provider_id, False)
         await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
         self._hot_models[provider_id] = []
