@@ -533,6 +533,7 @@ async def test_worker_health_check_steps_aside_and_is_bounded(
 
     # A hung probe holds the lock only until the cap, then releases it.
     monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+    pm._hot_models[pid] = [{"name": "stale"}]
 
     async def hung_probe(p, addr):
         await asyncio.sleep(30)
@@ -546,6 +547,20 @@ async def test_worker_health_check_steps_aside_and_is_bounded(
     assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
     logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
     assert any("timed out" in (e.error_detail or "") for e in logs)
+    assert pm.get_hot_models(pid) == []
+
+    # Back from offline, the next check rediscovers and gets the longer cap.
+    caps: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy(coro, timeout):
+        caps.append(timeout)
+        return await real_wait_for(coro, timeout)
+
+    monkeypatch.setattr(pm_mod.asyncio, "wait_for", spy)
+    pm._probe_address = real_probe
+    await pm.check_provider(await db.get_provider(pid))
+    assert caps[0] == pm_mod._WORKER_MANUAL_TIMEOUT
 
 
 async def test_disconnected_worker_reason_and_no_relog(link) -> None:
