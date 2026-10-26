@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 _PROBE_TIMEOUT = httpx.Timeout(5.0)
 # Providers checked at once during startup and each health cycle.
 _CHECK_CONCURRENCY = 8
+# Upper bound on one worker health check, which runs under the worker's lock.
+_WORKER_CHECK_TIMEOUT = 20.0
 
 
 def _failure_reason(exc: BaseException) -> str:
@@ -562,18 +564,44 @@ class ProviderManager:
         """
         assert provider.id is not None
         if provider.is_worker:
-            # Probe and discover without the worker lock, which the connect and
-            # disconnect handlers need promptly; write results only if the same
-            # socket is still current when we are done.
-            conn = self.worker_hub.get(provider.id)
-            return await self._check_provider_impl(
-                provider,
-                rediscover,
-                source,
-                commit_lock=self._worker_lock(provider.id),
-                still_current=lambda: self.worker_hub.get(provider.id) is conn,
-            )
+            return await self._check_worker(provider, rediscover, source)
         return await self._check_provider_impl(provider, rediscover, source)
+
+    async def _check_worker(
+        self, provider: Provider, rediscover: bool, source: str
+    ) -> ProviderStatus:
+        """Check a worker provider under its lock, bounded in time.
+
+        Every state change (clients, models, hot models, liveness, status)
+        happens under the per-worker lock the connect and disconnect handlers
+        use, so a check can never interleave with them. An automatic check
+        steps aside while a handler holds the lock, and the whole check is
+        capped so a hung upstream cannot keep the lock for long.
+        """
+        pid = provider.id
+        assert pid is not None
+        lock = self._worker_lock(pid)
+        if source == "health" and lock.locked():
+            return provider.status
+        async with lock:
+            conn = self.worker_hub.get(pid)
+            try:
+                return await asyncio.wait_for(
+                    self._check_provider_impl(
+                        provider,
+                        rediscover,
+                        source,
+                        still_current=lambda: self.worker_hub.get(pid) is conn,
+                    ),
+                    timeout=_WORKER_CHECK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Health check for worker %s timed out after %.0fs",
+                    provider.name,
+                    _WORKER_CHECK_TIMEOUT,
+                )
+                return provider.status
 
     async def _check_provider_impl(
         self,
@@ -581,7 +609,6 @@ class ProviderManager:
         rediscover: bool,
         source: str,
         *,
-        commit_lock: asyncio.Lock | None = None,
         still_current: Callable[[], bool] | None = None,
     ) -> ProviderStatus:
         pid = provider.id
@@ -593,12 +620,12 @@ class ProviderManager:
         results = await asyncio.gather(
             *(self._probe_address(provider, a) for a in addresses)
         )
-        changed = [
-            (addr, reachable)
-            for addr, reachable in zip(addresses, results)
-            if addr.is_live != reachable
-        ]
+        # Write liveness before rebuilding clients: the rebuild re-reads
+        # addresses and ranks them by is_live.
         for addr, reachable in zip(addresses, results):
+            assert addr.id is not None
+            if addr.is_live != reachable:
+                await self._db.set_address_live(addr.id, reachable)
             addr.is_live = reachable
         live = [a for a in addresses if a.is_live]
 
@@ -631,17 +658,13 @@ class ProviderManager:
                 busy = self._active_requests.get(pid, 0) > 0
                 status = ProviderStatus.BUSY if busy else ProviderStatus.IDLE
 
-        if commit_lock is None:
-            return await self._commit_check(
-                provider, prev_status, status, detail, live, changed, source, started
-            )
-        async with commit_lock:
-            if still_current is not None and not still_current():
-                # A connect or disconnect handler took over while we probed.
-                return provider.status
-            return await self._commit_check(
-                provider, prev_status, status, detail, live, changed, source, started
-            )
+        if still_current is not None and not still_current():
+            # A new socket arrived mid-check; its connect handler (waiting on
+            # the lock) sets status, so do not overwrite it with ours.
+            return provider.status
+        return await self._commit_check(
+            provider, prev_status, status, detail, live, source, started
+        )
 
     async def _commit_check(
         self,
@@ -650,16 +673,12 @@ class ProviderManager:
         status: ProviderStatus,
         detail: str | None,
         live: list[ProviderAddress],
-        changed: list[tuple[ProviderAddress, bool]],
         source: str,
         started: float,
     ) -> ProviderStatus:
         pid = provider.id
         assert pid is not None
         prev_detail = self._logged_detail.get(pid)
-        for addr, reachable in changed:
-            assert addr.id is not None
-            await self._db.set_address_live(addr.id, reachable)
 
         if detail and status == ProviderStatus.OFFLINE and live:
             self._status_detail[pid] = detail
