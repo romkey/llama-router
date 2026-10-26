@@ -208,6 +208,20 @@ class Database:
                 (name, machine_type, gpu_type, gpu_ram, provider_id),
             )
 
+    async def set_provider_capabilities(
+        self, provider_id: int, capabilities: dict | None
+    ) -> None:
+        """Store the last probe result (or clear it with None)."""
+        await self._execute(
+            "UPDATE providers SET capabilities = ?, probed_at = "
+            + ("CURRENT_TIMESTAMP" if capabilities is not None else "NULL")
+            + " WHERE id = ?",
+            (
+                json.dumps(capabilities) if capabilities is not None else None,
+                provider_id,
+            ),
+        )
+
     async def set_provider_api_key(
         self, provider_id: int, api_key_enc: str | None, header: str | None
     ) -> None:
@@ -918,7 +932,19 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         worker_name=row["worker_name"],
         api_key_enc=row["api_key_enc"],
         api_key_header=row["api_key_header"],
+        capabilities=_json_or_none(row["capabilities"]),
+        probed_at=row["probed_at"],
     )
+
+
+def _json_or_none(raw: Any) -> dict | None:
+    if not raw:
+        return None
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return val if isinstance(val, dict) else None
 
 
 def _row_to_model(row: Mapping[str, Any]) -> ProviderModel:

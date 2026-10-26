@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..auth import generate_api_key, key_hash, key_prefix
+from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
 from ..models import ProviderType, RequestLog
@@ -963,6 +964,7 @@ async def provider_detail(request: Request, provider_id: int):
                     (settings.cache_external_host or "").strip()
                 ),
                 "cache_enabled": settings.cache_enabled,
+                "family_labels": FAMILY_LABELS,
             },
         ),
     )
@@ -979,13 +981,14 @@ async def add_provider(
     gpu_ram: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
     api_key_header: Optional[str] = Form(None),
+    probe_after_add: Optional[str] = Form(None),
 ):
     """Create a provider; *url* and *llamacpp_url* become its first address."""
     pm = deps.get_pm()
     ptype = ProviderType(provider_type)
     lcpp_url = llamacpp_url if llamacpp_url else None
     try:
-        await pm.add_provider(
+        provider = await pm.add_provider(
             name,
             url,
             ptype,
@@ -999,7 +1002,50 @@ async def add_provider(
     except Exception:
         logger.exception("add_provider failed")
         raise HTTPException(status_code=400, detail="Could not add provider")
+    if probe_after_add and provider.id is not None:
+        # Record the endpoint list in the background; the dialog already showed it.
+        pid = provider.id
+
+        async def _probe() -> None:
+            try:
+                await pm.probe_provider(pid)
+            except Exception:
+                logger.exception("probe after add failed (provider_id=%s)", pid)
+
+        asyncio.create_task(_probe())
     return RedirectResponse(url="/", status_code=303)
+
+
+@router.post("/api/providers/probe")
+async def api_probe_url(request: Request):
+    """Probe a URL before a provider is saved (Add Provider dialog)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    url = str(body.get("url") or "")
+    api_key = (str(body.get("api_key") or "")).strip() or None
+    header = (str(body.get("api_key_header") or "")).strip() or None
+    try:
+        result = await probe_url(url, api_key=api_key, api_key_header=header)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    data = result.to_dict()
+    data["family_labels"] = FAMILY_LABELS
+    return JSONResponse(data)
+
+
+@router.post("/api/providers/{provider_id}/probe")
+async def api_probe_provider(provider_id: int):
+    """Probe a saved provider and store the endpoints its upstream supports."""
+    pm = deps.get_pm()
+    try:
+        caps = await pm.probe_provider(provider_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    if caps is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    return JSONResponse(caps)
 
 
 @router.post("/providers/{provider_id}/edit")

@@ -46,6 +46,9 @@ class Provider(BaseModel):
     api_key_enc: str | None = Field(default=None, repr=False, exclude=True)
     # Header carrying the key; None means "Authorization: Bearer <key>".
     api_key_header: str | None = None
+    # Result of the last endpoint probe (see probe.py), if any.
+    capabilities: dict | None = None
+    probed_at: datetime | None = None
 
     @property
     def is_worker(self) -> bool:

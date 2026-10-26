@@ -30,6 +30,7 @@ from .models import (
     WORKER_URL_SCHEME,
 )
 from .ollama_client import OllamaClient
+from .probe import merge_results, probe_url
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailable,
@@ -1293,6 +1294,65 @@ class ProviderManager:
                 await tmp.close()
 
         return False
+
+    # --- Endpoint probing ---
+
+    async def probe_provider(self, provider_id: int) -> dict | None:
+        """Probe the provider's best address and store what its upstream supports.
+
+        Direct providers are probed at the address URL and, when different, the
+        address's llama.cpp URL. Workers are probed through their socket.
+        """
+        provider = await self._db.get_provider(provider_id)
+        if provider is None:
+            return None
+        addresses = await self._db.get_addresses(provider_id)
+        best = self._best_address(addresses)
+        if best is None:
+            raise ValueError("provider has no address to probe")
+        results = []
+        if provider.is_worker:
+            if not self.worker_hub.is_connected(provider_id):
+                raise ValueError("worker is not connected")
+            targets = []
+            if provider.supports_ollama:
+                targets.append("ollama")
+            if provider.supports_llamacpp:
+                targets.append("llamacpp")
+            for target in targets:
+                r = await probe_url(
+                    "http://worker",
+                    transport=self.worker_hub.transport(provider_id, target),
+                )
+                # Each target is a different upstream behind the worker; label
+                # it so the two catalogs are not shown as duplicate rows.
+                r.base_url = f"{provider.worker_address} ({target})"
+                results.append(r)
+        else:
+            urls = [best.url]
+            if best.llamacpp_url and best.llamacpp_url.rstrip("/") != best.url.rstrip(
+                "/"
+            ):
+                urls.append(best.llamacpp_url)
+            headers = self._upstream_headers(provider)
+            for url in urls:
+                results.append(await probe_url(url, headers=headers))
+        caps = merge_results(results)
+        await self._db.set_provider_capabilities(provider_id, caps)
+        await self._log_event(
+            provider,
+            "probe",
+            ok=caps["reachable"],
+            detail=(
+                (
+                    f"{len(caps['supported'])} endpoints; servers: "
+                    + (", ".join(caps["servers"]) or "unrecognised")
+                )
+                if caps["reachable"]
+                else "no response from any endpoint"
+            ),
+        )
+        return caps
 
     # --- Workers ---
 

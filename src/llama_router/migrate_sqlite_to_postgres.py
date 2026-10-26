@@ -53,6 +53,8 @@ _TABLES: list[tuple[str, list[str]]] = [
             "worker_name",
             "api_key_enc",
             "api_key_header",
+            "capabilities",
+            "probed_at",
         ],
     ),
     (
