@@ -272,17 +272,16 @@ async def download(
         if on_progress and m:
             on_progress(f"downloading {m.group(1)}%")
 
+    # The files this run selects, so leftovers from earlier downloads of the
+    # same repository (other quants, other revisions) are never returned.
+    wanted = [f["file"] for f in await plan(repo, pattern, revision)]
     code, _out, err = await _run(args, progress)
     if code != 0:
         raise HfError(_error_from(err))
     found = []
-    for path in sorted(target.rglob("*")):
-        rel = path.relative_to(target).as_posix()
-        if (
-            path.is_file()
-            and not rel.startswith(".cache/")
-            and fnmatch.fnmatch(rel, pattern)
-        ):
+    for name in wanted:
+        path = _path_under(target, name)
+        if path.is_file():
             found.append(path)
     if not found:
         raise HfError(f"no files in {repo} match {pattern}")

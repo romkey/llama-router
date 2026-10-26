@@ -1590,38 +1590,49 @@ async def api_hf_pull(request: Request):
                 if p.name in hf_download.model_files([q.name for q in paths])
             ]
             if push_ids:
+                # A refusal here fails only the Ollama targets; shared-volume
+                # refreshes below still run, since the files are on disk.
+                refusal: str | None = None
                 if not models:
-                    raise hf_download.HfError("no GGUF model file was downloaded")
-                if hf_download.split_parts([p.name for p in models]):
-                    raise hf_download.HfError(
+                    refusal = "no GGUF model file was downloaded"
+                elif hf_download.split_parts([p.name for p in models]):
+                    refusal = (
                         "split GGUF files cannot be pushed to Ollama; "
                         "use a single-file quant or the shared volume"
                     )
-                if len(models) > 1:
-                    raise hf_download.HfError(
+                elif len(models) > 1:
+                    refusal = (
                         f"the pattern matched {len(models)} GGUF files; "
                         "narrow it to one quant to push to Ollama"
                     )
-                path = models[0]
-                name = model_name or hf_download.default_ollama_name(repo, path.name)
-                entry["model"] = name
-                entry["progress"] = f"hashing {path.name}"
-                digest = await hf_download.sha256_file(path)
-                await asyncio.gather(
-                    *(
-                        _hf_deliver_ollama(
-                            pm=pm,
-                            db=db,
-                            pid=pid,
-                            path=path,
-                            digest=digest,
-                            model_name=name,
-                            entry=entry,
-                            lock=lock,
-                        )
-                        for pid in push_ids
+                if refusal is not None:
+                    logger.warning("HF push of %s refused: %s", repo, refusal)
+                    async with lock:
+                        entry["failed"].extend(push_ids)
+                        entry["progress"] = f"failed: {refusal}"
+                else:
+                    path = models[0]
+                    name = model_name or hf_download.default_ollama_name(
+                        repo, path.name
                     )
-                )
+                    entry["model"] = name
+                    entry["progress"] = f"hashing {path.name}"
+                    digest = await hf_download.sha256_file(path)
+                    await asyncio.gather(
+                        *(
+                            _hf_deliver_ollama(
+                                pm=pm,
+                                db=db,
+                                pid=pid,
+                                path=path,
+                                digest=digest,
+                                model_name=name,
+                                entry=entry,
+                                lock=lock,
+                            )
+                            for pid in push_ids
+                        )
+                    )
             for pid in refresh_ids:
                 try:
                     await pm.refresh_provider(pid)

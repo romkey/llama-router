@@ -153,6 +153,10 @@ def _ollama_handler(created: list[dict], blobs: dict[str, bytes]):
                 return httpx.Response(200 if digest in blobs else 404)
             blobs[digest] = request.read()
             return httpx.Response(201)
+        if path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "Model-Q8_0"}]})
         if path == "/api/create" and method == "POST":
             created.append(json.loads(request.content))
             return httpx.Response(200, json={"status": "success"})
@@ -247,3 +251,41 @@ async def test_hf_routes_validate_input(dash_client, fake_hf) -> None:  # noqa: 
 
     env = await client.get("/api/hf/env")
     assert env.status_code == 200 and env.json()["hf_available"] is True
+
+
+async def test_download_ignores_leftovers_from_earlier_runs(fake_hf) -> None:
+    target = hf_download.local_dir_for("owner/Model-GGUF")
+    target.mkdir(parents=True)
+    (target / "Old-Q8_0.gguf").write_bytes(b"GGUF old")  # from an earlier run
+    paths = await hf_download.download("owner/Model-GGUF", "*.gguf", None)
+    assert sorted(p.name for p in paths) == [
+        "Model-Q4_K_M.gguf",
+        "mmproj-Model-F16.gguf",
+    ]
+    # One model file after dropping the projector, so a push is not ambiguous.
+    assert hf_download.model_files([p.name for p in paths]) == ["Model-Q4_K_M.gguf"]
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+async def test_refused_push_still_refreshes_shared_volume_providers(
+    dash_client, httpx_mock, fake_hf  # noqa: F811
+) -> None:
+    httpx_mock.add_callback(_ollama_handler([], {}), is_reusable=True)
+    client, db = dash_client
+    await client.post("/providers/add", data={"name": "oll", "url": "http://oll:11434"})
+    await client.post(
+        "/providers/add",
+        data={"name": "lcpp", "url": "http://lcpp:8080", "provider_type": "llamacpp"},
+    )
+    by_name = {p.name: p.id for p in await db.list_providers()}
+    r = await client.post(
+        "/api/hf/pull",
+        json={
+            "repo": "owner/two-quants-GGUF",
+            "push_provider_ids": [by_name["oll"]],
+            "refresh_provider_ids": [by_name["lcpp"]],
+        },
+    )
+    entry = await _wait_done(r.json()["pull_id"])
+    assert entry["failed"] == [by_name["oll"]]
+    assert entry["completed"] == [by_name["lcpp"]]
