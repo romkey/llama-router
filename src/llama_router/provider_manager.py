@@ -657,7 +657,7 @@ class ProviderManager:
             fresh = await self._db.get_provider(pid)
             if fresh is None:
                 return provider.status
-            provider.status = fresh.status
+            self._refresh_from(provider, fresh)
             conn = self.worker_hub.get(pid)
             prev_status = provider.status
             started = time.monotonic()
@@ -719,7 +719,7 @@ class ProviderManager:
             # The cycle's provider list can be seconds old by now.
             fresh = await self._db.get_provider(pid)
             if fresh is not None:
-                provider.status = fresh.status
+                self._refresh_from(provider, fresh)
         prev_status = provider.status
 
         addresses = await self._db.get_addresses(pid)
@@ -783,6 +783,17 @@ class ProviderManager:
                 "the new connection",
             )
         return provider.status
+
+    @staticmethod
+    def _refresh_from(provider: Provider, fresh: Provider) -> None:
+        """Update *provider* in place from a freshly read row.
+
+        Status, type, API key and header can all change while a cycle runs
+        (for example an edit saving a key), so copy every field, not just
+        the status.
+        """
+        for name in type(fresh).model_fields:
+            setattr(provider, name, getattr(fresh, name))
 
     async def _commit_check(
         self,
