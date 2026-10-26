@@ -125,3 +125,25 @@ async def test_dashboard_keeps_replaces_and_clears_key(
 
     await client.post(f"/providers/{p.id}/edit", data={**form, "clear_api_key": "1"})
     assert (await db.get_provider(p.id)).api_key_enc is None
+
+
+async def test_bad_header_rejects_edit_without_partial_write(db) -> None:
+    pm = ProviderManager(db)
+    p = await db.add_provider("gpu", ProviderType.OLLAMA, machine_type="old box")
+    with pytest.raises(ValueError):
+        await pm.update_provider(
+            p.id,
+            "renamed",
+            ProviderType.LLAMACPP,
+            machine_type="new box",
+            api_key=KEY,
+            api_key_header="Bad Header: x",
+        )
+    after = await db.get_provider(p.id)
+    assert (after.name, after.provider_type, after.machine_type) == (
+        "gpu",
+        ProviderType.OLLAMA,
+        "old box",
+    )
+    assert after.api_key_enc is None
+    await pm.stop()
