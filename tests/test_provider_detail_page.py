@@ -26,9 +26,7 @@ async def test_edit_address_button_carries_address_in_data_attributes(
     dash_client,  # noqa: F811
 ) -> None:
     client, db = dash_client
-    provider = await db.add_provider(
-        "gpu-1", "http://10.0.0.5:11434", ProviderType.BOTH, None
-    )
+    provider = await db.add_provider("gpu-1", ProviderType.BOTH)
     await db.add_address(
         provider.id, "http://10.0.0.5:11434", "http://10.0.0.5:8080", True
     )
