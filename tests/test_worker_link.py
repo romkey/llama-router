@@ -526,3 +526,16 @@ async def test_worker_health_check_does_not_hold_lock_while_probing(link) -> Non
     assert not pm._worker_lock(pid).locked()
     release.set()
     assert await task in (ProviderStatus.IDLE, ProviderStatus.BUSY)
+
+
+async def test_disconnected_worker_reason_and_no_relog(link) -> None:
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    provider = await db.get_provider(pid)
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    provider.status = ProviderStatus.IDLE
+
+    # Was online, socket gone: one log entry that says so in worker terms.
+    await pm.check_provider(provider)
+    await pm.check_provider(provider)
+    logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
+    assert [e.error_detail for e in logs] == ["worker is not connected"]
