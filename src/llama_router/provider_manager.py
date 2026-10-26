@@ -1395,7 +1395,22 @@ class ProviderManager:
             if self.worker_hub.is_connected(provider_id):
                 # A newer session already took over; its handler owns status.
                 return
+            provider = await self._db.get_provider(provider_id)
+            was_online = provider is not None and provider.status not in (
+                ProviderStatus.OFFLINE,
+                ProviderStatus.UNKNOWN,
+            )
             await self._mark_worker_offline(provider_id)
+            if provider is not None:
+                # The disconnect is the transition, so log it here; the
+                # remembered reason stops the next health check logging it again.
+                detail = "worker is not connected"
+                self._logged_detail[provider_id] = detail
+                if was_online:
+                    logger.warning("Worker %s disconnected", provider.name)
+                    await self._log_event(
+                        provider, "disconnect", ok=False, detail=detail
+                    )
 
     async def _set_worker_addresses_live(self, provider_id: int, live: bool) -> None:
         for addr in await self._db.get_addresses(provider_id):
