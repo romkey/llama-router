@@ -747,7 +747,12 @@ class ProviderManager:
                 detail=f"online via {live_urls}",
                 duration_ms=duration_ms,
             )
-        elif not online and (was_online or detail != prev_detail):
+        # A provider already offline before this process started has no
+        # remembered reason: remember it without logging, so a restart does not
+        # re-log every provider that was down anyway.
+        elif not online and (
+            was_online or (prev_detail is not None and detail != prev_detail)
+        ):
             logger.warning("Provider %s is offline: %s", provider.name, detail)
             await self._log_event(
                 provider, source, ok=False, detail=detail, duration_ms=duration_ms
