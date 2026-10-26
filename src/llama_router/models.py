@@ -140,3 +140,5 @@ class ProviderInfo(BaseModel):
     active_requests: int = 0
     hot_models: list[HotModel] = []
     worker: dict | None = None
+    # Why the provider is offline although an address answers, if known.
+    status_detail: str | None = None

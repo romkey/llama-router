@@ -20,11 +20,17 @@ _TIMEOUT = httpx.Timeout(10.0, read=120.0)
 
 class OllamaClient:
     def __init__(
-        self, base_url: str, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        base_url: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        timeout: httpx.Timeout | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._http = httpx.AsyncClient(
-            base_url=self._base_url, timeout=_TIMEOUT, transport=transport
+            base_url=self._base_url,
+            timeout=timeout or _TIMEOUT,
+            transport=transport,
         )
 
     def _upstream_url(self, path: str) -> str:
@@ -66,9 +72,11 @@ class OllamaClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    async def is_reachable(self) -> bool:
+    async def is_reachable(self, timeout: httpx.Timeout | None = None) -> bool:
         try:
-            resp = await self._http.get("/api/version")
+            resp = await self._http.get(
+                "/api/version", **({"timeout": timeout} if timeout else {})
+            )
             return resp.status_code == 200
         except httpx.HTTPError:
             return False

@@ -463,3 +463,195 @@ async def test_disconnect_handler_still_marks_offline_when_no_newer_socket(
     await pm._on_worker_disconnected(conn)
     assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
     assert not any(a.is_live for a in await db.get_addresses(pid))
+
+
+async def test_worker_connect_and_disconnect_clear_stale_status_detail(link) -> None:
+    w = await _connected_worker(link)
+    pm, pid = link["pm"], link["provider_id"]
+    conn = pm.worker_hub.get(pid)
+
+    # A successful (re)connect clears a reason left from an earlier failure.
+    pm._status_detail[pid] = "authentication required (HTTP 401 from /api/tags)"
+    await pm._on_worker_connected(conn)
+    assert pm.status_detail(pid) is None
+
+    # Losing the socket clears any "reachable but unusable" reason too.
+    pm._status_detail[pid] = "stale"
+    await w.stop()
+    await _wait_for(lambda: not pm.worker_hub.is_connected(pid))
+    await pm._on_worker_disconnected(conn)
+    assert pm.status_detail(pid) is None
+
+
+async def test_connect_with_failing_discovery_keeps_reachable_address_live(
+    link,
+) -> None:
+    await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    conn = pm.worker_hub.get(pid)
+
+    async def fail(provider):
+        req = httpx.Request("GET", "http://worker/api/tags")
+        raise httpx.HTTPStatusError(
+            "401", request=req, response=httpx.Response(401, request=req)
+        )
+
+    real = pm._discover_provider
+    pm._discover_provider = fail
+    try:
+        await pm._on_worker_connected(conn)
+    finally:
+        pm._discover_provider = real
+    # The socket and upstream answer, so the address is live; the provider is
+    # offline with the reason, matching what a health check would record.
+    assert all(a.is_live for a in await db.get_addresses(pid))
+    assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+    assert "authentication required" in (pm.status_detail(pid) or "")
+
+
+async def test_worker_health_check_steps_aside_and_is_bounded(
+    link, monkeypatch
+) -> None:
+    import llama_router.provider_manager as pm_mod
+
+    await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    provider = await db.get_provider(pid)
+
+    # While a connect/disconnect handler holds the lock, a health check skips.
+    probed: list[int] = []
+    real_probe = pm._probe_address
+
+    async def counting_probe(p, addr):
+        probed.append(1)
+        return await real_probe(p, addr)
+
+    pm._probe_address = counting_probe
+    async with pm._worker_lock(pid):
+        await pm.check_provider(provider)
+    assert probed == []
+
+    # A hung probe holds the lock only until the cap, then releases it.
+    monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+    pm._hot_models[pid] = [{"name": "stale"}]
+
+    async def hung_probe(p, addr):
+        await asyncio.sleep(30)
+        return True
+
+    pm._probe_address = hung_probe
+    status = await asyncio.wait_for(pm.check_provider(provider), timeout=5)
+    assert not pm._worker_lock(pid).locked()
+    # The timeout is committed as a consistent offline result and logged.
+    assert status == ProviderStatus.OFFLINE
+    assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+    logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
+    assert any("timed out" in (e.error_detail or "") for e in logs)
+    assert pm.get_hot_models(pid) == []
+
+    # Back from offline, the next check rediscovers and gets the longer cap.
+    caps: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy(coro, timeout):
+        caps.append(timeout)
+        return await real_wait_for(coro, timeout)
+
+    monkeypatch.setattr(pm_mod.asyncio, "wait_for", spy)
+    pm._probe_address = real_probe
+    await pm.check_provider(await db.get_provider(pid))
+    assert caps[0] == pm_mod._WORKER_MANUAL_TIMEOUT
+
+
+async def test_disconnected_worker_reason_and_no_relog(link) -> None:
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    provider = await db.get_provider(pid)
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    provider.status = ProviderStatus.IDLE
+
+    # Was online, socket gone: one log entry that says so in worker terms.
+    await pm.check_provider(provider)
+    await pm.check_provider(provider)
+    logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
+    assert [e.error_detail for e in logs] == ["worker is not connected"]
+
+
+async def test_live_disconnect_is_logged_once(link) -> None:
+    w = await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+
+    async def idle():
+        return (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    await _wait_for(idle)
+    await w.stop()
+
+    async def offline():
+        return (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+
+    await _wait_for(offline)
+    # The following health check must not log the same disconnect again.
+    await pm.check_provider(await db.get_provider(pid))
+    logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
+    offline_logs = [e for e in logs if e.status == "error"]
+    assert [(e.endpoint, e.error_detail) for e in offline_logs] == [
+        ("disconnect", "worker is not connected")
+    ]
+
+
+async def test_disconnect_during_cycle_is_not_logged_twice(link) -> None:
+    w = await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+
+    async def idle():
+        return (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    await _wait_for(idle)
+    stale = await db.get_provider(pid)  # the cycle's snapshot: still idle
+    await w.stop()
+
+    async def offline():
+        return (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+
+    await _wait_for(offline)
+    await pm.check_provider(stale)
+    errors = [
+        e
+        for e in await db.get_request_logs(50, 0)
+        if e.protocol == "system" and e.status == "error"
+    ]
+    assert [e.endpoint for e in errors] == ["disconnect"]
+
+
+async def test_timeout_does_not_mark_reconnected_worker_offline(
+    link, monkeypatch
+) -> None:
+    import llama_router.provider_manager as pm_mod
+
+    await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    provider = await db.get_provider(pid)
+    monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+    real_get = pm.worker_hub.get
+    swapped = {"on": False}
+
+    async def hung_probe(p, addr):
+        swapped["on"] = True  # a new socket "arrives" while we hang
+        await asyncio.sleep(30)
+        return True
+
+    def get(provider_id):
+        return object() if swapped["on"] else real_get(provider_id)
+
+    pm._probe_address = hung_probe
+    monkeypatch.setattr(pm.worker_hub, "get", get)
+    await pm.check_provider(provider)
+    assert (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    # A manual refresh in the same situation still leaves a Log row.
+    swapped["on"] = False
+    monkeypatch.setattr(pm_mod, "_WORKER_MANUAL_TIMEOUT", 0.2)
+    await pm.check_provider(await db.get_provider(pid), source="refresh")
+    rows = [e for e in await db.get_request_logs(50, 0) if e.endpoint == "refresh"]
+    assert rows and "reconnected" in (rows[0].request_meta or "")
