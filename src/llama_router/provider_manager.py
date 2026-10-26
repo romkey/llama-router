@@ -677,6 +677,10 @@ class ProviderManager:
                 logger.warning(
                     "Check of worker %s timed out after %.0fs", provider.name, cap
                 )
+                if self.worker_hub.get(pid) is not conn:
+                    # A new socket arrived; its connect handler, waiting on the
+                    # lock, sets status. Do not mark it offline first.
+                    return provider.status
                 live = [a for a in await self._db.get_addresses(pid) if a.is_live]
                 return await self._commit_check(
                     provider,
