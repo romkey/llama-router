@@ -556,3 +556,26 @@ async def test_disconnected_worker_reason_and_no_relog(link) -> None:
     await pm.check_provider(provider)
     logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
     assert [e.error_detail for e in logs] == ["worker is not connected"]
+
+
+async def test_live_disconnect_is_logged_once(link) -> None:
+    w = await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+
+    async def idle():
+        return (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    await _wait_for(idle)
+    await w.stop()
+
+    async def offline():
+        return (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+
+    await _wait_for(offline)
+    # The following health check must not log the same disconnect again.
+    await pm.check_provider(await db.get_provider(pid))
+    logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
+    offline_logs = [e for e in logs if e.status == "error"]
+    assert [(e.endpoint, e.error_detail) for e in offline_logs] == [
+        ("disconnect", "worker is not connected")
+    ]
