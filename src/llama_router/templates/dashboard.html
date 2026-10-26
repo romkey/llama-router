@@ -127,6 +127,29 @@
             </div>
         </div>
 
+        {% if providers %}
+        <!-- Filter pills: OR within a group, AND across groups -->
+        <div class="card mb-3" id="provider-filters">
+            <div class="card-body py-2">
+                <div class="d-flex flex-wrap gap-3 align-items-start" id="provider-filter-groups"></div>
+                <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                    <span class="small text-muted me-1">Models</span>
+                    <div id="provider-filter-model-pills" class="d-flex flex-wrap gap-1"></div>
+                    <input class="form-control form-control-sm" style="max-width:16rem" id="provider-filter-model-input" list="provider-filter-model-list" placeholder="Add model filter…" autocomplete="off">
+                    <datalist id="provider-filter-model-list"></datalist>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Model match mode" id="provider-filter-model-mode" style="display:none">
+                        <button type="button" class="btn btn-outline-secondary active" data-mode="any" title="Provider has any of the chosen models">any</button>
+                        <button type="button" class="btn btn-outline-secondary" data-mode="all" title="Provider has all of the chosen models">all</button>
+                    </div>
+                    <span class="small text-muted ms-auto" id="provider-filter-count"></span>
+                    <button type="button" class="btn btn-sm btn-link p-0" id="provider-filter-clear" style="display:none">Clear filters</button>
+                </div>
+            </div>
+        </div>
+        <script type="application/json" id="provider-filter-seed">{{ providers_seed | tojson }}</script>
+        <div class="alert alert-secondary d-none" id="provider-filter-empty">No providers match the current filters.</div>
+        {% endif %}
+
         <!-- Card view (expanded) -->
         <div id="providers-card-view">
             <div class="row g-3 mb-3">
@@ -1339,8 +1362,258 @@ function switchProviderView(view) {
     });
 
     initLogFilters();
+    // Runs after this whole script has executed, so the filter state below exists.
+    document.addEventListener('DOMContentLoaded', initProviderFilters);
     setInterval(refreshStatus, 5000);
 })();
+
+// ---- Provider filter pills ----------------------------------------------
+// Each group ORs its selected pills; groups AND together. The selection lives
+// in the "pf" query parameter so it survives reloads and can be shared.
+var PF_GROUPS = [
+    {key: 'status', label: 'Status', pills: [
+        {value: 'online', label: 'Online', test: p => p.status === 'idle' || p.status === 'busy'},
+        {value: 'idle', label: 'Idle', test: p => p.status === 'idle'},
+        {value: 'busy', label: 'Busy', test: p => p.status === 'busy'},
+        {value: 'offline', label: 'Offline', test: p => p.status === 'offline'},
+        {value: 'unknown', label: 'Unknown', test: p => p.status === 'unknown'},
+    ]},
+    {key: 'addr', label: 'Addresses', pills: [
+        {value: 'all-live', label: 'All live', test: p => addrHealth(p) === 'all-live'},
+        {value: 'some-down', label: 'Some down', test: p => addrHealth(p) === 'some-down'},
+        {value: 'none-live', label: 'None live', test: p => addrHealth(p) === 'none-live'},
+    ]},
+    {key: 'type', label: 'Type', pills: [
+        {value: 'ollama', label: 'Ollama', test: p => p.provider_type === 'ollama'},
+        {value: 'llamacpp', label: 'llama.cpp', test: p => p.provider_type === 'llamacpp'},
+        {value: 'both', label: 'Both', test: p => p.provider_type === 'both'},
+    ]},
+    {key: 'link', label: 'Link', pills: [
+        {value: 'direct', label: 'Direct', test: p => !p.is_worker},
+        {value: 'worker', label: 'Worker', test: p => !!p.is_worker},
+    ]},
+    {key: 'activity', label: 'Activity', pills: [
+        {value: 'hot', label: 'Hot models', test: p => (p.hot_models || []).length > 0},
+        {value: 'active', label: 'Active requests', test: p => (p.active_requests || 0) > 0},
+    ]},
+];
+
+var pfState = {sel: {}, models: [], modelMode: 'any', providers: {}};
+
+function addrHealth(p) {
+    const addrs = p.addresses || [];
+    const live = addrs.filter(a => a.is_live).length;
+    if (!addrs.length || live === 0) return 'none-live';
+    return live === addrs.length ? 'all-live' : 'some-down';
+}
+
+function pfLoad() {
+    const raw = new URLSearchParams(location.search).get('pf') || '';
+    raw.split(';').forEach(function(part) {
+        const i = part.indexOf(':');
+        if (i < 1) return;
+        const key = part.slice(0, i);
+        const vals = part.slice(i + 1).split(',').map(decodeURIComponent).filter(Boolean);
+        if (key === 'model') pfState.models = vals;
+        else if (key === 'mode') pfState.modelMode = vals[0] === 'all' ? 'all' : 'any';
+        else if (PF_GROUPS.some(g => g.key === key)) pfState.sel[key] = new Set(vals);
+    });
+}
+
+function pfSave() {
+    const parts = [];
+    PF_GROUPS.forEach(function(g) {
+        const set = pfState.sel[g.key];
+        if (set && set.size) parts.push(g.key + ':' + Array.from(set).map(encodeURIComponent).join(','));
+    });
+    if (pfState.models.length) {
+        parts.push('model:' + pfState.models.map(encodeURIComponent).join(','));
+        if (pfState.modelMode === 'all') parts.push('mode:all');
+    }
+    const params = new URLSearchParams(location.search);
+    if (parts.length) params.set('pf', parts.join(';')); else params.delete('pf');
+    const qs = params.toString();
+    history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+}
+
+function pfMatchesGroup(p, group) {
+    const set = pfState.sel[group.key];
+    if (!set || !set.size) return true;
+    return group.pills.some(pill => set.has(pill.value) && pill.test(p));
+}
+
+function pfMatchesModels(p) {
+    if (!pfState.models.length) return true;
+    const names = new Set(p.model_names || []);
+    return pfState.modelMode === 'all'
+        ? pfState.models.every(m => names.has(m))
+        : pfState.models.some(m => names.has(m));
+}
+
+function pfMatches(p) {
+    return PF_GROUPS.every(g => pfMatchesGroup(p, g)) && pfMatchesModels(p);
+}
+
+function pfActive() {
+    return pfState.models.length > 0 || PF_GROUPS.some(g => pfState.sel[g.key] && pfState.sel[g.key].size);
+}
+
+function pfRender() {
+    const groupsEl = document.getElementById('provider-filter-groups');
+    if (!groupsEl) return;
+    const providers = Object.values(pfState.providers);
+    // Skip rebuilding when nothing visible changed, so the 5 s status refresh
+    // does not replace a pill while someone is clicking it.
+    const sig = JSON.stringify([
+        PF_GROUPS.map(g => [Array.from(pfState.sel[g.key] || []), g.pills.map(pill => providers.filter(pill.test).length)]),
+        pfState.models, pfState.modelMode,
+        providers.map(p => p.model_names || []),
+    ]);
+    if (sig === pfState.renderSig) return;
+    pfState.renderSig = sig;
+    groupsEl.innerHTML = '';
+    PF_GROUPS.forEach(function(g) {
+        const set = pfState.sel[g.key] || new Set();
+        const pills = g.pills.filter(pill => set.has(pill.value) || providers.some(pill.test));
+        if (!pills.length) return;
+        const wrap = document.createElement('div');
+        wrap.className = 'd-flex flex-wrap gap-1 align-items-center';
+        const label = document.createElement('span');
+        label.className = 'small text-muted me-1';
+        label.textContent = g.label;
+        wrap.appendChild(label);
+        pills.forEach(function(pill) {
+            const on = set.has(pill.value);
+            const n = providers.filter(pill.test).length;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm rounded-pill py-0 ' + (on ? 'btn-primary' : 'btn-outline-secondary');
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.dataset.group = g.key;
+            btn.dataset.value = pill.value;
+            btn.textContent = pill.label + ' ';
+            const count = document.createElement('span');
+            count.className = 'badge rounded-pill ' + (on ? 'bg-light text-dark' : 'bg-secondary');
+            count.textContent = n;
+            btn.appendChild(count);
+            wrap.appendChild(btn);
+        });
+        groupsEl.appendChild(wrap);
+    });
+
+    const modelPills = document.getElementById('provider-filter-model-pills');
+    modelPills.innerHTML = '';
+    pfState.models.forEach(function(m) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-primary rounded-pill py-0';
+        btn.dataset.model = m;
+        btn.title = 'Remove model filter';
+        btn.textContent = m + ' ';
+        const x = document.createElement('i');
+        x.className = 'bi bi-x';
+        btn.appendChild(x);
+        modelPills.appendChild(btn);
+    });
+    const allNames = new Set();
+    providers.forEach(p => (p.model_names || []).forEach(n => allNames.add(n)));
+    const list = document.getElementById('provider-filter-model-list');
+    list.innerHTML = '';
+    Array.from(allNames).sort().forEach(function(n) {
+        if (pfState.models.includes(n)) return;
+        const opt = document.createElement('option');
+        opt.value = n;
+        list.appendChild(opt);
+    });
+    const modeEl = document.getElementById('provider-filter-model-mode');
+    modeEl.style.display = pfState.models.length > 1 ? '' : 'none';
+    modeEl.querySelectorAll('[data-mode]').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.mode === pfState.modelMode);
+    });
+    document.getElementById('provider-filter-clear').style.display = pfActive() ? '' : 'none';
+}
+
+function pfApply() {
+    let shown = 0;
+    const total = Object.keys(pfState.providers).length;
+    document.querySelectorAll('[data-card-provider]').forEach(function(card) {
+        const p = pfState.providers[card.dataset.cardProvider];
+        const ok = !p || pfMatches(p);
+        card.style.display = ok ? '' : 'none';
+        if (ok && p) shown += 1;
+    });
+    document.querySelectorAll('[data-list-provider]').forEach(function(row) {
+        const p = pfState.providers[row.dataset.listProvider];
+        row.style.display = !p || pfMatches(p) ? '' : 'none';
+    });
+    const countEl = document.getElementById('provider-filter-count');
+    if (countEl) countEl.textContent = pfActive() ? 'Showing ' + shown + ' of ' + total : '';
+    const emptyEl = document.getElementById('provider-filter-empty');
+    if (emptyEl) emptyEl.classList.toggle('d-none', !(pfActive() && shown === 0 && total > 0));
+}
+
+function pfUpdate(providers) {
+    pfState.providers = {};
+    providers.forEach(function(p) { pfState.providers[String(p.id)] = p; });
+    pfRender();
+    pfApply();
+}
+
+function pfChanged() {
+    pfSave();
+    pfRender();
+    pfApply();
+}
+
+function initProviderFilters() {
+    const seedEl = document.getElementById('provider-filter-seed');
+    if (!seedEl) return;
+    pfLoad();
+    let seed = [];
+    try { seed = JSON.parse(seedEl.textContent); } catch (e) { seed = []; }
+
+    document.getElementById('provider-filter-groups').addEventListener('click', function(ev) {
+        const btn = ev.target.closest('button[data-group]');
+        if (!btn) return;
+        const set = pfState.sel[btn.dataset.group] || (pfState.sel[btn.dataset.group] = new Set());
+        if (set.has(btn.dataset.value)) set.delete(btn.dataset.value); else set.add(btn.dataset.value);
+        pfChanged();
+    });
+    document.getElementById('provider-filter-model-pills').addEventListener('click', function(ev) {
+        const btn = ev.target.closest('button[data-model]');
+        if (!btn) return;
+        pfState.models = pfState.models.filter(m => m !== btn.dataset.model);
+        pfChanged();
+    });
+    const input = document.getElementById('provider-filter-model-input');
+    const addModel = function() {
+        const v = input.value.trim();
+        if (!v) return;
+        const known = Object.values(pfState.providers).some(p => (p.model_names || []).includes(v));
+        if (!known) return;
+        if (!pfState.models.includes(v)) pfState.models.push(v);
+        input.value = '';
+        pfChanged();
+    };
+    input.addEventListener('change', addModel);
+    input.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); addModel(); }
+    });
+    document.getElementById('provider-filter-model-mode').addEventListener('click', function(ev) {
+        const btn = ev.target.closest('button[data-mode]');
+        if (!btn) return;
+        pfState.modelMode = btn.dataset.mode;
+        pfChanged();
+    });
+    document.getElementById('provider-filter-clear').addEventListener('click', function() {
+        pfState.sel = {};
+        pfState.models = [];
+        pfState.modelMode = 'any';
+        pfChanged();
+    });
+    pfState.ready = true;
+    pfUpdate(seed);
+}
 
 function initLogFilters() {
     const rows = document.querySelectorAll('#log-table .log-entry-row');
@@ -1564,6 +1837,8 @@ function updateDashboard(data) {
             }
         }
     });
+
+    if (pfState.ready) pfUpdate(data.providers);
 
     document.querySelectorAll('[data-list-provider]').forEach(row => {
         const p = byId[row.dataset.listProvider];

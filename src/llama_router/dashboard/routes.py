@@ -720,6 +720,7 @@ async def dashboard(request: Request):
             request,
             {
                 "providers": infos,
+                "providers_seed": [_provider_status_payload(i) for i in infos],
                 "models": all_models,
                 "benchmarks_by_model": benchmarks_by_model,
                 "ollama_count": ollama_count,
@@ -748,6 +749,32 @@ async def dashboard(request: Request):
     )
 
 
+def _provider_status_payload(info: Any) -> dict[str, Any]:
+    """One provider as the dashboard sees it; shared by the page and /api/status."""
+    return {
+        "id": info.provider.id,
+        "name": info.provider.name,
+        "status": info.provider.status.value,
+        "status_detail": info.status_detail,
+        "provider_type": info.provider.provider_type.value,
+        "is_worker": info.provider.is_worker,
+        "model_count": len(info.models),
+        "model_names": sorted({m.name for m in info.models}),
+        "active_requests": info.active_requests,
+        "hot_models": info.hot_models,
+        "worker": info.worker,
+        "addresses": [
+            {
+                "id": a.id,
+                "url": a.url,
+                "is_live": a.is_live,
+                "is_preferred": a.is_preferred,
+            }
+            for a in info.addresses
+        ],
+    }
+
+
 @router.get("/api/status")
 async def api_status(request: Request):
     _prune_completed(_active_pulls)
@@ -764,30 +791,7 @@ async def api_status(request: Request):
     all_models = await db.list_all_models()
     log_total = await db.count_request_logs() if admin_payload else 0
 
-    providers_data = []
-    for info in infos:
-        providers_data.append(
-            {
-                "id": info.provider.id,
-                "name": info.provider.name,
-                "status": info.provider.status.value,
-                "status_detail": info.status_detail,
-                "provider_type": info.provider.provider_type.value,
-                "model_count": len(info.models),
-                "active_requests": info.active_requests,
-                "hot_models": info.hot_models,
-                "worker": info.worker,
-                "addresses": [
-                    {
-                        "id": a.id,
-                        "url": a.url,
-                        "is_live": a.is_live,
-                        "is_preferred": a.is_preferred,
-                    }
-                    for a in info.addresses
-                ],
-            }
-        )
+    providers_data = [_provider_status_payload(info) for info in infos]
 
     active_pulls = {
         pid: {
