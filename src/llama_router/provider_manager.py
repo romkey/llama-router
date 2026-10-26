@@ -690,7 +690,7 @@ class ProviderManager:
                 if self.worker_hub.get(pid) is not conn:
                     # A new socket arrived; its connect handler, waiting on the
                     # lock, sets status. Do not mark it offline first.
-                    return provider.status
+                    return await self._superseded(provider, source)
                 self._hot_models[pid] = []
                 live = [a for a in await self._db.get_addresses(pid) if a.is_live]
                 return await self._commit_check(
@@ -766,18 +766,22 @@ class ProviderManager:
         if still_current is not None and not still_current():
             # A new socket arrived mid-check; its connect handler (waiting on
             # the lock) sets status, so do not overwrite it with ours.
-            if source in ("refresh", "add", "edit"):
-                await self._log_event(
-                    provider,
-                    source,
-                    ok=True,
-                    detail="worker reconnected during the check; status follows "
-                    "the new connection",
-                )
-            return provider.status
+            return await self._superseded(provider, source)
         return await self._commit_check(
             provider, prev_status, status, detail, live, source, started
         )
+
+    async def _superseded(self, provider: Provider, source: str) -> ProviderStatus:
+        """A reconnect overtook this check: keep status, but log manual checks."""
+        if source in ("refresh", "add", "edit"):
+            await self._log_event(
+                provider,
+                source,
+                ok=True,
+                detail="worker reconnected during the check; status follows "
+                "the new connection",
+            )
+        return provider.status
 
     async def _commit_check(
         self,
