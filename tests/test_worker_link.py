@@ -481,3 +481,48 @@ async def test_worker_connect_and_disconnect_clear_stale_status_detail(link) -> 
     await _wait_for(lambda: not pm.worker_hub.is_connected(pid))
     await pm._on_worker_disconnected(conn)
     assert pm.status_detail(pid) is None
+
+
+async def test_connect_with_failing_discovery_keeps_reachable_address_live(
+    link,
+) -> None:
+    await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    conn = pm.worker_hub.get(pid)
+
+    async def fail(provider):
+        req = httpx.Request("GET", "http://worker/api/tags")
+        raise httpx.HTTPStatusError(
+            "401", request=req, response=httpx.Response(401, request=req)
+        )
+
+    real = pm._discover_provider
+    pm._discover_provider = fail
+    try:
+        await pm._on_worker_connected(conn)
+    finally:
+        pm._discover_provider = real
+    # The socket and upstream answer, so the address is live; the provider is
+    # offline with the reason, matching what a health check would record.
+    assert all(a.is_live for a in await db.get_addresses(pid))
+    assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+    assert "authentication required" in (pm.status_detail(pid) or "")
+
+
+async def test_worker_health_check_does_not_hold_lock_while_probing(link) -> None:
+    await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    provider = await db.get_provider(pid)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_probe(p, addr):
+        started.set()
+        await release.wait()
+        return True
+
+    pm._probe_address = slow_probe
+    task = asyncio.create_task(pm.check_provider(provider))
+    await started.wait()
+    assert not pm._worker_lock(pid).locked()
+    release.set()
+    assert await task in (ProviderStatus.IDLE, ProviderStatus.BUSY)
