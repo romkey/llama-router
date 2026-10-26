@@ -294,6 +294,11 @@ class ProviderManager:
         existing = await self._db.get_provider(provider_id)
         if existing is None:
             return
+        # Validate before writing anything, so a bad header name cannot leave
+        # the edit half-applied.
+        header = (
+            normalize_header(api_key_header) if api_key_header is not None else None
+        )
         if existing.is_worker:
             # A worker's name ties it to its token on the hub.
             name = existing.name
@@ -309,12 +314,12 @@ class ProviderManager:
             if clear_api_key:
                 await self._db.set_provider_api_key(provider_id, None, None)
             elif api_key:
-                await self._store_api_key(
-                    existing, api_key, normalize_header(api_key_header)
-                )
-            elif existing.api_key_enc and api_key_header is not None:
+                await self._store_api_key(existing, api_key, header)
+            elif existing.api_key_enc and header is not None:
                 await self._db.set_provider_api_key(
-                    provider_id, existing.api_key_enc, normalize_header(api_key_header)
+                    provider_id,
+                    existing.api_key_enc,
+                    None if header == DEFAULT_HEADER else header,
                 )
         provider = await self._db.get_provider(provider_id)
         if not provider:

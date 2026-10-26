@@ -1029,6 +1029,8 @@ async def edit_provider(
             api_key_header=api_key_header,
             clear_api_key=bool(clear_api_key),
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         logger.exception("update_provider failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not update provider")
