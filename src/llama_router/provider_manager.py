@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 import time
@@ -561,27 +562,43 @@ class ProviderManager:
         """
         assert provider.id is not None
         if provider.is_worker:
-            async with self._worker_lock(provider.id):
-                return await self._check_provider_locked(provider, rediscover, source)
-        return await self._check_provider_locked(provider, rediscover, source)
+            # Probe and discover without the worker lock, which the connect and
+            # disconnect handlers need promptly; write results only if the same
+            # socket is still current when we are done.
+            conn = self.worker_hub.get(provider.id)
+            return await self._check_provider_impl(
+                provider,
+                rediscover,
+                source,
+                commit_lock=self._worker_lock(provider.id),
+                still_current=lambda: self.worker_hub.get(provider.id) is conn,
+            )
+        return await self._check_provider_impl(provider, rediscover, source)
 
-    async def _check_provider_locked(
-        self, provider: Provider, rediscover: bool, source: str
+    async def _check_provider_impl(
+        self,
+        provider: Provider,
+        rediscover: bool,
+        source: str,
+        *,
+        commit_lock: asyncio.Lock | None = None,
+        still_current: Callable[[], bool] | None = None,
     ) -> ProviderStatus:
         pid = provider.id
         assert pid is not None
         started = time.monotonic()
         prev_status = provider.status
-        prev_detail = self._logged_detail.get(pid)
 
         addresses = await self._db.get_addresses(pid)
         results = await asyncio.gather(
             *(self._probe_address(provider, a) for a in addresses)
         )
+        changed = [
+            (addr, reachable)
+            for addr, reachable in zip(addresses, results)
+            if addr.is_live != reachable
+        ]
         for addr, reachable in zip(addresses, results):
-            assert addr.id is not None
-            if addr.is_live != reachable:
-                await self._db.set_address_live(addr.id, reachable)
             addr.is_live = reachable
         live = [a for a in addresses if a.is_live]
 
@@ -610,6 +627,36 @@ class ProviderManager:
             else:
                 busy = self._active_requests.get(pid, 0) > 0
                 status = ProviderStatus.BUSY if busy else ProviderStatus.IDLE
+
+        if commit_lock is None:
+            return await self._commit_check(
+                provider, prev_status, status, detail, live, changed, source, started
+            )
+        async with commit_lock:
+            if still_current is not None and not still_current():
+                # A connect or disconnect handler took over while we probed.
+                return provider.status
+            return await self._commit_check(
+                provider, prev_status, status, detail, live, changed, source, started
+            )
+
+    async def _commit_check(
+        self,
+        provider: Provider,
+        prev_status: ProviderStatus,
+        status: ProviderStatus,
+        detail: str | None,
+        live: list[ProviderAddress],
+        changed: list[tuple[ProviderAddress, bool]],
+        source: str,
+        started: float,
+    ) -> ProviderStatus:
+        pid = provider.id
+        assert pid is not None
+        prev_detail = self._logged_detail.get(pid)
+        for addr, reachable in changed:
+            assert addr.id is not None
+            await self._db.set_address_live(addr.id, reachable)
 
         if detail and status == ProviderStatus.OFFLINE and live:
             self._status_detail[pid] = detail
@@ -1094,10 +1141,10 @@ class ProviderManager:
         ):
             await self._rebuild_clients(provider)
         ollama = self._ollama_clients.get(provider.id)
-        if ollama is not None and await ollama.is_reachable():
+        if ollama is not None and await ollama.is_reachable(timeout=_PROBE_TIMEOUT):
             return True
         lcpp = self._llamacpp_clients.get(provider.id)
-        if lcpp is not None and await lcpp.is_reachable():
+        if lcpp is not None and await lcpp.is_reachable(timeout=_PROBE_TIMEOUT):
             return True
         return False
 
@@ -1167,15 +1214,18 @@ class ProviderManager:
                         provider.name,
                         detail,
                     )
+            # Liveness means the same as in check_provider: the socket is up and
+            # the worker's upstream answers, whether or not discovery worked.
+            reachable = ok or await self._probe_worker(provider)
             if not self._is_current_worker(conn):
                 return
-            # The socket is up, so a failure here is "reachable but unusable".
-            if detail is None:
-                self._status_detail.pop(provider_id, None)
-                self._logged_detail.pop(provider_id, None)
-            else:
+            if detail is not None and reachable:
                 self._status_detail[provider_id] = detail
-            await self._set_worker_addresses_live(provider_id, ok)
+            else:
+                self._status_detail.pop(provider_id, None)
+                if ok:
+                    self._logged_detail.pop(provider_id, None)
+            await self._set_worker_addresses_live(provider_id, reachable)
             await self._db.update_provider_status(
                 provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
             )
