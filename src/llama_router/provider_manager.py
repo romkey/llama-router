@@ -53,7 +53,8 @@ _PROBE_TIMEOUT = httpx.Timeout(5.0)
 _CHECK_CONCURRENCY = 8
 # Upper bound on one worker health check, which runs under the worker's lock.
 _WORKER_CHECK_TIMEOUT = 20.0
-# Manual refresh, add and edit rediscover models, which can take longer.
+# Checks that rediscover models (manual refresh, add, edit, or a worker
+# coming back from offline) can take longer.
 _WORKER_MANUAL_TIMEOUT = 60.0
 
 
@@ -650,7 +651,6 @@ class ProviderManager:
         lock = self._worker_lock(pid)
         if source == "health" and lock.locked():
             return provider.status
-        cap = _WORKER_CHECK_TIMEOUT if source == "health" else _WORKER_MANUAL_TIMEOUT
         async with lock:
             # Re-read under the lock: a connect or disconnect handler may have
             # changed (and logged) the status since this cycle listed providers.
@@ -661,6 +661,17 @@ class ProviderManager:
             conn = self.worker_hub.get(pid)
             prev_status = provider.status
             started = time.monotonic()
+            # A check that will rediscover models gets the longer cap, so one
+            # slow model listing cannot keep a connected worker offline.
+            rediscovering = rediscover or prev_status in (
+                ProviderStatus.OFFLINE,
+                ProviderStatus.UNKNOWN,
+            )
+            cap = (
+                _WORKER_MANUAL_TIMEOUT
+                if source != "health" or rediscovering
+                else _WORKER_CHECK_TIMEOUT
+            )
             try:
                 return await asyncio.wait_for(
                     self._check_provider_impl(
@@ -681,6 +692,7 @@ class ProviderManager:
                     # A new socket arrived; its connect handler, waiting on the
                     # lock, sets status. Do not mark it offline first.
                     return provider.status
+                self._hot_models[pid] = []
                 live = [a for a in await self._db.get_addresses(pid) if a.is_live]
                 return await self._commit_check(
                     provider,
