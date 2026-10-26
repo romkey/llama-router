@@ -176,6 +176,22 @@ All three API ports expose a `GET /health` endpoint that returns JSON:
 
 The dashboard port (80) includes provider counts; the Ollama (11434) and llama.cpp (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
 
+## Debugging from inside the container
+
+The image includes basic network tools so you can check reachability from the
+router's own point of view, which is often different from your laptop's:
+
+```bash
+docker compose exec llama-router ping -c 3 192.168.1.100
+docker compose exec llama-router host gpu-server.local
+docker compose exec llama-router dig +short gpu-server.local
+docker compose exec llama-router nc -zv 192.168.1.100 11434
+docker compose exec llama-router curl -s http://192.168.1.100:11434/api/version
+docker compose exec llama-router wget -qO- http://192.168.1.100:8080/health
+docker compose exec llama-router ip route
+docker compose exec llama-router traceroute 192.168.1.100
+```
+
 ## Model Fallbacks
 
 You can configure fallback models so that when a requested model is unavailable (no provider has it or all providers with it are offline), the router transparently tries an alternative model.
