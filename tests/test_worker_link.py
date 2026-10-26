@@ -463,3 +463,21 @@ async def test_disconnect_handler_still_marks_offline_when_no_newer_socket(
     await pm._on_worker_disconnected(conn)
     assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
     assert not any(a.is_live for a in await db.get_addresses(pid))
+
+
+async def test_worker_connect_and_disconnect_clear_stale_status_detail(link) -> None:
+    w = await _connected_worker(link)
+    pm, pid = link["pm"], link["provider_id"]
+    conn = pm.worker_hub.get(pid)
+
+    # A successful (re)connect clears a reason left from an earlier failure.
+    pm._status_detail[pid] = "authentication required (HTTP 401 from /api/tags)"
+    await pm._on_worker_connected(conn)
+    assert pm.status_detail(pid) is None
+
+    # Losing the socket clears any "reachable but unusable" reason too.
+    pm._status_detail[pid] = "stale"
+    await w.stop()
+    await _wait_for(lambda: not pm.worker_hub.is_connected(pid))
+    await pm._on_worker_disconnected(conn)
+    assert pm.status_detail(pid) is None
