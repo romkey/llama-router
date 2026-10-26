@@ -324,3 +324,12 @@ async def test_hf_pull_refuses_worker_push(dash_client, fake_hf) -> None:  # noq
         "/api/hf/pull", json={"repo": "owner/x", "push_provider_ids": [w.id]}
     )
     assert r.status_code == 400 and "worker" in r.json()["detail"]
+
+
+async def test_plan_keeps_nested_files_hf_selected(fake_hf, monkeypatch) -> None:
+    async def run(args, on_progress=None):
+        return 0, '[{"file": "Model-Q4.gguf"}, {"file": "sub/Model-Q8.gguf"}]', ""
+
+    monkeypatch.setattr(hf_download, "_run", run)
+    files = await hf_download.plan("owner/model-GGUF", "*.gguf", None)
+    assert [f["file"] for f in files] == ["Model-Q4.gguf", "sub/Model-Q8.gguf"]

@@ -244,8 +244,8 @@ async def plan(repo: str, pattern: str, revision: str | None) -> list[dict]:
     code, out, err = await _run(args)
     if code != 0:
         raise HfError(_error_from(err))
-    files = _parse_plan(out)
-    return [f for f in files if fnmatch.fnmatch(f["file"], pattern)] or files
+    # hf already applied --include; re-filtering could only drop files it chose.
+    return _parse_plan(out)
 
 
 def _parse_plan(out: str) -> list[dict]:
@@ -328,7 +328,8 @@ async def download(
             if (
                 path.is_file()
                 and not rel.startswith(".cache/")
-                and fnmatch.fnmatch(rel, pattern)
+                # Same rule as hf's --include: fnmatchcase on the full path.
+                and fnmatch.fnmatchcase(rel, pattern)
                 and path.stat().st_mtime >= started - 1
             ):
                 found.append(path)
