@@ -289,3 +289,38 @@ async def test_refused_push_still_refreshes_shared_volume_providers(
     entry = await _wait_done(r.json()["pull_id"])
     assert entry["failed"] == [by_name["oll"]]
     assert entry["completed"] == [by_name["lcpp"]]
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        '[{"file": "a.gguf", "size": "1M"}]',
+        '{"files": [{"path": "a.gguf"}]}',
+        '[\n  {\n    "rfilename": "a.gguf"\n  }\n]',
+        'noise line\n["a.gguf"]',
+    ],
+)
+def test_parse_plan_accepts_several_shapes(out) -> None:
+    assert [f["file"] for f in hf_download._parse_plan(out)] == ["a.gguf"]
+
+
+async def test_download_falls_back_when_plan_is_unreadable(
+    fake_hf, monkeypatch
+) -> None:
+    async def empty_plan(repo, pattern, revision):
+        return []
+
+    monkeypatch.setattr(hf_download, "plan", empty_plan)
+    paths = await hf_download.download("owner/model-GGUF", "*Q4_K_M*.gguf", None)
+    assert [p.name for p in paths] == ["Model-Q4_K_M.gguf"]
+
+
+async def test_hf_pull_refuses_worker_push(dash_client, fake_hf) -> None:  # noqa: F811
+    client, db = dash_client
+    from llama_router.models import ProviderType
+
+    w = await db.add_provider("edge", ProviderType.OLLAMA, worker_name="edge")
+    r = await client.post(
+        "/api/hf/pull", json={"repo": "owner/x", "push_provider_ids": [w.id]}
+    )
+    assert r.status_code == 400 and "worker" in r.json()["detail"]

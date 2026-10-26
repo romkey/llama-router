@@ -1560,8 +1560,17 @@ async def api_hf_pull(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
     for pid in push_ids + refresh_ids:
-        if await db.get_provider(pid) is None:
+        target = await db.get_provider(pid)
+        if target is None:
             raise HTTPException(status_code=400, detail=f"unknown provider {pid}")
+        if pid in push_ids and target.is_worker:
+            # The worker link buffers whole request bodies; a multi-GB upload
+            # through it would exhaust memory on the hub.
+            raise HTTPException(
+                status_code=400,
+                detail=f"{target.name} is a worker; pull the model on the worker "
+                "itself instead of pushing it through the hub",
+            )
 
     pull_id = str(uuid.uuid4())
     label = model_name or f"{repo} ({pattern})"

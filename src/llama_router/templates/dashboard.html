@@ -445,14 +445,17 @@
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Push to Ollama providers</div>
-                            {% for info in providers if info.provider.supports_ollama %}
+                            {% for info in providers if info.provider.supports_ollama and not info.provider.is_worker %}
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" id="hf-push-{{ info.provider.id }}" data-hf-push="{{ info.provider.id }}">
                                 <label class="form-check-label" for="hf-push-{{ info.provider.id }}">{{ info.provider.name }}</label>
                             </div>
                             {% else %}
-                            <div class="text-muted">No Ollama providers.</div>
+                            <div class="text-muted">No directly connected Ollama providers.</div>
                             {% endfor %}
+                            {% if providers | selectattr('provider.is_worker') | list %}
+                            <div class="form-text">Worker providers are not listed: pushing a large file through the worker link would buffer it in memory. Download on the worker itself.</div>
+                            {% endif %}
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Refresh llama.cpp providers (shared volume)</div>

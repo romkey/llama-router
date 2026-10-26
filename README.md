@@ -189,6 +189,9 @@ and deliver them to providers:
   `--models-dir` (router mode). The router then only refreshes the provider so
   the new model is discovered.
 
+Worker providers are not push targets, since the worker link buffers whole
+request bodies; download on the worker itself instead.
+
 Use **List files** to preview what a pattern selects, then click a file to pick
 one quant. Split GGUF files work through a shared volume but cannot be pushed
 to Ollama. Set `HF_TOKEN` for gated or private repositories and `HF_ENDPOINT`

@@ -32,8 +32,10 @@ import os
 import re
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from .config import settings
 
@@ -242,16 +244,50 @@ async def plan(repo: str, pattern: str, revision: str | None) -> list[dict]:
     code, out, err = await _run(args)
     if code != 0:
         raise HfError(_error_from(err))
-    try:
-        data = json.loads(out.strip().splitlines()[-1]) if out.strip() else []
-    except (ValueError, IndexError) as exc:
-        raise HfError("could not read the file list from hf") from exc
-    files = [
-        {"file": str(d.get("file")), "size": str(d.get("size") or "")}
-        for d in data
-        if isinstance(d, dict) and d.get("file")
-    ]
+    files = _parse_plan(out)
     return [f for f in files if fnmatch.fnmatch(f["file"], pattern)] or files
+
+
+def _parse_plan(out: str) -> list[dict]:
+    """File list from ``--dry-run --json`` output, tolerant of its shape.
+
+    Accepts the whole output or its last line as JSON, a list or an object
+    wrapping one (``files``/``items``/``data``), and entries keyed ``file``,
+    ``path``, ``filename`` or ``rfilename``.
+    """
+    text = out.strip()
+    if not text:
+        return []
+    data: Any = None
+    for candidate in (text, text.splitlines()[-1]):
+        try:
+            data = json.loads(candidate)
+            break
+        except ValueError:
+            continue
+    if isinstance(data, dict):
+        data = next(
+            (
+                data[k]
+                for k in ("files", "items", "data")
+                if isinstance(data.get(k), list)
+            ),
+            [],
+        )
+    if not isinstance(data, list):
+        return []
+    files = []
+    for d in data:
+        if isinstance(d, str):
+            files.append({"file": d, "size": ""})
+        elif isinstance(d, dict):
+            name = next(
+                (d[k] for k in ("file", "path", "filename", "rfilename") if d.get(k)),
+                None,
+            )
+            if name:
+                files.append({"file": str(name), "size": str(d.get("size") or "")})
+    return files
 
 
 async def download(
@@ -275,6 +311,7 @@ async def download(
     # The files this run selects, so leftovers from earlier downloads of the
     # same repository (other quants, other revisions) are never returned.
     wanted = [f["file"] for f in await plan(repo, pattern, revision)]
+    started = time.time()
     code, _out, err = await _run(args, progress)
     if code != 0:
         raise HfError(_error_from(err))
@@ -283,6 +320,18 @@ async def download(
         path = _path_under(target, name)
         if path.is_file():
             found.append(path)
+    if not found:
+        # The plan could not be read; fall back to matching files this run
+        # wrote or refreshed (hf touches files it verifies or downloads).
+        for path in sorted(target.rglob("*")):
+            rel = path.relative_to(target).as_posix()
+            if (
+                path.is_file()
+                and not rel.startswith(".cache/")
+                and fnmatch.fnmatch(rel, pattern)
+                and path.stat().st_mtime >= started - 1
+            ):
+                found.append(path)
     if not found:
         raise HfError(f"no files in {repo} match {pattern}")
     return found
