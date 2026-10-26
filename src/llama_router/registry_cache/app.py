@@ -48,7 +48,13 @@ from starlette.responses import FileResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..config import settings
-from .cache import BlobCache
+from .cache import (
+    BlobCache,
+    InvalidCacheKey,
+    validate_digest,
+    validate_name,
+    validate_reference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +87,12 @@ app = FastAPI(
     redirect_slashes=False,
     lifespan=_lifespan,
 )
+
+
+@app.exception_handler(InvalidCacheKey)
+async def _invalid_cache_key(_request: Request, exc: InvalidCacheKey) -> Response:
+    """Malformed repository name, tag or digest in a request path."""
+    return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
 def init_cache(cache: BlobCache) -> None:
@@ -167,6 +179,8 @@ async def v2_check():
 
 @app.get("/v2/{name:path}/manifests/{reference}")
 async def get_manifest(name: str, reference: str):
+    name = validate_name(name)
+    reference = validate_reference(reference)
     cache = _get_cache()
 
     cached = cache.get_manifest(name, reference)
@@ -215,6 +229,8 @@ async def get_manifest(name: str, reference: str):
 @app.head("/v2/{name:path}/blobs/{digest}")
 async def head_blob(name: str, digest: str):
     """Return Content-Length for a blob.  Ollama calls this in Prepare()."""
+    name = validate_name(name)
+    digest = validate_digest(digest)
     cache = _get_cache()
     # 1) Local blob  2) Size from manifest (no upstream)  3) Upstream HEAD
     if cache.has_blob(digest):
@@ -275,6 +291,8 @@ async def head_blob(name: str, digest: str):
 @app.get("/v2/{name:path}/blobs/{digest}")
 async def get_blob(name: str, digest: str, request: Request):
     """Serve blob downloads: cache hit → Location to local file; miss → stream-through."""
+    name = validate_name(name)
+    digest = validate_digest(digest)
     cache = _get_cache()
     base = str(request.base_url).rstrip("/")
     hit_headers = {"Docker-Content-Digest": digest}
@@ -345,6 +363,7 @@ async def get_blob(name: str, digest: str, request: Request):
 @app.get("/cache/blobs/{digest}")
 async def serve_cached_blob(digest: str):
     """Serve a cached blob.  Supports Range requests via FileResponse."""
+    digest = validate_digest(digest)
     cache = _get_cache()
     if not cache.has_blob(digest):
         logger.warning("Serve blob miss (not yet cached): %s", digest[:24])

@@ -360,11 +360,20 @@ def _safe_next_url(next_raw: str | None) -> str:
     path = parsed.path or "/"
     if not path.startswith("/") or path.startswith("//") or "\\" in path:
         return "/"
-    out = path
+    # Rebuild from a constant leading "/" so the caller controls only the suffix.
+    out = "/" + path[1:]
     if parsed.query:
         out += "?" + parsed.query
     if parsed.fragment:
         out += "#" + parsed.fragment
+    return out
+
+
+def _provider_url(provider_id: int, query: str = "") -> str:
+    """Same-site URL for a provider detail page; the id only ever forms the suffix."""
+    out = "/providers/" + str(int(provider_id))
+    if query:
+        out += "?" + query
     return out
 
 
@@ -1011,7 +1020,7 @@ async def edit_provider(
     except Exception:
         logger.exception("update_provider failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not update provider")
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/providers/{provider_id}/remove")
@@ -1025,7 +1034,7 @@ async def remove_provider(provider_id: int):
 async def refresh_provider(provider_id: int):
     pm = deps.get_pm()
     await pm.refresh_provider(provider_id)
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/api/benchmark")
@@ -1132,7 +1141,7 @@ async def benchmark_model(provider_id: int, model_name: str):
             entry["error"] = str(exc)
 
     asyncio.create_task(_run_benchmark())
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/benchmarks/{benchmark_id}/delete")
@@ -1164,8 +1173,9 @@ async def delete_model(provider_id: int, model_name: str):
         await pm.delete_remote_model(provider_id, model_name)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
+            msg = f"Model {model_name} not found on backend (removed from local list)"
             return RedirectResponse(
-                url=f"/providers/{provider_id}?error=Model+{model_name}+not+found+on+backend+(removed+from+local+list)",
+                url=_provider_url(provider_id, "error=" + quote(msg)),
                 status_code=303,
             )
         logger.error(
@@ -1190,7 +1200,7 @@ async def delete_model(provider_id: int, model_name: str):
             model_name,
         )
         raise HTTPException(status_code=500, detail="Could not delete model on backend")
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/providers/{provider_id}/addresses/add")
@@ -1207,7 +1217,7 @@ async def add_address(
     except Exception:
         logger.exception("add_address failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not add address")
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/providers/{provider_id}/addresses/save")
@@ -1244,7 +1254,7 @@ async def save_provider_address(
             raw_id or None,
         )
         raise HTTPException(status_code=400, detail="Could not save address")
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/providers/{provider_id}/addresses/{address_id}/edit")
@@ -1266,21 +1276,21 @@ async def edit_address(
             address_id,
         )
         raise HTTPException(status_code=400, detail="Could not update address")
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/providers/{provider_id}/addresses/{address_id}/remove")
 async def remove_address(provider_id: int, address_id: int):
     pm = deps.get_pm()
     await pm.remove_address(address_id)
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/providers/{provider_id}/addresses/{address_id}/toggle-preferred")
 async def toggle_preferred(provider_id: int, address_id: int):
     pm = deps.get_pm()
     await pm.toggle_address_preferred(address_id)
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/api/pull")
@@ -1647,7 +1657,7 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
                 pull_entry["completed_at"] = time.monotonic()
 
     asyncio.create_task(_run())
-    return RedirectResponse(url=f"/providers/{provider_id}", status_code=303)
+    return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
 @router.post("/models/pull-all")
