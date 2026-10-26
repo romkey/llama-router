@@ -52,6 +52,8 @@ _PROBE_TIMEOUT = httpx.Timeout(5.0)
 _CHECK_CONCURRENCY = 8
 # Upper bound on one worker health check, which runs under the worker's lock.
 _WORKER_CHECK_TIMEOUT = 20.0
+# Manual refresh, add and edit rediscover models, which can take longer.
+_WORKER_MANUAL_TIMEOUT = 60.0
 
 
 def _failure_reason(exc: BaseException) -> str:
@@ -647,8 +649,11 @@ class ProviderManager:
         lock = self._worker_lock(pid)
         if source == "health" and lock.locked():
             return provider.status
+        cap = _WORKER_CHECK_TIMEOUT if source == "health" else _WORKER_MANUAL_TIMEOUT
         async with lock:
             conn = self.worker_hub.get(pid)
+            prev_status = provider.status
+            started = time.monotonic()
             try:
                 return await asyncio.wait_for(
                     self._check_provider_impl(
@@ -657,15 +662,24 @@ class ProviderManager:
                         source,
                         still_current=lambda: self.worker_hub.get(pid) is conn,
                     ),
-                    timeout=_WORKER_CHECK_TIMEOUT,
+                    timeout=cap,
                 )
             except asyncio.TimeoutError:
+                # Commit a consistent result rather than leaving liveness
+                # written and status, reason and Log untouched.
                 logger.warning(
-                    "Health check for worker %s timed out after %.0fs",
-                    provider.name,
-                    _WORKER_CHECK_TIMEOUT,
+                    "Check of worker %s timed out after %.0fs", provider.name, cap
                 )
-                return provider.status
+                live = [a for a in await self._db.get_addresses(pid) if a.is_live]
+                return await self._commit_check(
+                    provider,
+                    prev_status,
+                    ProviderStatus.OFFLINE,
+                    f"check timed out after {cap:.0f}s",
+                    live,
+                    source,
+                    started,
+                )
 
     async def _check_provider_impl(
         self,
@@ -725,6 +739,14 @@ class ProviderManager:
         if still_current is not None and not still_current():
             # A new socket arrived mid-check; its connect handler (waiting on
             # the lock) sets status, so do not overwrite it with ours.
+            if source in ("refresh", "add", "edit"):
+                await self._log_event(
+                    provider,
+                    source,
+                    ok=True,
+                    detail="worker reconnected during the check; status follows "
+                    "the new connection",
+                )
             return provider.status
         return await self._commit_check(
             provider, prev_status, status, detail, live, source, started
