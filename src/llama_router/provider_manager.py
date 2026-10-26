@@ -30,6 +30,14 @@ from .models import (
     WORKER_URL_SCHEME,
 )
 from .ollama_client import OllamaClient
+from .provider_secrets import (
+    DEFAULT_HEADER,
+    ApiKeyUnavailable,
+    auth_headers,
+    decrypt_api_key,
+    encrypt_api_key,
+    normalize_header,
+)
 from .worker_link.hub import WorkerConnection, WorkerHub
 
 if TYPE_CHECKING:
@@ -186,6 +194,22 @@ class ProviderManager:
             return preferred[0]
         return addresses[0]
 
+    @staticmethod
+    def _upstream_headers(provider: Provider) -> dict[str, str] | None:
+        """Auth headers for a direct provider's upstream, or None.
+
+        Worker providers never get them: the link strips Authorization and
+        API-KEY, and the worker adds its own upstream key.
+        """
+        if provider.is_worker or not provider.api_key_enc:
+            return None
+        try:
+            key = decrypt_api_key(provider.api_key_enc)
+        except ApiKeyUnavailable as exc:
+            logger.warning("Provider %s: %s", provider.name, exc)
+            return None
+        return auth_headers(key, provider.api_key_header)
+
     async def _rebuild_clients(self, provider: Provider) -> None:
         """Close existing clients and create new ones from the best live address."""
         assert provider.id is not None
@@ -199,19 +223,20 @@ class ProviderManager:
             hub = self.worker_hub
             if provider.supports_ollama:
                 self._ollama_clients[provider.id] = OllamaClient(
-                    provider.url, transport=hub.transport(provider.id, "ollama")
+                    addr.url, transport=hub.transport(provider.id, "ollama")
                 )
             if provider.supports_llamacpp:
                 self._llamacpp_clients[provider.id] = LlamaCppClient(
-                    provider.url, transport=hub.transport(provider.id, "llamacpp")
+                    addr.url, transport=hub.transport(provider.id, "llamacpp")
                 )
-            self._active_urls[provider.id] = (provider.url, provider.url)
+            self._active_urls[provider.id] = (addr.url, addr.url)
             return
+        headers = self._upstream_headers(provider)
         if provider.supports_ollama:
-            self._ollama_clients[provider.id] = OllamaClient(addr.url)
+            self._ollama_clients[provider.id] = OllamaClient(addr.url, headers=headers)
         if provider.supports_llamacpp:
             url = addr.llamacpp_url or addr.url
-            self._llamacpp_clients[provider.id] = LlamaCppClient(url)
+            self._llamacpp_clients[provider.id] = LlamaCppClient(url, headers=headers)
         self._active_urls[provider.id] = self._address_url_sig(provider, addr)
 
     async def _close_clients(self, provider_id: int) -> None:
@@ -233,17 +258,22 @@ class ProviderManager:
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
+        *,
+        api_key: str | None = None,
+        api_key_header: str | None = None,
     ) -> Provider:
+        """Create a provider with *url* (and *llamacpp_url*) as its first address."""
+        header = normalize_header(api_key_header) if api_key else None
         provider = await self._db.add_provider(
             name,
-            url,
             provider_type,
-            llamacpp_url,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
         )
         assert provider.id is not None
+        if api_key:
+            await self._store_api_key(provider, api_key, header)
         await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
         await self._rebuild_clients(provider)
         await self.check_provider(provider, rediscover=True, source="add")
@@ -253,35 +283,69 @@ class ProviderManager:
         self,
         provider_id: int,
         name: str,
-        url: str,
         provider_type: ProviderType | None = None,
-        llamacpp_url: str | None = None,
+        *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
+        api_key: str | None = None,
+        api_key_header: str | None = None,
+        clear_api_key: bool = False,
     ) -> None:
+        """Update provider details. Addresses are edited separately.
+
+        *api_key* None keeps the stored key; *clear_api_key* removes it.
+        """
         existing = await self._db.get_provider(provider_id)
-        if existing is not None and existing.is_worker:
-            # A worker's address is its socket; the name and URL stay tied to the
-            # worker record so the hub can find it again.
+        if existing is None:
+            return
+        # Validate before writing anything, so a bad header name cannot leave
+        # the edit half-applied.
+        header = (
+            normalize_header(api_key_header) if api_key_header is not None else None
+        )
+        if existing.is_worker:
+            # A worker's name ties it to its token on the hub.
             name = existing.name
-            url = existing.url
-            llamacpp_url = None
         await self._db.update_provider(
             provider_id,
             name,
-            url,
             provider_type,
-            llamacpp_url,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
         )
+        if not existing.is_worker:
+            if clear_api_key:
+                await self._db.set_provider_api_key(provider_id, None, None)
+            elif api_key:
+                await self._store_api_key(existing, api_key, header)
+            elif existing.api_key_enc and header is not None:
+                await self._db.set_provider_api_key(
+                    provider_id,
+                    existing.api_key_enc,
+                    None if header == DEFAULT_HEADER else header,
+                )
         provider = await self._db.get_provider(provider_id)
         if not provider:
             return
         await self._rebuild_clients(provider)
         await self.check_provider(provider, rediscover=True, source="edit")
+
+    async def _store_api_key(
+        self, provider: Provider, api_key: str, header: str | None
+    ) -> None:
+        assert provider.id is not None
+        if provider.is_worker:
+            raise ValueError(
+                "worker providers use the worker's own upstream key "
+                "(LLAMA_ROUTER_WORKER_UPSTREAM_API_KEY)"
+            )
+        enc = encrypt_api_key(api_key.strip())
+        stored_header = None if header in (None, DEFAULT_HEADER) else header
+        await self._db.set_provider_api_key(provider.id, enc, stored_header)
+        provider.api_key_enc = enc
+        provider.api_key_header = stored_header
 
     async def delete_remote_model(self, provider_id: int, model_name: str) -> None:
         """Delete a model from the remote provider and re-discover.
@@ -592,7 +656,7 @@ class ProviderManager:
             fresh = await self._db.get_provider(pid)
             if fresh is None:
                 return provider.status
-            provider.status = fresh.status
+            self._refresh_from(provider, fresh)
             conn = self.worker_hub.get(pid)
             prev_status = provider.status
             started = time.monotonic()
@@ -654,7 +718,7 @@ class ProviderManager:
             # The cycle's provider list can be seconds old by now.
             fresh = await self._db.get_provider(pid)
             if fresh is not None:
-                provider.status = fresh.status
+                self._refresh_from(provider, fresh)
         prev_status = provider.status
 
         addresses = await self._db.get_addresses(pid)
@@ -718,6 +782,17 @@ class ProviderManager:
                 "the new connection",
             )
         return provider.status
+
+    @staticmethod
+    def _refresh_from(provider: Provider, fresh: Provider) -> None:
+        """Update *provider* in place from a freshly read row.
+
+        Status, type, API key and header can all change while a cycle runs
+        (for example an edit saving a key), so copy every field, not just
+        the status.
+        """
+        for name in type(fresh).model_fields:
+            setattr(provider, name, getattr(fresh, name))
 
     async def _commit_check(
         self,
@@ -1109,7 +1184,9 @@ class ProviderManager:
                 [] if provider.is_worker else await self._db.get_addresses(provider.id)
             )
             timeout = httpx.Timeout(10.0)
-            async with httpx.AsyncClient(timeout=timeout) as probe_client:
+            async with httpx.AsyncClient(
+                timeout=timeout, headers=self._upstream_headers(provider)
+            ) as probe_client:
                 for addr in addresses:
                     probe_url = (addr.llamacpp_url or addr.url).rstrip("/")
                     try:
@@ -1191,7 +1268,11 @@ class ProviderManager:
         if provider.is_worker:
             return await self._probe_worker(provider)
         if provider.supports_ollama:
-            tmp = OllamaClient(addr.url, timeout=_PROBE_TIMEOUT)
+            tmp = OllamaClient(
+                addr.url,
+                timeout=_PROBE_TIMEOUT,
+                headers=self._upstream_headers(provider),
+            )
             try:
                 if await tmp.is_reachable():
                     return True
@@ -1200,7 +1281,11 @@ class ProviderManager:
 
         if provider.supports_llamacpp:
             url = addr.llamacpp_url or addr.url
-            tmp = LlamaCppClient(url, timeout=_PROBE_TIMEOUT)
+            tmp = LlamaCppClient(
+                url,
+                timeout=_PROBE_TIMEOUT,
+                headers=self._upstream_headers(provider),
+            )
             try:
                 if await tmp.is_reachable():
                     return True
@@ -1230,9 +1315,11 @@ class ProviderManager:
 
     async def add_worker_provider(self, name: str) -> Provider:
         """Create the provider record a worker attaches to when it dials in."""
-        url = f"{WORKER_URL_SCHEME}{name}"
-        provider = await self._db.add_provider(name, url, ProviderType.OLLAMA, None)
+        provider = await self._db.add_provider(
+            name, ProviderType.OLLAMA, worker_name=name
+        )
         assert provider.id is not None
+        url = f"{WORKER_URL_SCHEME}{name}"
         await self._db.add_address(provider.id, url, None, is_preferred=True)
         await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
         provider.status = ProviderStatus.OFFLINE
@@ -1272,9 +1359,7 @@ class ProviderManager:
                 await self._db.update_provider(
                     provider_id,
                     provider.name,
-                    provider.url,
                     ptype,
-                    None,
                     machine_type=provider.machine_type,
                     gpu_type=provider.gpu_type,
                     gpu_ram=provider.gpu_ram,

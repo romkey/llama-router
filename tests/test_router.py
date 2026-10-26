@@ -10,8 +10,8 @@ from llama_router.router import Router, RoutingPreferences
 
 @pytest.mark.asyncio
 async def test_route_picks_least_busy(db: Database):
-    p1 = await db.add_provider("fast", "http://host1:11434")
-    p2 = await db.add_provider("slow", "http://host2:11434")
+    p1 = await db.add_provider("fast")
+    p2 = await db.add_provider("slow")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
     await db.update_provider_status(p2.id, ProviderStatus.IDLE)
 
@@ -35,8 +35,8 @@ async def test_route_picks_least_busy(db: Database):
 
 @pytest.mark.asyncio
 async def test_route_prefers_faster_when_equal_load(db: Database):
-    p1 = await db.add_provider("fast", "http://host1:11434")
-    p2 = await db.add_provider("slow", "http://host2:11434")
+    p1 = await db.add_provider("fast")
+    p2 = await db.add_provider("slow")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
     await db.update_provider_status(p2.id, ProviderStatus.IDLE)
 
@@ -81,8 +81,8 @@ async def test_route_returns_none_for_unknown_model(db: Database):
 
 @pytest.mark.asyncio
 async def test_route_skips_offline_providers(db: Database):
-    p1 = await db.add_provider("offline-srv", "http://host1:11434")
-    p2 = await db.add_provider("online-srv", "http://host2:11434")
+    p1 = await db.add_provider("offline-srv")
+    p2 = await db.add_provider("online-srv")
     await db.update_provider_status(p1.id, ProviderStatus.OFFLINE)
     await db.update_provider_status(p2.id, ProviderStatus.IDLE)
 
@@ -102,7 +102,7 @@ async def test_route_skips_offline_providers(db: Database):
 
 @pytest.mark.asyncio
 async def test_route_follows_fallback_chain(db: Database):
-    p1 = await db.add_provider("srv1", "http://host1:11434")
+    p1 = await db.add_provider("srv1")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
 
     await db.set_provider_models(
@@ -121,7 +121,7 @@ async def test_route_follows_fallback_chain(db: Database):
 
 @pytest.mark.asyncio
 async def test_route_cascading_fallback(db: Database):
-    p1 = await db.add_provider("srv1", "http://host1:11434")
+    p1 = await db.add_provider("srv1")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
 
     await db.set_provider_models(
@@ -152,8 +152,8 @@ async def test_route_fallback_returns_none_if_chain_exhausted(db: Database):
 
 @pytest.mark.asyncio
 async def test_route_honors_pinned_provider(db: Database):
-    p1 = await db.add_provider("busy-fast", "http://host1:11434")
-    p2 = await db.add_provider("idle-slow", "http://host2:11434")
+    p1 = await db.add_provider("busy-fast")
+    p2 = await db.add_provider("idle-slow")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
     await db.update_provider_status(p2.id, ProviderStatus.IDLE)
 

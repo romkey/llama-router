@@ -14,7 +14,7 @@ from llama_router.models import (
 
 @pytest.mark.asyncio
 async def test_add_and_list_providers(db: Database):
-    p = await db.add_provider("test-server", "http://localhost:11434")
+    p = await db.add_provider("test-server")
     assert p.id is not None
     assert p.name == "test-server"
 
@@ -25,7 +25,7 @@ async def test_add_and_list_providers(db: Database):
 
 @pytest.mark.asyncio
 async def test_remove_provider(db: Database):
-    p = await db.add_provider("to-remove", "http://localhost:11434")
+    p = await db.add_provider("to-remove")
     await db.remove_provider(p.id)
     providers = await db.list_providers()
     assert len(providers) == 0
@@ -33,7 +33,7 @@ async def test_remove_provider(db: Database):
 
 @pytest.mark.asyncio
 async def test_update_provider_status(db: Database):
-    p = await db.add_provider("srv", "http://localhost:11434")
+    p = await db.add_provider("srv")
     await db.update_provider_status(p.id, ProviderStatus.IDLE)
     updated = await db.get_provider(p.id)
     assert updated is not None
@@ -42,7 +42,7 @@ async def test_update_provider_status(db: Database):
 
 @pytest.mark.asyncio
 async def test_provider_models(db: Database):
-    p = await db.add_provider("srv", "http://localhost:11434")
+    p = await db.add_provider("srv")
     models = [
         ProviderModel(provider_id=p.id, name="llama3:8b", size=4_000_000_000),
         ProviderModel(provider_id=p.id, name="nomic-embed-text", size=500_000_000),
@@ -55,8 +55,8 @@ async def test_provider_models(db: Database):
 
 @pytest.mark.asyncio
 async def test_get_providers_for_model(db: Database):
-    p1 = await db.add_provider("srv1", "http://host1:11434")
-    p2 = await db.add_provider("srv2", "http://host2:11434")
+    p1 = await db.add_provider("srv1")
+    p2 = await db.add_provider("srv2")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
     await db.update_provider_status(p2.id, ProviderStatus.IDLE)
 
@@ -73,7 +73,7 @@ async def test_get_providers_for_model(db: Database):
 
 @pytest.mark.asyncio
 async def test_benchmarks(db: Database):
-    p = await db.add_provider("srv", "http://localhost:11434")
+    p = await db.add_provider("srv")
     result = BenchmarkResult(
         provider_id=p.id,
         model_name="llama3:8b",
@@ -90,8 +90,8 @@ async def test_benchmarks(db: Database):
 
 @pytest.mark.asyncio
 async def test_list_all_models_deduplicates(db: Database):
-    p1 = await db.add_provider("srv1", "http://host1:11434")
-    p2 = await db.add_provider("srv2", "http://host2:11434")
+    p1 = await db.add_provider("srv1")
+    p2 = await db.add_provider("srv2")
     await db.update_provider_status(p1.id, ProviderStatus.IDLE)
     await db.update_provider_status(p2.id, ProviderStatus.IDLE)
 
@@ -109,11 +109,9 @@ async def test_list_all_models_deduplicates(db: Database):
 
 @pytest.mark.asyncio
 async def test_providers_for_model_protocol_filter(db: Database):
-    p1 = await db.add_provider("ollama-srv", "http://host1:11434")
-    p2 = await db.add_provider("lcpp-srv", "http://host2:8080", ProviderType.LLAMACPP)
-    p3 = await db.add_provider(
-        "both-srv", "http://host3:11434", ProviderType.BOTH, "http://host3:8080"
-    )
+    p1 = await db.add_provider("ollama-srv")
+    p2 = await db.add_provider("lcpp-srv", ProviderType.LLAMACPP)
+    p3 = await db.add_provider("both-srv", ProviderType.BOTH)
     for p in [p1, p2, p3]:
         await db.update_provider_status(p.id, ProviderStatus.IDLE)
         await db.set_provider_models(
@@ -136,7 +134,7 @@ async def test_providers_for_model_protocol_filter(db: Database):
 
 @pytest.mark.asyncio
 async def test_address_crud(db: Database):
-    p = await db.add_provider("srv", "http://host:11434")
+    p = await db.add_provider("srv")
     addr1 = await db.add_address(p.id, "http://host:11434", is_preferred=True)
     addr2 = await db.add_address(p.id, "http://backup:11434", is_preferred=False)
 
@@ -160,20 +158,6 @@ async def test_address_crud(db: Database):
     await db.remove_address(addr2.id)
     addrs = await db.get_addresses(p.id)
     assert len(addrs) == 1
-
-
-@pytest.mark.asyncio
-async def test_seed_addresses_migration(db: Database):
-    """Existing provider url/llamacpp_url get seeded into addresses table."""
-    p = await db.add_provider(
-        "srv", "http://host:11434", ProviderType.BOTH, "http://host:8080"
-    )
-    await db._seed_addresses()
-    addrs = await db.get_addresses(p.id)
-    assert len(addrs) >= 1
-    assert addrs[0].url == "http://host:11434"
-    assert addrs[0].llamacpp_url == "http://host:8080"
-    assert addrs[0].is_preferred is True
 
 
 @pytest.mark.asyncio
@@ -212,8 +196,8 @@ async def test_request_log(db: Database):
 
 @pytest.mark.asyncio
 async def test_api_key_model_pins(db: Database):
-    p1 = await db.add_provider("srv1", "http://host1:11434")
-    p2 = await db.add_provider("srv2", "http://host2:11434")
+    p1 = await db.add_provider("srv1")
+    p2 = await db.add_provider("srv2")
     key_id = await db.create_api_key(
         key_prefix="lrk_test",
         key_hash="deadbeef",

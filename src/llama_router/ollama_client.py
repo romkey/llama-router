@@ -25,12 +25,14 @@ class OllamaClient:
         transport: httpx.AsyncBaseTransport | None = None,
         *,
         timeout: httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._http = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=timeout or _TIMEOUT,
             transport=transport,
+            headers=headers,
         )
 
     def _upstream_url(self, path: str) -> str:

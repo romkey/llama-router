@@ -977,7 +977,10 @@ async def add_provider(
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
+    api_key: Optional[str] = Form(None),
+    api_key_header: Optional[str] = Form(None),
 ):
+    """Create a provider; *url* and *llamacpp_url* become its first address."""
     pm = deps.get_pm()
     ptype = ProviderType(provider_type)
     lcpp_url = llamacpp_url if llamacpp_url else None
@@ -990,6 +993,8 @@ async def add_provider(
             machine_type=machine_type or None,
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
+            api_key=(api_key or "").strip() or None,
+            api_key_header=api_key_header or None,
         )
     except Exception:
         logger.exception("add_provider failed")
@@ -1001,27 +1006,31 @@ async def add_provider(
 async def edit_provider(
     provider_id: int,
     name: str = Form(...),
-    url: str = Form(...),
     provider_type: str = Form("ollama"),
-    llamacpp_url: Optional[str] = Form(None),
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
+    api_key: Optional[str] = Form(None),
+    api_key_header: Optional[str] = Form(None),
+    clear_api_key: Optional[str] = Form(None),
 ):
+    """Edit provider details. A blank API key keeps the stored one."""
     pm = deps.get_pm()
     ptype = ProviderType(provider_type)
-    lcpp_url = llamacpp_url if llamacpp_url else None
     try:
         await pm.update_provider(
             provider_id,
             name,
-            url,
             ptype,
-            lcpp_url,
             machine_type=machine_type or None,
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
+            api_key=(api_key or "").strip() or None,
+            api_key_header=api_key_header,
+            clear_api_key=bool(clear_api_key),
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         logger.exception("update_provider failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not update provider")

@@ -1214,6 +1214,7 @@
                         <option value="both">Both</option>
                     </select>
                 </div>
+                <p class="text-muted small mb-2">First address (add more later on the provider page)</p>
                 <div class="mb-3" id="url-group">
                     <label for="url" class="form-label">URL</label>
                     <input type="url" class="form-control" id="url" name="url" required placeholder="http://192.168.1.100:11434">
@@ -1223,6 +1224,19 @@
                     <label for="llamacpp_url" class="form-label">llama.cpp URL</label>
                     <input type="url" class="form-control" id="llamacpp_url" name="llamacpp_url" placeholder="http://192.168.1.100:8080">
                 </div>
+                <hr>
+                <p class="text-muted small mb-2">Upstream authentication (optional)</p>
+                <div class="row g-3 mb-1">
+                    <div class="col-md-7">
+                        <label for="api_key" class="form-label">API key</label>
+                        <input type="password" class="form-control" id="api_key" name="api_key" autocomplete="new-password" placeholder="Sent with every request">
+                    </div>
+                    <div class="col-md-5">
+                        <label for="api_key_header" class="form-label">Header</label>
+                        <input type="text" class="form-control" id="api_key_header" name="api_key_header" placeholder="Authorization">
+                    </div>
+                </div>
+                <div class="form-text mb-3">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>.</div>
                 <hr>
                 <p class="text-muted small mb-2">Hardware (optional)</p>
                 <div class="mb-3">
