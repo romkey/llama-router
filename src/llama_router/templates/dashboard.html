@@ -1237,6 +1237,14 @@
                     </div>
                 </div>
                 <div class="form-text mb-3">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>.</div>
+                <div class="d-flex align-items-center gap-2 mb-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="probe-new-provider">
+                        <i class="bi bi-search me-1"></i>Probe URL
+                    </button>
+                    <span class="small text-muted">Optional: detect the server type and the endpoints it supports.</span>
+                </div>
+                <input type="hidden" name="probe_after_add" id="probe_after_add" value="">
+                <div id="probe-new-result" class="small mb-3" style="display:none"></div>
                 <hr>
                 <p class="text-muted small mb-2">Hardware (optional)</p>
                 <div class="mb-3">
@@ -1338,6 +1346,107 @@ function toggleUrlFields() {
         lcppGroup.style.display = '';
     }
 }
+
+function probeEl(tag, cls, text) {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = text;
+    return el;
+}
+
+function renderProbeResult(box, data) {
+    box.innerHTML = '';
+    if (!data.reachable) {
+        box.appendChild(probeEl('div', 'text-danger', 'No response from ' + data.base_url + '.'));
+        return;
+    }
+    const head = probeEl('div', 'mb-1');
+    head.appendChild(probeEl('strong', '', (data.servers.length ? data.servers.join(', ') : 'Unrecognised server')));
+    if (data.version) head.appendChild(probeEl('span', 'text-muted ms-2', 'version ' + data.version));
+    box.appendChild(head);
+    if (data.auth_required) {
+        box.appendChild(probeEl('div', 'text-warning', 'Some endpoints need an API key' + (document.getElementById('api_key').value ? ' (the key given was not accepted everywhere).' : '; enter one above and probe again.')));
+    }
+    box.appendChild(probeEl('div', 'text-muted', data.models.length + ' model' + (data.models.length === 1 ? '' : 's') + ' listed; ' + data.supported.length + ' endpoints answered.'));
+    const fams = probeEl('div', 'd-flex flex-wrap gap-1 my-1');
+    Object.keys(data.families).forEach(function(f) {
+        const n = data.families[f];
+        if (!n) return;
+        fams.appendChild(probeEl('span', 'badge bg-body-secondary text-body', (data.family_labels[f] || f) + ' ' + n));
+    });
+    box.appendChild(fams);
+    const details = probeEl('details', '');
+    details.appendChild(probeEl('summary', '', 'Endpoints'));
+    const table = probeEl('table', 'table table-sm mb-0');
+    const tbody = probeEl('tbody');
+    data.endpoints.filter(e => e.state !== 'missing').forEach(function(e) {
+        const tr = probeEl('tr');
+        tr.appendChild(probeEl('td', 'text-nowrap', e.method));
+        tr.appendChild(probeEl('td', '', e.path));
+        tr.appendChild(probeEl('td', 'text-muted', e.purpose));
+        const badge = {available: 'bg-success', exists: 'bg-info text-dark', needs_key: 'bg-warning text-dark', error: 'bg-danger'}[e.state] || 'bg-secondary';
+        const td = probeEl('td');
+        td.appendChild(probeEl('span', 'badge ' + badge, e.state.replace('_', ' ')));
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    details.appendChild(table);
+    box.appendChild(details);
+    if (data.suggested_type) {
+        const sel = document.getElementById('provider_type');
+        const apply = probeEl('button', 'btn btn-sm btn-link p-0 mt-1', 'Use type: ' + data.suggested_type);
+        apply.type = 'button';
+        apply.addEventListener('click', function() {
+            sel.value = data.suggested_type;
+            toggleUrlFields();
+        });
+        box.appendChild(apply);
+    }
+}
+
+function probeNewProvider() {
+    const box = document.getElementById('probe-new-result');
+    const btn = document.getElementById('probe-new-provider');
+    const url = document.getElementById('url').value.trim();
+    box.style.display = '';
+    if (!url) {
+        box.innerHTML = '';
+        box.appendChild(probeEl('div', 'text-danger', 'Enter a URL first.'));
+        return;
+    }
+    btn.disabled = true;
+    box.innerHTML = '';
+    box.appendChild(probeEl('div', 'text-muted', 'Probing ' + url + '…'));
+    fetch('/api/providers/probe', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            url: url,
+            api_key: document.getElementById('api_key').value,
+            api_key_header: document.getElementById('api_key_header').value,
+        }),
+    })
+        .then(r => r.json().then(d => ({ok: r.ok, d: d})))
+        .then(function(res) {
+            if (!res.ok) {
+                box.innerHTML = '';
+                box.appendChild(probeEl('div', 'text-danger', res.d.detail || 'Probe failed.'));
+                return;
+            }
+            document.getElementById('probe_after_add').value = '1';
+            renderProbeResult(box, res.d);
+        })
+        .catch(function() {
+            box.innerHTML = '';
+            box.appendChild(probeEl('div', 'text-danger', 'Probe request failed.'));
+        })
+        .finally(function() { btn.disabled = false; });
+}
+
+document.addEventListener('click', function(ev) {
+    if (ev.target.closest('#probe-new-provider')) probeNewProvider();
+});
 
 function switchProviderView(view) {
     const cardView = document.getElementById('providers-card-view');

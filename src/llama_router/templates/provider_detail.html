@@ -150,6 +150,54 @@
     </div>
 </div>
 
+<!-- Capabilities (last endpoint probe) -->
+{% set caps = info.provider.capabilities %}
+<div class="card mb-4" id="capabilities-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Capabilities</h5>
+        <div class="d-flex align-items-center gap-2">
+            {% if info.provider.probed_at %}<span class="small text-muted">probed {{ info.provider.probed_at | localtime }}</span>{% endif %}
+            {% if not read_only %}
+            <button type="button" class="btn btn-sm btn-outline-primary" id="probe-provider" data-provider-id="{{ info.provider.id }}">
+                <i class="bi bi-search me-1"></i>Probe endpoints
+            </button>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body small">
+        <div id="probe-provider-status" class="text-muted mb-2" style="display:none"></div>
+        {% if caps %}
+        <div class="mb-2">
+            <strong>{{ caps.servers | join(', ') if caps.servers else 'Unrecognised server' }}</strong>
+            {% if caps.version %}<span class="text-muted ms-2">version {{ caps.version }}</span>{% endif %}
+            {% if caps.auth_required %}<span class="badge bg-warning text-dark ms-2">some endpoints need a key</span>{% endif %}
+        </div>
+        <div class="d-flex flex-wrap gap-1 mb-2">
+            {% for fam, n in (caps.families or {}).items() if n %}
+            <span class="badge bg-body-secondary text-body">{{ family_labels.get(fam, fam) }} {{ n }}</span>
+            {% endfor %}
+        </div>
+        <details>
+            <summary>{{ caps.supported | length }} supported endpoints</summary>
+            <table class="table table-sm mb-0 mt-2">
+                <tbody>
+                    {% for e in caps.endpoints if e.state != 'missing' %}
+                    <tr>
+                        <td class="text-nowrap">{{ e.method }}</td>
+                        <td><code>{{ e.path }}</code>{% if caps.base_urls | length > 1 %} <span class="text-muted">at {{ e.base_url }}</span>{% endif %}</td>
+                        <td class="text-muted">{{ e.purpose }}</td>
+                        <td><span class="badge {% if e.state == 'available' %}bg-success{% elif e.state == 'exists' %}bg-info text-dark{% elif e.state == 'needs_key' %}bg-warning text-dark{% else %}bg-danger{% endif %}">{{ e.state | replace('_', ' ') }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% else %}
+        <p class="text-muted mb-0">Not probed yet. Probing checks which Ollama, llama.cpp, OpenAI, Anthropic, LiteLLM and decision-model endpoints this provider answers, without running any model.</p>
+        {% endif %}
+    </div>
+</div>
+
 <div class="row g-4">
     <div class="col-lg-7">
         <div class="card">
@@ -556,6 +604,32 @@
 {% block scripts %}
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
+
+document.addEventListener('click', function (ev) {
+    const probeBtn = ev.target.closest('#probe-provider');
+    if (!probeBtn) return;
+    const status = document.getElementById('probe-provider-status');
+    probeBtn.disabled = true;
+    status.style.display = '';
+    status.className = 'text-muted mb-2';
+    status.textContent = 'Probing…';
+    fetch('/api/providers/' + probeBtn.dataset.providerId + '/probe', {method: 'POST'})
+        .then(r => r.json().then(d => ({ok: r.ok, d: d})))
+        .then(function(res) {
+            if (!res.ok) {
+                status.className = 'text-danger mb-2';
+                status.textContent = res.d.detail || 'Probe failed.';
+                probeBtn.disabled = false;
+                return;
+            }
+            location.reload();
+        })
+        .catch(function() {
+            status.className = 'text-danger mb-2';
+            status.textContent = 'Probe request failed.';
+            probeBtn.disabled = false;
+        });
+});
 
 function openEditAddress(addrId, url, lcppUrl, preferred) {
     document.getElementById('edit-addr-id').value = String(addrId);
