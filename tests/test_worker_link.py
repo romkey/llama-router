@@ -539,10 +539,13 @@ async def test_worker_health_check_steps_aside_and_is_bounded(
         return True
 
     pm._probe_address = hung_probe
-    before = (await db.get_provider(pid)).status
     status = await asyncio.wait_for(pm.check_provider(provider), timeout=5)
-    assert status == before
     assert not pm._worker_lock(pid).locked()
+    # The timeout is committed as a consistent offline result and logged.
+    assert status == ProviderStatus.OFFLINE
+    assert (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+    logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
+    assert any("timed out" in (e.error_detail or "") for e in logs)
 
 
 async def test_disconnected_worker_reason_and_no_relog(link) -> None:
