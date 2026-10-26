@@ -12,9 +12,7 @@ from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 
 async def _seed(db):
-    p = await db.add_provider(
-        "gpu-1", "http://10.0.0.5:11434", ProviderType.OLLAMA, None
-    )
+    p = await db.add_provider("gpu-1", ProviderType.OLLAMA)
     await db.add_address(p.id, "http://10.0.0.5:11434", None, True)
     await db.set_provider_models(
         p.id,

@@ -31,6 +31,7 @@
         <h2>
             {{ info.provider.name }}
             <span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.provider_type.value }}</span>
+            {% if info.provider.has_api_key %}<span class="badge bg-secondary fs-6 align-middle me-1" title="Requests to this provider carry an API key"><i class="bi bi-key"></i></span>{% endif %}
             <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle" title="{{ info.status_detail or '' }}">
                 {{ info.provider.status.value }}
             </span>
@@ -421,20 +422,44 @@
                 </div>
                 <div class="mb-3">
                     <label for="edit-provider-type" class="form-label">Type</label>
-                    <select class="form-select" id="edit-provider-type" name="provider_type" onchange="toggleEditUrlFields()">
+                    <select class="form-select" id="edit-provider-type" name="provider_type">
                         <option value="ollama" {% if info.provider.provider_type.value == 'ollama' %}selected{% endif %}>Ollama</option>
                         <option value="llamacpp" {% if info.provider.provider_type.value == 'llamacpp' %}selected{% endif %}>llama.cpp</option>
                         <option value="both" {% if info.provider.provider_type.value == 'both' %}selected{% endif %}>Both</option>
                     </select>
                 </div>
-                <div class="mb-3" id="edit-url-group">
-                    <label for="edit-url" class="form-label">URL</label>
-                    <input type="url" class="form-control" id="edit-url" name="url" required value="{{ info.provider.url }}">
+                <p class="form-text">Change where this provider is reached under <strong>Addresses</strong>.</p>
+                <hr>
+                <p class="text-muted small mb-2">Upstream authentication (optional)</p>
+                {% if info.provider.is_worker %}
+                <p class="small text-muted mb-3">
+                    Worker providers authenticate to their backend with the worker's own
+                    <code>LLAMA_ROUTER_WORKER_UPSTREAM_API_KEY</code>; the hub link strips
+                    auth headers, so no key is set here.
+                </p>
+                {% else %}
+                <div class="mb-2 small">
+                    API key:
+                    {% if info.provider.has_api_key %}<span class="badge bg-success">set</span>{% else %}<span class="badge bg-secondary">not set</span>{% endif %}
                 </div>
-                <div class="mb-3" id="edit-llamacpp-url-group" {% if info.provider.provider_type.value != 'both' %}style="display: none;"{% endif %}>
-                    <label for="edit-llamacpp-url" class="form-label">llama.cpp URL</label>
-                    <input type="url" class="form-control" id="edit-llamacpp-url" name="llamacpp_url" value="{{ info.provider.llamacpp_url or '' }}">
+                <div class="row g-3 mb-2">
+                    <div class="col-md-7">
+                        <label for="edit-api-key" class="form-label">{{ 'Replace API key' if info.provider.has_api_key else 'API key' }}</label>
+                        <input type="password" class="form-control" id="edit-api-key" name="api_key" autocomplete="new-password" placeholder="{{ 'Leave blank to keep the current key' if info.provider.has_api_key else 'Sent with every request to this provider' }}">
+                    </div>
+                    <div class="col-md-5">
+                        <label for="edit-api-key-header" class="form-label">Header</label>
+                        <input type="text" class="form-control" id="edit-api-key-header" name="api_key_header" value="{{ info.provider.api_key_header or '' }}" placeholder="Authorization">
+                    </div>
                 </div>
+                <div class="form-text mb-2">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>. Another header name, such as <code>API-KEY</code> for an upstream llama-router, sends the key as is.</div>
+                {% if info.provider.has_api_key %}
+                <div class="form-check mb-1">
+                    <input class="form-check-input" type="checkbox" id="edit-clear-api-key" name="clear_api_key" value="1">
+                    <label class="form-check-label" for="edit-clear-api-key">Remove the stored API key</label>
+                </div>
+                {% endif %}
+                {% endif %}
                 <hr>
                 <p class="text-muted small mb-2">Hardware (optional)</p>
                 <div class="mb-3">
@@ -531,11 +556,6 @@
 {% block scripts %}
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
-function toggleEditUrlFields() {
-    const ptype = document.getElementById('edit-provider-type').value;
-    const lcppGroup = document.getElementById('edit-llamacpp-url-group');
-    lcppGroup.style.display = (ptype === 'both') ? '' : 'none';
-}
 
 function openEditAddress(addrId, url, lcppUrl, preferred) {
     document.getElementById('edit-addr-id').value = String(addrId);

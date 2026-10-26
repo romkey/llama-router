@@ -34,7 +34,7 @@ async def test_alembic_head_recorded_and_core_tables_exist(
     try:
         ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
         assert ver is not None
-        assert ver[0] == "003_workers"
+        assert ver[0] == "004_provider_api_key"
         tables = {
             r[0]
             for r in con.execute(
@@ -57,7 +57,7 @@ async def test_reopen_database_preserves_data(tmp_path) -> None:
     path = str(tmp_path / "persist.db")
     d1 = Database(path)
     await d1.connect()
-    p = await d1.add_provider("keep-me", "http://host:11434")
+    p = await d1.add_provider("keep-me")
     pid = p.id
     await d1.close()
 
@@ -158,7 +158,7 @@ async def test_request_logs_limit_and_offset(db: Database) -> None:
 
 @pytest.mark.asyncio
 async def test_get_backend_model_name_prefers_raw_name(db: Database) -> None:
-    p = await db.add_provider("srv", "http://localhost:11434")
+    p = await db.add_provider("srv")
     await db.set_provider_models(
         p.id,
         [
@@ -181,7 +181,7 @@ async def test_get_backend_model_name_prefers_raw_name(db: Database) -> None:
 async def test_delete_benchmark_rowcounts(db: Database) -> None:
     from llama_router.models import BenchmarkResult
 
-    p = await db.add_provider("bench-del", "http://localhost:11434")
+    p = await db.add_provider("bench-del")
     for _ in range(3):
         await db.save_benchmark(
             BenchmarkResult(
@@ -200,7 +200,7 @@ async def test_delete_benchmark_rowcounts(db: Database) -> None:
 
 @pytest.mark.asyncio
 async def test_list_api_keys_includes_pin_counts(db: Database) -> None:
-    p = await db.add_provider("k", "http://localhost:11434")
+    p = await db.add_provider("k")
     kid = await db.create_api_key("pre", "hash-list-api", "latency", True)
     await db.set_api_key_model_pin(kid, "m1", p.id)
     rows = await db.list_api_keys()
@@ -237,18 +237,9 @@ async def test_dashboard_user_case_insensitive_lookup_and_order(db: Database) ->
 
 
 @pytest.mark.asyncio
-async def test_seed_addresses_idempotent(db: Database) -> None:
-    p = await db.add_provider("seed", "http://seed:11434")
-    await db._seed_addresses()
-    await db._seed_addresses()
-    addrs = await db.get_addresses(p.id)
-    assert len(addrs) == 1
-
-
-@pytest.mark.asyncio
 async def test_list_all_models_excludes_offline_providers(db: Database) -> None:
-    on_p = await db.add_provider("on", "http://on:11434")
-    off_p = await db.add_provider("off", "http://off:11434")
+    on_p = await db.add_provider("on")
+    off_p = await db.add_provider("off")
     await db.update_provider_status(on_p.id, ProviderStatus.IDLE)
     await db.update_provider_status(off_p.id, ProviderStatus.OFFLINE)
     await db.set_provider_models(

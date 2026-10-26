@@ -341,7 +341,7 @@ async def test_viewer_post_providers_add_redirects_forbidden(dash_client) -> Non
 async def test_viewer_get_dashboard_and_provider_detail_allowed(dash_client) -> None:
     client, db = dash_client
     uid = await db.create_dashboard_user("v", hash_password("password-12345"), False)
-    p = await db.add_provider("p1", "http://127.0.0.1:11434")
+    p = await db.add_provider("p1")
     invalidate_dashboard_user_count_cache()
     hdr = _session_cookie_header(uid)
 
@@ -357,7 +357,7 @@ async def test_admin_save_provider_address_add_and_edit(dash_client) -> None:
     """Address modals must POST to /addresses/save, not to GET-only /providers/{id}."""
     client, db = dash_client
     uid = await db.create_dashboard_user("admin", hash_password("password-12345"), True)
-    p = await db.add_provider("p1", "http://127.0.0.1:11434")
+    p = await db.add_provider("p1")
     invalidate_dashboard_user_count_cache()
     hdr = _session_cookie_header(uid)
 
@@ -512,7 +512,8 @@ async def test_admin_can_create_rotate_disable_and_delete_worker(dash_client) ->
     row = await db.get_worker_by_token_hash(worker_token_hash(token))
     assert row is not None and row["provider_id"] == body["provider_id"]
     prov = await db.get_provider(body["provider_id"])
-    assert prov.url == "worker://alice-gpu"
+    assert prov.worker_name == "alice-gpu" and prov.is_worker
+    assert [a.url for a in await db.get_addresses(prov.id)] == ["worker://alice-gpu"]
     assert prov.status.value == "offline"
 
     dup = await client.post("/api/workers", headers=hdr, json={"name": "alice-gpu"})

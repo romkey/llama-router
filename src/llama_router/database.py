@@ -69,8 +69,6 @@ class Database:
             async with self._engine.begin() as conn:
                 await conn.execute(text("PRAGMA foreign_keys = ON"))
 
-        await self._seed_addresses()
-
     async def close(self) -> None:
         if self._engine is not None:
             await self._engine.dispose()
@@ -127,70 +125,39 @@ class Database:
                 val = r.scalar_one()
                 return int(val)
 
-    async def _seed_addresses(self) -> None:
-        sf = self._require_session_factory()
-        async with sf() as session:
-            async with session.begin():
-                st0, bd0 = qmark("SELECT id, url, llamacpp_url FROM providers")
-                r = await session.execute(st0, bd0)
-                rows = list(result_mappings(r))
-                for row in rows:
-                    st1, bd1 = qmark(
-                        "SELECT COUNT(*) AS cnt FROM provider_addresses "
-                        "WHERE provider_id = ?",
-                        row["id"],
-                    )
-                    r2 = await session.execute(st1, bd1)
-                    cnt_row = result_first(r2)
-                    if cnt_row and cnt_row["cnt"] == 0 and row["url"]:
-                        st2, bd2 = qmark(
-                            "INSERT INTO provider_addresses "
-                            "(provider_id, url, llamacpp_url, is_preferred) "
-                            "VALUES (?, ?, ?, 1)",
-                            row["id"],
-                            row["url"],
-                            row["llamacpp_url"],
-                        )
-                        await session.execute(st2, bd2)
-
     # --- Providers ---
 
     async def add_provider(
         self,
         name: str,
-        url: str,
         provider_type: ProviderType = ProviderType.OLLAMA,
-        llamacpp_url: str | None = None,
+        *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
+        worker_name: str | None = None,
     ) -> Provider:
-        url = url.rstrip("/")
-        if llamacpp_url:
-            llamacpp_url = llamacpp_url.rstrip("/")
+        """Create a provider. Addresses are added separately with add_address."""
         pid = await self._insert_get_id(
-            "INSERT INTO providers (name, url, llamacpp_url, provider_type, "
-            "machine_type, gpu_type, gpu_ram) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO providers (name, provider_type, machine_type, gpu_type, "
+            "gpu_ram, worker_name) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 name,
-                url,
-                llamacpp_url,
                 provider_type.value,
                 machine_type,
                 gpu_type,
                 gpu_ram,
+                worker_name,
             ),
         )
         return Provider(
             id=pid,
             name=name,
-            url=url,
-            llamacpp_url=llamacpp_url,
             provider_type=provider_type,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
+            worker_name=worker_name,
         )
 
     async def remove_provider(self, provider_id: int) -> None:
@@ -214,25 +181,19 @@ class Database:
         self,
         provider_id: int,
         name: str,
-        url: str,
         provider_type: ProviderType | None = None,
-        llamacpp_url: str | None = None,
+        *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
     ) -> None:
-        url = url.rstrip("/")
-        if llamacpp_url:
-            llamacpp_url = llamacpp_url.rstrip("/")
         if provider_type is not None:
             await self._execute(
-                "UPDATE providers SET name = ?, url = ?, llamacpp_url = ?, "
-                "provider_type = ?, machine_type = ?, gpu_type = ?, gpu_ram = ?, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE providers SET name = ?, provider_type = ?, machine_type = ?, "
+                "gpu_type = ?, gpu_ram = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
                 (
                     name,
-                    url,
-                    llamacpp_url,
                     provider_type.value,
                     machine_type,
                     gpu_type,
@@ -242,11 +203,20 @@ class Database:
             )
         else:
             await self._execute(
-                "UPDATE providers SET name = ?, url = ?, llamacpp_url = ?, "
-                "machine_type = ?, gpu_type = ?, gpu_ram = ?, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (name, url, llamacpp_url, machine_type, gpu_type, gpu_ram, provider_id),
+                "UPDATE providers SET name = ?, machine_type = ?, gpu_type = ?, "
+                "gpu_ram = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (name, machine_type, gpu_type, gpu_ram, provider_id),
             )
+
+    async def set_provider_api_key(
+        self, provider_id: int, api_key_enc: str | None, header: str | None
+    ) -> None:
+        """Store (or with None, clear) the encrypted upstream API key."""
+        await self._execute(
+            "UPDATE providers SET api_key_enc = ?, api_key_header = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (api_key_enc, header, provider_id),
+        )
 
     async def update_provider_status(
         self, provider_id: int, status: ProviderStatus
@@ -938,8 +908,6 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
     return Provider(
         id=row["id"],
         name=row["name"],
-        url=row["url"],
-        llamacpp_url=row["llamacpp_url"],
         provider_type=ProviderType(row["provider_type"]),
         status=ProviderStatus(row["status"]),
         machine_type=row["machine_type"],
@@ -947,6 +915,9 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         gpu_ram=row["gpu_ram"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        worker_name=row["worker_name"],
+        api_key_enc=row["api_key_enc"],
+        api_key_header=row["api_key_header"],
     )
 
 

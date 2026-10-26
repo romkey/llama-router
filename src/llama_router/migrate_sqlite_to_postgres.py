@@ -43,8 +43,6 @@ _TABLES: list[tuple[str, list[str]]] = [
         [
             "id",
             "name",
-            "url",
-            "llamacpp_url",
             "provider_type",
             "status",
             "machine_type",
@@ -52,6 +50,9 @@ _TABLES: list[tuple[str, list[str]]] = [
             "gpu_ram",
             "created_at",
             "updated_at",
+            "worker_name",
+            "api_key_enc",
+            "api_key_header",
         ],
     ),
     (

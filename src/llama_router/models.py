@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TypedDict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HotModel(TypedDict, total=False):
@@ -33,8 +33,6 @@ class ProviderType(str, Enum):
 class Provider(BaseModel):
     id: int | None = None
     name: str
-    url: str
-    llamacpp_url: str | None = None
     provider_type: ProviderType = ProviderType.OLLAMA
     status: ProviderStatus = ProviderStatus.UNKNOWN
     machine_type: str | None = None
@@ -42,17 +40,28 @@ class Provider(BaseModel):
     gpu_ram: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    # Set for providers backed by a worker that dials in over a WebSocket.
+    worker_name: str | None = None
+    # Upstream API key, encrypted (see provider_secrets). Never rendered.
+    api_key_enc: str | None = Field(default=None, repr=False, exclude=True)
+    # Header carrying the key; None means "Authorization: Bearer <key>".
+    api_key_header: str | None = None
 
     @property
     def is_worker(self) -> bool:
         """Provider backed by a worker that dials in over a WebSocket."""
-        return self.url.startswith(WORKER_URL_SCHEME)
+        return self.worker_name is not None
 
     @property
-    def worker_name(self) -> str | None:
-        if not self.is_worker:
+    def worker_address(self) -> str | None:
+        """The address row a worker provider shows, ``worker://<name>``."""
+        if self.worker_name is None:
             return None
-        return self.url[len(WORKER_URL_SCHEME) :]
+        return f"{WORKER_URL_SCHEME}{self.worker_name}"
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self.api_key_enc)
 
     @property
     def supports_ollama(self) -> bool:

@@ -43,7 +43,7 @@ def _routes(httpx_mock, by_host: dict) -> None:
 
 
 async def _provider(db, name: str, url: str, status: ProviderStatus):
-    p = await db.add_provider(name, url, ProviderType.OLLAMA, None)
+    p = await db.add_provider(name, ProviderType.OLLAMA)
     await db.add_address(p.id, url, None, True)
     await db.update_provider_status(p.id, status)
     return await db.get_provider(p.id)
