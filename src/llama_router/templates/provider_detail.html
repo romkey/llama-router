@@ -125,7 +125,11 @@
                         {% if not read_only %}
                         <td class="text-end text-nowrap">
                             <button type="button" class="btn btn-sm btn-outline-secondary" title="Edit"
-                                onclick="openEditAddress({{ addr.id | tojson }}, {{ addr.url | tojson }}, {{ (addr.llamacpp_url or '') | tojson }}, {{ addr.is_preferred | tojson }})">
+                                data-edit-address
+                                data-addr-id="{{ addr.id }}"
+                                data-addr-url="{{ addr.url }}"
+                                data-addr-lcpp="{{ addr.llamacpp_url or '' }}"
+                                data-addr-preferred="{{ 'true' if addr.is_preferred else 'false' }}">
                                 <i class="bi bi-pencil"></i>
                             </button>
                             <form method="post" action="/providers/{{ info.provider.id }}/addresses/{{ addr.id }}/remove" class="d-inline">
@@ -533,6 +537,17 @@ function toggleEditUrlFields() {
     const lcppGroup = document.getElementById('edit-llamacpp-url-group');
     lcppGroup.style.display = (ptype === 'both') ? '' : 'none';
 }
+
+document.addEventListener('click', function (ev) {
+    const btn = ev.target.closest('[data-edit-address]');
+    if (!btn) return;
+    openEditAddress(
+        btn.dataset.addrId,
+        btn.dataset.addrUrl,
+        btn.dataset.addrLcpp,
+        btn.dataset.addrPreferred === 'true'
+    );
+});
 
 function openEditAddress(addrId, url, lcppUrl, preferred) {
     document.getElementById('edit-addr-id').value = String(addrId);
