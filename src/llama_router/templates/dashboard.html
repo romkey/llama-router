@@ -143,11 +143,12 @@
                                 <div>
                                     {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
                                     <span class="badge bg-info text-dark me-1">{{ info.provider.provider_type.value }}</span>
-                                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status>
+                                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status title="{{ info.status_detail or '' }}">
                                         {{ info.provider.status.value }}
                                     </span>
                                 </div>
                             </div>
+                            <div class="small text-danger mb-1" data-card-detail{% if not info.status_detail %} style="display:none"{% endif %}><i class="bi bi-exclamation-triangle me-1"></i><span>{{ info.status_detail or '' }}</span></div>
                             <div class="small mb-2" data-card-addresses>
                                 {% for addr in info.addresses %}
                                 <div class="text-muted">
@@ -256,7 +257,7 @@
                                 {% if info.provider.gpu_type %}{{ info.provider.gpu_type }}{% if info.provider.gpu_ram %} ({{ info.provider.gpu_ram }}){% endif %}{% elif info.provider.machine_type %}{{ info.provider.machine_type }}{% else %}—{% endif %}
                             </td>
                             <td data-list-status>
-                                <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}">
+                                <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" title="{{ info.status_detail or '' }}">
                                     {{ info.provider.status.value }}
                                 </span>
                             </td>
@@ -832,6 +833,7 @@
                             <option value="ollama">Ollama</option>
                             <option value="llamacpp">llama.cpp</option>
                             <option value="v1">v1</option>
+                            <option value="system">System</option>
                         </select>
                     </div>
                     <div class="col-md-2">
@@ -892,7 +894,7 @@
                     >
                         <td class="text-muted small text-nowrap">{{ entry.created_at | localtime }}</td>
                         <td class="small"><code>{{ entry.source_ip or "—" }}</code></td>
-                        <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
+                        <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% elif entry.protocol == 'system' %}bg-secondary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
                         <td class="small"><code>{{ entry.endpoint }}</code></td>
                         <td class="small"><code>{{ entry.model or "—" }}</code></td>
                         <td class="small text-muted">{{ entry.request_meta or "—" }}</td>
@@ -965,7 +967,7 @@
 
         {% else %}
         <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Send requests through the Ollama or llama.cpp APIs to see them here.
+            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Requests through the Ollama or llama.cpp APIs and provider events such as refreshes appear here.
         </div>
         {% endif %}
     </div>
@@ -1523,7 +1525,16 @@ function updateDashboard(data) {
         if (!p) return;
 
         const statusEl = card.querySelector('[data-card-status]');
-        if (statusEl) { statusEl.className = STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown; statusEl.textContent = p.status; }
+        if (statusEl) {
+            statusEl.className = STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown;
+            statusEl.textContent = p.status;
+            statusEl.title = p.status_detail || '';
+        }
+        const detailEl = card.querySelector('[data-card-detail]');
+        if (detailEl) {
+            detailEl.style.display = p.status_detail ? '' : 'none';
+            detailEl.querySelector('span').textContent = p.status_detail || '';
+        }
 
         const addrEl = card.querySelector('[data-card-addresses]');
         if (addrEl) addrEl.innerHTML = renderCardAddresses(p.addresses);
@@ -1559,7 +1570,10 @@ function updateDashboard(data) {
         if (!p) return;
 
         const statusEl = row.querySelector('[data-list-status]');
-        if (statusEl) statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + p.status + '</span>';
+        if (statusEl) {
+            statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + p.status + '</span>';
+            statusEl.firstChild.title = p.status_detail || '';
+        }
 
         const addrEl = row.querySelector('[data-list-addresses]');
         if (addrEl) addrEl.innerHTML = renderListAddresses(p.addresses);

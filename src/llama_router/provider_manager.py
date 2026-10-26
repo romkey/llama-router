@@ -25,6 +25,7 @@ from .models import (
     ProviderModel,
     ProviderStatus,
     ProviderType,
+    RequestLog,
     WORKER_URL_SCHEME,
 )
 from .ollama_client import OllamaClient
@@ -34,6 +35,27 @@ if TYPE_CHECKING:
     from .router import Router
 
 logger = logging.getLogger(__name__)
+
+# Reachability probes must be quick: one black-holed address must not stall the
+# health cycle for every other provider.
+_PROBE_TIMEOUT = httpx.Timeout(5.0)
+# Providers checked at once during startup and each health cycle.
+_CHECK_CONCURRENCY = 8
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Short, safe description of why discovery failed, for status and the Log."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return (
+                f"authentication required (HTTP {code} from "
+                f"{exc.request.url.path}); set the provider's API key"
+            )
+        return f"HTTP {code} from {exc.request.url.path}"
+    if isinstance(exc, httpx.HTTPError):
+        return describe_httpx_error(exc)
+    return str(exc) or type(exc).__name__
 
 
 def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
@@ -73,6 +95,12 @@ class ProviderManager:
         self._active_urls: dict[int, tuple[str, str]] = {}
         self._router: Router | None = None
         self._health_task: asyncio.Task | None = None
+        # Why a provider with a reachable address is still not usable, shown in
+        # the dashboard. Cleared once discovery succeeds.
+        self._status_detail: dict[int, str] = {}
+        # Last offline reason written to the Log, so automatic checks log a
+        # failure once rather than on every cycle.
+        self._logged_detail: dict[int, str] = {}
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -108,6 +136,7 @@ class ProviderManager:
 
     async def start(self) -> None:
         providers = await self._db.list_providers()
+        http_providers: list[Provider] = []
         for p in providers:
             assert p.id is not None
             await self._rebuild_clients(p)
@@ -116,27 +145,10 @@ class ProviderManager:
                 if not self.worker_hub.is_connected(p.id):
                     await self._mark_worker_offline(p.id)
                 continue
-            try:
-                await self._discover_provider(p)
-            except Exception as exc:
-                urls = await self._format_provider_urls(p.id)
-                if isinstance(exc, httpx.HTTPError):
-                    logger.error(
-                        "Initial model discovery failed for provider %r (id=%s); "
-                        "configured URL(s): %s (see prior upstream httpx log for details)",
-                        p.name,
-                        p.id,
-                        urls,
-                    )
-                else:
-                    logger.error(
-                        "Initial model discovery failed for provider %r (id=%s); "
-                        "configured URL(s): %s: %s",
-                        p.name,
-                        p.id,
-                        urls,
-                        exc,
-                    )
+            http_providers.append(p)
+        # Probe and discover now so the dashboard shows real state immediately
+        # instead of whatever the database held from the last run.
+        await self._check_many(http_providers, rediscover=True, source="startup")
         self._health_task = asyncio.create_task(self._health_check_loop())
 
     async def stop(self) -> None:
@@ -228,32 +240,7 @@ class ProviderManager:
         assert provider.id is not None
         await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
         await self._rebuild_clients(provider)
-
-        try:
-            await self._discover_provider(provider)
-            await self._db.update_provider_status(provider.id, ProviderStatus.IDLE)
-            provider.status = ProviderStatus.IDLE
-        except Exception as exc:
-            urls = await self._format_provider_urls(provider.id)
-            if isinstance(exc, httpx.HTTPError):
-                logger.error(
-                    "Failed to discover new provider %r (id=%s); URL(s): %s "
-                    "(upstream error logged above)",
-                    name,
-                    provider.id,
-                    urls,
-                )
-            else:
-                logger.error(
-                    "Failed to discover new provider %r (id=%s); URL(s): %s: %s",
-                    name,
-                    provider.id,
-                    urls,
-                    exc,
-                )
-            await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
-            provider.status = ProviderStatus.OFFLINE
-
+        await self.check_provider(provider, rediscover=True, source="add")
         return provider
 
     async def update_provider(
@@ -288,28 +275,7 @@ class ProviderManager:
         if not provider:
             return
         await self._rebuild_clients(provider)
-        try:
-            await self._discover_provider(provider)
-            await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
-        except Exception as exc:
-            urls = await self._format_provider_urls(provider_id)
-            if isinstance(exc, httpx.HTTPError):
-                logger.error(
-                    "Failed to discover updated provider %r (id=%s); URL(s): %s "
-                    "(upstream error logged above)",
-                    provider.name,
-                    provider_id,
-                    urls,
-                )
-            else:
-                logger.error(
-                    "Failed to discover updated provider %r (id=%s); URL(s): %s: %s",
-                    provider.name,
-                    provider_id,
-                    urls,
-                    exc,
-                )
-            await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
+        await self.check_provider(provider, rediscover=True, source="edit")
 
     async def delete_remote_model(self, provider_id: int, model_name: str) -> None:
         """Delete a model from the remote provider and re-discover.
@@ -420,6 +386,7 @@ class ProviderManager:
             active_requests=self._active_requests.get(provider_id, 0),
             hot_models=self._hot_models.get(provider_id, []),
             worker=self.worker_summary(provider),
+            status_detail=self._status_detail.get(provider_id),
         )
 
     def worker_summary(self, provider: Provider) -> dict | None:
@@ -448,6 +415,7 @@ class ProviderManager:
                     active_requests=self._active_requests.get(p.id, 0),
                     hot_models=self._hot_models.get(p.id, []),
                     worker=self.worker_summary(p),
+                    status_detail=self._status_detail.get(p.id),
                 )
             )
         return infos
@@ -524,32 +492,184 @@ class ProviderManager:
                     exc,
                 )
 
-    async def refresh_provider(self, provider_id: int) -> None:
+    async def refresh_provider(self, provider_id: int) -> ProviderStatus | None:
+        """Re-probe every address, rebuild clients and re-discover models.
+
+        Writes the outcome to the dashboard Log so a manual refresh is visible.
+        """
         provider = await self._db.get_provider(provider_id)
         if not provider:
-            return
+            return None
+        return await self.check_provider(provider, rediscover=True, source="refresh")
+
+    def status_detail(self, provider_id: int) -> str | None:
+        """Why a provider is not usable although an address answers, if known."""
+        return self._status_detail.get(provider_id)
+
+    async def _log_event(
+        self,
+        provider: Provider,
+        endpoint: str,
+        *,
+        ok: bool,
+        detail: str | None = None,
+        duration_ms: float = 0.0,
+    ) -> None:
+        """Record a provider lifecycle event in the dashboard Log."""
         try:
-            await self._discover_provider(provider)
-            await self._db.update_provider_status(provider_id, ProviderStatus.IDLE)
-        except Exception as exc:
-            urls = await self._format_provider_urls(provider_id)
-            if isinstance(exc, httpx.HTTPError):
-                logger.error(
-                    "Failed to refresh provider %r (id=%s); URL(s): %s "
-                    "(upstream error logged above)",
-                    provider.name,
-                    provider_id,
-                    urls,
+            await self._db.save_request_log(
+                RequestLog(
+                    provider_id=provider.id,
+                    provider_name=provider.name,
+                    protocol="system",
+                    endpoint=endpoint,
+                    source_ip="internal",
+                    request_meta=None if not ok else detail,
+                    duration_ms=duration_ms,
+                    status="ok" if ok else "error",
+                    error_detail=None if ok else detail,
                 )
+            )
+        except Exception:
+            logger.exception("Could not write %s event for %s", endpoint, provider.name)
+
+    async def _check_many(
+        self, providers: list[Provider], *, rediscover: bool, source: str
+    ) -> None:
+        """Check providers concurrently; one failure never stops the others."""
+        sem = asyncio.Semaphore(_CHECK_CONCURRENCY)
+
+        async def one(p: Provider) -> None:
+            async with sem:
+                try:
+                    await self.check_provider(p, rediscover=rediscover, source=source)
+                except Exception:
+                    logger.exception("Health check failed for provider %s", p.name)
+
+        await asyncio.gather(*(one(p) for p in providers))
+
+    async def check_provider(
+        self, provider: Provider, *, rediscover: bool = False, source: str = "health"
+    ) -> ProviderStatus:
+        """Probe all addresses, update liveness, clients, models and status.
+
+        *source* is ``startup``, ``refresh`` or ``health``. Manual refreshes
+        always write a Log entry; automatic checks write one only when the
+        status or the failure reason changes, so the Log is not flooded.
+        """
+        assert provider.id is not None
+        if provider.is_worker:
+            async with self._worker_lock(provider.id):
+                return await self._check_provider_locked(provider, rediscover, source)
+        return await self._check_provider_locked(provider, rediscover, source)
+
+    async def _check_provider_locked(
+        self, provider: Provider, rediscover: bool, source: str
+    ) -> ProviderStatus:
+        pid = provider.id
+        assert pid is not None
+        started = time.monotonic()
+        prev_status = provider.status
+        prev_detail = self._logged_detail.get(pid)
+
+        addresses = await self._db.get_addresses(pid)
+        results = await asyncio.gather(
+            *(self._probe_address(provider, a) for a in addresses)
+        )
+        for addr, reachable in zip(addresses, results):
+            assert addr.id is not None
+            if addr.is_live != reachable:
+                await self._db.set_address_live(addr.id, reachable)
+            addr.is_live = reachable
+        live = [a for a in addresses if a.is_live]
+
+        detail: str | None = None
+        if not live:
+            status = ProviderStatus.OFFLINE
+            urls = ", ".join(a.url for a in addresses) or "no addresses"
+            detail = f"no address responded ({urls})"
+            self._hot_models[pid] = []
+        else:
+            await self._maybe_rebuild_clients(provider, addresses)
+            needs_discovery = rediscover or prev_status in (
+                ProviderStatus.OFFLINE,
+                ProviderStatus.UNKNOWN,
+            )
+            try:
+                if needs_discovery:
+                    await self._discover_provider(provider)
+                else:
+                    await self._refresh_hot_models(provider)
+            except Exception as exc:
+                # Reachable but unusable (for example a key is required to list
+                # models). Keep it out of routing and say why.
+                status = ProviderStatus.OFFLINE
+                detail = _failure_reason(exc)
             else:
-                logger.error(
-                    "Failed to refresh provider %r (id=%s); URL(s): %s: %s",
-                    provider.name,
-                    provider_id,
-                    urls,
-                    exc,
-                )
-            await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
+                busy = self._active_requests.get(pid, 0) > 0
+                status = ProviderStatus.BUSY if busy else ProviderStatus.IDLE
+
+        if detail and status == ProviderStatus.OFFLINE and live:
+            self._status_detail[pid] = detail
+        else:
+            self._status_detail.pop(pid, None)
+
+        await self._db.update_provider_status(pid, status)
+        provider.status = status
+
+        online = status != ProviderStatus.OFFLINE
+        if online:
+            self._logged_detail.pop(pid, None)
+        elif detail:
+            self._logged_detail[pid] = detail
+        was_online = prev_status not in (ProviderStatus.OFFLINE, ProviderStatus.UNKNOWN)
+        duration_ms = (time.monotonic() - started) * 1000
+        live_urls = ", ".join(a.url for a in live)
+        if source in ("refresh", "add", "edit"):
+            summary = f"online via {live_urls}" if online else (detail or "offline")
+            await self._log_event(
+                provider, source, ok=online, detail=summary, duration_ms=duration_ms
+            )
+        elif online and not was_online:
+            logger.info("Provider %s is online (%s)", provider.name, live_urls)
+            await self._log_event(
+                provider,
+                source,
+                ok=True,
+                detail=f"online via {live_urls}",
+                duration_ms=duration_ms,
+            )
+        elif not online and (was_online or detail != prev_detail):
+            logger.warning("Provider %s is offline: %s", provider.name, detail)
+            await self._log_event(
+                provider, source, ok=False, detail=detail, duration_ms=duration_ms
+            )
+        return status
+
+    async def _maybe_rebuild_clients(
+        self, provider: Provider, addresses: list[ProviderAddress]
+    ) -> None:
+        """Point clients at the best live address unless requests are in flight."""
+        pid = provider.id
+        assert pid is not None
+        best = self._best_address(addresses)
+        if best is None:
+            return
+        has_clients = pid in self._ollama_clients or pid in self._llamacpp_clients
+        new_sig = self._address_url_sig(provider, best)
+        if has_clients and (
+            provider.is_worker or new_sig == self._active_urls.get(pid)
+        ):
+            return
+        in_flight = self._active_requests.get(pid, 0)
+        if has_clients and in_flight > 0:
+            logger.info(
+                "Skipping client rebuild for provider %d — %d requests in flight",
+                pid,
+                in_flight,
+            )
+            return
+        await self._rebuild_clients(provider)
 
     async def benchmark_provider(
         self,
@@ -935,72 +1055,14 @@ class ProviderManager:
 
     async def _run_health_checks(self) -> None:
         providers = await self._db.list_providers()
-        for p in providers:
-            assert p.id is not None
-            addresses = await self._db.get_addresses(p.id)
-            any_live = False
-
-            for addr in addresses:
-                assert addr.id is not None
-                reachable = await self._probe_address(p, addr)
-                await self._db.set_address_live(addr.id, reachable)
-                if reachable:
-                    any_live = True
-
-            addresses = await self._db.get_addresses(p.id)
-            if any_live:
-                if p.status == ProviderStatus.OFFLINE:
-                    live_urls = [a.url for a in addresses if a.is_live]
-                    logger.info(
-                        "Provider %s is back online (%s), re-discovering",
-                        p.name,
-                        ", ".join(live_urls),
-                    )
-                    best = self._best_address(addresses)
-                    new_sig = (
-                        self._address_url_sig(p, best) if best is not None else ("", "")
-                    )
-                    has_clients = (
-                        p.id in self._ollama_clients or p.id in self._llamacpp_clients
-                    )
-                    prev_sig = self._active_urls.get(p.id)
-                    need_rebuild = best is not None and (
-                        not has_clients or new_sig != prev_sig
-                    )
-                    if need_rebuild:
-                        in_flight = self._active_requests.get(p.id, 0)
-                        if in_flight > 0:
-                            logger.info(
-                                "Skipping client rebuild for provider %d — "
-                                "%d requests in flight",
-                                p.id,
-                                in_flight,
-                            )
-                        else:
-                            await self._rebuild_clients(p)
-                    await self._discover_provider(p)
-                else:
-                    await self._refresh_hot_models(p)
-                if self._active_requests.get(p.id, 0) > 0:
-                    await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
-                else:
-                    await self._db.update_provider_status(p.id, ProviderStatus.IDLE)
-            else:
-                if p.status != ProviderStatus.OFFLINE:
-                    addr_urls = [a.url for a in addresses]
-                    logger.warning(
-                        "Provider %s went offline (%s)",
-                        p.name,
-                        ", ".join(addr_urls),
-                    )
-                await self._db.update_provider_status(p.id, ProviderStatus.OFFLINE)
+        await self._check_many(providers, rediscover=False, source="health")
 
     async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
         """Check if a single address is reachable via the provider's protocol(s)."""
         if provider.is_worker:
             return await self._probe_worker(provider)
         if provider.supports_ollama:
-            tmp = OllamaClient(addr.url)
+            tmp = OllamaClient(addr.url, timeout=_PROBE_TIMEOUT)
             try:
                 if await tmp.is_reachable():
                     return True
@@ -1009,7 +1071,7 @@ class ProviderManager:
 
         if provider.supports_llamacpp:
             url = addr.llamacpp_url or addr.url
-            tmp = LlamaCppClient(url)
+            tmp = LlamaCppClient(url, timeout=_PROBE_TIMEOUT)
             try:
                 if await tmp.is_reachable():
                     return True

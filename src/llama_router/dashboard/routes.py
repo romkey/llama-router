@@ -771,6 +771,7 @@ async def api_status(request: Request):
                 "id": info.provider.id,
                 "name": info.provider.name,
                 "status": info.provider.status.value,
+                "status_detail": info.status_detail,
                 "provider_type": info.provider.provider_type.value,
                 "model_count": len(info.models),
                 "active_requests": info.active_requests,
