@@ -606,3 +606,30 @@ async def test_disconnect_during_cycle_is_not_logged_twice(link) -> None:
         if e.protocol == "system" and e.status == "error"
     ]
     assert [e.endpoint for e in errors] == ["disconnect"]
+
+
+async def test_timeout_does_not_mark_reconnected_worker_offline(
+    link, monkeypatch
+) -> None:
+    import llama_router.provider_manager as pm_mod
+
+    await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    provider = await db.get_provider(pid)
+    monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+    real_get = pm.worker_hub.get
+    swapped = {"on": False}
+
+    async def hung_probe(p, addr):
+        swapped["on"] = True  # a new socket "arrives" while we hang
+        await asyncio.sleep(30)
+        return True
+
+    def get(provider_id):
+        return object() if swapped["on"] else real_get(provider_id)
+
+    pm._probe_address = hung_probe
+    monkeypatch.setattr(pm.worker_hub, "get", get)
+    await pm.check_provider(provider)
+    assert (await db.get_provider(pid)).status == ProviderStatus.IDLE
