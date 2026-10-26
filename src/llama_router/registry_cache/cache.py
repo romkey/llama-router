@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import shutil
 import time
 from collections.abc import Iterator
@@ -11,10 +13,43 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# OCI distribution spec: a repository name is one or more lowercase path
+# components separated by "/"; a tag is up to 128 chars of [A-Za-z0-9._-]
+# starting with a word character; a digest is an algorithm and hex.  Ollama
+# model names may carry upper-case letters, so name components accept them.
+_NAME_COMPONENT = r"[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*"
+_NAME_RE = re.compile(rf"^{_NAME_COMPONENT}(?:/{_NAME_COMPONENT})*$")
+_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class InvalidCacheKey(ValueError):
+    """A repository name, tag or digest that is not a valid OCI identifier."""
+
+
+def validate_name(name: str) -> str:
+    if not name or len(name) > 255 or not _NAME_RE.fullmatch(name):
+        raise InvalidCacheKey(f"invalid repository name: {name!r}")
+    return name
+
+
+def validate_reference(reference: str) -> str:
+    if not reference or not (
+        _TAG_RE.fullmatch(reference) or _DIGEST_RE.fullmatch(reference)
+    ):
+        raise InvalidCacheKey(f"invalid reference: {reference!r}")
+    return reference
+
+
+def validate_digest(digest: str) -> str:
+    if not digest or not _DIGEST_RE.fullmatch(digest):
+        raise InvalidCacheKey(f"invalid digest: {digest!r}")
+    return digest
+
 
 class BlobCache:
     def __init__(self, cache_dir: str, manifest_ttl_hours: int = 240):
-        self._root = Path(cache_dir)
+        self._root = Path(os.path.abspath(cache_dir))
         self._blobs_dir = self._root / "blobs" / "sha256"
         self._manifests_dir = self._root / "manifests"
         self._manifest_ttl_seconds = manifest_ttl_hours * 3600
@@ -25,14 +60,29 @@ class BlobCache:
         self.manifest_hits: int = 0
         self.manifest_misses: int = 0
 
+    @staticmethod
+    def _path_under(base: Path, *parts: str) -> Path:
+        """Join *parts* onto *base* and refuse any result that escapes it.
+
+        Callers validate their inputs first; this is the last line of defence
+        against path traversal and the check CodeQL recognises as a barrier.
+        """
+        root = os.path.abspath(str(base))
+        candidate = os.path.normpath(os.path.join(root, *parts))
+        if candidate != root and not candidate.startswith(root + os.sep):
+            raise InvalidCacheKey("path escapes cache directory")
+        return Path(candidate)
+
     def _blob_path(self, digest: str) -> Path:
         """sha256:abc123... -> blobs/sha256/abc123..."""
-        short = digest.removeprefix("sha256:")
-        return self._blobs_dir / short
+        short = validate_digest(digest).removeprefix("sha256:")
+        return self._path_under(self._blobs_dir, short)
 
     def _manifest_path(self, name: str, reference: str) -> Path:
-        safe_name = name.replace("/", "_")
-        return self._manifests_dir / safe_name / reference
+        safe_name = validate_name(name).replace("/", "_")
+        return self._path_under(
+            self._manifests_dir, safe_name, validate_reference(reference)
+        )
 
     # --- Blobs ---
 
