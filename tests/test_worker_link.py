@@ -648,3 +648,10 @@ async def test_timeout_does_not_mark_reconnected_worker_offline(
     monkeypatch.setattr(pm.worker_hub, "get", get)
     await pm.check_provider(provider)
     assert (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    # A manual refresh in the same situation still leaves a Log row.
+    swapped["on"] = False
+    monkeypatch.setattr(pm_mod, "_WORKER_MANUAL_TIMEOUT", 0.2)
+    await pm.check_provider(await db.get_provider(pid), source="refresh")
+    rows = [e for e in await db.get_request_logs(50, 0) if e.endpoint == "refresh"]
+    assert rows and "reconnected" in (rows[0].request_meta or "")
