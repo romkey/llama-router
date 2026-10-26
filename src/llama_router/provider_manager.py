@@ -652,6 +652,12 @@ class ProviderManager:
             return provider.status
         cap = _WORKER_CHECK_TIMEOUT if source == "health" else _WORKER_MANUAL_TIMEOUT
         async with lock:
+            # Re-read under the lock: a connect or disconnect handler may have
+            # changed (and logged) the status since this cycle listed providers.
+            fresh = await self._db.get_provider(pid)
+            if fresh is None:
+                return provider.status
+            provider.status = fresh.status
             conn = self.worker_hub.get(pid)
             prev_status = provider.status
             started = time.monotonic()
@@ -693,6 +699,11 @@ class ProviderManager:
         pid = provider.id
         assert pid is not None
         started = time.monotonic()
+        if not provider.is_worker:
+            # The cycle's provider list can be seconds old by now.
+            fresh = await self._db.get_provider(pid)
+            if fresh is not None:
+                provider.status = fresh.status
         prev_status = provider.status
 
         addresses = await self._db.get_addresses(pid)
