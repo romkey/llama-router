@@ -29,10 +29,10 @@
     </button>
 </li>
 {% endif %}
-{% if show_wireguard %}
+{% if show_workers %}
 <li class="nav-item" role="presentation">
-    <button class="nav-link" id="wireguard-tab" data-bs-toggle="tab" data-bs-target="#wireguard-pane" type="button" role="tab" aria-controls="wireguard-pane" aria-selected="false">
-        <i class="bi bi-shield-lock me-1"></i>WireGuard
+    <button class="nav-link" id="workers-tab" data-bs-toggle="tab" data-bs-target="#workers-pane" type="button" role="tab" aria-controls="workers-pane" aria-selected="false">
+        <i class="bi bi-diagram-3 me-1"></i>Workers
     </button>
 </li>
 {% endif %}
@@ -141,6 +141,7 @@
                                     </a>
                                 </h5>
                                 <div>
+                                    {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
                                     <span class="badge bg-info text-dark me-1">{{ info.provider.provider_type.value }}</span>
                                     <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status>
                                         {{ info.provider.status.value }}
@@ -709,345 +710,111 @@
     </div>
     {% endif %}
 
-    <!-- ==================== WIREGUARD TAB ==================== -->
-    {% if show_wireguard %}
-    <div class="tab-pane fade" id="wireguard-pane" role="tabpanel" aria-labelledby="wireguard-tab" tabindex="0">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Inbound peering</h5>
+    <!-- ==================== WORKERS TAB ==================== -->
+    {% if show_workers %}
+    <div class="tab-pane fade" id="workers-pane" role="tabpanel" aria-labelledby="workers-tab" tabindex="0">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Workers connected to this hub</h5>
+                {% if not worker_hub_enabled %}<span class="badge bg-warning text-dark">Hub disabled</span>{% endif %}
             </div>
             <div class="card-body">
-                <p class="small text-muted">Allow other llama-router instances to register as WireGuard peers using a shared secret.</p>
-                <div class="row g-3 align-items-end mb-3">
-                    <div class="col-md-4">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="wg-peering-enabled" {% if wg_iface.peering_enabled %}checked{% endif %}>
-                            <label class="form-check-label" for="wg-peering-enabled">Accept peer requests from remote routers</label>
-                        </div>
-                    </div>
-                    <div class="col-md-5">
-                        <label class="form-label" for="wg-peering-key">Peering API key</label>
-                        <div class="input-group">
-                            <input type="password" class="form-control font-monospace small" id="wg-peering-key" autocomplete="off" placeholder="{{ wg_peering_key_masked or 'Generate on save' }}" value="">
-                            <button type="button" class="btn btn-outline-secondary" id="wg-peering-regen" title="Regenerate"><i class="bi bi-arrow-clockwise"></i></button>
-                        </div>
-                        <div class="form-text"><strong>Stored value</strong> (masked) is the key <em>already saved on the server</em>. The box above is only for typing a <em>new</em> key before you click Save—until then, the first characters may not match.</div>
-                        <div class="form-text">Saved key prefix: <code id="wg-peering-masked-display">{{ wg_peering_key_masked or '(not set)' }}</code></div>
-                        <div id="wg-peering-key-reveal-wrap" class="mt-2 d-none">
-                            <label class="form-label small mb-1" for="wg-peering-key-reveal">Full peering API key (copy for <code>X-Peering-Key</code> — not shown after page reload)</label>
-                            <div class="input-group input-group-sm">
-                                <input type="text" class="form-control font-monospace small" id="wg-peering-key-reveal" readonly autocomplete="off">
-                                <button type="button" class="btn btn-outline-secondary" id="wg-peering-key-reveal-copy" title="Copy key"><i class="bi bi-clipboard"></i></button>
-                            </div>
-                            <div class="form-text">After reload, click <strong>Save</strong> again (leave the key box empty) to fetch the current key here, or use <strong>Regenerate</strong> for a new one.</div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <button type="button" class="btn btn-primary" id="wg-peering-save"><i class="bi bi-save me-1"></i>Save</button>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label" for="wg-peering-expires-hours">Key expires after (hours)</label>
-                        <input type="number" class="form-control" id="wg-peering-expires-hours" min="0" step="1" placeholder="Optional — leave blank to keep current">
-                        <div class="form-text">Set from save time; blank does not change expiry.</div>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label" for="wg-peering-max-uses">Max inbound API uses</label>
-                        <input type="number" class="form-control" id="wg-peering-max-uses" min="0" step="1" placeholder="Unlimited" value="{{ wg_iface.peering_key_max_uses or '' }}">
-                        <div class="form-text">Blank does not change. <code id="wg-peering-use-hint">Uses: {{ wg_iface.peering_key_use_count|default(0) }}{% if wg_iface.peering_key_max_uses is not none %}/{{ wg_iface.peering_key_max_uses }}{% endif %}</code></div>
-                    </div>
-                </div>
-                <div class="mb-2">
-                    <label class="form-label small text-muted">Share with remote operators (requires API key to view)</label>
-                    <div class="input-group">
-                        <textarea class="form-control font-monospace small" id="wg-peer-info-json" rows="4" readonly placeholder="Save peering config and use Copy all"></textarea>
-                        <button type="button" class="btn btn-outline-secondary" id="wg-peer-info-copy" title="Copy all"><i class="bi bi-clipboard"></i></button>
-                    </div>
-                </div>
-                <div id="wg-peering-banner" class="alert d-none" role="alert"></div>
-            </div>
-        </div>
-
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-arrow-left-right me-2"></i>Manual peer exchange</h5>
-            </div>
-            <div class="card-body">
-                <p class="small text-muted">When dashboards cannot reach each other (firewalls, HTTP-only, etc.), exchange JSON out-of-band, then import locally. No peering key on export — you must be logged into this dashboard.</p>
-                <div class="row g-3">
-                    <div class="col-lg-6">
-                        <h6 class="text-secondary">Share your config</h6>
-                        <button type="button" class="btn btn-outline-primary btn-sm mb-2" id="wg-manual-export-btn"><i class="bi bi-download me-1"></i>Generate export</button>
-                        <div class="input-group">
-                            <textarea class="form-control font-monospace small" id="wg-manual-export-text" rows="8" readonly placeholder="Click Generate export"></textarea>
-                            <button type="button" class="btn btn-outline-secondary" id="wg-manual-export-copy" title="Copy"><i class="bi bi-clipboard"></i></button>
-                        </div>
-                        <div class="form-text">Share this JSON with the remote operator. They paste it into their Import panel.</div>
-                        <div id="wg-manual-export-banner" class="alert d-none mt-2 mb-0" role="alert"></div>
-                    </div>
-                    <div class="col-lg-6">
-                        <h6 class="text-secondary">Import remote config</h6>
-                        <label class="form-label small" for="wg-manual-import-text">Remote exported JSON</label>
-                        <textarea class="form-control font-monospace small mb-2" id="wg-manual-import-text" rows="5" placeholder="{ &quot;public_key&quot;: &quot;…&quot;, … }"></textarea>
-                        <label class="form-label small" for="wg-manual-import-our-ip">Our tunnel IP</label>
-                        <input type="text" class="form-control font-monospace mb-2" id="wg-manual-import-our-ip" placeholder="10.8.0.1" value="{{ wg_iface.address_cidr.split('/')[0] if wg_iface.address_cidr else '' }}">
-                        <div class="form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="wg-manual-import-add-provider" checked>
-                            <label class="form-check-label" for="wg-manual-import-add-provider">Also add as provider</label>
-                        </div>
-                        <button type="button" class="btn btn-success" id="wg-manual-import-btn"><i class="bi bi-box-arrow-in-down me-1"></i>Import peer</button>
-                        <div id="wg-manual-import-banner" class="alert d-none mt-2 mb-0" role="alert"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Connect to remote llama-router</h5>
-            </div>
-            <div class="card-body">
-                <div id="wg-connect-http-warn" class="alert alert-warning py-2 small d-none" role="alert">
-                    HTTP remotes are not supported — the peering key would be sent in cleartext.
-                    If the remote dashboard is not reachable or only available over HTTP, use
-                    <strong>Manual peer exchange</strong> above.
-                </div>
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label" for="wg-connect-url">Remote router URL</label>
-                        <input type="url" class="form-control" id="wg-connect-url" placeholder="https://router-b.example.com">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" for="wg-connect-key">Remote peering API key</label>
-                        <input type="password" class="form-control font-monospace" id="wg-connect-key" autocomplete="off">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label" for="wg-connect-our-ip">Our tunnel IP</label>
-                        <input type="text" class="form-control font-monospace" id="wg-connect-our-ip" placeholder="10.8.0.1" value="{{ wg_iface.address_cidr.split('/')[0] if wg_iface.address_cidr else '' }}">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label" for="wg-connect-their-ip">Their tunnel IP</label>
-                        <input type="text" class="form-control font-monospace" id="wg-connect-their-ip" placeholder="10.8.0.2">
-                    </div>
-                    <div class="col-md-4 d-flex align-items-end">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="wg-connect-add-provider" checked>
-                            <label class="form-check-label" for="wg-connect-add-provider">Also add as provider</label>
-                        </div>
-                    </div>
-                    <div class="col-12">
-                        <button type="button" class="btn btn-success" id="wg-connect-btn"><i class="bi bi-plug me-1"></i>Connect</button>
-                    </div>
-                </div>
-                <div id="wg-connect-banner" class="alert d-none mt-3" role="alert"></div>
-            </div>
-        </div>
-
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>WireGuard tunnel</h5>
-            </div>
-            <div class="card-body">
-                {% if not wireguard_path_set %}
-                <div class="alert alert-warning">
-                    <strong>Config file path not set.</strong> Set <code>LLAMA_ROUTER_WIREGUARD_CONFIG_PATH</code> to where <code>wg-quick</code> should read <code>wg0.conf</code> (default <code>/etc/wireguard/wg0.conf</code>). For Docker on Linux you typically need <code>network_mode: host</code> and WireGuard tools on the host; see README.
-                </div>
-                {% else %}
-                <p class="text-muted small mb-2">Writing to <code>{{ wireguard_config_path }}</code>{% if wireguard_legacy_volume %} (legacy volume mode — file only, no <code>wg-quick</code>){% endif %}.</p>
+                <p class="small text-muted">
+                    A worker is another llama-router that dials out to this one over a WebSocket and serves jobs sent down that socket.
+                    It needs no open ports, VPN, or port forwarding on its side. Each worker shows up here and as a provider.
+                </p>
+                {% if not worker_hub_enabled %}
+                <div class="alert alert-warning py-2 small">Incoming worker connections are off. Set <code>LLAMA_ROUTER_WORKER_HUB_ENABLED=true</code> to accept them.</div>
                 {% endif %}
-                <div class="mb-3 rounded border border-secondary p-2">
-                    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-                        <span class="small fw-semibold text-body-secondary">Runtime status</span>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" id="wg-runtime-refresh" title="Tools on PATH, live tunnel from wg"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</button>
+                <div class="row g-2 align-items-end mb-3">
+                    <div class="col-sm-6 col-md-4">
+                        <label class="form-label" for="worker-new-name">New worker name</label>
+                        <input type="text" class="form-control" id="worker-new-name" placeholder="alice-3090" maxlength="64" autocomplete="off">
                     </div>
-                    <p class="small text-muted mb-2 mb-lg-1">Shows whether <code>wg-quick</code> / <code>wg</code> are available in this process (e.g. in the container) and the current kernel interface from <code>wg show</code>. Use after <strong>Apply WireGuard</strong> or saving the interface.</p>
-                    <pre class="small mb-0 rounded p-2 border font-monospace text-body bg-body-secondary" id="wg-runtime-pre" style="max-height:16rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem;"></pre>
-                </div>
-                <p class="small text-muted">Configure the tunnel here; provider URLs can use peer tunnel IPs (e.g. <code>http://10.8.0.2:11434</code>). Share <strong>Public key</strong> and <strong>Endpoint</strong> with remote peers.</p>
-
-                <form method="post" action="/wireguard/interface" class="row g-3 mb-4">
-                    <div class="col-12">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" name="enabled" value="1" id="wg-enabled" {% if wg_iface.enabled %}checked{% endif %}>
-                            <label class="form-check-label" for="wg-enabled">Enable WireGuard (write live <code>[Interface]</code> section)</label>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label" for="wg-listen-port">Listen port (UDP)</label>
-                        <input type="number" class="form-control" id="wg-listen-port" name="listen_port" min="1" max="65535" value="{{ wg_iface.listen_port }}" required>
-                    </div>
-                    <div class="col-md-5">
-                        <label class="form-label" for="wg-address">Tunnel address (CIDR)</label>
-                        <input type="text" class="form-control" id="wg-address" name="address_cidr" value="{{ wg_iface.address_cidr }}" required placeholder="10.8.0.1/24">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label" for="wg-mtu">MTU (optional)</label>
-                        <input type="number" class="form-control" id="wg-mtu" name="mtu" min="576" max="65535" placeholder="1420" value="{{ wg_iface.mtu or '' }}">
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label" for="wg-endpoint-pub">Public endpoint (hint for remote configs)</label>
-                        <input type="text" class="form-control" id="wg-endpoint-pub" name="endpoint_public" value="{{ wg_iface.endpoint_public or '' }}" placeholder="vpn.example.com:51820 or 203.0.113.50:51820">
-                        <div class="form-text">Not written to wg0.conf; shown here so you can paste into peer configs.</div>
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label" for="wg-private-key">Private key</label>
-                        <textarea class="form-control font-monospace small" id="wg-private-key" name="private_key" rows="2" placeholder="Leave blank to keep existing key; use Generate below"></textarea>
-                        {% if wg_iface.private_key %}
-                        <div class="form-text text-success"><i class="bi bi-check-circle me-1"></i>A private key is stored.</div>
-                        {% endif %}
-                    </div>
-                    <div class="col-12">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" name="clear_private_key" value="1" id="wg-clear-key">
-                            <label class="form-check-label text-danger" for="wg-clear-key">Clear stored private key</label>
-                        </div>
-                    </div>
-                    <div class="col-12 d-flex flex-wrap gap-2">
-                        <button type="submit" class="btn btn-primary"><i class="bi bi-save me-1"></i>Save interface &amp; write config</button>
-                    </div>
-                </form>
-
-                <div class="row g-3 mb-4">
-                    <div class="col-md-6">
-                        <label class="form-label">This router public key</label>
-                        <div class="input-group">
-                            <input type="text" class="form-control font-monospace small" id="wg-public-key-display" readonly value="{{ wg_iface.public_key or '— (generate or set private key)' }}">
-                            <button type="button" class="btn btn-outline-secondary" onclick="var el=document.getElementById('wg-public-key-display'); if(el&&el.value.indexOf('—')!==0) navigator.clipboard.writeText(el.value)" title="Copy" {% if not wg_iface.public_key %}disabled{% endif %}><i class="bi bi-clipboard"></i></button>
-                        </div>
-                    </div>
-                    <div class="col-md-6 d-flex align-items-end gap-2 flex-wrap">
-                        <form method="post" action="/wireguard/generate-keys" class="d-inline" onsubmit="return confirm('Generate a new private key? You must update all peers with the new public key.');">
-                            <button type="submit" class="btn btn-outline-warning"><i class="bi bi-key-fill me-1"></i>Generate new keypair</button>
-                        </form>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-success" id="worker-create-btn"><i class="bi bi-plus-lg me-1"></i>Create worker token</button>
                     </div>
                 </div>
-
-                <h6 class="border-bottom pb-2">Peers</h6>
-                <p class="small text-muted">Add one row per remote peer. Prefer <strong>only that peer’s tunnel address</strong>, e.g. <code>10.8.0.2/32</code> — so traffic stays on the VPN overlay and you do <strong>not</strong> pull your LAN into the tunnel. Comma-separate only if you intend multiple narrow routes; <strong>avoid</strong> site LAN subnets (e.g. <code>192.168.0.0/24</code>) unless you mean to expose them to the peer.</p>
-                <div class="table-responsive mb-3">
-                    <table class="table table-sm table-hover">
+                <div id="worker-token-reveal" class="alert alert-success d-none" role="alert">
+                    <div class="mb-2"><strong>Token for <span id="worker-token-name"></span>.</strong> Copy it now; it is not shown again. On the worker, paste the hub URL and token into its Workers tab, or set these environment variables:</div>
+                    <div class="input-group input-group-sm mb-2">
+                        <textarea class="form-control font-monospace small" id="worker-token-env" rows="2" readonly></textarea>
+                        <button type="button" class="btn btn-outline-secondary" id="worker-token-copy" title="Copy"><i class="bi bi-clipboard"></i></button>
+                    </div>
+                    <div class="small mb-0">If members reach this hub through a reverse proxy, use that public URL instead, for example <code>https://llm.example.org</code>.</div>
+                </div>
+                <div id="worker-banner" class="alert d-none" role="alert"></div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle">
                         <thead>
                             <tr>
                                 <th>Name</th>
-                                <th>Public key</th>
-                                <th>AllowedIPs</th>
-                                <th>Endpoint</th>
-                                <th>Handshake</th>
-                                <th>Provider</th>
-                                <th>On</th>
-                                <th></th>
+                                <th>Status</th>
+                                <th>Jobs</th>
+                                <th>Models</th>
+                                <th>Last seen</th>
+                                <th>Token</th>
+                                <th class="text-end">Actions</th>
                             </tr>
                         </thead>
-                        <tbody id="wg-peers-tbody">
-                            {% for p in wg_peers %}
-                            <tr data-wg-peer-id="{{ p.id }}" data-wg-peer-pub="{{ p.public_key }}">
-                                <td>{{ p.name or "—" }}</td>
-                                <td class="font-monospace small text-truncate" style="max-width:12rem;" title="{{ p.public_key }}">{{ p.public_key[:16] }}…</td>
-                                <td class="small"><code>{{ p.allowed_ips }}</code></td>
-                                <td class="small">{{ p.endpoint or "—" }}</td>
-                                <td class="small" data-wg-handshake><span class="text-muted">…</span></td>
-                                <td class="small" data-wg-provider>{% set pr = wg_peer_to_provider.get(p.id) %}{% if pr %}<a href="/providers/{{ pr.id }}">{{ pr.name }}</a>{% else %}—{% endif %}</td>
-                                <td>{% if p.enabled %}<span class="badge bg-success">yes</span>{% else %}<span class="badge bg-secondary">no</span>{% endif %}</td>
-                                <td class="text-nowrap">
-                                    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#wgPeerModal" onclick='wgPeerModalOpen({{ p.id }}, {{ (p.name or "")|tojson }}, {{ p.public_key|tojson }}, {{ (p.preshared_key or "")|tojson }}, {{ p.allowed_ips|tojson }}, {{ (p.endpoint or "")|tojson }}, {{ p.persistent_keepalive|tojson }}, {{ p.enabled|tojson }})'><i class="bi bi-pencil"></i></button>
-                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="wgRemovePeer({{ p.id }})"><i class="bi bi-trash"></i></button>
+                        <tbody id="workers-tbody">
+                            {% for w in workers %}
+                            <tr data-worker-id="{{ w.id }}">
+                                <td>{% if w.provider_id %}<a href="/providers/{{ w.provider_id }}">{{ w.name }}</a>{% else %}{{ w.name }}{% endif %}</td>
+                                <td data-worker-status>
+                                    {% if not w.enabled %}<span class="badge bg-secondary">disabled</span>
+                                    {% elif w.connected %}<span class="badge bg-success">connected</span>
+                                    {% else %}<span class="badge bg-danger">offline</span>{% endif %}
+                                </td>
+                                <td class="small" data-worker-jobs>{% if w.live %}{{ w.live.in_flight }} / {{ w.live.max_concurrency }}{% else %}&mdash;{% endif %}</td>
+                                <td class="small" data-worker-models>{{ w.model_count }}</td>
+                                <td class="small text-muted" data-worker-seen>{% if w.last_connected_at %}{{ w.last_connected_at | localtime }}{% if w.last_remote_addr %} from {{ w.last_remote_addr }}{% endif %}{% else %}never{% endif %}</td>
+                                <td><code class="small">{{ w.token_prefix }}</code></td>
+                                <td class="text-end text-nowrap">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerRotate({{ w.id }}, '{{ w.name }}')" title="Issue a new token and disconnect the old one"><i class="bi bi-arrow-repeat"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerSetEnabled({{ w.id }}, {{ 'false' if w.enabled else 'true' }})" title="{{ 'Disable' if w.enabled else 'Enable' }}"><i class="bi {{ 'bi-pause-circle' if w.enabled else 'bi-play-circle' }}"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="workerDelete({{ w.id }}, '{{ w.name }}')" title="Remove worker and its provider"><i class="bi bi-trash"></i></button>
                                 </td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="8" class="text-muted">No peers yet.</td></tr>
+                            <tr><td colspan="7" class="text-muted small">No workers yet. Create a token above and give it to the member who runs the worker.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
-                <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#wgPeerModal" onclick="wgPeerModalOpen()"><i class="bi bi-plus-lg me-1"></i>Add peer</button>
             </div>
         </div>
-    </div>
 
-    <!-- Peer modal -->
-    <div class="modal fade" id="wgPeerModal" tabindex="-1">
-        <div class="modal-dialog modal-lg">
-            <form method="post" action="/wireguard/peers/save" class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="wgPeerModalTitle">Add WireGuard peer</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <input type="hidden" name="peer_id" id="wg-peer-id" value="">
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-name">Name</label>
-                        <input type="text" class="form-control" id="wg-peer-name" name="name" placeholder="office-router">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-broadcast me-2"></i>Serve a hub from this router</h5>
+                <span id="worker-link-state">{% set st = worker_link.state if worker_link else 'disabled' %}<span class="badge {% if st == 'connected' %}bg-success{% elif st in ('rejected',) %}bg-danger{% elif st == 'disabled' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">{{ st }}</span></span>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted">
+                    Connect this router to a hub as a worker. It opens one outbound connection, reconnects on its own, and serves only inference and model-listing requests from the hub.
+                    Jobs run against this router's own providers.
+                </p>
+                {% if worker_link and worker_link.env_locked %}
+                <div class="alert alert-info py-2 small">Set by <code>LLAMA_ROUTER_WORKER_HUB_URL</code> and <code>LLAMA_ROUTER_WORKER_TOKEN</code> on this host, so it cannot be changed here.</div>
+                {% endif %}
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label" for="worker-link-url">Hub URL</label>
+                        <input type="text" class="form-control" id="worker-link-url" placeholder="https://llm.example.org" value="{{ worker_link.hub_url if worker_link else '' }}" {% if worker_link and worker_link.env_locked %}disabled{% endif %}>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-pub">Peer public key</label>
-                        <textarea class="form-control font-monospace" id="wg-peer-pub" name="public_key" rows="2" required></textarea>
+                    <div class="col-md-6">
+                        <label class="form-label" for="worker-link-token">Worker token</label>
+                        <input type="password" class="form-control font-monospace" id="worker-link-token" autocomplete="off" placeholder="{{ 'Saved; leave blank to keep' if worker_link and worker_link.token_set else 'lrw_…' }}" {% if worker_link and worker_link.env_locked %}disabled{% endif %}>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-psk">Preshared key (optional)</label>
-                        <textarea class="form-control font-monospace" id="wg-peer-psk" name="preshared_key" rows="2"></textarea>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-allowed">AllowedIPs</label>
-                        <input type="text" class="form-control font-monospace" id="wg-peer-allowed" name="allowed_ips" required placeholder="10.8.0.2/32">
-                        <div class="form-text">Use <code>/32</code> for the peer’s tunnel IP only to keep access to this router’s services, not your whole LAN.</div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-endpoint">Endpoint (optional)</label>
-                        <input type="text" class="form-control" id="wg-peer-endpoint" name="endpoint" placeholder="peer.example.com:51820">
-                        <div class="form-text">Set on the side that knows the peer’s reachable UDP address (often hub for spokes).</div>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-ka">Persistent keepalive (seconds)</label>
-                        <input type="number" class="form-control" id="wg-peer-ka" name="persistent_keepalive" min="0" placeholder="25">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label" for="wg-peer-enabled">Peer state</label>
-                        <select class="form-select" name="peer_enabled" id="wg-peer-enabled">
-                            <option value="1">Enabled</option>
-                            <option value="0">Disabled</option>
-                        </select>
-                    </div>
-                    <hr>
-                    <p class="small text-muted mb-2">Optional: create a linked provider (only if none exists for this peer yet).</p>
-                    <div class="form-check mb-2">
-                        <input class="form-check-input" type="checkbox" name="link_provider" value="1" id="wg-link-provider">
-                        <label class="form-check-label" for="wg-link-provider">Link new provider</label>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label" for="wg-prov-name">Provider name</label>
-                        <input type="text" class="form-control" name="provider_name" id="wg-prov-name" placeholder="remote-gpu">
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label" for="wg-prov-type">Provider type</label>
-                        <select class="form-select" name="provider_type" id="wg-prov-type">
-                            <option value="ollama">Ollama</option>
-                            <option value="llamacpp">llama.cpp</option>
-                            <option value="both">Both</option>
-                        </select>
-                    </div>
-                    <div class="mb-2">
-                        <label class="form-label" for="wg-prov-ollama">Ollama base URL</label>
-                        <input type="url" class="form-control font-monospace" name="ollama_url" id="wg-prov-ollama" placeholder="http://10.8.0.2:11434">
-                    </div>
-                    <div class="mb-0">
-                        <label class="form-label" for="wg-prov-lcpp">llama.cpp base URL (optional)</label>
-                        <input type="url" class="form-control font-monospace" name="llamacpp_url" id="wg-prov-lcpp" placeholder="http://10.8.0.2:8080">
-                    </div>
-                    <hr class="mt-3">
-                    <div class="mb-0">
-                        <div class="small fw-semibold mb-2">Live tunnel &amp; debugging</div>
-                        <p class="small text-muted mb-2">Apply writes <code>wg0.conf</code> from the database and runs <code>wg-quick</code> / <code>wg syncconf</code> when tools are available. Checks use <code>ping</code>, <code>curl</code> (Ollama <code>/api/tags</code> on the peer tunnel IP), and <code>host</code> on the peer endpoint hostname when present.</p>
-                        <div class="d-flex flex-wrap gap-2 mb-2">
-                            <button type="button" class="btn btn-sm btn-outline-primary" id="wg-peer-apply-btn"><i class="bi bi-lightning-charge me-1"></i>Apply WireGuard</button>
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="wg-peer-debug-btn" disabled><i class="bi bi-bug me-1"></i>Run connectivity checks</button>
-                        </div>
-                        <pre class="small mb-0 border rounded p-2 font-monospace text-body bg-body-secondary" id="wg-peer-debug-out" style="max-height:14rem;overflow:auto;white-space:pre-wrap;font-size:0.8rem;"></pre>
+                    <div class="col-12">
+                        <button type="button" class="btn btn-primary" id="worker-link-save" {% if worker_link and worker_link.env_locked %}disabled{% endif %}><i class="bi bi-plug me-1"></i>Save &amp; connect</button>
+                        <button type="button" class="btn btn-outline-danger" id="worker-link-disconnect" {% if worker_link and worker_link.env_locked %}disabled{% endif %}><i class="bi bi-x-circle me-1"></i>Disconnect &amp; forget</button>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save peer &amp; write config</button>
-                </div>
-            </form>
+                <div class="small text-muted mt-3" id="worker-link-detail"></div>
+                <div id="worker-link-banner" class="alert d-none mt-3" role="alert"></div>
+            </div>
         </div>
     </div>
     {% endif %}
@@ -1212,7 +979,7 @@
             <i class="bi bi-exclamation-triangle-fill me-2"></i>
             <strong>LLAMA_ROUTER_CACHE_EXTERNAL_HOST is not set.</strong>
             Remote Ollama providers (e.g. on other machines) will not use this cache — they will download from the internet.
-            Set it to the IP or hostname that your providers can reach (e.g. this machine's LAN or WireGuard IP).
+            Set it to the IP or hostname that your providers can reach (e.g. this machine's LAN IP).
         </div>
         {% endif %}
         <div class="row g-4">
@@ -1746,45 +1513,7 @@ function updateDashboard(data) {
         }
     }
 
-    if (data.wireguard) {
-        var pmap = {};
-        (data.wireguard.peers || []).forEach(function(p) {
-            pmap[p.public_key] = p.last_handshake_seconds_ago;
-        });
-        var wl = data.wireguard.linked_providers || {};
-        document.querySelectorAll('[data-wg-peer-id]').forEach(function(row) {
-            var pk = row.getAttribute('data-wg-peer-pub') || '';
-            var hel = row.querySelector('[data-wg-handshake]');
-            if (hel) {
-                var ago = Object.prototype.hasOwnProperty.call(pmap, pk) ? pmap[pk] : undefined;
-                if (!data.wireguard.available) {
-                    hel.innerHTML = '<span class="text-muted">\u2014</span>';
-                } else if (ago === undefined) {
-                    hel.innerHTML = '<span class="text-danger">\u2717 not in tunnel</span>';
-                } else if (ago === null) {
-                    hel.innerHTML = '<span class="text-danger">\u2717 never</span>';
-                } else if (ago < 180) {
-                    var m = Math.floor(ago / 60);
-                    var s = ago % 60;
-                    var t = (m > 0 ? m + 'm ' : '') + s + 's ago';
-                    hel.innerHTML = '<span class="text-success">\u2713 ' + t + '</span>';
-                } else {
-                    hel.innerHTML = '<span class="text-danger">\u2717 ' + ago + 's ago</span>';
-                }
-            }
-            var pel = row.querySelector('[data-wg-provider]');
-            if (pel) {
-                var pid = row.getAttribute('data-wg-peer-id');
-                var link = wl[String(pid)];
-                if (link) {
-                    var nm = String(link.name || '').replace(/</g, '');
-                    pel.innerHTML = '<a href="/providers/' + link.id + '">' + nm + '</a>';
-                } else {
-                    pel.innerHTML = '\u2014';
-                }
-            }
-        });
-    }
+    if (data.workers || data.worker_link) renderWorkers(data.workers || [], data.worker_link);
 
     const byId = {};
     data.providers.forEach(p => { byId[p.id] = p; });
@@ -2467,49 +2196,13 @@ function removeFallback(model) {
         .catch(function() { alert('Failed to remove fallback'); });
 }
 
-function wgPeerModalOpen(id, name, publicKey, psk, allowed, endpoint, ka, enabled) {
-    if (arguments.length === 0) {
-        id = null;
-        name = '';
-        publicKey = '';
-        psk = '';
-        allowed = '';
-        endpoint = '';
-        ka = null;
-        enabled = true;
-    }
-    document.getElementById('wg-peer-id').value = id != null ? String(id) : '';
-    document.getElementById('wgPeerModalTitle').textContent =
-        id != null ? 'Edit WireGuard peer' : 'Add WireGuard peer';
-    document.getElementById('wg-peer-name').value = name || '';
-    document.getElementById('wg-peer-pub').value = publicKey || '';
-    document.getElementById('wg-peer-psk').value = psk || '';
-    document.getElementById('wg-peer-allowed').value = allowed || '';
-    document.getElementById('wg-peer-endpoint').value = endpoint || '';
-    var kaEl = document.getElementById('wg-peer-ka');
-    if (ka === null || ka === undefined) {
-        kaEl.value = '';
-    } else {
-        kaEl.value = String(ka);
-    }
-    document.getElementById('wg-peer-enabled').value = enabled ? '1' : '0';
-    var dbgBtn = document.getElementById('wg-peer-debug-btn');
-    if (dbgBtn) dbgBtn.disabled = id == null;
-    var dbgOut = document.getElementById('wg-peer-debug-out');
-    if (dbgOut) dbgOut.textContent = '';
-    var lp = document.getElementById('wg-link-provider');
-    if (lp) lp.checked = false;
-    var pn = document.getElementById('wg-prov-name');
-    if (pn) pn.value = '';
-    var pt = document.getElementById('wg-prov-type');
-    if (pt) pt.value = 'ollama';
-    var ou = document.getElementById('wg-prov-ollama');
-    if (ou) ou.value = '';
-    var lc = document.getElementById('wg-prov-lcpp');
-    if (lc) lc.value = '';
+function workerEsc(v) {
+    return String(v == null ? '' : v)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function wgShowBanner(elId, kind, text) {
+function workerBanner(elId, kind, text) {
     var el = document.getElementById(elId);
     if (!el) return;
     el.className = 'alert alert-' + (kind === 'success' ? 'success' : 'danger');
@@ -2517,297 +2210,182 @@ function wgShowBanner(elId, kind, text) {
     el.classList.remove('d-none');
 }
 
-function wgRemovePeer(peerId) {
-    if (!dashRequireWrite()) return;
-    if (!confirm('Remove this WireGuard peer?')) return;
-    function doRemove(rmProv) {
-        fetch('/api/wireguard/peers/' + peerId + '/remove', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({remove_providers: !!rmProv})
-        }).then(function(r) {
-            if (r.status === 409) {
-                return r.json().then(function(j) {
-                    var names = (j.providers || []).map(function(p) { return p.name; }).join(', ');
-                    if (confirm((j.message || 'Linked providers exist') + ' ' + names + '. Remove providers too?')) {
-                        doRemove(true);
-                    }
-                });
-            }
+function workerFetchJson(url, opts) {
+    return fetch(url, opts).then(function(r) {
+        return r.json().catch(function() { return {}; }).then(function(j) {
             if (!r.ok) {
-                return r.text().then(function(t) { throw new Error(t || 'Request failed'); });
+                var d = j.detail;
+                if (Array.isArray(d)) d = d.map(function(x) { return x.msg || x; }).join('; ');
+                throw new Error(d || ('HTTP ' + r.status));
             }
-            location.reload();
-        }).catch(function(e) { alert(e.message || 'Failed'); });
+            return j;
+        });
+    });
+}
+
+function workerShowToken(name, envText) {
+    document.getElementById('worker-token-name').textContent = name;
+    document.getElementById('worker-token-env').value = envText;
+    document.getElementById('worker-token-reveal').classList.remove('d-none');
+}
+
+function workerAgo(epochSeconds) {
+    if (!epochSeconds) return '';
+    var s = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+    return Math.floor(s / 86400) + 'd';
+}
+
+function workerRotate(id, name) {
+    if (!dashRequireWrite()) return;
+    if (!confirm('Issue a new token for ' + name + '? The current token stops working and the worker disconnects.')) return;
+    workerFetchJson('/api/workers/' + id + '/rotate', {method: 'POST'})
+        .then(function(res) {
+            var hub = window.location.protocol + '//' + window.location.hostname + ':{{ api_port }}';
+            workerShowToken(name, 'LLAMA_ROUTER_WORKER_HUB_URL=' + hub + '\nLLAMA_ROUTER_WORKER_TOKEN=' + res.token);
+        })
+        .catch(function(e) { workerBanner('worker-banner', 'danger', e.message); });
+}
+
+function workerSetEnabled(id, enabled) {
+    if (!dashRequireWrite()) return;
+    workerFetchJson('/api/workers/' + id + '/enabled', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: !!enabled})
+    }).then(function() { location.href = '/?tab=workers'; })
+      .catch(function(e) { workerBanner('worker-banner', 'danger', e.message); });
+}
+
+function workerDelete(id, name) {
+    if (!dashRequireWrite()) return;
+    if (!confirm('Remove worker ' + name + '? Its provider and token are deleted.')) return;
+    workerFetchJson('/api/workers/' + id, {method: 'DELETE'})
+        .then(function() { location.href = '/?tab=workers'; })
+        .catch(function(e) { workerBanner('worker-banner', 'danger', e.message); });
+}
+
+function renderWorkers(workers, link) {
+    workers.forEach(function(w) {
+        var row = document.querySelector('[data-worker-id="' + w.id + '"]');
+        if (!row) return;
+        var st = row.querySelector('[data-worker-status]');
+        if (st) {
+            if (!w.enabled) st.innerHTML = '<span class="badge bg-secondary">disabled</span>';
+            else if (w.connected) st.innerHTML = '<span class="badge bg-success">connected</span>' +
+                (w.live ? ' <span class="small text-muted">' + workerAgo(w.live.connected_at) + '</span>' : '');
+            else st.innerHTML = '<span class="badge bg-danger">offline</span>';
+        }
+        var jobs = row.querySelector('[data-worker-jobs]');
+        if (jobs) jobs.textContent = w.live ? (w.live.in_flight + ' / ' + w.live.max_concurrency) : '—';
+        var models = row.querySelector('[data-worker-models]');
+        if (models) models.textContent = String(w.model_count);
+    });
+
+    if (link) {
+        var stEl = document.getElementById('worker-link-state');
+        if (stEl) {
+            var cls = link.state === 'connected' ? 'bg-success'
+                : link.state === 'rejected' ? 'bg-danger'
+                : link.state === 'disabled' ? 'bg-secondary' : 'bg-warning text-dark';
+            stEl.innerHTML = '<span class="badge ' + cls + '">' + workerEsc(link.state) + '</span>';
+        }
+        var det = document.getElementById('worker-link-detail');
+        if (det) {
+            var parts = [];
+            if (link.state === 'connected') {
+                parts.push('Connected as <strong>' + workerEsc(link.worker_name || '?') + '</strong> for ' + workerAgo(link.connected_since));
+                parts.push('Jobs in flight: ' + (link.in_flight || 0) + ', served: ' + (link.jobs_total || 0));
+                if (link.protocols) parts.push('Serving: ' + workerEsc(link.protocols.join(', ')));
+            } else if (link.configured) {
+                if (link.last_error) parts.push('Last error: ' + workerEsc(link.last_error));
+                if (link.next_retry_at) {
+                    var wait = Math.max(0, Math.round(link.next_retry_at - Date.now() / 1000));
+                    parts.push('Retrying in ' + wait + 's');
+                }
+            } else {
+                parts.push('Not connected to any hub.');
+            }
+            det.innerHTML = parts.join('<br>');
+        }
     }
-    doRemove(false);
 }
 
 document.addEventListener('DOMContentLoaded', function() {
     var params = new URLSearchParams(window.location.search);
-    if (params.get('tab') === 'wireguard') {
-        var t = document.getElementById('wireguard-tab');
-        if (t && window.bootstrap && bootstrap.Tab) {
-            bootstrap.Tab.getOrCreateInstance(t).show();
-        }
+    if (params.get('tab') === 'workers') {
+        var t = document.getElementById('workers-tab');
+        if (t && window.bootstrap && bootstrap.Tab) bootstrap.Tab.getOrCreateInstance(t).show();
     }
 
-    function wgRefreshRuntimePre() {
-        var pre = document.getElementById('wg-runtime-pre');
-        if (!pre) return;
-        pre.textContent = 'Loading…';
-        fetch('/api/wireguard/status')
-            .then(function(r) {
-                return r.json().then(function(j) {
-                    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : 'Request failed');
-                    return j;
-                });
-            })
-            .then(function(d) { pre.textContent = JSON.stringify(d, null, 2); })
-            .catch(function(e) { pre.textContent = 'Error: ' + (e.message || e); });
-    }
-    var wgr = document.getElementById('wg-runtime-refresh');
-    if (wgr) wgr.addEventListener('click', wgRefreshRuntimePre);
-    var wgtab = document.getElementById('wireguard-tab');
-    if (wgtab) wgtab.addEventListener('shown.bs.tab', wgRefreshRuntimePre);
-    if (params.get('tab') === 'wireguard') setTimeout(wgRefreshRuntimePre, 300);
-
-    function wgShowPeeringKeyFull(apiKey) {
-        var wrap = document.getElementById('wg-peering-key-reveal-wrap');
-        var inp = document.getElementById('wg-peering-key-reveal');
-        if (!wrap || !inp || !apiKey) return;
-        inp.value = apiKey;
-        wrap.classList.remove('d-none');
-    }
-
-    var pkrc = document.getElementById('wg-peering-key-reveal-copy');
-    if (pkrc) pkrc.addEventListener('click', function() {
-        var inp = document.getElementById('wg-peering-key-reveal');
-        if (inp && inp.value) {
-            navigator.clipboard.writeText(inp.value);
-        }
-    });
-
-    function wgPeeringBody(en, key, regen) {
-        var body = {enabled: en, api_key: key, regenerate_api_key: !!regen};
-        var eh = document.getElementById('wg-peering-expires-hours');
-        if (eh && eh.value.trim() !== '') {
-            var n = parseInt(eh.value, 10);
-            if (!isNaN(n)) body.expires_hours = n;
-        }
-        var mu = document.getElementById('wg-peering-max-uses');
-        if (mu && mu.value.trim() !== '') {
-            var m = parseInt(mu.value, 10);
-            if (!isNaN(m)) body.max_uses = m;
-        }
-        return body;
-    }
-
-    var ps = document.getElementById('wg-peering-save');
-    if (ps) ps.addEventListener('click', function() {
-        var en = document.getElementById('wg-peering-enabled').checked;
-        var key = document.getElementById('wg-peering-key').value.trim();
-        fetch('/api/wireguard/peering-config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(wgPeeringBody(en, key, false))
-        }).then(function(r) {
-            if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-            return r.json();
-        }).then(function(d) {
-            document.getElementById('wg-peering-key').value = '';
-            var md = document.getElementById('wg-peering-masked-display');
-            if (md) md.textContent = d.api_key_masked || '(set)';
-            wgShowPeeringKeyFull(d.api_key);
-            return fetch('/api/wireguard/peer-info', {headers: {'X-Peering-Key': d.api_key}});
-        }).then(function(r) {
-            if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-            return r.json();
-        }).then(function(info) {
-            var ta = document.getElementById('wg-peer-info-json');
-            if (ta) ta.value = JSON.stringify(info, null, 2);
-            wgShowBanner('wg-peering-banner', 'success', 'Peering settings saved.');
-        }).catch(function(e) { wgShowBanner('wg-peering-banner', 'danger', e.message || 'Save failed'); });
-    });
-
-    var pr = document.getElementById('wg-peering-regen');
-    if (pr) pr.addEventListener('click', function() {
-        if (!confirm('Regenerate peering API key? Remotes must use the new key.')) return;
-        var en = document.getElementById('wg-peering-enabled').checked;
-        fetch('/api/wireguard/peering-config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(wgPeeringBody(en, '', true))
-        }).then(function(r) {
-            if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-            return r.json();
-        }).then(function(d) {
-            var md = document.getElementById('wg-peering-masked-display');
-            if (md) md.textContent = d.api_key_masked || '(set)';
-            wgShowPeeringKeyFull(d.api_key);
-            return fetch('/api/wireguard/peer-info', {headers: {'X-Peering-Key': d.api_key}});
-        }).then(function(r) {
-            if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-            return r.json();
-        }).then(function(info) {
-            var ta = document.getElementById('wg-peer-info-json');
-            if (ta) ta.value = JSON.stringify(info, null, 2);
-            wgShowBanner('wg-peering-banner', 'success', 'New API key generated.');
-        }).catch(function(e) { wgShowBanner('wg-peering-banner', 'danger', e.message || 'Failed'); });
-    });
-
-    var pc = document.getElementById('wg-peer-info-copy');
-    if (pc) pc.addEventListener('click', function() {
-        var ta = document.getElementById('wg-peer-info-json');
-        if (ta && ta.value) navigator.clipboard.writeText(ta.value);
-    });
-
-    function wgConnectHttpWarnSync() {
-        var u = document.getElementById('wg-connect-url');
-        var w = document.getElementById('wg-connect-http-warn');
-        if (!u || !w) return;
-        var v = (u.value || '').trim().toLowerCase();
-        w.classList.toggle('d-none', !v.startsWith('http://'));
-    }
-    var cu = document.getElementById('wg-connect-url');
-    if (cu) {
-        cu.addEventListener('input', wgConnectHttpWarnSync);
-        cu.addEventListener('change', wgConnectHttpWarnSync);
-        wgConnectHttpWarnSync();
-    }
-
-    var meb = document.getElementById('wg-manual-export-btn');
-    if (meb) meb.addEventListener('click', function() {
-        fetch('/api/wireguard/export-peer-config')
-            .then(function(r) {
-                if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-                return r.json();
-            })
-            .then(function(d) {
-                var ta = document.getElementById('wg-manual-export-text');
-                if (ta) ta.value = JSON.stringify(d, null, 2);
-                wgShowBanner('wg-manual-export-banner', 'success', 'Export generated. Copy and send to the remote operator.');
-            })
-            .catch(function(e) { wgShowBanner('wg-manual-export-banner', 'danger', e.message || 'Export failed'); });
-    });
-    var mec = document.getElementById('wg-manual-export-copy');
-    if (mec) mec.addEventListener('click', function() {
-        var ta = document.getElementById('wg-manual-export-text');
-        if (ta && ta.value) navigator.clipboard.writeText(ta.value);
-    });
-    var mib = document.getElementById('wg-manual-import-btn');
-    if (mib) mib.addEventListener('click', function() {
-        var raw = (document.getElementById('wg-manual-import-text') || {}).value || '';
-        var ourIp = (document.getElementById('wg-manual-import-our-ip') || {}).value || '';
-        var addP = document.getElementById('wg-manual-import-add-provider');
-        var peer_config;
-        try {
-            peer_config = JSON.parse(raw.trim());
-        } catch (e) {
-            wgShowBanner('wg-manual-import-banner', 'danger', 'Invalid JSON');
-            return;
-        }
-        fetch('/api/wireguard/import-peer-config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                peer_config: peer_config,
-                our_tunnel_ip: ourIp.trim(),
-                add_as_provider: addP ? addP.checked : true
-            })
-        }).then(function(r) {
-            if (!r.ok) {
-                return r.json().catch(function() { return {}; }).then(function(j) {
-                    var d = j.detail;
-                    if (typeof d === 'string') throw new Error(d);
-                    if (Array.isArray(d)) d = d.map(function(x) { return x.msg || x; }).join('; ');
-                    throw new Error(d || j.message || 'Import failed');
-                });
-            }
-            return r.json();
-        }).then(function(res) {
-            wgShowBanner('wg-manual-import-banner', 'success', res.message || 'Imported.');
-            setTimeout(function() { location.reload(); }, 1500);
-        }).catch(function(e) {
-            wgShowBanner('wg-manual-import-banner', 'danger', e.message || 'Import failed');
-        });
-    });
-
-    var wga = document.getElementById('wg-peer-apply-btn');
-    if (wga) wga.addEventListener('click', function() {
-        if (typeof dashRequireWrite === 'function' && !dashRequireWrite()) return;
-        fetch('/api/wireguard/apply', {method: 'POST'})
-            .then(function(r) {
-                return r.json().then(function(j) {
-                    if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : (j.message || 'Apply failed'));
-                    return j;
-                });
-            })
-            .then(function(j) {
-                var o = document.getElementById('wg-peer-debug-out');
-                if (o) o.textContent = (j.ok ? 'OK: ' : 'Problem: ') + (j.message || JSON.stringify(j));
-            })
-            .catch(function(e) {
-                var o = document.getElementById('wg-peer-debug-out');
-                if (o) o.textContent = 'Error: ' + (e.message || e);
-            });
-    });
-    var wgd = document.getElementById('wg-peer-debug-btn');
-    if (wgd) wgd.addEventListener('click', function() {
-        if (typeof dashRequireWrite === 'function' && !dashRequireWrite()) return;
-        var pid = (document.getElementById('wg-peer-id') || {}).value || '';
-        pid = pid.trim();
-        if (!pid) return;
-        fetch('/api/wireguard/debug-peer', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({peer_id: parseInt(pid, 10)})
-        }).then(function(r) {
-            return r.json().then(function(j) {
-                if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail || j));
-                return j;
-            });
-        }).then(function(j) {
-            var o = document.getElementById('wg-peer-debug-out');
-            if (o) o.textContent = JSON.stringify(j, null, 2);
-        }).catch(function(e) {
-            var o = document.getElementById('wg-peer-debug-out');
-            if (o) o.textContent = 'Error: ' + (e.message || e);
-        });
-    });
-
-    var cb = document.getElementById('wg-connect-btn');
+    var cb = document.getElementById('worker-create-btn');
     if (cb) cb.addEventListener('click', function() {
-        var url = (document.getElementById('wg-connect-url') || {}).value || '';
-        var rk = (document.getElementById('wg-connect-key') || {}).value || '';
-        var ourIp = (document.getElementById('wg-connect-our-ip') || {}).value || '';
-        var theirIp = (document.getElementById('wg-connect-their-ip') || {}).value || '';
-        var addP = document.getElementById('wg-connect-add-provider');
-        fetch('/api/wireguard/connect', {
+        if (!dashRequireWrite()) return;
+        var name = (document.getElementById('worker-new-name').value || '').trim();
+        if (!name) { workerBanner('worker-banner', 'danger', 'Enter a name for the worker.'); return; }
+        workerFetchJson('/api/workers', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                remote_url: url.trim(),
-                remote_api_key: rk.trim(),
-                our_tunnel_ip: ourIp.trim(),
-                their_tunnel_ip: theirIp.trim(),
-                add_as_provider: addP ? addP.checked : true
-            })
-        }).then(function(r) {
-            if (!r.ok) {
-                return r.json().catch(function() { return {}; }).then(function(j) {
-                    var d = j.detail;
-                    if (Array.isArray(d)) d = d.map(function(x) { return x.msg || x; }).join('; ');
-                    throw new Error(d || j.message || 'Connect failed');
-                });
-            }
-            return r.json();
+            body: JSON.stringify({name: name})
         }).then(function(res) {
-            wgShowBanner('wg-connect-banner', 'success', res.message || 'Connected.');
-            setTimeout(function() { location.reload(); }, 1500);
-        }).catch(function(e) {
-            wgShowBanner('wg-connect-banner', 'danger', e.message || 'Connect failed');
-        });
+            workerShowToken(res.name, res.env_example);
+            var tb = document.getElementById('workers-tbody');
+            if (tb) {
+                var empty = tb.querySelector('td[colspan]');
+                if (empty) empty.parentNode.remove();
+                tb.insertAdjacentHTML('beforeend',
+                    '<tr data-worker-id="' + res.id + '"><td><a href="/providers/' + res.provider_id + '">' + workerEsc(res.name) + '</a></td>' +
+                    '<td data-worker-status><span class="badge bg-danger">offline</span></td>' +
+                    '<td class="small" data-worker-jobs>—</td><td class="small" data-worker-models>0</td>' +
+                    '<td class="small text-muted">never</td><td><code class="small">' + workerEsc(res.token.slice(0, 12)) + '…</code></td>' +
+                    '<td class="text-end small text-muted">reload for actions</td></tr>');
+            }
+            document.getElementById('worker-new-name').value = '';
+        }).catch(function(e) { workerBanner('worker-banner', 'danger', e.message); });
+    });
+
+    var cp = document.getElementById('worker-token-copy');
+    if (cp) cp.addEventListener('click', function() {
+        var ta = document.getElementById('worker-token-env');
+        if (ta && ta.value) navigator.clipboard.writeText(ta.value);
+    });
+
+    var ls = document.getElementById('worker-link-save');
+    if (ls) ls.addEventListener('click', function() {
+        if (!dashRequireWrite()) return;
+        var url = (document.getElementById('worker-link-url').value || '').trim();
+        var tok = (document.getElementById('worker-link-token').value || '').trim();
+        if (!url) { workerBanner('worker-link-banner', 'danger', 'Enter the hub URL.'); return; }
+        workerFetchJson('/api/worker-link', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hub_url: url, token: tok ? tok : null})
+        }).then(function(res) {
+            document.getElementById('worker-link-token').value = '';
+            if (!res.token_set) {
+                workerBanner('worker-link-banner', 'danger', 'Saved the hub URL, but no token is set yet.');
+            } else {
+                workerBanner('worker-link-banner', 'success', 'Saved. Connecting to the hub…');
+            }
+            renderWorkers([], res);
+        }).catch(function(e) { workerBanner('worker-link-banner', 'danger', e.message); });
+    });
+
+    var ld = document.getElementById('worker-link-disconnect');
+    if (ld) ld.addEventListener('click', function() {
+        if (!dashRequireWrite()) return;
+        if (!confirm('Disconnect from the hub and forget the saved URL and token?')) return;
+        workerFetchJson('/api/worker-link', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hub_url: '', token: ''})
+        }).then(function(res) {
+            document.getElementById('worker-link-url').value = '';
+            workerBanner('worker-link-banner', 'success', 'Disconnected.');
+            renderWorkers([], res);
+        }).catch(function(e) { workerBanner('worker-link-banner', 'danger', e.message); });
     });
 });
 </script>

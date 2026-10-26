@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
 from .db_migrate import run_upgrade_sync
@@ -38,35 +38,6 @@ logger = logging.getLogger(__name__)
 
 # Foreign-key safe copy order (parents before children).
 _TABLES: list[tuple[str, list[str]]] = [
-    (
-        "wireguard_interface",
-        [
-            "id",
-            "enabled",
-            "listen_port",
-            "private_key",
-            "address_cidr",
-            "mtu",
-            "endpoint_public",
-            "updated_at",
-            "peering_api_key",
-            "peering_enabled",
-        ],
-    ),
-    (
-        "wireguard_peers",
-        [
-            "id",
-            "name",
-            "public_key",
-            "preshared_key",
-            "allowed_ips",
-            "endpoint",
-            "persistent_keepalive",
-            "enabled",
-            "created_at",
-        ],
-    ),
     (
         "providers",
         [
@@ -81,7 +52,20 @@ _TABLES: list[tuple[str, list[str]]] = [
             "gpu_ram",
             "created_at",
             "updated_at",
-            "wireguard_peer_id",
+        ],
+    ),
+    (
+        "workers",
+        [
+            "id",
+            "name",
+            "token_hash",
+            "token_prefix",
+            "provider_id",
+            "enabled",
+            "created_at",
+            "last_connected_at",
+            "last_remote_addr",
         ],
     ),
     (
@@ -173,8 +157,8 @@ _TABLES: list[tuple[str, list[str]]] = [
 
 # Tables with a PostgreSQL sequence on ``id`` (reset after copy).
 _SEQUENCE_TABLES = [
-    "wireguard_peers",
     "providers",
+    "workers",
     "provider_models",
     "benchmarks",
     "request_log",
@@ -183,7 +167,6 @@ _SEQUENCE_TABLES = [
     "api_keys",
     "api_key_model_pins",
     "dashboard_users",
-    "wireguard_interface",
 ]
 
 
@@ -284,7 +267,11 @@ def migrate_sqlite_to_postgres(
         logger.info("Truncating application tables on PostgreSQL before copy")
         _truncate_app_tables(pg_conn)
 
+        source_tables = set(inspect(sl_conn).get_table_names())
         for table, columns in _TABLES:
+            if table not in source_tables:
+                logger.info("Skipping %s (not in source database)", table)
+                continue
             rows = _fetch_sqlite_rows(sl_conn, table, columns)
             logger.info("Copying %s (%d rows)", table, len(rows))
             _insert_rows_pg(pg_conn, table, columns, rows)

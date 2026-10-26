@@ -8,10 +8,12 @@ from ..config import settings
 from ..database import Database
 from ..provider_manager import ProviderManager
 from ..registry_cache.cache import BlobCache
+from ..worker_link.worker import WorkerLinkManager
 
 _db: Database | None = None
 _pm: ProviderManager | None = None
 _blob_cache: BlobCache | None = None
+_worker_link: WorkerLinkManager | None = None
 _dashboard_session_secret_cache: str | None = None
 
 
@@ -24,6 +26,20 @@ def init(db: Database, pm: ProviderManager) -> None:
 def init_cache(cache: BlobCache) -> None:
     global _blob_cache
     _blob_cache = cache
+
+
+def init_worker_link(manager: WorkerLinkManager) -> None:
+    global _worker_link
+    _worker_link = manager
+
+
+def get_worker_link() -> WorkerLinkManager:
+    """Return the worker link manager, creating an idle one for tests."""
+    global _worker_link
+    db = get_db()
+    if _worker_link is None or _worker_link.db is not db:
+        _worker_link = WorkerLinkManager(db)
+    return _worker_link
 
 
 def get_db() -> Database:

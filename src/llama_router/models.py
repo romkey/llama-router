@@ -14,6 +14,9 @@ class HotModel(TypedDict, total=False):
     expires_at: str
 
 
+WORKER_URL_SCHEME = "worker://"
+
+
 class ProviderStatus(str, Enum):
     IDLE = "idle"
     BUSY = "busy"
@@ -37,9 +40,19 @@ class Provider(BaseModel):
     machine_type: str | None = None
     gpu_type: str | None = None
     gpu_ram: str | None = None
-    wireguard_peer_id: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    @property
+    def is_worker(self) -> bool:
+        """Provider backed by a worker that dials in over a WebSocket."""
+        return self.url.startswith(WORKER_URL_SCHEME)
+
+    @property
+    def worker_name(self) -> str | None:
+        if not self.is_worker:
+            return None
+        return self.url[len(WORKER_URL_SCHEME) :]
 
     @property
     def supports_ollama(self) -> bool:
@@ -126,4 +139,4 @@ class ProviderInfo(BaseModel):
     addresses: list[ProviderAddress] = []
     active_requests: int = 0
     hot_models: list[HotModel] = []
-    wireguard_ok: bool | None = None
+    worker: dict | None = None

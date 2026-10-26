@@ -13,8 +13,11 @@ config = context.config
 
 if config.config_file_name is not None:
     ini = Path(config.config_file_name)
-    if ini.exists():
-        fileConfig(ini)
+    # Migrations also run inside the app at startup. Only apply alembic.ini's
+    # logging when nothing is configured yet (the alembic CLI), so the app keeps
+    # its own handlers, level, and llama_router loggers.
+    if ini.exists() and not logging.getLogger().handlers:
+        fileConfig(ini, disable_existing_loggers=False)
 
 logger = logging.getLogger("alembic.env")
 

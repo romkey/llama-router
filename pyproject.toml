@@ -21,6 +21,7 @@ dependencies = [
     "pydantic-settings",
     "python-multipart",
     "sentry-sdk[fastapi]",
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]

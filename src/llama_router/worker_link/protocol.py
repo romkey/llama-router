@@ -1,0 +1,115 @@
+"""Wire format shared by the hub and worker sides.
+
+Control messages are JSON text frames with a ``type`` field. Body bytes travel
+in binary frames: one byte of kind, a 4-byte big-endian request id, then the
+payload. Many requests are multiplexed over one socket by request id.
+
+Hub -> worker
+    ``welcome``   {worker_name, provider_id, version}
+    ``request``   {id, target, method, path, headers}
+                  followed by zero or more REQ_BODY frames and one REQ_END
+    ``cancel``    {id}
+
+Worker -> hub
+    ``hello``     {version, protocols, max_concurrency, software_version}
+    ``response``  {id, status, headers}
+                  followed by zero or more RESP_BODY frames and one RESP_END
+    ``error``     {id, kind, message}  (instead of, or after, a response)
+"""
+
+from __future__ import annotations
+
+import json
+import struct
+from typing import Any
+
+PROTOCOL_VERSION = 1
+
+WS_PATH = "/worker/ws"
+
+# Binary frame kinds.
+REQ_BODY = 1
+REQ_END = 2
+RESP_BODY = 3
+RESP_END = 4
+
+_HEADER = struct.Struct(">BI")
+
+# Body chunks are split to keep individual frames well under max frame size.
+MAX_CHUNK = 256 * 1024
+# Upper bound for one WebSocket message on both sides.
+MAX_MESSAGE_SIZE = 4 * 1024 * 1024
+
+TARGETS = ("ollama", "llamacpp")
+
+# WebSocket close codes (4000-4999 are application-defined).
+CLOSE_UNAUTHORIZED = 4401
+CLOSE_REPLACED = 4409
+CLOSE_PROTOCOL = 4400
+CLOSE_REVOKED = 4403
+
+# Hop-by-hop or transport headers that must not be relayed in either direction.
+_DROP_HEADERS = frozenset(
+    {
+        "host",
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "transfer-encoding",
+        "upgrade",
+        "te",
+        "trailer",
+        "content-length",
+        "content-encoding",
+        "accept-encoding",
+        "authorization",
+        "api-key",
+        "cookie",
+        "set-cookie",
+    }
+)
+
+
+def encode_binary(kind: int, req_id: int, payload: bytes = b"") -> bytes:
+    return _HEADER.pack(kind, req_id) + payload
+
+
+def decode_binary(data: bytes) -> tuple[int, int, bytes]:
+    if len(data) < _HEADER.size:
+        raise ValueError("binary frame too short")
+    kind, req_id = _HEADER.unpack_from(data)
+    return kind, req_id, data[_HEADER.size :]
+
+
+def encode_json(msg: dict[str, Any]) -> str:
+    return json.dumps(msg, separators=(",", ":"))
+
+
+def decode_json(text: str) -> dict[str, Any]:
+    msg = json.loads(text)
+    if not isinstance(msg, dict) or not isinstance(msg.get("type"), str):
+        raise ValueError("control frame must be an object with a type")
+    return msg
+
+
+def filter_headers(pairs: Any) -> list[list[str]]:
+    """Drop hop-by-hop and credential headers; normalise to ``[[k, v], ...]``."""
+    out: list[list[str]] = []
+    if not pairs:
+        return out
+    items = pairs.items() if hasattr(pairs, "items") else pairs
+    for item in items:
+        try:
+            k, v = item
+        except (TypeError, ValueError):
+            continue
+        k = str(k)
+        if k.lower() in _DROP_HEADERS:
+            continue
+        out.append([k, str(v)])
+    return out
+
+
+def chunks(data: bytes, size: int = MAX_CHUNK):
+    for i in range(0, len(data), size):
+        yield data[i : i + size]

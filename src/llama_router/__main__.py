@@ -10,9 +10,9 @@ import uvicorn
 from .config import settings
 from .database import Database
 from .provider_manager import ProviderManager
-from .wireguard_sync import try_sync_wireguard_config_on_startup
 from .router import Router
 from .sentry import init_sentry
+from .worker_link.worker import WorkerLinkManager
 from .api import deps as api_deps
 from .api.app import app as api_app
 from .dashboard import deps as dash_deps
@@ -32,16 +32,19 @@ async def run() -> None:
 
     db = Database()
     await db.connect()
-    await try_sync_wireguard_config_on_startup(db)
 
     pm = ProviderManager(db)
     await pm.start()
+
+    worker_link = WorkerLinkManager(db)
+    await worker_link.reload()
 
     rt = Router(db, pm)
     pm.attach_router(rt)
 
     api_deps.init(db, pm, rt)
     dash_deps.init(db, pm)
+    dash_deps.init_worker_link(worker_link)
     lcpp_deps.init(db, pm, rt)
 
     dashboard_config = uvicorn.Config(
@@ -107,6 +110,8 @@ async def run() -> None:
     try:
         await asyncio.gather(*(s.serve() for s in servers))
     finally:
+        await worker_link.stop()
+        await pm.worker_hub.close_all()
         await pm.stop()
         await db.close()
 
