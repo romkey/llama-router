@@ -131,3 +131,20 @@ async def test_restart_does_not_relog_already_offline_provider(db, httpx_mock) -
 
     assert await _system_logs(db) == []
     await pm.stop()
+
+
+async def test_rebuild_uses_this_cycles_liveness(db, httpx_mock) -> None:
+    _routes(httpx_mock, {"dead": httpx.ConnectError("refused"), "backup": _ollama_ok})
+    p = await _provider(db, "two", "http://dead:11434", ProviderStatus.IDLE)
+    dead = (await db.get_addresses(p.id))[0]
+    await db.set_address_live(dead.id, True)  # stale: it was live last cycle
+    await db.add_address(p.id, "http://backup:11434", None, False)
+    pm = ProviderManager(db)
+    await pm._rebuild_clients(p)
+    assert pm._active_urls[p.id][0] == "http://dead:11434"
+
+    status = await pm.check_provider(p)
+
+    assert status == ProviderStatus.IDLE
+    assert pm._active_urls[p.id][0] == "http://backup:11434"
+    await pm.stop()

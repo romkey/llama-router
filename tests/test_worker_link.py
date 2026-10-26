@@ -509,23 +509,40 @@ async def test_connect_with_failing_discovery_keeps_reachable_address_live(
     assert "authentication required" in (pm.status_detail(pid) or "")
 
 
-async def test_worker_health_check_does_not_hold_lock_while_probing(link) -> None:
+async def test_worker_health_check_steps_aside_and_is_bounded(
+    link, monkeypatch
+) -> None:
+    import llama_router.provider_manager as pm_mod
+
     await _connected_worker(link)
     pm, pid, db = link["pm"], link["provider_id"], link["db"]
     provider = await db.get_provider(pid)
-    started, release = asyncio.Event(), asyncio.Event()
 
-    async def slow_probe(p, addr):
-        started.set()
-        await release.wait()
+    # While a connect/disconnect handler holds the lock, a health check skips.
+    probed: list[int] = []
+    real_probe = pm._probe_address
+
+    async def counting_probe(p, addr):
+        probed.append(1)
+        return await real_probe(p, addr)
+
+    pm._probe_address = counting_probe
+    async with pm._worker_lock(pid):
+        await pm.check_provider(provider)
+    assert probed == []
+
+    # A hung probe holds the lock only until the cap, then releases it.
+    monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+
+    async def hung_probe(p, addr):
+        await asyncio.sleep(30)
         return True
 
-    pm._probe_address = slow_probe
-    task = asyncio.create_task(pm.check_provider(provider))
-    await started.wait()
+    pm._probe_address = hung_probe
+    before = (await db.get_provider(pid)).status
+    status = await asyncio.wait_for(pm.check_provider(provider), timeout=5)
+    assert status == before
     assert not pm._worker_lock(pid).locked()
-    release.set()
-    assert await task in (ProviderStatus.IDLE, ProviderStatus.BUSY)
 
 
 async def test_disconnected_worker_reason_and_no_relog(link) -> None:
