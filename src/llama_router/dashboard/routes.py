@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..auth import generate_api_key, key_hash, key_prefix
+from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
@@ -722,6 +723,7 @@ async def dashboard(request: Request):
             {
                 "providers": infos,
                 "providers_seed": [_provider_status_payload(i) for i in infos],
+                "hf_models_dir": settings.hf_models_dir,
                 "models": all_models,
                 "benchmarks_by_model": benchmarks_by_model,
                 "ollama_count": ollama_count,
@@ -1432,6 +1434,243 @@ async def api_pull_model(request: Request):
 
     asyncio.create_task(_run_pull())
 
+    return JSONResponse({"pull_id": pull_id, "status": "pulling"})
+
+
+@router.get("/api/hf/env")
+async def api_hf_env():
+    """Hugging Face settings the hf CLI will see (secrets masked)."""
+    try:
+        hf_download.hf_executable()
+        available = True
+    except hf_download.HfError:
+        available = False
+    return JSONResponse(
+        {
+            "hf_available": available,
+            "models_dir": str(hf_download.models_root()),
+            "env": hf_download.env_summary(),
+        }
+    )
+
+
+@router.post("/api/hf/files")
+async def api_hf_files(request: Request):
+    """List the files a repository and pattern select, without downloading."""
+    body = await request.json()
+    try:
+        repo = hf_download.validate_repo(str(body.get("repo") or ""))
+        pattern = hf_download.validate_pattern(body.get("pattern"))
+        revision = hf_download.validate_revision(body.get("revision"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        files = await hf_download.plan(repo, pattern, revision)
+    except hf_download.HfError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    models = hf_download.model_files([f["file"] for f in files])
+    suggested = (
+        hf_download.default_ollama_name(repo, models[0]) if len(models) == 1 else None
+    )
+    return JSONResponse(
+        {
+            "repo": repo,
+            "pattern": pattern,
+            "files": files,
+            "model_files": models,
+            "split": hf_download.split_parts(models),
+            "suggested_name": suggested,
+        }
+    )
+
+
+async def _hf_deliver_ollama(
+    *,
+    pm: Any,
+    db: Any,
+    pid: int,
+    path: Path,
+    digest: str,
+    model_name: str,
+    entry: dict,
+    lock: asyncio.Lock,
+) -> None:
+    provider = await db.get_provider(pid)
+    pname = provider.name if provider else str(pid)
+    start = time.monotonic()
+    status, detail = "ok", None
+    try:
+        client = pm.get_ollama_client(pid)
+        if await client.has_blob(digest):
+            async with lock:
+                entry["progress"] = f"{pname}: blob already present"
+        else:
+
+            def on_sent(sent: int, total: int) -> None:
+                pct = int(sent * 100 / total) if total else 0
+                entry["progress"] = f"{pname}: uploading {pct}%"
+
+            await client.push_blob(digest, str(path), on_sent)
+        async with lock:
+            entry["progress"] = f"{pname}: creating {model_name}"
+        await client.create_from_files(model_name, {path.name: digest})
+        await pm.refresh_provider(pid)
+        async with lock:
+            entry["completed"].append(pid)
+    except Exception as exc:
+        status = "error"
+        detail = (
+            describe_httpx_error(exc) if isinstance(exc, httpx.HTTPError) else str(exc)
+        )
+        logger.error("HF push of %s to %s failed: %s", model_name, pname, detail)
+        async with lock:
+            entry["failed"].append(pid)
+            entry["progress"] = f"{pname}: failed: {detail}"
+    await db.save_request_log(
+        RequestLog(
+            provider_id=pid,
+            provider_name=pname,
+            protocol="system",
+            endpoint="hf-pull",
+            source_ip="internal",
+            model=model_name,
+            duration_ms=(time.monotonic() - start) * 1000,
+            status=status,
+            error_detail=detail,
+        )
+    )
+
+
+@router.post("/api/hf/pull")
+async def api_hf_pull(request: Request):
+    """Download from Hugging Face, then push to Ollama providers and/or refresh
+    llama.cpp providers that share the models directory."""
+    body = await request.json()
+    try:
+        repo = hf_download.validate_repo(str(body.get("repo") or ""))
+        pattern = hf_download.validate_pattern(body.get("pattern"))
+        revision = hf_download.validate_revision(body.get("revision"))
+        name_raw = str(body.get("model_name") or "").strip()
+        model_name = hf_download.validate_ollama_name(name_raw) if name_raw else None
+        push_ids = [int(x) for x in body.get("push_provider_ids") or []]
+        refresh_ids = [int(x) for x in body.get("refresh_provider_ids") or []]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    pm = deps.get_pm()
+    db = deps.get_db()
+    for pid in push_ids + refresh_ids:
+        target = await db.get_provider(pid)
+        if target is None:
+            raise HTTPException(status_code=400, detail=f"unknown provider {pid}")
+        if pid in push_ids and target.is_worker:
+            # The worker link buffers whole request bodies; a multi-GB upload
+            # through it would exhaust memory on the hub.
+            raise HTTPException(
+                status_code=400,
+                detail=f"{target.name} is a worker; pull the model on the worker "
+                "itself instead of pushing it through the hub",
+            )
+
+    pull_id = str(uuid.uuid4())
+    label = model_name or f"{repo} ({pattern})"
+    entry = {
+        "model": label,
+        "pull_api": "huggingface",
+        "provider_ids": push_ids + refresh_ids,
+        "status": "pulling",
+        "completed": [],
+        "failed": [],
+        "progress": "starting download",
+    }
+    _active_pulls[pull_id] = entry
+    lock = asyncio.Lock()
+
+    async def _run() -> None:
+        try:
+
+            def on_progress(text: str) -> None:
+                entry["progress"] = f"{repo}: {text}"
+
+            paths = await hf_download.download(repo, pattern, revision, on_progress)
+            models = [
+                p
+                for p in paths
+                if p.name in hf_download.model_files([q.name for q in paths])
+            ]
+            if push_ids:
+                # A refusal here fails only the Ollama targets; shared-volume
+                # refreshes below still run, since the files are on disk.
+                refusal: str | None = None
+                if not models:
+                    refusal = "no GGUF model file was downloaded"
+                elif hf_download.split_parts([p.name for p in models]):
+                    refusal = (
+                        "split GGUF files cannot be pushed to Ollama; "
+                        "use a single-file quant or the shared volume"
+                    )
+                elif len(models) > 1:
+                    refusal = (
+                        f"the pattern matched {len(models)} GGUF files; "
+                        "narrow it to one quant to push to Ollama"
+                    )
+                if refusal is not None:
+                    logger.warning("HF push of %s refused: %s", repo, refusal)
+                    async with lock:
+                        entry["failed"].extend(push_ids)
+                        entry["progress"] = f"failed: {refusal}"
+                else:
+                    path = models[0]
+                    name = model_name or hf_download.default_ollama_name(
+                        repo, path.name
+                    )
+                    entry["model"] = name
+                    entry["progress"] = f"hashing {path.name}"
+                    digest = await hf_download.sha256_file(path)
+                    await asyncio.gather(
+                        *(
+                            _hf_deliver_ollama(
+                                pm=pm,
+                                db=db,
+                                pid=pid,
+                                path=path,
+                                digest=digest,
+                                model_name=name,
+                                entry=entry,
+                                lock=lock,
+                            )
+                            for pid in push_ids
+                        )
+                    )
+            for pid in refresh_ids:
+                try:
+                    await pm.refresh_provider(pid)
+                    async with lock:
+                        entry["completed"].append(pid)
+                except Exception:
+                    logger.exception("refresh after HF download failed (%s)", pid)
+                    async with lock:
+                        entry["failed"].append(pid)
+            if not (push_ids or refresh_ids):
+                entry["progress"] = (
+                    f"saved {len(paths)} file(s) in the models directory"
+                )
+        except Exception as exc:
+            logger.error("HF download of %s failed: %s", repo, exc)
+            async with lock:
+                done = set(entry["completed"]) | set(entry["failed"])
+                entry["failed"].extend(
+                    p for p in entry["provider_ids"] if p not in done
+                )
+                if not entry["provider_ids"]:
+                    entry["failed"].append(0)
+                entry["progress"] = f"failed: {exc}"
+        finally:
+            async with lock:
+                entry["status"] = "done"
+                entry["completed_at"] = time.monotonic()
+
+    asyncio.create_task(_run())
     return JSONResponse({"pull_id": pull_id, "status": "pulling"})
 
 

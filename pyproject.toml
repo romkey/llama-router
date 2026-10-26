@@ -13,6 +13,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "httpx",
+    "huggingface_hub>=1.0",
     "aiosqlite",
     "alembic>=1.13",
     "sqlalchemy[asyncio]>=2.0",

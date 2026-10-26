@@ -36,6 +36,12 @@ COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-deps .
 
+# Hugging Face downloads: keep the hf cache and downloaded models on the data
+# volume, and skip the CLI's PyPI update check.
+ENV HF_HOME=/app/data/hf \
+    HF_HUB_DISABLE_UPDATE_CHECK=1 \
+    LLAMA_ROUTER_HF_MODELS_DIR=/app/data/hf_models
+
 EXPOSE 80 8080 9200 11434
 
 CMD ["llama-router"]

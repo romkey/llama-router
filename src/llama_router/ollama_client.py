@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlparse
@@ -445,6 +447,55 @@ class OllamaClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    async def has_blob(self, digest: str) -> bool:
+        """True if the server already holds the blob (``HEAD /api/blobs``)."""
+        resp = await self._http.head(f"/api/blobs/{digest}")
+        return resp.status_code == 200
+
+    async def push_blob(
+        self,
+        digest: str,
+        path: str,
+        progress_callback: Any | None = None,
+    ) -> None:
+        """Upload a local file as a blob (``POST /api/blobs/<digest>``)."""
+        total = os.path.getsize(path)
+
+        async def body():
+            sent = 0
+            with open(path, "rb") as fh:
+                while True:
+                    chunk = await asyncio.to_thread(fh.read, 4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    sent += len(chunk)
+                    if progress_callback:
+                        progress_callback(sent, total)
+                    yield chunk
+
+        resp = await self._post(
+            f"/api/blobs/{digest}",
+            op="Upload blob (/api/blobs)",
+            content=body(),
+            headers={"Content-Length": str(total)},
+            timeout=httpx.Timeout(30.0, write=None, read=600.0),
+        )
+        resp.raise_for_status()
+
+    async def create_from_files(self, model: str, files: dict[str, str]) -> dict:
+        """Create *model* from uploaded blobs (``POST /api/create``).
+
+        *files* maps a GGUF file name to its ``sha256:`` digest.
+        """
+        resp = await self._post(
+            "/api/create",
+            op="Create model (/api/create)",
+            json={"model": model, "files": files, "stream": False},
+            timeout=httpx.Timeout(30.0, read=1800.0),
+        )
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
 
     async def delete_model(self, model: str) -> None:
         resp = await self._delete(

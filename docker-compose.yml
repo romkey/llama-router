@@ -23,6 +23,16 @@ services:
       # Set this to the IP/hostname your Ollama backends can reach this host on
       # LLAMA_ROUTER_CACHE_EXTERNAL_HOST: 192.168.1.50
       #
+      # Hugging Face downloads (Models tab). Variables are passed to the hf CLI
+      # as-is; uncomment the ones you need (an empty HF_ENDPOINT breaks the
+      # client, so leave unused ones commented). Downloads go to /app/data/hf_models.
+      # HF_TOKEN: hf_...
+      # HF_ENDPOINT: https://hf-mirror.example.org
+      # HF_DEBUG: "1"
+      # HF_HUB_DOWNLOAD_TIMEOUT: "60"
+      # HF_XET_HIGH_PERFORMANCE: "1"
+      # HTTPS_PROXY: http://proxy.example:3128
+      #
       # Forgotten dashboard password: delete all dashboard user rows, restart, then
       # open the UI (no login until you add a user under Users). If you changed
       # LLAMA_ROUTER_DATABASE_PATH, use that path instead of /app/data/llama_router.db.
