@@ -582,3 +582,27 @@ async def test_live_disconnect_is_logged_once(link) -> None:
     assert [(e.endpoint, e.error_detail) for e in offline_logs] == [
         ("disconnect", "worker is not connected")
     ]
+
+
+async def test_disconnect_during_cycle_is_not_logged_twice(link) -> None:
+    w = await _connected_worker(link)
+    pm, pid, db = link["pm"], link["provider_id"], link["db"]
+
+    async def idle():
+        return (await db.get_provider(pid)).status == ProviderStatus.IDLE
+
+    await _wait_for(idle)
+    stale = await db.get_provider(pid)  # the cycle's snapshot: still idle
+    await w.stop()
+
+    async def offline():
+        return (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
+
+    await _wait_for(offline)
+    await pm.check_provider(stale)
+    errors = [
+        e
+        for e in await db.get_request_logs(50, 0)
+        if e.protocol == "system" and e.status == "error"
+    ]
+    assert [e.endpoint for e in errors] == ["disconnect"]
