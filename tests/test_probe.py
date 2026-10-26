@@ -194,3 +194,33 @@ async def test_probe_routes_store_capabilities(
 
     missing = await client.post("/api/providers/999/probe")
     assert missing.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "tags_body",
+    [{"models": None}, {"models": "x"}, {"models": [1, None, {"name": "ok"}]}, []],
+)
+async def test_malformed_model_lists_do_not_crash(tags_body) -> None:
+    routes = {
+        ("GET", "/api/version"): httpx.Response(200, json={"version": "1"}),
+        ("GET", "/api/tags"): httpx.Response(200, json=tags_body),
+        ("GET", "/v1/models"): httpx.Response(200, json={"data": None}),
+    }
+    transport, _ = _server(routes)
+    r = await probe_url("http://odd:11434", transport=transport)
+    assert "ollama" in r.servers
+    assert r.models in ([], ["ok"])
+
+
+def test_merge_keeps_targets_apart() -> None:
+    from llama_router.probe import ProbeResult, EndpointResult, merge_results
+
+    a = ProbeResult(base_url="worker://edge (ollama)", reachable=True)
+    b = ProbeResult(base_url="worker://edge (llamacpp)", reachable=True)
+    for r in (a, b):
+        r.endpoints = [
+            EndpointResult("/health", "GET", "llamacpp", "h", "available", 200)
+        ]
+    merged = merge_results([a, b])
+    assert merged["base_urls"] == ["worker://edge (ollama)", "worker://edge (llamacpp)"]
+    assert len({e["base_url"] for e in merged["endpoints"]}) == 2

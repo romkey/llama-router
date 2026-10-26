@@ -331,14 +331,19 @@ def _detect(
     elif servers:
         result.suggested_type = "llamacpp"
 
+    # Servers answer with all sorts of shapes; never let one crash the probe.
     names: list[str] = []
-    tags = get("/api/tags")
-    if isinstance(tags, dict):
-        names += [str(m.get("name")) for m in tags.get("models", []) if m.get("name")]
-    if isinstance(models_json, dict):
-        for m in models_json.get("data") or []:
-            if isinstance(m, dict) and m.get("id") and str(m["id"]) not in names:
-                names.append(str(m["id"]))
+
+    def entries(obj: Any, key: str) -> list[dict]:
+        val = obj.get(key) if isinstance(obj, dict) else None
+        return [m for m in val if isinstance(m, dict)] if isinstance(val, list) else []
+
+    for m in entries(get("/api/tags"), "models"):
+        if m.get("name") and str(m["name"]) not in names:
+            names.append(str(m["name"]))
+    for m in entries(models_json, "data"):
+        if m.get("id") and str(m["id"]) not in names:
+            names.append(str(m["id"]))
     result.models = names[:_MAX_MODELS]
 
 

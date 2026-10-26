@@ -1320,12 +1320,14 @@ class ProviderManager:
             if provider.supports_llamacpp:
                 targets.append("llamacpp")
             for target in targets:
-                results.append(
-                    await probe_url(
-                        "http://worker",
-                        transport=self.worker_hub.transport(provider_id, target),
-                    )
+                r = await probe_url(
+                    "http://worker",
+                    transport=self.worker_hub.transport(provider_id, target),
                 )
+                # Each target is a different upstream behind the worker; label
+                # it so the two catalogs are not shown as duplicate rows.
+                r.base_url = f"{provider.worker_address} ({target})"
+                results.append(r)
         else:
             urls = [best.url]
             if best.llamacpp_url and best.llamacpp_url.rstrip("/") != best.url.rstrip(
