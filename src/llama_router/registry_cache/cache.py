@@ -87,10 +87,21 @@ class BlobCache:
     # --- Blobs ---
 
     def has_blob(self, digest: str) -> bool:
-        return self._blob_path(digest).is_file()
+        """True if *digest* is a valid identifier with a cached blob.
+
+        Digests read back from stored manifests or the filesystem may not be
+        valid cache keys; such blobs are simply reported as not cached.
+        """
+        try:
+            return self._blob_path(digest).is_file()
+        except InvalidCacheKey:
+            return False
 
     def blob_size(self, digest: str) -> int:
-        p = self._blob_path(digest)
+        try:
+            p = self._blob_path(digest)
+        except InvalidCacheKey:
+            return 0
         return p.stat().st_size if p.is_file() else 0
 
     def blob_path(self, digest: str) -> Path:
@@ -115,7 +126,11 @@ class BlobCache:
     # --- Manifests ---
 
     def has_manifest(self, name: str, reference: str) -> bool:
-        p = self._manifest_path(name, reference)
+        """True if a non-expired manifest is cached under a valid name and tag."""
+        try:
+            p = self._manifest_path(name, reference)
+        except InvalidCacheKey:
+            return False
         if not p.is_file():
             return False
         age = time.time() - p.stat().st_mtime
