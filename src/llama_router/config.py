@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     worker_max_concurrency: int = 4
     # Allow the hub to pull and delete models on this worker.
     worker_allow_admin: bool = False
+    # Where Hugging Face downloads are stored. Mount the same directory into a
+    # llama.cpp server's --models-dir to share models without pushing them.
+    hf_models_dir: str = "./hf_models"
     # If set, used to sign dashboard session cookies; otherwise persisted in app_settings.
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.

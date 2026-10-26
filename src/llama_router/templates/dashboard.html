@@ -412,6 +412,73 @@
     <!-- ==================== MODELS TAB ==================== -->
     <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         <div id="pull-status-area"></div>
+        {% if not read_only %}
+        <div class="card mb-3" id="hf-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h6 class="mb-0"><i class="bi bi-cloud-download me-1"></i>Download from Hugging Face</h6>
+                <button type="button" class="btn btn-sm btn-link p-0" data-bs-toggle="collapse" data-bs-target="#hf-body" aria-expanded="false">Show</button>
+            </div>
+            <div class="collapse" id="hf-body">
+                <div class="card-body small">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label" for="hf-repo">Repository</label>
+                            <input class="form-control form-control-sm" id="hf-repo" placeholder="owner/name, e.g. Qwen/Qwen3-8B-GGUF">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" for="hf-pattern">Files</label>
+                            <input class="form-control form-control-sm" id="hf-pattern" placeholder="*Q4_K_M*.gguf">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label" for="hf-revision">Revision</label>
+                            <input class="form-control form-control-sm" id="hf-revision" placeholder="main">
+                        </div>
+                        <div class="col-md-3">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="hf-list">List files</button>
+                        </div>
+                    </div>
+                    <div id="hf-files" class="mt-2" style="display:none"></div>
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-4">
+                            <label class="form-label" for="hf-name">Ollama model name</label>
+                            <input class="form-control form-control-sm" id="hf-name" placeholder="derived from the file, e.g. qwen3-8b:q4_k_m">
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-label">Push to Ollama providers</div>
+                            {% for info in providers if info.provider.supports_ollama %}
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="hf-push-{{ info.provider.id }}" data-hf-push="{{ info.provider.id }}">
+                                <label class="form-check-label" for="hf-push-{{ info.provider.id }}">{{ info.provider.name }}</label>
+                            </div>
+                            {% else %}
+                            <div class="text-muted">No Ollama providers.</div>
+                            {% endfor %}
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-label">Refresh llama.cpp providers (shared volume)</div>
+                            {% for info in providers if info.provider.supports_llamacpp %}
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="hf-refresh-{{ info.provider.id }}" data-hf-refresh="{{ info.provider.id }}">
+                                <label class="form-check-label" for="hf-refresh-{{ info.provider.id }}">{{ info.provider.name }}</label>
+                            </div>
+                            {% else %}
+                            <div class="text-muted">No llama.cpp providers.</div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 mt-2">
+                        <button type="button" class="btn btn-sm btn-primary" id="hf-download"><i class="bi bi-download me-1"></i>Download</button>
+                        <span class="text-muted" id="hf-msg"></span>
+                    </div>
+                    <details class="mt-2" id="hf-env">
+                        <summary>Hugging Face settings</summary>
+                        <div class="text-muted mt-1">Files are saved under <code id="hf-models-dir">{{ hf_models_dir }}</code>. Mount that directory into a llama.cpp server's <code>--models-dir</code> to share models without pushing them. The variables below are read from the router's environment.</div>
+                        <table class="table table-sm mb-0 mt-1"><tbody id="hf-env-rows"></tbody></table>
+                    </details>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         {% if cache_stats and not read_only %}
         {% if cache_stats.get("enabled", true) and not cache_external_host_set %}
         <div class="alert alert-warning py-2 mb-2 small">
@@ -1448,6 +1515,98 @@ document.addEventListener('click', function(ev) {
     if (ev.target.closest('#probe-new-provider')) probeNewProvider();
 });
 
+// ---- Hugging Face downloads ---------------------------------------------
+function hfMsg(text, cls) {
+    const el = document.getElementById('hf-msg');
+    el.className = cls || 'text-muted';
+    el.textContent = text || '';
+}
+
+function hfBody() {
+    return {
+        repo: document.getElementById('hf-repo').value.trim(),
+        pattern: document.getElementById('hf-pattern').value.trim(),
+        revision: document.getElementById('hf-revision').value.trim(),
+    };
+}
+
+function hfListFiles() {
+    const box = document.getElementById('hf-files');
+    const body = hfBody();
+    if (!body.repo) { hfMsg('Enter a repository first.', 'text-danger'); return; }
+    hfMsg('Listing files…');
+    fetch('/api/hf/files', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+        .then(r => r.json().then(d => ({ok: r.ok, d: d})))
+        .then(function(res) {
+            if (!res.ok) { hfMsg(res.d.detail || 'Could not list files.', 'text-danger'); return; }
+            hfMsg(res.d.files.length + ' file(s) match.');
+            box.style.display = '';
+            box.innerHTML = '';
+            const list = probeEl('div', 'd-flex flex-wrap gap-1');
+            res.d.files.forEach(function(f) {
+                const b = probeEl('button', 'btn btn-sm btn-outline-secondary py-0', f.file + (f.size ? ' (' + f.size + ')' : ''));
+                b.type = 'button';
+                b.title = 'Use only this file';
+                b.addEventListener('click', function() {
+                    document.getElementById('hf-pattern').value = f.file;
+                    hfListFiles();
+                });
+                list.appendChild(b);
+            });
+            box.appendChild(list);
+            if (res.d.split) box.appendChild(probeEl('div', 'text-warning mt-1', 'Split GGUF: llama.cpp can load it from a shared volume, but Ollama cannot take it.'));
+            if (res.d.model_files.length > 1) box.appendChild(probeEl('div', 'text-warning mt-1', 'Several model files match; pick one to push to Ollama.'));
+            const nameEl = document.getElementById('hf-name');
+            if (res.d.suggested_name && !nameEl.value) nameEl.placeholder = res.d.suggested_name;
+        })
+        .catch(function() { hfMsg('Request failed.', 'text-danger'); });
+}
+
+function hfDownload() {
+    if (!dashRequireWrite()) return;
+    const body = hfBody();
+    if (!body.repo) { hfMsg('Enter a repository first.', 'text-danger'); return; }
+    body.model_name = document.getElementById('hf-name').value.trim();
+    body.push_provider_ids = [...document.querySelectorAll('[data-hf-push]:checked')].map(c => Number(c.dataset.hfPush));
+    body.refresh_provider_ids = [...document.querySelectorAll('[data-hf-refresh]:checked')].map(c => Number(c.dataset.hfRefresh));
+    hfMsg('Starting…');
+    fetch('/api/hf/pull', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+        .then(r => r.json().then(d => ({ok: r.ok, d: d})))
+        .then(function(res) {
+            if (!res.ok) { hfMsg(res.d.detail || 'Could not start the download.', 'text-danger'); return; }
+            hfMsg('Download started; progress is shown above.');
+            const label = body.model_name || (body.repo + (body.pattern ? ' (' + body.pattern + ')' : ''));
+            _trackedPulls[res.d.pull_id] = {model: label, btn: null};
+            showPullBanner(res.d.pull_id, label, 'pulling', 0, 0, 0, '');
+            pollPull(res.d.pull_id);
+        })
+        .catch(function() { hfMsg('Request failed.', 'text-danger'); });
+}
+
+function hfLoadEnv() {
+    const rows = document.getElementById('hf-env-rows');
+    if (!rows || rows.dataset.loaded) return;
+    fetch('/api/hf/env').then(r => r.json()).then(function(d) {
+        rows.dataset.loaded = '1';
+        document.getElementById('hf-models-dir').textContent = d.models_dir;
+        if (!d.hf_available) rows.appendChild(probeEl('tr', 'text-danger', 'The hf command is not installed.'));
+        d.env.forEach(function(v) {
+            const tr = probeEl('tr');
+            tr.appendChild(probeEl('td', '', v.name));
+            tr.appendChild(probeEl('td', v.set ? '' : 'text-muted', v.set ? v.value : 'not set'));
+            rows.appendChild(tr);
+        });
+    }).catch(function() {});
+}
+
+document.addEventListener('click', function(ev) {
+    if (ev.target.closest('#hf-list')) hfListFiles();
+    if (ev.target.closest('#hf-download')) hfDownload();
+});
+document.addEventListener('toggle', function(ev) {
+    if (ev.target && ev.target.id === 'hf-env' && ev.target.open) hfLoadEnv();
+}, true);
+
 function switchProviderView(view) {
     const cardView = document.getElementById('providers-card-view');
     const listView = document.getElementById('providers-list-view');
@@ -2344,6 +2503,12 @@ function showPullBanner(pullId, model, status, completed, total, failed, progres
             (total > 0 ? ' &mdash; ' + completed + '/' + total + ' succeeded' : '') +
             (failed > 0 ? ', ' + failed + ' failed' : '') +
             '</span>';
+        if (failed > 0 && progress) {
+            var why = document.createElement('span');
+            why.className = 'ms-2 small';
+            why.textContent = '(' + progress + ')';
+            el.appendChild(why);
+        }
         setTimeout(function() { el.remove(); }, 10000);
     }
 }

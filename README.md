@@ -176,6 +176,24 @@ All three API ports expose a `GET /health` endpoint that returns JSON:
 
 The dashboard port (80) includes provider counts; the Ollama (11434) and llama.cpp (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
 
+## Hugging Face Downloads
+
+The Models tab can download GGUF models from Hugging Face with the `hf` CLI
+and deliver them to providers:
+
+- **Ollama providers:** the router uploads the file as a blob and creates the
+  model, so remote Ollama servers need no internet access or shared disk.
+  Name the model yourself or let the router derive one, such as
+  `qwen3-8b:q4_k_m`.
+- **llama.cpp providers:** mount `LLAMA_ROUTER_HF_MODELS_DIR` into the server's
+  `--models-dir` (router mode). The router then only refreshes the provider so
+  the new model is discovered.
+
+Use **List files** to preview what a pattern selects, then click a file to pick
+one quant. Split GGUF files work through a shared volume but cannot be pushed
+to Ollama. Set `HF_TOKEN` for gated or private repositories and `HF_ENDPOINT`
+for a mirror; see `.env.example` for the full list of variables the CLI reads.
+
 ## Debugging from inside the container
 
 The image includes basic network tools so you can check reachability from the
