@@ -118,3 +118,16 @@ async def test_health_logs_only_transitions(db, httpx_mock) -> None:
     logs = await _system_logs(db)
     assert [(e.endpoint, e.status) for e in logs] == [("health", "ok")]
     await pm.stop()
+
+
+async def test_restart_does_not_relog_already_offline_provider(db, httpx_mock) -> None:
+    _routes(httpx_mock, {"gone": httpx.ConnectError("refused")})
+    # Offline in the database from the previous run, still unreachable now.
+    await _provider(db, "gone", "http://gone:11434", ProviderStatus.OFFLINE)
+    pm = ProviderManager(db)
+
+    await pm._check_many(await db.list_providers(), rediscover=True, source="startup")
+    await pm._run_health_checks()
+
+    assert await _system_logs(db) == []
+    await pm.stop()
