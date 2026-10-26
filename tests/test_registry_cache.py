@@ -57,9 +57,9 @@ def test_blob_and_manifest_paths_stay_under_root(tmp_path):
 def test_cache_rejects_traversal_inputs(tmp_path):
     cache = BlobCache(str(tmp_path / "cache"))
     with pytest.raises(InvalidCacheKey):
-        cache.has_blob("sha256:../../../etc/passwd")
+        cache.blob_path("sha256:../../../etc/passwd")
     with pytest.raises(InvalidCacheKey):
-        cache.has_manifest("library/llama3.2", "../../secret")
+        cache.temp_blob_path("sha256:../../../etc/passwd")
     with pytest.raises(InvalidCacheKey):
         cache.save_manifest("../outside", "latest", b"x")
     assert not (tmp_path / "outside").exists()
@@ -69,3 +69,34 @@ def test_path_under_rejects_escape_even_without_validation(tmp_path):
     cache = BlobCache(str(tmp_path / "cache"))
     with pytest.raises(InvalidCacheKey):
         BlobCache._path_under(cache._manifests_dir, "..", "..", "x")
+
+
+def test_query_predicates_tolerate_invalid_keys(tmp_path):
+    cache = BlobCache(str(tmp_path / "cache"))
+    assert cache.has_blob("sha256:../../etc/passwd") is False
+    assert cache.has_blob("md5:" + "a" * 32) is False
+    assert cache.blob_size("not-a-digest") == 0
+    assert cache.has_manifest("library/llama3.2", "../x") is False
+    assert cache.get_manifest("../x", "latest") is None
+    assert cache.is_model_fully_cached("library/llama3.2", "bad tag") is False
+
+
+def test_listings_survive_stray_files_and_odd_digests(tmp_path):
+    import json
+
+    cache = BlobCache(str(tmp_path / "cache"))
+    manifests = tmp_path / "cache" / "manifests"
+    # A manifest whose layer digest is not sha256 and a stray file whose
+    # name is not a valid tag; neither may abort the listing helpers.
+    odd = {"config": {"digest": "md5:" + "a" * 32, "size": 1}, "layers": []}
+    (manifests / "library_odd").mkdir(parents=True)
+    (manifests / "library_odd" / "latest").write_bytes(json.dumps(odd).encode())
+    (manifests / "library_odd" / ".stray tag").write_bytes(b"{}")
+    (manifests / "bad name!").mkdir()
+    (manifests / "bad name!" / "latest").write_bytes(b"{}")
+
+    assert cache.cached_models() == set()
+    details = cache.cached_model_details()
+    assert any(d["name"] == "odd:latest" and not d["fully_cached"] for d in details)
+    stats = cache.stats()
+    assert stats["manifest_count"] == 3
