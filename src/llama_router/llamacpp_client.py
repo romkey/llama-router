@@ -66,9 +66,11 @@ class LlamaCppClient:
     async def close(self) -> None:
         await self._http.aclose()
 
-    async def is_reachable(self) -> bool:
+    async def is_reachable(self, timeout: httpx.Timeout | None = None) -> bool:
         try:
-            resp = await self._http.get("/health")
+            resp = await self._http.get(
+                "/health", **({"timeout": timeout} if timeout else {})
+            )
             return resp.status_code == 200
         except httpx.HTTPError:
             return False
