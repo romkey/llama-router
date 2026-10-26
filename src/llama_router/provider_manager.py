@@ -377,6 +377,8 @@ class ProviderManager:
         self._active_requests.pop(provider_id, None)
         self._active_urls.pop(provider_id, None)
         self._hot_models.pop(provider_id, None)
+        self._status_detail.pop(provider_id, None)
+        self._logged_detail.pop(provider_id, None)
         await self._db.remove_provider(provider_id)
         self._notify_model_routing_cache(provider_id)
 
@@ -1221,16 +1223,13 @@ class ProviderManager:
                 )
                 provider.provider_type = ptype
             await self._rebuild_clients(provider)
+            detail: str | None = None
             try:
                 await self._discover_provider(provider)
                 ok = True
             except Exception as exc:
                 ok = False
-                detail = (
-                    describe_httpx_error(exc)
-                    if isinstance(exc, httpx.HTTPError)
-                    else str(exc)
-                )
+                detail = _failure_reason(exc)
                 if self._is_current_worker(conn):
                     logger.warning(
                         "Worker %s connected but model discovery failed: %s",
@@ -1239,6 +1238,12 @@ class ProviderManager:
                     )
             if not self._is_current_worker(conn):
                 return
+            # The socket is up, so a failure here is "reachable but unusable".
+            if detail is None:
+                self._status_detail.pop(provider_id, None)
+                self._logged_detail.pop(provider_id, None)
+            else:
+                self._status_detail[provider_id] = detail
             await self._set_worker_addresses_live(provider_id, ok)
             await self._db.update_provider_status(
                 provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
@@ -1264,3 +1269,6 @@ class ProviderManager:
         await self._set_worker_addresses_live(provider_id, False)
         await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
         self._hot_models[provider_id] = []
+        # No socket means nothing answers; any "reachable but unusable" reason
+        # from the last session no longer applies.
+        self._status_detail.pop(provider_id, None)
