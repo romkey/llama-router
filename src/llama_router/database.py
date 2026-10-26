@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -165,15 +164,14 @@ class Database:
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
-        wireguard_peer_id: int | None = None,
     ) -> Provider:
         url = url.rstrip("/")
         if llamacpp_url:
             llamacpp_url = llamacpp_url.rstrip("/")
         pid = await self._insert_get_id(
             "INSERT INTO providers (name, url, llamacpp_url, provider_type, "
-            "machine_type, gpu_type, gpu_ram, wireguard_peer_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "machine_type, gpu_type, gpu_ram) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 url,
@@ -182,7 +180,6 @@ class Database:
                 machine_type,
                 gpu_type,
                 gpu_ram,
-                wireguard_peer_id,
             ),
         )
         return Provider(
@@ -194,7 +191,6 @@ class Database:
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
-            wireguard_peer_id=wireguard_peer_id,
         )
 
     async def remove_provider(self, provider_id: int) -> None:
@@ -592,289 +588,61 @@ class Database:
         )
         return {r["model_name"]: r["fallback_model"] for r in rows}
 
-    # --- WireGuard ---
+    # --- Workers (hub side) ---
 
-    async def _ensure_wireguard_interface_row(self) -> None:
-        if self._dialect_name in ("mysql", "mariadb"):
-            await self._execute(
-                "INSERT IGNORE INTO wireguard_interface (id) VALUES (1)"
-            )
-        elif self._dialect_name == "postgresql":
-            await self._execute(
-                "INSERT INTO wireguard_interface (id) VALUES (1) "
-                "ON CONFLICT (id) DO NOTHING"
-            )
-        else:
-            await self._execute(
-                "INSERT OR IGNORE INTO wireguard_interface (id) VALUES (1)"
-            )
-
-    async def get_wireguard_interface(self) -> dict:
-        from .wireguard_config import public_key_from_private
-
-        row = await self._select_one("SELECT * FROM wireguard_interface WHERE id = 1")
-        if row is None:
-            await self._ensure_wireguard_interface_row()
-            row = await self._select_one(
-                "SELECT * FROM wireguard_interface WHERE id = 1"
-            )
-        assert row is not None
-        d = dict(row)
-        d["peering_enabled"] = bool(d.get("peering_enabled"))
-        d["peering_api_key"] = d.get("peering_api_key") or ""
-        d["peering_key_use_count"] = int(d.get("peering_key_use_count") or 0)
-        max_u = d.get("peering_key_max_uses")
-        d["peering_key_max_uses"] = int(max_u) if max_u is not None else None
-        priv = (d.get("private_key") or "").strip()
-        if priv:
-            try:
-                d["public_key"] = public_key_from_private(priv)
-            except Exception:
-                d["public_key"] = ""
-        else:
-            d["public_key"] = ""
-        d["enabled"] = bool(d.get("enabled"))
-        return d
-
-    async def update_wireguard_interface(
-        self,
-        *,
-        enabled: bool,
-        listen_port: int,
-        address_cidr: str,
-        mtu: int | None = None,
-        endpoint_public: str | None = None,
-        new_private_key: str | None = None,
-    ) -> None:
-        if new_private_key is not None:
-            await self._execute(
-                "UPDATE wireguard_interface SET enabled = ?, listen_port = ?, "
-                "address_cidr = ?, mtu = ?, endpoint_public = ?, private_key = ?, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-                (
-                    int(enabled),
-                    listen_port,
-                    address_cidr.strip(),
-                    mtu,
-                    (endpoint_public or "").strip() or None,
-                    new_private_key.strip(),
-                ),
-            )
-        else:
-            await self._execute(
-                "UPDATE wireguard_interface SET enabled = ?, listen_port = ?, "
-                "address_cidr = ?, mtu = ?, endpoint_public = ?, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-                (
-                    int(enabled),
-                    listen_port,
-                    address_cidr.strip(),
-                    mtu,
-                    (endpoint_public or "").strip() or None,
-                ),
-            )
-
-    async def set_wireguard_private_key(self, private_key_b64: str) -> None:
-        await self._execute(
-            "UPDATE wireguard_interface SET private_key = ?, "
-            "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-            (private_key_b64.strip(),),
-        )
-
-    async def list_wireguard_peers(self) -> list[dict]:
-        rows = await self._select_all("SELECT * FROM wireguard_peers ORDER BY id ASC")
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["enabled"] = bool(d.get("enabled"))
-            out.append(d)
-        return out
-
-    async def get_wireguard_peer(self, peer_id: int) -> dict | None:
-        row = await self._select_one(
-            "SELECT * FROM wireguard_peers WHERE id = ?", (peer_id,)
-        )
-        if not row:
-            return None
-        d = dict(row)
-        d["enabled"] = bool(d.get("enabled"))
-        return d
-
-    async def add_wireguard_peer(
-        self,
-        *,
-        name: str,
-        public_key: str,
-        allowed_ips: str,
-        preshared_key: str | None = None,
-        endpoint: str | None = None,
-        persistent_keepalive: int | None = None,
-        enabled: bool = True,
+    async def create_worker(
+        self, name: str, token_hash: str, token_prefix: str, provider_id: int
     ) -> int:
         return await self._insert_get_id(
-            "INSERT INTO wireguard_peers "
-            "(name, public_key, preshared_key, allowed_ips, endpoint, "
-            "persistent_keepalive, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                name.strip(),
-                public_key.strip(),
-                (preshared_key or "").strip() or None,
-                allowed_ips.strip(),
-                (endpoint or "").strip() or None,
-                persistent_keepalive,
-                int(enabled),
-            ),
+            "INSERT INTO workers (name, token_hash, token_prefix, provider_id) "
+            "VALUES (?, ?, ?, ?)",
+            (name, token_hash, token_prefix, provider_id),
         )
 
-    async def update_wireguard_peer(
-        self,
-        peer_id: int,
-        *,
-        name: str,
-        public_key: str,
-        allowed_ips: str,
-        preshared_key: str | None = None,
-        endpoint: str | None = None,
-        persistent_keepalive: int | None = None,
-        enabled: bool = True,
-    ) -> None:
-        await self._execute(
-            "UPDATE wireguard_peers SET name = ?, public_key = ?, preshared_key = ?, "
-            "allowed_ips = ?, endpoint = ?, persistent_keepalive = ?, enabled = ? "
-            "WHERE id = ?",
-            (
-                name.strip(),
-                public_key.strip(),
-                (preshared_key or "").strip() or None,
-                allowed_ips.strip(),
-                (endpoint or "").strip() or None,
-                persistent_keepalive,
-                int(enabled),
-                peer_id,
-            ),
-        )
+    async def list_workers(self) -> list[dict]:
+        rows = await self._select_all("SELECT * FROM workers ORDER BY name")
+        return [_row_to_worker(r) for r in rows]
 
-    async def remove_wireguard_peer(self, peer_id: int) -> None:
-        await self._execute("DELETE FROM wireguard_peers WHERE id = ?", (peer_id,))
+    async def get_worker(self, worker_id: int) -> dict | None:
+        row = await self._select_one("SELECT * FROM workers WHERE id = ?", (worker_id,))
+        return _row_to_worker(row) if row else None
 
-    async def set_provider_wireguard_peer(
-        self, provider_id: int, peer_id: int | None
-    ) -> None:
-        await self._execute(
-            "UPDATE providers SET wireguard_peer_id = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
-            (peer_id, provider_id),
-        )
-
-    async def get_providers_by_peer_id(self, peer_id: int) -> list[Provider]:
-        rows = await self._select_all(
-            "SELECT * FROM providers WHERE wireguard_peer_id = ? ORDER BY name",
-            (peer_id,),
-        )
-        return [_row_to_provider(r) for r in rows]
-
-    async def get_wireguard_peering_config(self) -> dict:
-        iface = await self.get_wireguard_interface()
-        max_u = iface.get("peering_key_max_uses")
-        return {
-            "peering_enabled": bool(iface.get("peering_enabled")),
-            "peering_api_key": iface.get("peering_api_key") or "",
-            "peering_key_expires_at": self._coerce_peering_expiry(
-                iface.get("peering_key_expires_at")
-            ),
-            "peering_key_use_count": int(iface.get("peering_key_use_count") or 0),
-            "peering_key_max_uses": int(max_u) if max_u is not None else None,
-        }
-
-    @staticmethod
-    def _coerce_peering_expiry(value: Any) -> datetime | None:
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value.replace(tzinfo=None) if value.tzinfo else value
-        if isinstance(value, str):
-            s = value.strip()
-            if not s:
-                return None
-            if s.endswith("Z"):
-                s = s[:-1]
-            try:
-                dt = datetime.fromisoformat(s)
-                return dt.replace(tzinfo=None) if dt.tzinfo else dt
-            except ValueError:
-                return None
-        return None
-
-    async def set_wireguard_peering_config(
-        self,
-        enabled: bool,
-        api_key: str,
-        *,
-        peering_key_expires_at: datetime | None = None,
-        peering_key_max_uses: int | None = None,
-        reset_peering_key_use_count: bool = False,
-    ) -> None:
-        if reset_peering_key_use_count:
-            await self._execute(
-                "UPDATE wireguard_interface SET peering_enabled = ?, peering_api_key = ?, "
-                "peering_key_expires_at = ?, peering_key_max_uses = ?, "
-                "peering_key_use_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-                (
-                    int(enabled),
-                    api_key.strip(),
-                    peering_key_expires_at,
-                    peering_key_max_uses,
-                ),
-            )
-        else:
-            await self._execute(
-                "UPDATE wireguard_interface SET peering_enabled = ?, peering_api_key = ?, "
-                "peering_key_expires_at = ?, peering_key_max_uses = ?, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-                (
-                    int(enabled),
-                    api_key.strip(),
-                    peering_key_expires_at,
-                    peering_key_max_uses,
-                ),
-            )
-
-    async def increment_peering_key_use_count(self) -> int:
-        """Atomically increment peering API key use count; return new total."""
-        sf = self._require_session_factory()
-        async with sf() as session:
-            async with session.begin():
-                stmt, bind = qmark(
-                    "UPDATE wireguard_interface SET peering_key_use_count = "
-                    "peering_key_use_count + 1 WHERE id = 1"
-                )
-                await session.execute(stmt, bind)
-                stmt2, bind2 = qmark(
-                    "SELECT peering_key_use_count FROM wireguard_interface WHERE id = 1"
-                )
-                r = await session.execute(stmt2, bind2)
-                row = result_first(r)
-                if not row:
-                    return 0
-                return int(row["peering_key_use_count"] or 0)
-
-    async def find_wireguard_peer_by_public_key(self, public_key: str) -> dict | None:
-        key = public_key.strip()
+    async def get_worker_by_token_hash(self, token_hash: str) -> dict | None:
         row = await self._select_one(
-            "SELECT * FROM wireguard_peers WHERE public_key = ?", (key,)
+            "SELECT * FROM workers WHERE token_hash = ?", (token_hash,)
         )
-        if not row:
-            return None
-        d = dict(row)
-        d["enabled"] = bool(d.get("enabled"))
-        return d
+        return _row_to_worker(row) if row else None
 
-    async def unlink_providers_from_wireguard_peer(self, peer_id: int) -> None:
-        await self._execute(
-            "UPDATE providers SET wireguard_peer_id = NULL, updated_at = CURRENT_TIMESTAMP "
-            "WHERE wireguard_peer_id = ?",
-            (peer_id,),
+    async def get_worker_by_provider(self, provider_id: int) -> dict | None:
+        row = await self._select_one(
+            "SELECT * FROM workers WHERE provider_id = ?", (provider_id,)
         )
+        return _row_to_worker(row) if row else None
+
+    async def set_worker_token(
+        self, worker_id: int, token_hash: str, token_prefix: str
+    ) -> None:
+        await self._execute(
+            "UPDATE workers SET token_hash = ?, token_prefix = ? WHERE id = ?",
+            (token_hash, token_prefix, worker_id),
+        )
+
+    async def set_worker_enabled(self, worker_id: int, enabled: bool) -> None:
+        await self._execute(
+            "UPDATE workers SET enabled = ? WHERE id = ?", (int(enabled), worker_id)
+        )
+
+    async def touch_worker_connected(
+        self, worker_id: int, remote_addr: str | None
+    ) -> None:
+        await self._execute(
+            "UPDATE workers SET last_connected_at = CURRENT_TIMESTAMP, "
+            "last_remote_addr = ? WHERE id = ?",
+            (remote_addr, worker_id),
+        )
+
+    async def delete_worker(self, worker_id: int) -> None:
+        await self._execute("DELETE FROM workers WHERE id = ?", (worker_id,))
 
     async def resolve_fallback_chain(
         self, model_name: str, max_depth: int = 10
@@ -1152,8 +920,21 @@ class Database:
         return int(row["c"]) if row else 0
 
 
+def _row_to_worker(row: Mapping[str, Any]) -> dict:
+    pid = row.get("provider_id")
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "token_prefix": row["token_prefix"],
+        "provider_id": int(pid) if pid is not None else None,
+        "enabled": bool(row["enabled"]),
+        "created_at": row["created_at"],
+        "last_connected_at": row["last_connected_at"],
+        "last_remote_addr": row["last_remote_addr"],
+    }
+
+
 def _row_to_provider(row: Mapping[str, Any]) -> Provider:
-    wgid = row.get("wireguard_peer_id")
     return Provider(
         id=row["id"],
         name=row["name"],
@@ -1164,7 +945,6 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         machine_type=row["machine_type"],
         gpu_type=row["gpu_type"],
         gpu_ram=row["gpu_ram"],
-        wireguard_peer_id=int(wgid) if wgid is not None else None,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

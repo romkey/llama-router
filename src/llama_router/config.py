@@ -31,12 +31,21 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.0
     sentry_profiles_sample_rate: float = 0.0
     sentry_send_default_pii: bool = False
-    # Host path for wg-quick config (interface name = basename without .conf).
-    wireguard_config_path: str = "/etc/wireguard/wg0.conf"
-    # If true, only write the file (no wg-quick/wg); for external tunnel management.
-    wireguard_legacy_volume: bool = False
-    # If true, apply WireGuard on process startup when wg-quick is available.
-    wireguard_enabled: bool = False
+    # Hub: accept outbound worker connections on the Ollama API port at /worker/ws.
+    worker_hub_enabled: bool = True
+    # Worker: dial out to this hub (https://, wss://, or bare host). Set together
+    # with worker_token to pin the link; otherwise it is configured in the dashboard.
+    worker_hub_url: str = ""
+    worker_token: str = ""
+    # Local upstreams the worker relays jobs to. Empty means this router's own
+    # Ollama / llama.cpp API ports on 127.0.0.1; "none" disables that protocol.
+    worker_ollama_url: str = ""
+    worker_llamacpp_url: str = ""
+    # Sent as API-KEY to the local upstream when it requires one.
+    worker_upstream_api_key: str = ""
+    worker_max_concurrency: int = 4
+    # Allow the hub to pull and delete models on this worker.
+    worker_allow_admin: bool = False
     # If set, used to sign dashboard session cookies; otherwise persisted in app_settings.
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.

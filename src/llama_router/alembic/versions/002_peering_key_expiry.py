@@ -19,6 +19,9 @@ depends_on = None
 def upgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
+    # 003 drops this table; a database restored or stamped past it may lack it.
+    if "wireguard_interface" not in insp.get_table_names():
+        return
     cols = {c["name"] for c in insp.get_columns("wireguard_interface")}
     if "peering_key_expires_at" not in cols:
         op.add_column(

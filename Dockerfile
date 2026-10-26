@@ -2,15 +2,6 @@ FROM python:3.14-slim AS base
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bind9-host \
-        curl \
-        iproute2 \
-        iputils-ping \
-        wireguard-tools \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY pyproject.toml .
 
 RUN python - <<'PY'

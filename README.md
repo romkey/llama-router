@@ -13,6 +13,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 - **Smart Routing** — Routes to the least-busy, most-capable provider based on active requests and benchmark data
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
 - **API Key Routing Policies** — Per-key latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
+- **Hub and Worker Links** — Member routers dial out to a hub over one WebSocket and serve its jobs, with no inbound ports or VPN
 - **OCI Registry Cache** — Built-in pull-through cache for Ollama model downloads, serving cached layers at LAN speed
 
 ## Quick Start
@@ -45,23 +46,30 @@ docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/
 docker compose restart llama-router
 ```
 
-### WireGuard (optional)
+### Connecting routers: hubs and workers
 
-**Prerequisites:** `wg-quick` and `wg` wherever llama-router applies config (`apt install wireguard-tools` on Debian/Ubuntu). The **default** `Dockerfile` does not install WireGuard tools; add them in a derived image if you want `wg-quick` inside the container, or use **legacy volume mode** and run WireGuard on the host.
+One llama-router can serve as a **hub** for others. A **worker** is a llama-router that opens a single outbound WebSocket to the hub and serves the inference jobs the hub sends down it. The worker needs no open ports, port forwarding, or VPN, so it works from a home network, behind NAT, or while the machine is on another tailnet or VPN. Nothing on the worker's network becomes reachable from the hub.
 
-**Docker networking:** You do **not** need `network_mode: host` if everything that must use the VPN (llama-router APIs, backends you configure with tunnel URLs, etc.) runs **inside the same container** and remote peers only need to reach that container. Use **`cap_add: [NET_ADMIN]`**, map **`51820:51820/udp`** (or your listen port), and set the dashboard **Public endpoint** to whatever address:port peers use to reach the host (Docker forwards UDP into the container). Use **`network_mode: host`** when you want the WireGuard interface and service ports on the **host** network namespace (typical when the tunnel must behave like a bare-metal router on the LAN). Docker Desktop for macOS/Windows is awkward for in-container kernel WG; use a Linux host, **legacy volume mode** with WG outside the container, or run llama-router on the host.
+**On the hub:** open the dashboard **Workers** tab, enter a name, and click **Create worker token**. The token is shown once. The worker also appears on the **Providers** tab and is routed to like any other provider once it connects.
 
-**Defaults:** `LLAMA_ROUTER_WIREGUARD_CONFIG_PATH` defaults to `/etc/wireguard/wg0.conf`. The dashboard renders peers from the database and applies the config with `wg syncconf` when possible (falling back to `wg-quick up`).
+**On the worker:** open its **Workers** tab, paste the hub URL and token under **Serve a hub from this router**, and save. Or set the environment variables:
 
-**Connecting two routers:** On each host, open the dashboard **WireGuard** tab. On the hub, enable **Inbound peering**, save to obtain a **peering API key**, and share that key with the spoke operator. On the spoke, use **Connect to remote llama-router** with the hub URL, key, and chosen tunnel IPs (or use the peering HTTP API documented below). The flow adds reciprocal WireGuard peers and optional providers in one step.
+```bash
+LLAMA_ROUTER_WORKER_HUB_URL=https://llm.example.org
+LLAMA_ROUTER_WORKER_TOKEN=lrw_...
+```
 
-**Peering API key:** Remote routers must send `X-Peering-Key: <secret>` on `GET /api/wireguard/peer-info` and `POST /api/wireguard/peer-request`. Treat it like a password.
+The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
 
-**Isolation (peers vs your LAN):** WireGuard only carries traffic you route into the tunnel. To **not** give the remote side access to your site network, keep **`AllowedIPs` minimal**: typically the peer’s **tunnel address only** (e.g. `10.8.0.2/32` on your side for that peer). **Do not** add office/home LAN subnets (e.g. `192.168.0.0/24`) to `AllowedIPs` unless you intend to expose them. The built-in connect/peering flow uses `/32` tunnel addresses. On the **remote** peer, they should likewise aim `AllowedIPs` at **your** llama-router tunnel IP (and ports), not `0.0.0.0/0`, unless you explicitly want full tunnel routing. Avoid `PostUp`/`iptables` in `wg0.conf` that forward or NAT arbitrary traffic from `wg0` into other interfaces unless you have reviewed it. With **Docker bridge** networking and no host routing tricks, peers still only reach what the tunnel and your published ports allow—but **narrow `AllowedIPs` remains your main control**.
+**What a worker serves.** Jobs run against the worker's own Ollama and llama.cpp APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
-**Legacy sidecar:** Set `LLAMA_ROUTER_WIREGUARD_LEGACY_VOLUME=true` to only write `wg0.conf` and let an external process (or old sidecar layout) apply it.
+**Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 
-See [docs/wireguard.md](docs/wireguard.md) for a short pointer on cache access over the tunnel (`LLAMA_ROUTER_CACHE_EXTERNAL_HOST`).
+**Privacy.** A worker sees the prompts it serves. Make that clear to whoever uses the hub.
+
+**Loops.** Do not add the hub as a provider on a worker that relays to its own router, or a request can bounce between them. If a worker also wants to use the hub's models, point the worker's upstream at its local Ollama with `WORKER_OLLAMA_URL`.
+
+See [docs/workers.md](docs/workers.md) for the wire protocol.
 
 ## Configuration
 
@@ -80,9 +88,14 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
 | `LLAMACPP_PORT` | `8080` | llama.cpp API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
-| `WIREGUARD_CONFIG_PATH` | `/etc/wireguard/wg0.conf` | Path for `wg0.conf`; interface name is the basename without `.conf` |
-| `WIREGUARD_LEGACY_VOLUME` | `false` | If `true`, write config only (no `wg-quick` / `wg` from the app) |
-| `WIREGUARD_ENABLED` | `false` | If `true`, apply WireGuard on process startup when `wg-quick` is available |
+| `WORKER_HUB_ENABLED` | `true` | Accept worker connections at `/worker/ws` on the Ollama API port |
+| `WORKER_HUB_URL` | *(empty)* | Hub to connect to as a worker. With `WORKER_TOKEN`, overrides the dashboard setting |
+| `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub |
+| `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
+| `WORKER_LLAMACPP_URL` | *(this router)* | llama.cpp API the worker relays jobs to; `none` disables llama.cpp jobs |
+| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
+| `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
+| `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
 | `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
 
 ### Migrating data from SQLite to PostgreSQL

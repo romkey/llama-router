@@ -34,7 +34,7 @@ async def test_alembic_head_recorded_and_core_tables_exist(
     try:
         ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
         assert ver is not None
-        assert ver[0] == "002_peering_key_expiry"
+        assert ver[0] == "003_workers"
         tables = {
             r[0]
             for r in con.execute(
@@ -45,7 +45,8 @@ async def test_alembic_head_recorded_and_core_tables_exist(
         assert "provider_models" in tables
         assert "model_fallbacks" in tables
         assert "app_settings" in tables
-        assert "wireguard_interface" in tables
+        assert "workers" in tables
+        assert "wireguard_interface" not in tables
         assert "dashboard_users" in tables
     finally:
         con.close()

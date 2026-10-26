@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..config import settings
 from ..request_logger import log_request
+from ..worker_link.protocol import WS_PATH
 
 from .chat import router as chat_router
 from . import deps
@@ -29,6 +31,16 @@ app = FastAPI(title="llama-router Ollama API")
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok", "version": __version__})
+
+
+@app.websocket(WS_PATH)
+async def worker_socket(websocket: WebSocket):
+    """Hub endpoint: member routers dial in here with their worker token."""
+    if not settings.worker_hub_enabled:
+        await websocket.close(code=1008)
+        return
+    pm = deps.get_pm()
+    await pm.worker_hub.serve(websocket, deps.get_db())
 
 
 @app.exception_handler(StarletteHTTPException)

@@ -1,41 +1,25 @@
-# WireGuard in Docker (Linux): UDP publish + NET_ADMIN + TUN device so wg-quick
-# can bring up wg0 inside the container. In the dashboard, set "Public endpoint"
-# to <host-or-IP>:51820 (or whatever you map HostPort:51820 below).
-#
-# Docker Desktop (macOS/Windows): kernel networking differs; use a Linux host/VM
-# or host network mode if you need a real tunnel.
-#
-# Alternative: network_mode: host (drop custom port mappings; use host ports).
-#
-# In the dashboard, keep each peer's AllowedIPs to their tunnel /32 unless you
-# intend to expose LAN routes.
-#
-# Every router must enable the tunnel on the WireGuard tab: turn ON "Enable
-# WireGuard", set Address/Listen port/Endpoint, and have a private key (Generate
-# or paste). Peering only adds DB peers; without that, wg0.conf is a comment stub
-# and nothing listens. The config file name is wg0.conf (not wg0).
+# Hub and worker links: other llama-routers dial in to this one over a WebSocket
+# at ws://<host>:11434/worker/ws (put TLS in front of it for use over the
+# internet). Workers need no inbound ports. To run this instance as a worker,
+# set LLAMA_ROUTER_WORKER_HUB_URL and LLAMA_ROUTER_WORKER_TOKEN below or use the
+# dashboard Workers tab.
 
 services:
   llama-router:
     build: .
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun
     ports:
       - "80:80"
       - "8080:8080"
       - "9200:9200"
       - "11434:11434"
-      - "51820:51820/udp"
     volumes:
       - llama-router-data:/app/data
-      - llama-router-wg:/shared/wireguard
     environment:
       LLAMA_ROUTER_DATABASE_PATH: /app/data/llama_router.db
       LLAMA_ROUTER_CACHE_DIR: /app/data/model_cache
-      LLAMA_ROUTER_WIREGUARD_CONFIG_PATH: /shared/wireguard/wg0.conf
-      LLAMA_ROUTER_WIREGUARD_ENABLED: "true"
+      # Run as a worker of another hub (token comes from that hub's Workers tab):
+      # LLAMA_ROUTER_WORKER_HUB_URL: https://llm.example.org
+      # LLAMA_ROUTER_WORKER_TOKEN: lrw_...
       # Set this to the IP/hostname your Ollama backends can reach this host on
       # LLAMA_ROUTER_CACHE_EXTERNAL_HOST: 192.168.1.50
       #
@@ -54,4 +38,3 @@ services:
 
 volumes:
   llama-router-data:
-  llama-router-wg:

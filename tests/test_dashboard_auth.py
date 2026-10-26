@@ -89,7 +89,8 @@ def test_password_hash_roundtrip() -> None:
         "/users/1/delete",
         "/api/keys",
         "/api/keys/9/pins",
-        "/api/wireguard/status",
+        "/api/workers",
+        "/api/worker-link",
         "/api/cache/status",
         "/api/fallbacks",
         "/api/pulls",
@@ -136,7 +137,7 @@ async def test_bootstrap_no_users_dashboard_and_api_status_open(dash_client) -> 
     r2 = await client.get("/api/status")
     assert r2.status_code == 200
     body = r2.json()
-    assert "wireguard" in body
+    assert "workers" in body
     assert "cache" in body
 
 
@@ -192,62 +193,13 @@ async def test_after_users_exist_api_returns_401_json(dash_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_wireguard_peer_info_bypasses_session_with_peering_key(
-    dash_client,
-) -> None:
+async def test_worker_socket_path_is_not_on_dashboard(dash_client) -> None:
+    """The hub socket lives on the API port; the dashboard must not expose it."""
     client, db = dash_client
     await db.create_dashboard_user("adm", hash_password("password-12345"), True)
     invalidate_dashboard_user_count_cache()
-    await db.set_wireguard_peering_config(False, "peer-secret-test")
-
-    r = await client.get(
-        "/api/wireguard/peer-info",
-        headers={"X-Peering-Key": "peer-secret-test"},
-    )
-    assert r.status_code == 200
-    assert "public_key" in r.json()
-
-
-@pytest.mark.asyncio
-async def test_peering_max_uses_exceeded_returns_401(dash_client) -> None:
-    client, db = dash_client
-    await db.create_dashboard_user("adm", hash_password("password-12345"), True)
-    invalidate_dashboard_user_count_cache()
-    await db.set_wireguard_peering_config(
-        True,
-        "limited-key",
-        peering_key_max_uses=2,
-        reset_peering_key_use_count=True,
-    )
-    hdr = {"X-Peering-Key": "limited-key"}
-    assert (
-        await client.get("/api/wireguard/peer-info", headers=hdr)
-    ).status_code == 200
-    assert (
-        await client.get("/api/wireguard/peer-info", headers=hdr)
-    ).status_code == 200
-    r3 = await client.get("/api/wireguard/peer-info", headers=hdr)
-    assert r3.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_wireguard_connect_rejects_http_url(dash_client) -> None:
-    client, db = dash_client
-    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
-    invalidate_dashboard_user_count_cache()
-    r = await client.post(
-        "/api/wireguard/connect",
-        headers=_session_cookie_header(uid),
-        json={
-            "remote_url": "http://router.example",
-            "remote_api_key": "k",
-            "our_tunnel_ip": "10.8.0.1",
-            "their_tunnel_ip": "10.8.0.2",
-            "add_as_provider": True,
-        },
-    )
-    assert r.status_code == 400
-    assert "HTTPS" in (r.json().get("detail") or "")
+    r = await client.get("/worker/ws")
+    assert r.status_code in (302, 401, 404)
 
 
 @pytest.mark.asyncio
@@ -294,7 +246,7 @@ async def test_admin_api_status_includes_sensitive_sections(dash_client) -> None
     r = await client.get("/api/status", headers=_session_cookie_header(uid))
     assert r.status_code == 200
     body = r.json()
-    assert "wireguard" in body
+    assert "workers" in body
     assert "cache" in body
     assert "active_pulls" in body
     assert "active_benchmarks" in body
@@ -311,7 +263,8 @@ async def test_viewer_api_status_hides_sensitive_sections(dash_client) -> None:
     r = await client.get("/api/status", headers=_session_cookie_header(uid))
     assert r.status_code == 200
     body = r.json()
-    assert "wireguard" not in body
+    assert "workers" not in body
+    assert "worker_link" not in body
     assert "cache" not in body
     assert body.get("active_pulls") == {}
     assert body.get("active_benchmarks") == {}
@@ -328,7 +281,8 @@ async def test_viewer_api_status_hides_sensitive_sections(dash_client) -> None:
         "/api/fallbacks",
         "/api/pulls",
         "/api/cache/status",
-        "/api/wireguard/status",
+        "/api/workers",
+        "/api/worker-link",
         "/api/benchmarks/fill-missing/job-x",
     ],
 )
@@ -518,7 +472,7 @@ async def test_deleting_last_dashboard_user_reopens_bootstrap(dash_client) -> No
 
     r = await client.get("/api/status", headers={"Cookie": f"{AUTH_COOKIE}={token}"})
     assert r.status_code == 200
-    assert "wireguard" in r.json()
+    assert "workers" in r.json()
 
 
 @pytest.mark.asyncio
@@ -537,3 +491,118 @@ async def test_logout_prevents_further_access(dash_client) -> None:
     again = await client.get("/")
     assert again.status_code == 302
     assert "/login" in (again.headers.get("location") or "")
+
+
+@pytest.mark.asyncio
+async def test_admin_can_create_rotate_disable_and_delete_worker(dash_client) -> None:
+    from llama_router.worker_link.hub import worker_token_hash
+
+    client, db = dash_client
+    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    hdr = _session_cookie_header(uid)
+
+    r = await client.post("/api/workers", headers=hdr, json={"name": "Alice-GPU"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "alice-gpu"
+    token = body["token"]
+    assert token.startswith("lrw_")
+    assert "LLAMA_ROUTER_WORKER_TOKEN=" + token in body["env_example"]
+    row = await db.get_worker_by_token_hash(worker_token_hash(token))
+    assert row is not None and row["provider_id"] == body["provider_id"]
+    prov = await db.get_provider(body["provider_id"])
+    assert prov.url == "worker://alice-gpu"
+    assert prov.status.value == "offline"
+
+    dup = await client.post("/api/workers", headers=hdr, json={"name": "alice-gpu"})
+    assert dup.status_code == 409
+    bad = await client.post("/api/workers", headers=hdr, json={"name": "no spaces"})
+    assert bad.status_code == 400
+
+    listed = (await client.get("/api/workers", headers=hdr)).json()["workers"]
+    assert [w["name"] for w in listed] == ["alice-gpu"]
+    assert listed[0]["connected"] is False
+
+    page = await client.get("/", headers=hdr)
+    assert page.status_code == 200
+    assert "workers-pane" in page.text
+    assert "alice-gpu" in page.text
+    assert "wireguard" not in page.text.lower()
+
+    rot = await client.post(f"/api/workers/{body['id']}/rotate", headers=hdr)
+    new_token = rot.json()["token"]
+    assert new_token != token
+    assert await db.get_worker_by_token_hash(worker_token_hash(token)) is None
+    assert await db.get_worker_by_token_hash(worker_token_hash(new_token)) is not None
+
+    dis = await client.post(
+        f"/api/workers/{body['id']}/enabled", headers=hdr, json={"enabled": False}
+    )
+    assert dis.status_code == 200
+    assert (await db.get_worker(body["id"]))["enabled"] is False
+
+    rm = await client.delete(f"/api/workers/{body['id']}", headers=hdr)
+    assert rm.status_code == 200
+    assert await db.get_worker(body["id"]) is None
+    assert await db.get_provider(body["provider_id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_viewer_cannot_create_worker(dash_client) -> None:
+    client, db = dash_client
+    uid = await db.create_dashboard_user("v", hash_password("password-12345"), False)
+    invalidate_dashboard_user_count_cache()
+    r = await client.post(
+        "/api/workers", headers=_session_cookie_header(uid), json={"name": "x1"}
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_worker_link_save_and_clear(dash_client, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "worker_hub_url", "")
+    monkeypatch.setattr(settings, "worker_token", "")
+    client, db = dash_client
+    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    hdr = _session_cookie_header(uid)
+
+    r = await client.get("/api/worker-link", headers=hdr)
+    assert r.json()["state"] == "disabled"
+    assert r.json()["configured"] is False
+
+    # Port 9 (discard) refuses connections, so the link stays in backoff.
+    r = await client.post(
+        "/api/worker-link",
+        headers=hdr,
+        json={"hub_url": "http://127.0.0.1:9", "token": "lrw_abc"},
+    )
+    assert r.status_code == 200, r.text
+    st = r.json()
+    assert st["configured"] is True and st["source"] == "dashboard"
+    assert st["hub_url"] == "http://127.0.0.1:9"
+    assert st["state"] in ("connecting", "backoff")
+    assert await db.get_app_setting("worker_token") == "lrw_abc"
+
+    r = await client.post(
+        "/api/worker-link", headers=hdr, json={"hub_url": "", "token": ""}
+    )
+    st = r.json()
+    assert st["configured"] is False and st["state"] == "disabled"
+    await dash_deps.get_worker_link().stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_link_locked_when_set_by_env(dash_client, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "worker_hub_url", "https://hub.example")
+    monkeypatch.setattr(settings, "worker_token", "lrw_env")
+    client, db = dash_client
+    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    r = await client.post(
+        "/api/worker-link",
+        headers=_session_cookie_header(uid),
+        json={"hub_url": "https://other", "token": "x"},
+    )
+    assert r.status_code == 409

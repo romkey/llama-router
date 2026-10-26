@@ -25,41 +25,15 @@ from .models import (
     ProviderModel,
     ProviderStatus,
     ProviderType,
+    WORKER_URL_SCHEME,
 )
 from .ollama_client import OllamaClient
-from . import wireguard_manager
+from .worker_link.hub import WorkerConnection, WorkerHub
 
 if TYPE_CHECKING:
     from .router import Router
 
 logger = logging.getLogger(__name__)
-
-_WG_HANDSHAKE_MAX_AGE_SEC = 180
-
-
-def _wg_pubkey_handshake_map(tunnel: dict) -> dict[str, int | None]:
-    out: dict[str, int | None] = {}
-    for p in tunnel.get("peers") or []:
-        pk = (p.get("public_key") or "").strip()
-        if pk:
-            out[pk] = p.get("last_handshake_seconds_ago")
-    return out
-
-
-def _wireguard_ok_for_peer(
-    peer_row: dict | None, handshake_map: dict[str, int | None]
-) -> bool | None:
-    if not peer_row:
-        return None
-    pk = (peer_row.get("public_key") or "").strip()
-    if not pk:
-        return None
-    if pk not in handshake_map:
-        return False
-    ago = handshake_map[pk]
-    if ago is None:
-        return False
-    return ago < _WG_HANDSHAKE_MAX_AGE_SEC
 
 
 def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
@@ -85,8 +59,13 @@ def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
 class ProviderManager:
     _cached_prefixes: list[str] | None = None
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, hub: WorkerHub | None = None):
         self._db = db
+        self.worker_hub = hub if hub is not None else WorkerHub()
+        self._worker_locks: dict[int, asyncio.Lock] = {}
+        self.worker_hub.set_callbacks(
+            self._on_worker_connected, self._on_worker_disconnected
+        )
         self._ollama_clients: dict[int, OllamaClient] = {}
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
         self._active_requests: dict[int, int] = defaultdict(int)
@@ -132,6 +111,11 @@ class ProviderManager:
         for p in providers:
             assert p.id is not None
             await self._rebuild_clients(p)
+            if p.is_worker:
+                # Workers come online when they dial in, not at startup.
+                if not self.worker_hub.is_connected(p.id):
+                    await self._mark_worker_offline(p.id)
+                continue
             try:
                 await self._discover_provider(p)
             except Exception as exc:
@@ -193,6 +177,18 @@ class ProviderManager:
         if not addr:
             self._active_urls.pop(provider.id, None)
             return
+        if provider.is_worker:
+            hub = self.worker_hub
+            if provider.supports_ollama:
+                self._ollama_clients[provider.id] = OllamaClient(
+                    provider.url, transport=hub.transport(provider.id, "ollama")
+                )
+            if provider.supports_llamacpp:
+                self._llamacpp_clients[provider.id] = LlamaCppClient(
+                    provider.url, transport=hub.transport(provider.id, "llamacpp")
+                )
+            self._active_urls[provider.id] = (provider.url, provider.url)
+            return
         if provider.supports_ollama:
             self._ollama_clients[provider.id] = OllamaClient(addr.url)
         if provider.supports_llamacpp:
@@ -219,7 +215,6 @@ class ProviderManager:
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
-        wireguard_peer_id: int | None = None,
     ) -> Provider:
         provider = await self._db.add_provider(
             name,
@@ -229,7 +224,6 @@ class ProviderManager:
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
-            wireguard_peer_id=wireguard_peer_id,
         )
         assert provider.id is not None
         await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
@@ -273,6 +267,13 @@ class ProviderManager:
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
     ) -> None:
+        existing = await self._db.get_provider(provider_id)
+        if existing is not None and existing.is_worker:
+            # A worker's address is its socket; the name and URL stay tied to the
+            # worker record so the hub can find it again.
+            name = existing.name
+            url = existing.url
+            llamacpp_url = None
         await self._db.update_provider(
             provider_id,
             name,
@@ -339,6 +340,14 @@ class ProviderManager:
             )
 
     async def remove_provider(self, provider_id: int) -> None:
+        worker = await self._db.get_worker_by_provider(provider_id)
+        if worker is not None:
+            from .worker_link.protocol import CLOSE_REVOKED
+
+            await self.worker_hub.disconnect(
+                provider_id, CLOSE_REVOKED, "worker removed"
+            )
+            await self._db.delete_worker(int(worker["id"]))
         await self._close_clients(provider_id)
         self._active_requests.pop(provider_id, None)
         self._active_urls.pop(provider_id, None)
@@ -403,7 +412,6 @@ class ProviderManager:
         models = await self._db.get_provider_models(provider_id)
         benchmarks = await self._db.get_benchmarks_for_provider(provider_id)
         addresses = await self._db.get_addresses(provider_id)
-        wg_ok = await self._wireguard_status_for_provider(provider)
         return ProviderInfo(
             provider=provider,
             models=models,
@@ -411,38 +419,26 @@ class ProviderManager:
             addresses=addresses,
             active_requests=self._active_requests.get(provider_id, 0),
             hot_models=self._hot_models.get(provider_id, []),
-            wireguard_ok=wg_ok,
+            worker=self.worker_summary(provider),
         )
 
-    async def _wireguard_status_for_provider(self, provider: Provider) -> bool | None:
-        if not provider.wireguard_peer_id:
+    def worker_summary(self, provider: Provider) -> dict | None:
+        """Live socket details for a worker provider; None for HTTP providers."""
+        if not provider.is_worker or provider.id is None:
             return None
-        if not await wireguard_manager.is_wireguard_available():
-            return None
-        tunnel = await wireguard_manager.get_tunnel_status()
-        hm = _wg_pubkey_handshake_map(tunnel)
-        peer_row = await self._db.get_wireguard_peer(provider.wireguard_peer_id)
-        return _wireguard_ok_for_peer(peer_row, hm)
+        conn = self.worker_hub.get(provider.id)
+        if conn is None:
+            return {"connected": False}
+        return conn.summary()
 
     async def list_provider_infos(self) -> list[ProviderInfo]:
         providers = await self._db.list_providers()
-        wg_avail = await wireguard_manager.is_wireguard_available()
-        tunnel = await wireguard_manager.get_tunnel_status() if wg_avail else None
-        hm = _wg_pubkey_handshake_map(tunnel or {"peers": []})
-        peer_cache: dict[int, dict | None] = {}
         infos = []
         for p in providers:
             assert p.id is not None
             models = await self._db.get_provider_models(p.id)
             benchmarks = await self._db.get_benchmarks_for_provider(p.id)
             addresses = await self._db.get_addresses(p.id)
-            wg_ok: bool | None = None
-            if wg_avail and p.wireguard_peer_id:
-                if p.wireguard_peer_id not in peer_cache:
-                    peer_cache[p.wireguard_peer_id] = await self._db.get_wireguard_peer(
-                        p.wireguard_peer_id
-                    )
-                wg_ok = _wireguard_ok_for_peer(peer_cache[p.wireguard_peer_id], hm)
             infos.append(
                 ProviderInfo(
                     provider=p,
@@ -451,7 +447,7 @@ class ProviderManager:
                     addresses=addresses,
                     active_requests=self._active_requests.get(p.id, 0),
                     hot_models=self._hot_models.get(p.id, []),
-                    wireguard_ok=wg_ok,
+                    worker=self.worker_summary(p),
                 )
             )
         return infos
@@ -848,7 +844,21 @@ class ProviderManager:
             # Also probe each configured llama.cpp instance for its currently loaded
             # model via /props; some instances expose active model there even when
             # /v1/models is sparse.
-            addresses = await self._db.get_addresses(provider.id)
+            if provider.is_worker:
+                props = await self._llamacpp_clients[provider.id].get_props()
+                current = self._extract_llamacpp_current_model(props)
+                if current:
+                    clean_name = self._strip_cache_prefix(current)
+                    raw_name = current if clean_name != current else None
+                    _upsert_model(
+                        source="llamacpp",
+                        clean_name=clean_name,
+                        raw_name=raw_name,
+                        details={"_from_props": True},
+                    )
+            addresses = (
+                [] if provider.is_worker else await self._db.get_addresses(provider.id)
+            )
             timeout = httpx.Timeout(10.0)
             async with httpx.AsyncClient(timeout=timeout) as probe_client:
                 for addr in addresses:
@@ -924,10 +934,6 @@ class ProviderManager:
                 logger.error("Health check cycle failed: %s", detail)
 
     async def _run_health_checks(self) -> None:
-        wg_avail = await wireguard_manager.is_wireguard_available()
-        tunnel = await wireguard_manager.get_tunnel_status() if wg_avail else None
-        hm = _wg_pubkey_handshake_map(tunnel or {"peers": []})
-
         providers = await self._db.list_providers()
         for p in providers:
             assert p.id is not None
@@ -979,22 +985,6 @@ class ProviderManager:
                     await self._db.update_provider_status(p.id, ProviderStatus.BUSY)
                 else:
                     await self._db.update_provider_status(p.id, ProviderStatus.IDLE)
-                if wg_avail and any_live and p.wireguard_peer_id:
-                    prow = await self._db.get_wireguard_peer(p.wireguard_peer_id)
-                    wok = _wireguard_ok_for_peer(prow, hm)
-                    if wok is False:
-                        pk = (prow or {}).get("public_key") or ""
-                        ago = hm.get(pk.strip()) if pk else None
-                        if ago is None:
-                            detail = "never"
-                        else:
-                            detail = f"{ago}s ago"
-                        logger.warning(
-                            'Provider "%s" is reachable but WireGuard handshake is stale '
-                            "(last seen %s)",
-                            p.name,
-                            detail,
-                        )
             else:
                 if p.status != ProviderStatus.OFFLINE:
                     addr_urls = [a.url for a in addresses]
@@ -1007,6 +997,8 @@ class ProviderManager:
 
     async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
         """Check if a single address is reachable via the provider's protocol(s)."""
+        if provider.is_worker:
+            return await self._probe_worker(provider)
         if provider.supports_ollama:
             tmp = OllamaClient(addr.url)
             try:
@@ -1025,3 +1017,119 @@ class ProviderManager:
                 await tmp.close()
 
         return False
+
+    # --- Workers ---
+
+    async def _probe_worker(self, provider: Provider) -> bool:
+        """A worker is live when its socket is up and its upstream answers."""
+        assert provider.id is not None
+        if not self.worker_hub.is_connected(provider.id):
+            return False
+        if provider.id not in self._ollama_clients and (
+            provider.id not in self._llamacpp_clients
+        ):
+            await self._rebuild_clients(provider)
+        ollama = self._ollama_clients.get(provider.id)
+        if ollama is not None and await ollama.is_reachable():
+            return True
+        lcpp = self._llamacpp_clients.get(provider.id)
+        if lcpp is not None and await lcpp.is_reachable():
+            return True
+        return False
+
+    async def add_worker_provider(self, name: str) -> Provider:
+        """Create the provider record a worker attaches to when it dials in."""
+        url = f"{WORKER_URL_SCHEME}{name}"
+        provider = await self._db.add_provider(name, url, ProviderType.OLLAMA, None)
+        assert provider.id is not None
+        await self._db.add_address(provider.id, url, None, is_preferred=True)
+        await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
+        provider.status = ProviderStatus.OFFLINE
+        return provider
+
+    def _worker_lock(self, provider_id: int) -> asyncio.Lock:
+        lock = self._worker_locks.get(provider_id)
+        if lock is None:
+            lock = self._worker_locks[provider_id] = asyncio.Lock()
+        return lock
+
+    def _is_current_worker(self, conn: WorkerConnection) -> bool:
+        return self.worker_hub.get(conn.provider_id) is conn and not conn.closed
+
+    async def _on_worker_connected(self, conn: WorkerConnection) -> None:
+        """Bring a freshly connected worker online.
+
+        Connect and disconnect handlers for one provider run one at a time, and
+        each re-checks that its socket is still current before writing status,
+        so a handler from an older session cannot undo a newer one.
+        """
+        provider_id = conn.provider_id
+        async with self._worker_lock(provider_id):
+            if not self._is_current_worker(conn):
+                return
+            provider = await self._db.get_provider(provider_id)
+            if provider is None or not provider.is_worker:
+                return
+            protocols = conn.protocols
+            if "ollama" in protocols and "llamacpp" in protocols:
+                ptype = ProviderType.BOTH
+            elif "llamacpp" in protocols:
+                ptype = ProviderType.LLAMACPP
+            else:
+                ptype = ProviderType.OLLAMA
+            if ptype != provider.provider_type:
+                await self._db.update_provider(
+                    provider_id,
+                    provider.name,
+                    provider.url,
+                    ptype,
+                    None,
+                    machine_type=provider.machine_type,
+                    gpu_type=provider.gpu_type,
+                    gpu_ram=provider.gpu_ram,
+                )
+                provider.provider_type = ptype
+            await self._rebuild_clients(provider)
+            try:
+                await self._discover_provider(provider)
+                ok = True
+            except Exception as exc:
+                ok = False
+                detail = (
+                    describe_httpx_error(exc)
+                    if isinstance(exc, httpx.HTTPError)
+                    else str(exc)
+                )
+                if self._is_current_worker(conn):
+                    logger.warning(
+                        "Worker %s connected but model discovery failed: %s",
+                        provider.name,
+                        detail,
+                    )
+            if not self._is_current_worker(conn):
+                return
+            await self._set_worker_addresses_live(provider_id, ok)
+            await self._db.update_provider_status(
+                provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
+            )
+
+    async def _on_worker_disconnected(self, conn: WorkerConnection) -> None:
+        provider_id = conn.provider_id
+        async with self._worker_lock(provider_id):
+            if self.worker_hub.is_connected(provider_id):
+                # A newer session already took over; its handler owns status.
+                return
+            await self._mark_worker_offline(provider_id)
+
+    async def _set_worker_addresses_live(self, provider_id: int, live: bool) -> None:
+        for addr in await self._db.get_addresses(provider_id):
+            if addr.id is not None:
+                await self._db.set_address_live(addr.id, live)
+
+    async def _mark_worker_offline(self, provider_id: int) -> None:
+        provider = await self._db.get_provider(provider_id)
+        if provider is None:
+            return
+        await self._set_worker_addresses_live(provider_id, False)
+        await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
+        self._hot_models[provider_id] = []

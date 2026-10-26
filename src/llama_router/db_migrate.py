@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 # Must match revision in alembic/versions/001_initial_schema.py
 _INITIAL_REVISION = "001_initial"
 
-# All tables created by 001_initial (lowercase names as returned by SQLite inspect).
+# Tables created by 001_initial that still exist at head (lowercase names as
+# returned by SQLite inspect). The WireGuard tables from 001 are dropped by 003,
+# so they are deliberately not listed: their absence is not a broken schema.
 _INITIAL_SCHEMA_TABLES = frozenset(
     {
-        "wireguard_interface",
-        "wireguard_peers",
         "providers",
         "provider_models",
         "benchmarks",
