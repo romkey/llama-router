@@ -695,8 +695,10 @@ async def test_users_page_marks_sso_accounts(dash_client, idp) -> None:
 async def test_users_page_reports_broken_config(dash_client, idp, monkeypatch) -> None:
     client, db = dash_client
     monkeypatch.setattr(settings, "oidc_client_secret", "")
+    monkeypatch.setattr(settings, "oidc_only", True)
     r = await client.get("/users")
     assert "CLIENT_SECRET is required" in r.text
+    assert "is ignored until single sign-on works" in r.text
     assert "/login/oidc?next=/users" not in r.text
 
 
