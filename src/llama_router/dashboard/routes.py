@@ -585,6 +585,8 @@ async def users_page(request: Request):
     if n > 0 and not bootstrap and (not user or not user.is_admin):
         raise HTTPException(status_code=403, detail="Forbidden")
     users = await db.list_dashboard_users() if n else []
+    cfg = oidc.current_config()
+    scheme, host = _external_origin(request)
     return templates.TemplateResponse(
         request,
         "users.html",
@@ -593,6 +595,9 @@ async def users_page(request: Request):
             {
                 "dashboard_users": users,
                 "users_exist": n > 0,
+                "oidc": cfg if cfg.enabled else None,
+                "oidc_problems": cfg.problems(),
+                "oidc_callback": oidc.redirect_uri(cfg, scheme, host),
                 "query_error": request.query_params.get("error"),
                 "query_created": request.query_params.get("created"),
                 "query_updated": request.query_params.get("updated"),

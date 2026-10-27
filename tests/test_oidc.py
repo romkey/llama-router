@@ -648,3 +648,48 @@ def test_id_token_is_well_formed_jwt() -> None:
         base64.urlsafe_b64decode(fake.id_token().split(".")[0] + "==").decode()
     )
     assert header["kid"] == "k1"
+
+
+# --- Users page ---
+
+
+async def test_users_page_marks_sso_accounts(dash_client, idp) -> None:
+    client, db = dash_client
+    await _seed_local_admin(db)
+    await _login(client, idp, groups=["router-admins"])
+    sso = await db.get_dashboard_user_by_oidc(ISSUER, "user-1")
+    local = await db.get_dashboard_user_by_username("root")
+    r = await client.get("/users")
+    assert r.status_code == 200
+    html = r.text
+    assert "Single sign-on" in html
+    assert ISSUER in html
+    assert "http://testserver/login/oidc/callback" in html
+    assert "router-admins" in html
+    assert "alice@example.org" in html
+    assert f'data-bs-target="#pw-{local["id"]}"' in html
+    assert f'data-bs-target="#pw-{sso["id"]}"' not in html
+    assert f'action="/users/{sso["id"]}/password"' not in html
+
+
+async def test_users_page_reports_broken_config(dash_client, idp, monkeypatch) -> None:
+    client, db = dash_client
+    monkeypatch.setattr(settings, "oidc_client_secret", "")
+    r = await client.get("/users")
+    assert "CLIENT_SECRET is required" in r.text
+    assert "/login/oidc?next=/users" not in r.text
+
+
+async def test_users_page_bootstrap_offers_sso(dash_client, idp) -> None:
+    client, _ = dash_client
+    r = await client.get("/users")
+    assert "/login/oidc?next=/users" in r.text
+
+
+async def test_users_page_without_oidc_has_no_sso_card(
+    dash_client, monkeypatch
+) -> None:
+    client, _ = dash_client
+    monkeypatch.setattr(settings, "oidc_issuer", "")
+    r = await client.get("/users")
+    assert "Single sign-on" not in r.text
