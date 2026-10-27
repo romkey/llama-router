@@ -20,15 +20,20 @@ import asyncio
 import logging
 import weakref
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from . import decisions as d
 from .database import CHANGE_DECISIONS, Database
 from .provider_manager import ProviderManager
-from .routing_table import alias_groups
+from .routing_table import alias_groups, native_decision_path
 from .v1_client import get_v1_client
+from .worker_link.protocol import refused as worker_refused
+
+if TYPE_CHECKING:
+    from .models import Provider
+    from .router import RouteResult
 
 logger = logging.getLogger(__name__)
 
@@ -263,3 +268,63 @@ def summarize(response: Mapping[str, Any], calibrated: int = 0) -> str | None:
     if calibrated:
         head += f", calibrated={calibrated}"
     return (head + "; " + ", ".join(parts))[:_SUMMARY_MAX]
+
+
+async def pass_through(
+    pm: ProviderManager, provider: Provider, path: str, body: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Send the request on as it came; None when a worker will not relay it.
+
+    A worker older than decision support refuses the route with 403. Its
+    stored probe result can still say otherwise, so the request is emulated
+    instead and the worker is probed again.
+    """
+    assert provider.id is not None
+    try:
+        return await native(pm, provider.id, path, body)
+    except httpx.HTTPStatusError as exc:
+        resp = exc.response
+        if not (provider.is_worker and worker_refused(resp.status_code, resp.text)):
+            raise
+    logger.info(
+        "Worker %s does not relay %s; answering from logprobs instead",
+        provider.name,
+        path,
+    )
+    pm.schedule_probe(provider.id, "worker refused decisions")
+    return None
+
+
+async def answer_routed(
+    pm: ProviderManager,
+    db: Database,
+    result: RouteResult,
+    request: d.DecisionRequest,
+    path: str,
+    body: Mapping[str, Any],
+    aliases: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Answer *request* on the provider *result* routed it to.
+
+    Passed through to the upstream's own decision route when it serves
+    one, else emulated with the calibrations stored under any name or
+    alias of the model. Returns the response and the number of calibrated
+    questions. Raises like :func:`emulate` and :func:`native`.
+    """
+    provider = result.provider
+    assert provider.id is not None
+    native_path = native_decision_path(provider, path)
+    if native_path is not None:
+        out = await pass_through(
+            pm, provider, native_path, {**body, "model": result.backend_model}
+        )
+        if out is not None:
+            return out, 0
+    names = model_names(
+        (result.model_key, result.resolved_model, request.model, result.backend_model),
+        aliases,
+    )
+    cal = await calibrations(db).for_request(names, request)
+    answered = await emulate(pm, provider.id, result.backend_model, request, cal)
+    pm.stats.record_logprobs(provider.id, ok=True)
+    return {"model": result.resolved_model, **answered}, len(cal)

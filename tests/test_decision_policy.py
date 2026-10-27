@@ -22,10 +22,16 @@ from llama_router.api import deps as ollama_deps
 from llama_router.api.app import app as ollama_app
 from llama_router.llamacpp_api import deps
 from llama_router.llamacpp_api.app import app as api_app
-from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
+from llama_router.models import (
+    Provider,
+    ProviderModel,
+    ProviderProtocol,
+    ProviderStatus,
+)
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.routing_stats import ProviderStats
+from llama_router.worker_link.protocol import REFUSED_PREFIX
 
 URL = "http://a.test:8080"
 JUDGE = "judge"
@@ -445,6 +451,39 @@ async def test_jev_upstream_gets_its_own_route(
     assert list(body["questions"]) == ["tier", "gate:injection"]
     assert backend.decisions == []
     assert [g["model"] for g in backend.generations] == ["big"]
+
+
+async def test_worker_refusal_falls_back_to_emulation(
+    db, router, pm, backend, key, httpx_mock, monkeypatch
+):
+    # A worker whose stored probe says it relays decisions, but which is too
+    # old to: the policy is answered from logprobs, as the endpoint does.
+    (a,) = await db.list_providers()
+    await db.set_provider_capabilities(
+        a.id,
+        {
+            "endpoints": [
+                {"path": "/v1/systemone", "state": "available"},
+                {"path": "/v1/chat/completions", "state": "available"},
+            ]
+        },
+    )
+    await router.rebuild()
+    monkeypatch.setattr(Provider, "is_worker", property(lambda self: True))
+    probes: list[str] = []
+    monkeypatch.setattr(pm, "schedule_probe", lambda i, r="": probes.append(r))
+    httpx_mock.add_response(
+        url=f"{URL}/v1/systemone",
+        method="POST",
+        status_code=403,
+        text=f"{REFUSED_PREFIX} /v1/systemone",
+    )
+    await _set(db, key[0], {"model": JUDGE, "tier": TIER})
+    resp = await _post("/v1/chat/completions", dict(CHAT), key[1])
+    assert resp.status_code == 200, resp.text
+    assert len(backend.decisions) == 1
+    assert [g["model"] for g in backend.generations] == ["big"]
+    assert probes == ["worker refused decisions"]
 
 
 async def test_calibration_saved_under_an_alias_applies(db, router, backend, key):
