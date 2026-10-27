@@ -10,6 +10,7 @@ import uvicorn
 from .config import settings
 from .database import Database
 from .provider_manager import ProviderManager
+from .request_logger import attach_stats
 from .router import Router
 from .sentry import init_sentry
 from .worker_link.worker import WorkerLinkManager
@@ -41,6 +42,9 @@ async def run() -> None:
 
     rt = Router(db, pm)
     pm.attach_router(rt)
+    attach_stats(pm.stats)
+    # Build the first routing table before any API accepts requests.
+    await rt.start()
 
     api_deps.init(db, pm, rt)
     dash_deps.init(db, pm)
@@ -111,6 +115,7 @@ async def run() -> None:
         await asyncio.gather(*(s.serve() for s in servers))
     finally:
         await worker_link.stop()
+        await rt.stop()
         await pm.worker_hub.close_all()
         await pm.stop()
         await db.close()

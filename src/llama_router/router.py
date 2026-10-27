@@ -1,209 +1,317 @@
-"""Routes requests to the best available provider for a given model."""
+"""Routes requests to the best available provider for a given model.
+
+Routing decisions come from a precomputed :class:`RoutingTable`. The table is
+rebuilt in the background whenever something that affects routing changes:
+the database reports a write (providers, status, addresses, models,
+benchmarks, fallbacks, probe results), the hot-model set changes, or live
+request and round-trip samples arrive. Rebuilds are coalesced, so a burst of
+changes produces one rebuild. ``route()`` itself only reads the table and the
+in-memory queue depth; it never touches the database once the table exists.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
-from dataclasses import dataclass
-from dataclasses import field
+import time
+from dataclasses import dataclass, field
 
-from .cache import TTLCache
-from .database import Database
-from .models import BenchmarkResult, Provider, ProviderStatus, ProviderType
+from .database import ROUTING_CHANGES, Database
+from .models import Provider
 from .provider_manager import ProviderManager
+from .routing_table import (
+    DEFAULT_MODE,
+    MODES,
+    Candidate,
+    RoutingInputs,
+    RoutingTable,
+    build_table,
+    load_inputs,
+    normalize_endpoint,
+)
 
 logger = logging.getLogger(__name__)
+
+ROUTING_MODES = frozenset({*MODES, "chaos"})
+
+# Wait this long after the first change before rebuilding, to batch a burst.
+REBUILD_DEBOUNCE_S = 0.25
+# Never rebuild more often than this.
+REBUILD_MIN_INTERVAL_S = 1.0
+# Reasons kept for the dashboard.
+_MAX_REASONS = 20
 
 
 class RouteResult:
     """Wraps a routing decision, including which model was actually resolved."""
 
-    __slots__ = ("provider", "resolved_model")
+    __slots__ = ("provider", "resolved_model", "backend_model", "model_key")
 
-    def __init__(self, provider: Provider, resolved_model: str):
+    def __init__(
+        self,
+        provider: Provider,
+        resolved_model: str,
+        backend_model: str | None = None,
+        model_key: str | None = None,
+    ):
         self.provider = provider
         self.resolved_model = resolved_model
+        # The name the chosen backend knows the model by.
+        self.backend_model = backend_model or resolved_model
+        # The model's discovered name, which live stats are keyed by. Differs
+        # from resolved_model when the client asked by raw (backend) name.
+        self.model_key = model_key or resolved_model
 
 
 @dataclass(slots=True)
 class RoutingPreferences:
-    mode: str = "latency"  # "latency", "throughput", or "chaos"
+    mode: str = DEFAULT_MODE  # "latency", "throughput", "balanced" or "chaos"
     allow_fallback: bool = True
     pinned_providers: dict[str, int] = field(default_factory=dict)
 
 
 class Router:
-    def __init__(self, db: Database, provider_manager: ProviderManager):
+    def __init__(
+        self,
+        db: Database,
+        provider_manager: ProviderManager,
+        *,
+        debounce_s: float = REBUILD_DEBOUNCE_S,
+        min_interval_s: float = REBUILD_MIN_INTERVAL_S,
+    ):
         self._db = db
         self._pm = provider_manager
-        self._providers_cache: TTLCache[list[Provider]] = TTLCache(5.0)
-        self._benchmark_cache: TTLCache[list[BenchmarkResult | None]] = TTLCache(60.0)
+        self._debounce_s = debounce_s
+        self._min_interval_s = min_interval_s
+        self._table: RoutingTable | None = None
+        self._inputs: RoutingInputs | None = None
+        self._need_reload = True
+        self._need_rescore = True
+        self._pending_reasons: list[str] = []
+        self._version = 0
+        self._wake = asyncio.Event()
+        self._lock = asyncio.Lock()
+        self._task: asyncio.Task | None = None
+        db.add_change_listener(self._on_db_change)
+        provider_manager.stats.add_listener(self._on_stats_change)
+        provider_manager.attach_router(self)
 
-    def invalidate_providers_for_model_cache(self) -> None:
-        self._providers_cache.clear()
+    # --- Table maintenance ---
 
-    def invalidate_benchmark_cache_for_provider(self, provider_id: int) -> None:
-        self._benchmark_cache.invalidate_prefix(f"{provider_id}:")
+    @property
+    def table(self) -> RoutingTable | None:
+        return self._table
 
-    async def _get_providers_for_model_cached(
-        self, model_name: str, protocol: str | None
-    ) -> list[Provider]:
-        key = f"{model_name}:{protocol or ''}"
-        hit = self._providers_cache.get(key)
-        if hit is not None:
-            return hit
-        providers = await self._db.get_providers_for_model(model_name, protocol)
-        self._providers_cache.set(key, providers)
-        return providers
+    def mark_dirty(self, reason: str, *, reload: bool = True) -> None:
+        """Schedule a rebuild. *reload* re-reads the database first.
 
-    async def _get_latest_benchmark_cached(
-        self,
-        provider_id: int,
-        model_name: str,
-        protocol: str | None,
-    ) -> BenchmarkResult | None:
-        key = f"{provider_id}:{model_name}:{protocol or ''}"
-        hit = self._benchmark_cache.get(key)
-        if hit is not None:
-            return hit[0]
-        bench = await self._db.get_latest_benchmark(
-            provider_id, model_name, protocol=protocol
-        )
-        self._benchmark_cache.set(key, [bench])
-        return bench
+        Cheap and synchronous; callers never wait for the rebuild.
+        """
+        if reload:
+            self._need_reload = True
+        self._need_rescore = True
+        if len(self._pending_reasons) < _MAX_REASONS:
+            self._pending_reasons.append(reason)
+        self._wake.set()
+
+    def _on_db_change(self, reason: str) -> None:
+        if reason in ROUTING_CHANGES:
+            self.mark_dirty(reason)
+
+    def _on_stats_change(self, reason: str) -> None:
+        # Live samples only change scores; the database inputs are unchanged.
+        self.mark_dirty(reason, reload=False)
+
+    async def rebuild(self) -> RoutingTable:
+        """Rebuild the table now and swap it in."""
+        async with self._lock:
+            reasons = tuple(dict.fromkeys(self._pending_reasons)) or ("initial",)
+            self._pending_reasons = []
+            reload = self._need_reload or self._inputs is None
+            # Clear flags before reading so a change during the build marks
+            # the table dirty again.
+            self._need_reload = False
+            self._need_rescore = False
+            started = time.perf_counter()
+            try:
+                if reload:
+                    self._inputs = await load_inputs(self._db)
+                assert self._inputs is not None
+                self._version += 1
+                table = build_table(
+                    self._inputs,
+                    hot_models=self._pm.hot_model_names,
+                    stats=self._pm.stats,
+                    version=self._version,
+                    reasons=reasons,
+                )
+            except Exception:
+                if reload:
+                    self._need_reload = True
+                self._need_rescore = True
+                raise
+            self._table = table
+            elapsed = (time.perf_counter() - started) * 1000
+            log = logger.info if reload else logger.debug
+            log(
+                "Routing table v%d built in %.1f ms (%s; %s)",
+                table.version,
+                elapsed,
+                "reloaded" if reload else "rescored",
+                ", ".join(reasons),
+            )
+            return table
+
+    async def start(self) -> None:
+        """Build the first table and keep it current in the background."""
+        await self.rebuild()
+        if self._task is None:
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._db.remove_change_listener(self._on_db_change)
+
+    async def _run(self) -> None:
+        while True:
+            await self._wake.wait()
+            await asyncio.sleep(self._debounce_s)
+            self._wake.clear()
+            try:
+                await self.rebuild()
+            except Exception:
+                logger.exception("Routing table rebuild failed")
+            await asyncio.sleep(self._min_interval_s)
+
+    async def _current_table(self) -> RoutingTable:
+        table = self._table
+        if table is None or (
+            self._task is None and (self._need_reload or self._need_rescore)
+        ):
+            # No background task (tests, or before start): build inline.
+            table = await self.rebuild()
+        return table
+
+    # --- Routing ---
 
     async def route(
         self,
         model_name: str,
         protocol: str | None = None,
         preferences: RoutingPreferences | None = None,
+        endpoint: str | None = None,
     ) -> RouteResult | None:
         """Pick the best provider for the requested model, following fallbacks.
 
-        Walks the fallback chain if the requested model has no available provider.
-        Returns a RouteResult containing the chosen provider and the model name
-        that was actually resolved (may differ from the original if a fallback
-        was used).
+        Walks the fallback chain if the requested model has no available
+        provider. *endpoint* is the request path; providers whose last probe
+        found it missing are skipped while another candidate remains.
         """
-        has_direct_pin = bool(
-            preferences
-            and preferences.pinned_providers
-            and model_name in preferences.pinned_providers
-        )
-        if preferences and preferences.mode == "chaos" and not has_direct_pin:
-            return await self._route_chaos(model_name, protocol)
+        table = await self._current_table()
+        return self.route_with(table, model_name, protocol, preferences, endpoint)
 
-        if preferences and not preferences.allow_fallback:
-            chain = [model_name]
-        else:
-            chain = await self._db.resolve_fallback_chain(model_name)
-        for candidate_model in chain:
-            pinned_result = await self._route_pinned(
-                candidate_model, protocol, preferences=preferences
-            )
-            if pinned_result is not None:
-                if candidate_model != model_name:
-                    logger.info(
-                        "Model %s unavailable; fell back to pinned model %s",
-                        model_name,
-                        candidate_model,
-                    )
-                return RouteResult(pinned_result, candidate_model)
-            result = await self._route_single(
-                candidate_model, protocol, preferences=preferences
-            )
-            if result is not None:
-                if candidate_model != model_name:
-                    logger.info(
-                        "Model %s unavailable; fell back to %s",
-                        model_name,
-                        candidate_model,
-                    )
-                return RouteResult(result, candidate_model)
-        return None
-
-    async def _route_pinned(
+    def route_with(
         self,
+        table: RoutingTable,
         model_name: str,
         protocol: str | None = None,
         preferences: RoutingPreferences | None = None,
-    ) -> Provider | None:
-        if not preferences or not preferences.pinned_providers:
-            return None
-        provider_id = preferences.pinned_providers.get(model_name)
-        if provider_id is None:
-            return None
+        endpoint: str | None = None,
+    ) -> RouteResult | None:
+        """Route against *table*. Synchronous: no I/O, no awaits."""
+        pins = preferences.pinned_providers if preferences else None
+        mode = preferences.mode if preferences else DEFAULT_MODE
+        if mode == "chaos" and not (pins and model_name in pins):
+            return self._route_chaos(table, model_name, protocol)
+        if mode not in MODES:
+            mode = DEFAULT_MODE
 
-        candidates = await self._get_providers_for_model_cached(model_name, protocol)
-        for provider in candidates:
-            if provider.id == provider_id and provider.status != ProviderStatus.OFFLINE:
+        if preferences and not preferences.allow_fallback:
+            chain: tuple[str, ...] = (model_name,)
+        else:
+            chain = table.chain(model_name)
+        path = normalize_endpoint(endpoint)
+        active = self._pm.active_requests
+
+        for candidate_model in chain:
+            if pins:
+                pid = pins.get(candidate_model)
+                if pid is not None:
+                    pinned = self._pinned(table, candidate_model, protocol, pid)
+                    if pinned is not None:
+                        if candidate_model != model_name:
+                            logger.info(
+                                "Model %s unavailable; fell back to pinned model %s",
+                                model_name,
+                                candidate_model,
+                            )
+                        return RouteResult(
+                            pinned.provider,
+                            candidate_model,
+                            pinned.backend_model,
+                            pinned.model,
+                        )
+            ranked = table.ranked.get((candidate_model, protocol, mode))
+            if not ranked:
+                continue
+            chosen = _pick(ranked, mode, path, active)
+            if candidate_model != model_name:
                 logger.info(
-                    "Pinned routing model %s (%s) -> provider %s",
+                    "Model %s unavailable; fell back to %s",
                     model_name,
-                    protocol or "any",
-                    provider.name,
+                    candidate_model,
                 )
-                return provider
+            logger.debug(
+                "Routing model %s (%s, %s) to provider %s",
+                candidate_model,
+                protocol or "any",
+                mode,
+                chosen.provider.name,
+            )
+            return RouteResult(
+                chosen.provider, candidate_model, chosen.backend_model, chosen.model
+            )
+        return None
 
+    @staticmethod
+    def _pinned(
+        table: RoutingTable, model: str, protocol: str | None, provider_id: int
+    ) -> Candidate | None:
+        for c in table.all_candidates.get((model, protocol), ()):
+            if c.provider.id == provider_id:
+                logger.debug(
+                    "Pinned routing model %s (%s) -> provider %s",
+                    model,
+                    protocol or "any",
+                    c.provider.name,
+                )
+                return c
         logger.warning(
             "Pinned route unavailable for model %s (%s) provider_id=%d",
-            model_name,
+            model,
             protocol or "any",
             provider_id,
         )
         return None
 
-    async def _route_chaos(
-        self, requested_model: str, protocol: str | None = None
+    @staticmethod
+    def _route_chaos(
+        table: RoutingTable, requested_model: str, protocol: str | None
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model."""
-        providers = await self._db.list_providers()
-        online = [p for p in providers if p.status != ProviderStatus.OFFLINE]
-        if protocol == "ollama":
-            online = [
-                p
-                for p in online
-                if p.provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
-            ]
-        elif protocol == "llamacpp":
-            online = [
-                p
-                for p in online
-                if p.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
-            ]
-        if not online:
+        entries = table.chaos.get(protocol)
+        if not entries:
             return None
-
-        candidates: list[tuple[Provider, list[str]]] = []
-        for p in online:
-            if p.id is None:
-                continue
-            models = await self._db.get_provider_models(p.id)
-            eligible: list[str] = []
-            for m in models:
-                details = m.details or {}
-                if protocol == "ollama":
-                    if "_in_ollama" in details:
-                        if details.get("_in_ollama"):
-                            eligible.append(m.name)
-                    elif p.provider_type in (ProviderType.OLLAMA, ProviderType.BOTH):
-                        eligible.append(m.name)
-                elif protocol == "llamacpp":
-                    if "_in_llamacpp" in details:
-                        if details.get("_in_llamacpp"):
-                            eligible.append(m.name)
-                    elif p.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH):
-                        eligible.append(m.name)
-                else:
-                    eligible.append(m.name)
-            if eligible:
-                candidates.append((p, eligible))
-
-        if not candidates:
-            return None
-
-        provider, eligible = random.choice(candidates)
+        provider, eligible = random.choice(entries)
         resolved_model = random.choice(eligible)
+        assert provider.id is not None
         logger.info(
             "Chaos routing requested=%s protocol=%s -> provider=%s model=%s",
             requested_model,
@@ -211,63 +319,33 @@ class Router:
             provider.name,
             resolved_model,
         )
-        return RouteResult(provider, resolved_model)
-
-    async def _route_single(
-        self,
-        model_name: str,
-        protocol: str | None = None,
-        preferences: RoutingPreferences | None = None,
-    ) -> Provider | None:
-        """Pick the best provider for a single model (no fallbacks)."""
-        candidates = await self._get_providers_for_model_cached(model_name, protocol)
-        if not candidates:
-            return None
-
-        online = [c for c in candidates if c.status != ProviderStatus.OFFLINE]
-        if not online:
-            return None
-
-        scored: list[tuple[float, Provider]] = []
-        for provider in online:
-            assert provider.id is not None
-            active = self._pm.active_requests(provider.id)
-            bench = await self._get_latest_benchmark_cached(
-                provider.id, model_name, protocol
-            )
-            hot_names = {
-                hm.get("name")
-                for hm in self._pm.get_hot_models(provider.id)
-                if hm.get("name")
-            }
-            is_hot = model_name in hot_names
-            tps = bench.tokens_per_second if bench and bench.tokens_per_second else 0
-            startup_ms = (
-                bench.startup_time_ms if bench and bench.startup_time_ms else None
-            )
-            mode = preferences.mode if preferences else "latency"
-            if mode == "throughput":
-                # Prefer highest TPS, then lower active queue depth.
-                score = (active * 100.0) - tps
-            else:
-                # Prefer low queue depth and low startup latency; hot models ignore
-                # benchmark startup so they sort ahead of cold starts.
-                if is_hot:
-                    startup_component = 0.0
-                else:
-                    startup_component = (
-                        startup_ms if startup_ms is not None else 1_000_000.0
-                    )
-                score = (active * 1000.0) + startup_component
-            scored.append((score, provider))
-
-        scored.sort(key=lambda x: x[0])
-        chosen = scored[0][1]
-        logger.info(
-            "Routing model %s (%s) to provider %s (active=%d)",
-            model_name,
-            protocol or "any",
-            chosen.name,
-            self._pm.active_requests(chosen.id),  # type: ignore[arg-type]
+        return RouteResult(
+            provider, resolved_model, table.backend_name(provider.id, resolved_model)
         )
-        return chosen
+
+
+def _pick(
+    ranked: tuple[Candidate, ...], mode: str, path: str | None, active
+) -> Candidate:
+    """Lowest static score plus queue cost; *ranked* is sorted by static score."""
+    if path is not None:
+        serving = [c for c in ranked if path not in c.missing_endpoints]
+        if serving:
+            ranked = tuple(serving)
+    first = ranked[0]
+    if len(ranked) == 1:
+        return first
+    first_active = active(first.provider_id)
+    if first_active == 0:
+        # Queue costs are never negative, so nothing can beat an idle leader.
+        return first
+    best = first
+    best_score = first.scores[mode] + first_active * first.queue_weight[mode]
+    for c in ranked[1:]:
+        s = c.scores[mode]
+        if s >= best_score:
+            break  # sorted: every later static score is at least this high
+        s += active(c.provider_id) * c.queue_weight[mode]
+        if s < best_score:
+            best, best_score = c, s
+    return best

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..request_logger import StreamLogger, log_request
+from ..request_logger import StreamLogger, log_request_background
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -28,18 +28,21 @@ async def generate(request: Request):
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    route_result = await rt.route(model, protocol="ollama", preferences=prefs)
+    route_result = await rt.route(
+        model, protocol="ollama", preferences=prefs, endpoint=request.url.path
+    )
     if not route_result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
         )
 
     provider = route_result.provider
+    routed = route_result.model_key
     if route_result.resolved_model != model:
         body["model"] = route_result.resolved_model
 
     assert provider.id is not None
-    body["model"] = await db.get_backend_model_name(provider.id, body["model"])
+    body["model"] = route_result.backend_model
     client = pm.get_client(provider.id)
     stream = body.get("stream", True)
     start = time.monotonic()
@@ -59,6 +62,7 @@ async def generate(request: Request):
             endpoint="/api/generate",
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             start_time=start,
         )
@@ -67,19 +71,17 @@ async def generate(request: Request):
     try:
         async with pm.acquire_provider(provider.id):
             payload = await client.generate(body)
-            import json as _json
-
-            resp_size = len(_json.dumps(payload).encode())
             duration = (time.monotonic() - start) * 1000
-            await log_request(
+            log_request_background(
                 db,
                 provider=provider,
                 protocol="ollama",
                 endpoint="/api/generate",
                 request=request,
                 model=model,
+                routed_model=routed,
                 request_body=body,
-                response_size=resp_size,
+                response_body=payload,
                 duration_ms=duration,
             )
             return JSONResponse(content=payload)
@@ -91,13 +93,14 @@ async def generate(request: Request):
             exc.response.status_code,
             model,
         )
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="ollama",
             endpoint="/api/generate",
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             response_size=0,
             duration_ms=duration,
@@ -116,13 +119,14 @@ async def generate(request: Request):
                 provider.name,
                 describe_httpx_error(exc),
             )
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="ollama",
             endpoint="/api/generate",
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             response_size=0,
             duration_ms=duration,

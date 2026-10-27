@@ -31,6 +31,7 @@ from .models import (
 )
 from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
+from .routing_stats import ProviderStats
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailable,
@@ -109,6 +110,8 @@ class ProviderManager:
         self._hot_models: dict[int, list[HotModel]] = {}
         self._active_urls: dict[int, tuple[str, str]] = {}
         self._router: Router | None = None
+        # Live round-trip and request samples that feed the routing table.
+        self.stats = ProviderStats()
         self._health_task: asyncio.Task | None = None
         # Why a provider with a reachable address is still not usable, shown in
         # the dashboard. Cleared once discovery succeeds.
@@ -120,12 +123,14 @@ class ProviderManager:
     def attach_router(self, router: Router) -> None:
         self._router = router
 
-    def _notify_model_routing_cache(self, provider_id: int) -> None:
-        rt = self._router
-        if rt is None:
-            return
-        rt.invalidate_providers_for_model_cache()
-        rt.invalidate_benchmark_cache_for_provider(provider_id)
+    @property
+    def router(self) -> Router | None:
+        return self._router
+
+    def _routing_changed(self, reason: str) -> None:
+        """In-memory routing input changed (database writes notify on their own)."""
+        if self._router is not None:
+            self._router.mark_dirty(reason, reload=False)
 
     @classmethod
     def _get_cache_prefixes(cls) -> list[str]:
@@ -391,8 +396,8 @@ class ProviderManager:
         self._hot_models.pop(provider_id, None)
         self._status_detail.pop(provider_id, None)
         self._logged_detail.pop(provider_id, None)
+        self.stats.forget_provider(provider_id)
         await self._db.remove_provider(provider_id)
-        self._notify_model_routing_cache(provider_id)
 
     # --- Address CRUD ---
 
@@ -531,11 +536,22 @@ class ProviderManager:
     def get_hot_models(self, provider_id: int) -> list[HotModel]:
         return self._hot_models.get(provider_id, [])
 
+    def hot_model_names(self, provider_id: int) -> set[str]:
+        return {
+            hm["name"] for hm in self._hot_models.get(provider_id, []) if hm.get("name")
+        }
+
+    def _set_hot_models(self, provider_id: int, hot: list[HotModel]) -> None:
+        before = self.hot_model_names(provider_id)
+        self._hot_models[provider_id] = hot
+        if self.hot_model_names(provider_id) != before:
+            self._routing_changed("hot models")
+
     async def _refresh_hot_models(self, provider: Provider) -> None:
         """Fetch running models via /api/ps for Ollama providers."""
         assert provider.id is not None
         if not provider.supports_ollama or provider.id not in self._ollama_clients:
-            self._hot_models[provider.id] = []
+            self._set_hot_models(provider.id, [])
             return
         try:
             raw = await self._ollama_clients[provider.id].get_ps()
@@ -550,7 +566,7 @@ class ProviderManager:
                 if m.get("expires_at"):
                     entry["expires_at"] = m["expires_at"]
                 hot.append(entry)
-            self._hot_models[provider.id] = hot
+            self._set_hot_models(provider.id, hot)
         except Exception as exc:
             if isinstance(exc, httpx.HTTPError):
                 logger.warning(
@@ -692,7 +708,7 @@ class ProviderManager:
                     # A new socket arrived; its connect handler, waiting on the
                     # lock, sets status. Do not mark it offline first.
                     return await self._superseded(provider, source)
-                self._hot_models[pid] = []
+                self._set_hot_models(pid, [])
                 live = [a for a in await self._db.get_addresses(pid) if a.is_live]
                 return await self._commit_check(
                     provider,
@@ -743,7 +759,7 @@ class ProviderManager:
             else:
                 urls = ", ".join(a.url for a in addresses) or "no addresses"
                 detail = f"no address responded ({urls})"
-            self._hot_models[pid] = []
+            self._set_hot_models(pid, [])
         else:
             await self._maybe_rebuild_clients(provider, addresses)
             needs_discovery = rediscover or prev_status in (
@@ -947,8 +963,6 @@ class ProviderManager:
                 tokens_per_second=metrics["tokens_per_second"],
             )
             await self._db.save_benchmark(result)
-            if self._router:
-                self._router.invalidate_benchmark_cache_for_provider(provider_id)
 
             duration = (time.monotonic() - start) * 1000
             await log_request(
@@ -1229,7 +1243,6 @@ class ProviderManager:
             )
 
         await self._refresh_hot_models(provider)
-        self._notify_model_routing_cache(provider.id)
 
     @staticmethod
     def _extract_llamacpp_current_model(props: dict | None) -> str | None:
@@ -1265,6 +1278,22 @@ class ProviderManager:
         await self._check_many(providers, rediscover=False, source="health")
 
     async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
+        """Check one address and record how long a successful check took.
+
+        The round trip includes connecting, so it reflects what a request to
+        that address pays before the backend starts work.
+        """
+        started = time.monotonic()
+        ok = await self._probe_address_once(provider, addr)
+        if ok and provider.id is not None and addr.id is not None:
+            self.stats.record_rtt(
+                provider.id, addr.id, (time.monotonic() - started) * 1000
+            )
+        return ok
+
+    async def _probe_address_once(
+        self, provider: Provider, addr: ProviderAddress
+    ) -> bool:
         """Check if a single address is reachable via the provider's protocol(s)."""
         if provider.is_worker:
             return await self._probe_worker(provider)
@@ -1489,7 +1518,7 @@ class ProviderManager:
             return
         await self._set_worker_addresses_live(provider_id, False)
         await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
-        self._hot_models[provider_id] = []
+        self._set_hot_models(provider_id, [])
         # No socket means nothing answers; any "reachable but unusable" reason
         # from the last session no longer applies.
         self._status_detail.pop(provider_id, None)

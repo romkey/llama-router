@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 
@@ -10,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from ..auth import routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..request_logger import log_request
+from ..request_logger import log_request_background
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -28,34 +27,37 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, protocol="ollama", preferences=prefs)
+    result = await rt.route(
+        model, protocol="ollama", preferences=prefs, endpoint=request.url.path
+    )
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
         )
 
     provider = result.provider
+    routed = result.model_key
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
     assert provider.id is not None
-    body["model"] = await db.get_backend_model_name(provider.id, body["model"])
+    body["model"] = result.backend_model
     client = pm.get_client(provider.id)
     start = time.monotonic()
     pm.acquire(provider.id)
     try:
         result = await getattr(client, method)(body)
-        resp_size = len(json.dumps(result).encode())
         duration = (time.monotonic() - start) * 1000
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="ollama",
             endpoint=endpoint,
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
-            response_size=resp_size,
+            response_body=result,
             duration_ms=duration,
         )
         return JSONResponse(content=result)
@@ -68,13 +70,14 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
             endpoint,
             model,
         )
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="ollama",
             endpoint=endpoint,
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             response_size=0,
             duration_ms=duration,
@@ -94,13 +97,14 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
                 provider.name,
                 describe_httpx_error(exc),
             )
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="ollama",
             endpoint=endpoint,
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             response_size=0,
             duration_ms=duration,
