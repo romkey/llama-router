@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 import sqlalchemy as sa
 from alembic import op
 
+from llama_router.db_types import ShortText
+
 revision = "012_locality"
 down_revision = "011_provider_presets"
 branch_labels = None
@@ -64,7 +66,7 @@ def upgrade() -> None:
     if "locality" not in _cols("providers"):
         op.add_column(
             "providers",
-            sa.Column("locality", sa.Text(), nullable=False, server_default="local"),
+            sa.Column("locality", ShortText, nullable=False, server_default="local"),
         )
         rows = bind.execute(
             sa.text("SELECT id, preset, worker_name FROM providers")

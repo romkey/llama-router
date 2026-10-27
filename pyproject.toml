@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart",
     "sentry-sdk[fastapi]",
     "websockets>=13",
+    "joserfc>=1.6",
 ]
 
 [project.optional-dependencies]

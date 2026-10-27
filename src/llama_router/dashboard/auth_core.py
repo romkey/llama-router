@@ -18,6 +18,11 @@ class DashboardUser:
     id: int
     username: str
     is_admin: bool
+    auth_source: str = "local"
+
+    @property
+    def is_sso(self) -> bool:
+        return self.auth_source == "oidc"
 
 
 def hash_password(password: str) -> str:
@@ -33,7 +38,10 @@ def hash_password(password: str) -> str:
     return f"{salt.hex()}:{dk.hex()}"
 
 
-def verify_password(password: str, stored: str) -> bool:
+def verify_password(password: str, stored: str | None) -> bool:
+    if not stored:
+        # Accounts that sign in through OIDC have no password.
+        return False
     try:
         sh, kh = stored.split(":")
         salt = bytes.fromhex(sh)

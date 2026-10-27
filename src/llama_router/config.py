@@ -83,6 +83,29 @@ class Settings(BaseSettings):
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
+    # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid profile email groups"
+    # Claim holding the user's groups; dotted paths reach nested claims
+    # (Keycloak: realm_access.roles).
+    oidc_groups_claim: str = "groups"
+    # Members of this group are dashboard administrators.
+    oidc_admin_group: str = ""
+    # If set, only members of this group may sign in at all.
+    oidc_allowed_group: str = ""
+    # External base URL of the dashboard, e.g. https://llm.example.org. The
+    # callback is {base}/login/oidc/callback. Empty uses the request's host.
+    oidc_redirect_base_url: str = ""
+    # Button label: "Sign in with {name}".
+    oidc_display_name: str = "single sign-on"
+    # Hide the password form and refuse password sign-in.
+    oidc_only: bool = False
+    # Also end the session at the identity provider on logout.
+    oidc_logout_at_idp: bool = False
+    # Permit an http:// issuer (local development only).
+    oidc_allow_insecure: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 
@@ -101,14 +124,14 @@ class Settings(BaseSettings):
         u = make_url(async_url or self.effective_database_url())
         dn = u.drivername
         if dn == "sqlite+aiosqlite":
-            return str(u.set(drivername="sqlite"))
-        if dn == "postgresql+asyncpg":
-            return str(u.set(drivername="postgresql+psycopg"))
-        if dn in ("mysql+asyncmy", "mysql+aiomysql"):
-            return str(u.set(drivername="mysql+pymysql"))
-        if dn.startswith("mariadb+"):
-            return str(u.set(drivername="mysql+pymysql"))
-        return str(u)
+            u = u.set(drivername="sqlite")
+        elif dn == "postgresql+asyncpg":
+            u = u.set(drivername="postgresql+psycopg")
+        elif dn in ("mysql+asyncmy", "mysql+aiomysql") or dn.startswith("mariadb+"):
+            u = u.set(drivername="mysql+pymysql")
+        # str(URL) masks the password as "***", which Alembic would then use
+        # to log in.
+        return u.render_as_string(hide_password=False)
 
 
 settings = Settings()

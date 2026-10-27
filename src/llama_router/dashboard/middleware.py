@@ -88,6 +88,7 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
                     id=row["id"],
                     username=row["username"],
                     is_admin=row["is_admin"],
+                    auth_source=row.get("auth_source") or "local",
                 )
 
         if user is None:
