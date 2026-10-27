@@ -142,6 +142,16 @@
         return typeof x === "number" ? x.toFixed(digits === undefined ? 3 : digits) : "—";
     }
 
+    // The database stores UTC without a zone; read it as UTC, as the
+    // localtime template filter does.
+    function localTime(value) {
+        if (!value) return "—";
+        let iso = String(value).replace(" ", "T");
+        if (!/(Z|[+-]\d\d:?\d\d)$/.test(iso)) iso += "Z";
+        const t = new Date(iso);
+        return isNaN(t) ? String(value) : t.toLocaleString();
+    }
+
     function errorText(body, status) {
         const detail = body && body.detail;
         if (typeof detail === "string") return detail;
@@ -221,7 +231,7 @@
                 el("td", {}, fmt(c.temperature, 2)),
                 offsetsCell(c.offsets),
                 el("td", {}, c.examples === null || c.examples === undefined ? "—" : c.examples),
-                el("td", { class: "small text-nowrap" }, c.updated_at ? new Date(c.updated_at).toLocaleString() : "—"),
+                el("td", { class: "small text-nowrap" }, localTime(c.updated_at)),
                 actions);
         }));
     }
