@@ -12,14 +12,14 @@ import os
 
 import pytest
 
-from llama_router.cloud_presets import PRESETS
+from llama_router.cloud_presets import PRESETS, CloudPreset
 from llama_router.llamacpp_client import OpenAIClient
 from llama_router.ollama_client import OllamaClient
 from llama_router.provider_secrets import auth_headers
 
 
 @pytest.mark.parametrize("preset", PRESETS, ids=lambda p: p.id)
-async def test_preset_lists_models(preset) -> None:
+async def test_preset_lists_models(preset: CloudPreset) -> None:
     key = os.environ.get(preset.env_var, "").strip()
     if not key:
         pytest.skip(f"{preset.env_var} not set")
@@ -27,6 +27,7 @@ async def test_preset_lists_models(preset) -> None:
     params = {k: os.environ.get(prefix + k.upper(), "") for k in preset.url_params}
     headers = {**preset.extra_headers, **auth_headers(key, preset.api_key_header)}
     url = preset.url(**params)
+    client: OllamaClient | OpenAIClient
     if preset.protocol == "ollama":
         client = OllamaClient(url, headers=headers)
         models = await client.get_tags()

@@ -274,11 +274,12 @@ def best_address(addresses: list[ProviderAddress]) -> ProviderAddress | None:
     """The address the provider's clients use: live+preferred > live > preferred."""
     if not addresses:
         return None
-    for pick in (
+    picks: tuple[Callable[[ProviderAddress], bool], ...] = (
         lambda a: a.is_live and a.is_preferred,
         lambda a: a.is_live,
         lambda a: a.is_preferred,
-    ):
+    )
+    for pick in picks:
         for a in addresses:
             if pick(a):
                 return a
@@ -681,13 +682,13 @@ def build_table(
                     if all(x.provider.id != pid for x in bucket):
                         bucket.append(c)
 
+    def _score_by(mode: str) -> Callable[[Candidate], float]:
+        return lambda c: c.scores[mode]
+
     def _rank(cands: list[Candidate]) -> dict[str, tuple[Candidate, ...]]:
         best_tier = min(c.tier for c in cands)
         usable = [c for c in cands if c.tier == best_tier]
-        return {
-            mode: tuple(sorted(usable, key=lambda c, m=mode: c.scores[m]))
-            for mode in MODES
-        }
+        return {mode: tuple(sorted(usable, key=_score_by(mode))) for mode in MODES}
 
     for (model, path), cands in grouped.items():
         table.all_candidates[(model, path)] = tuple(cands)

@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any
 
 import httpx
@@ -103,7 +103,7 @@ def usage_from_tail(tail: bytes) -> tuple[int | None, int | None]:
     (``stream_options.include_usage``); Ollama's final chunk always does.
     """
 
-    def last(patterns) -> int | None:
+    def last(patterns: Iterable[re.Pattern[bytes]]) -> int | None:
         for pattern in patterns:
             matches = pattern.findall(tail)
             if matches:
@@ -435,7 +435,7 @@ class StreamLogger:
         self._first_chunk_at: float | None = None
         self._tail: deque[bytes] = deque(maxlen=_TAIL_CHUNKS)
 
-    async def __aiter__(self):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         status = "ok"
         error_detail = None
         try:

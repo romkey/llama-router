@@ -47,7 +47,7 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
 @router.post("/systemone")
 @router.post("/v1/decisions")
 @router.post("/decisions")
-async def decide(request: Request):
+async def decide(request: Request) -> Response:
     try:
         body = await request.json()
     except ValueError as exc:
@@ -89,7 +89,7 @@ async def serve(
         provider = result.provider
         assert provider.id is not None
         start = time.monotonic()
-        log = dict(
+        log: dict[str, Any] = dict(
             provider=provider,
             protocol="v1",
             endpoint=endpoint_path,

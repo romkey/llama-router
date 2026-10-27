@@ -17,6 +17,7 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,7 @@ from .endpoints import (  # noqa: F401  (re-exported)
     resolve_endpoint,
 )
 from .models import Provider, ProviderStatus
+from .pricing import Price
 from .provider_manager import ProviderManager
 
 if TYPE_CHECKING:
@@ -126,7 +128,7 @@ class Router:
         self._version = 0
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self.affinity = affinity or SessionAffinity(
             settings.session_affinity_ttl_seconds,
             settings.session_affinity_max_sessions,
@@ -262,7 +264,7 @@ class Router:
 
     def session_for(
         self,
-        headers,
+        headers: Mapping[str, str],
         body: dict[str, Any],
         preferences: RoutingPreferences | None,
     ) -> str | None:
@@ -286,7 +288,7 @@ class Router:
         ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
         return ready or ranked
 
-    def price_for(self, provider_id: int, model: str):
+    def price_for(self, provider_id: int, model: str) -> Price | None:
         """The model's price on the provider from the current table, or None."""
         table = self._table
         if table is None or table.prices is None:
@@ -567,7 +569,7 @@ class Router:
         protocol: str | None,
         mode: str,
         pins: dict[str, int],
-        active,
+        active: Callable[[int], int],
         chosen_id: int | None = None,
         bound: int | None = None,
         locality: str | None = None,
@@ -739,7 +741,7 @@ class Router:
             if p.status == ProviderStatus.OFFLINE:
                 reason = "provider is offline"
             elif not reaches(p, protocol):
-                api = _API_NAMES.get(protocol, protocol)
+                api = _API_NAMES.get(protocol or "", protocol or "")
                 reason = f"provider does not serve the {api} API"
             else:
                 continue
@@ -820,7 +822,9 @@ def _summary(out: dict[str, Any], requested: str) -> str:
     return f"Routes to {chosen['provider']}{via}: {last.get('outcome', '')}."
 
 
-def _pick(ranked: tuple[Candidate, ...], mode: str, active) -> Candidate:
+def _pick(
+    ranked: tuple[Candidate, ...], mode: str, active: Callable[[int], int]
+) -> Candidate:
     """Lowest static score plus queue cost; *ranked* is sorted by static score."""
     first = ranked[0]
     if len(ranked) == 1:
