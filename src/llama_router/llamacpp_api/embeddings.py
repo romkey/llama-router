@@ -18,7 +18,7 @@ router = APIRouter()
 
 
 @router.post("/v1/embeddings")
-async def embeddings(request: Request):
+async def embeddings(request: Request) -> JSONResponse:
     body = await request.json()
     model = body.get("model")
     if not model:

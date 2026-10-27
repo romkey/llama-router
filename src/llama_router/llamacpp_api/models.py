@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/v1/models")
-async def list_models():
+async def list_models() -> JSONResponse:
     """Aggregate models from all online providers (OpenAI format)."""
     db = deps.get_db()
     models = await db.list_all_models()
@@ -32,7 +32,7 @@ async def list_models():
 
 
 @router.get("/v1/models/{model_name:path}")
-async def get_model(model_name: str):
+async def get_model(model_name: str) -> JSONResponse:
     """Return a single model in OpenAI format."""
     db = deps.get_db()
     models = await db.list_all_models()
@@ -50,5 +50,5 @@ async def get_model(model_name: str):
 
 
 @router.get("/health")
-async def health():
+async def health() -> JSONResponse:
     return JSONResponse(content={"status": "ok"})

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from pytest_httpx import HTTPXMock
 
+from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol
 from llama_router.provider_manager import ProviderManager, worker_protocol
 
@@ -37,8 +39,8 @@ def test_worker_target_keeps_wire_names() -> None:
 @pytest.mark.asyncio
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_add_provider_form_takes_protocol(
-    dash_client,
-    httpx_mock,
+    dash_client: tuple[httpx.AsyncClient, Database],
+    httpx_mock: HTTPXMock,
 ) -> None:
     httpx_mock.add_exception(httpx.ConnectError("refused"), is_reusable=True)
     client, db = dash_client
@@ -61,7 +63,7 @@ async def test_add_provider_form_takes_protocol(
 
 
 @pytest.mark.asyncio
-async def test_benchmark_rejects_the_other_protocol(db) -> None:
+async def test_benchmark_rejects_the_other_protocol(db: Database) -> None:
     p = await db.add_provider("lcpp", ProviderProtocol.OPENAI)
     await db.set_provider_models(p.id, [ProviderModel(provider_id=p.id, name="m")])
     pm = ProviderManager(db)

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ..auth import routing_preferences_from_request
 from ..decision_policy import apply_decision_policy
@@ -19,7 +20,7 @@ router = APIRouter()
 
 
 @router.post("/api/generate")
-async def generate(request: Request):
+async def generate(request: Request) -> Response:
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -58,7 +59,7 @@ async def generate(request: Request):
 
     if stream:
 
-        async def generate_chunks():
+        async def generate_chunks() -> AsyncIterator[bytes]:
             try:
                 async with pm.acquire_provider(provider_id):
                     async for chunk in client.generate_stream(body):

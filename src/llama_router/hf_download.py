@@ -201,12 +201,13 @@ async def _run(
     )
     if proc.stdout is None or proc.stderr is None:
         raise RuntimeError("hf subprocess started without its pipes")
+    stderr = proc.stderr
     err_tail: list[str] = []
 
     async def read_stderr() -> None:
         buf = b""
         while True:
-            chunk = await proc.stderr.read(4096)
+            chunk = await stderr.read(4096)
             if not chunk:
                 break
             buf += chunk
@@ -237,7 +238,7 @@ def _error_from(stderr: str) -> str:
     return "hf exited with an error"
 
 
-async def plan(repo: str, pattern: str, revision: str | None) -> list[dict]:
+async def plan(repo: str, pattern: str, revision: str | None) -> list[dict[str, Any]]:
     """Files *pattern* selects in *repo*, from ``hf download --dry-run --json``."""
     args = ["download", repo, "--include", pattern, "--dry-run", "--json"]
     if revision:
@@ -249,7 +250,7 @@ async def plan(repo: str, pattern: str, revision: str | None) -> list[dict]:
     return _parse_plan(out)
 
 
-def _parse_plan(out: str) -> list[dict]:
+def _parse_plan(out: str) -> list[dict[str, Any]]:
     """File list from ``--dry-run --json`` output, tolerant of its shape.
 
     Accepts the whole output or its last line as JSON, a list or an object

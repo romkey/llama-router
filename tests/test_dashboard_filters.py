@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 
+import httpx
 import pytest
 
-from llama_router.models import ProviderModel, ProviderProtocol
+from llama_router.database import Database
+from llama_router.models import Provider, ProviderModel, ProviderProtocol
 
 
-async def _seed(db):
+async def _seed(db: Database) -> Provider:
     p = await db.add_provider("gpu-1", ProviderProtocol.OLLAMA)
     await db.add_address(p.id, "http://10.0.0.5:11434", True)
     await db.set_provider_models(
@@ -24,7 +26,9 @@ async def _seed(db):
 
 
 @pytest.mark.asyncio
-async def test_status_api_carries_filter_fields(dash_client) -> None:
+async def test_status_api_carries_filter_fields(
+    dash_client: tuple[httpx.AsyncClient, Database],
+) -> None:
     client, db = dash_client
     await _seed(db)
     data = (await client.get("/api/status")).json()
@@ -36,7 +40,9 @@ async def test_status_api_carries_filter_fields(dash_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dashboard_embeds_provider_seed(dash_client) -> None:
+async def test_dashboard_embeds_provider_seed(
+    dash_client: tuple[httpx.AsyncClient, Database],
+) -> None:
     client, db = dash_client
     await _seed(db)
     html = (await client.get("/")).text
