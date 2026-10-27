@@ -28,9 +28,7 @@ async def generate(request: Request):
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    route_result = await rt.route(
-        model, protocol="ollama", preferences=prefs, endpoint=request.url.path
-    )
+    route_result = await rt.route(model, request.url.path, prefs)
     if not route_result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"

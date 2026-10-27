@@ -21,7 +21,6 @@ from ..router import (
     ENDPOINT_PROTOCOLS,
     ROUTING_MODES,
     RoutingPreferences,
-    protocol_for_endpoint,
 )
 from ..routing_table import DEFAULT_MODE, MODES
 from .. import hf_download
@@ -616,7 +615,12 @@ async def dashboard(request: Request):
     if read_only:
         api_keys: list[Any] = []
         allow_unauthenticated = False
-        key_routing_preview = {"latency": [], "throughput": [], "chaos": []}
+        key_routing_preview = {
+            "balanced": [],
+            "latency": [],
+            "throughput": [],
+            "chaos": [],
+        }
         routing_summary = None
         log_page = 1
         log_pages = 1
@@ -680,9 +684,18 @@ async def dashboard(request: Request):
                 r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 1_000_000.0,
             ),
         )[:5]
+        balanced_preview = sorted(
+            preview_rows,
+            key=lambda r: (
+                r["active_requests"],
+                (r["avg_startup_ms"] if r["avg_startup_ms"] is not None else 10_000.0)
+                + 256 / (r["avg_tps"] or 10.0) * 1000,
+            ),
+        )[:5]
         chaos_preview = sorted(preview_rows, key=lambda r: r["name"])[:5]
 
         key_routing_preview = {
+            "balanced": balanced_preview,
             "latency": latency_preview,
             "throughput": throughput_preview,
             "chaos": chaos_preview,
@@ -865,11 +878,7 @@ def _routing_summary(pm) -> dict[str, Any] | None:
     table = rt.table if rt is not None else None
     if table is None:
         return None
-    rows: dict[str, dict[str, str]] = {}
-    for (model, protocol, mode), ranked in table.ranked.items():
-        if protocol is not None or not ranked:
-            continue
-        rows.setdefault(model, {})[mode] = ranked[0].provider.name
+    rows = table.first_choices(_DEFAULT_EXPLAIN_ENDPOINT)
     return {
         "version": table.version,
         "built_at": datetime.fromtimestamp(table.built_at, tz=timezone.utc),
@@ -879,7 +888,41 @@ def _routing_summary(pm) -> dict[str, Any] | None:
         "rows": sorted(rows.items()),
         "endpoints": list(ENDPOINT_PROTOCOLS),
         "default_endpoint": _DEFAULT_EXPLAIN_ENDPOINT,
+        "health": provider_health_rows(pm),
     }
+
+
+def provider_health_rows(pm) -> list[dict[str, Any]]:
+    """Health score and health-check latency tally for every provider."""
+    rt = pm.router
+    inputs = rt.inputs if rt is not None else None
+    if inputs is None:
+        return []
+    out = []
+    for p in inputs.providers:
+        if p.id is None:
+            continue
+        health = pm.stats.provider_health(p.id)
+        addrs = []
+        for a in inputs.addresses.get(p.id, []):
+            tally = pm.stats.tally(p.id, a.id) if a.id is not None else None
+            addrs.append(
+                {
+                    "url": a.url,
+                    "is_live": a.is_live,
+                    "latency": tally.to_dict() if tally else None,
+                }
+            )
+        out.append(
+            {
+                "provider_id": p.id,
+                "provider": p.name,
+                "status": p.status.value,
+                "health": health.to_dict(),
+                "addresses": addrs,
+            }
+        )
+    return out
 
 
 @router.get("/api/routing-table")
@@ -966,12 +1009,7 @@ async def api_explain_routing(request: Request):
     rt = deps.get_pm().router
     if rt is None:
         raise HTTPException(status_code=503, detail="router not running")
-    result = await rt.explain(
-        model,
-        protocol=protocol_for_endpoint(normalized),
-        preferences=prefs,
-        endpoint=normalized,
-    )
+    result = await rt.explain(model, normalized, prefs)
     result["api_key"] = key_info
     return JSONResponse(result)
 

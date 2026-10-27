@@ -1,12 +1,14 @@
 """Routes requests to the best available provider for a given model.
 
-Routing decisions come from a precomputed :class:`RoutingTable`. The table is
-rebuilt in the background whenever something that affects routing changes:
-the database reports a write (providers, status, addresses, models,
-benchmarks, fallbacks, probe results), the hot-model set changes, or live
-request and round-trip samples arrive. Rebuilds are coalesced, so a burst of
-changes produces one rebuild. ``route()`` itself only reads the table and the
-in-memory queue depth; it never touches the database once the table exists.
+Routing decisions come from a precomputed :class:`RoutingTable` that ranks,
+for every model and every proxied endpoint, the providers per routing mode.
+The table is rebuilt in the background whenever something that affects
+routing changes: the database reports a write (providers, status, addresses,
+models, benchmarks, fallbacks, probe results), the hot-model set changes, or
+live request and health-check samples arrive. Rebuilds are coalesced, so a
+burst of changes produces one rebuild. ``route()`` itself only reads the table
+and the in-memory queue depth; it never touches the database once the table
+exists.
 """
 
 from __future__ import annotations
@@ -19,17 +21,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .database import ROUTING_CHANGES, Database
+from .endpoints import (  # noqa: F401  (re-exported)
+    ENDPOINT_PROTOCOLS,
+    ENDPOINTS,
+    UnknownEndpoint,
+    normalize_endpoint,
+    protocol_for_endpoint,
+    resolve_endpoint,
+)
 from .models import Provider, ProviderStatus
 from .provider_manager import ProviderManager
 from .routing_table import (
     DEFAULT_MODE,
     MODES,
+    TIER_OK,
     Candidate,
     RoutingInputs,
     RoutingTable,
     build_table,
     load_inputs,
-    normalize_endpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,29 +52,6 @@ REBUILD_DEBOUNCE_S = 0.25
 REBUILD_MIN_INTERVAL_S = 1.0
 # Reasons kept for the dashboard.
 _MAX_REASONS = 20
-
-# Every proxied endpoint and the protocol its handler routes with. Ollama
-# native routes need an Ollama-capable provider; OpenAI-style routes take any.
-ENDPOINT_PROTOCOLS: dict[str, str | None] = {
-    "/api/chat": "ollama",
-    "/api/generate": "ollama",
-    "/api/embed": "ollama",
-    "/api/embeddings": "ollama",
-    "/v1/chat/completions": None,
-    "/v1/completions": None,
-    "/v1/responses": None,
-    "/v1/embeddings": None,
-    "/v1/images/generations": None,
-    "/v1/images/edits": None,
-    "/v1/audio/speech": None,
-    "/v1/audio/transcriptions": None,
-}
-
-
-def protocol_for_endpoint(endpoint: str | None) -> str | None:
-    """The protocol a request to *endpoint* is routed with."""
-    path = normalize_endpoint(endpoint)
-    return ENDPOINT_PROTOCOLS.get(path or "")
 
 
 class RouteResult:
@@ -126,6 +113,11 @@ class Router:
     @property
     def table(self) -> RoutingTable | None:
         return self._table
+
+    @property
+    def inputs(self) -> RoutingInputs | None:
+        """The database inputs the current table was built from."""
+        return self._inputs
 
     def mark_dirty(self, reason: str, *, reload: bool = True) -> None:
         """Schedule a rebuild. *reload* re-reads the database first.
@@ -228,32 +220,36 @@ class Router:
     async def route(
         self,
         model_name: str,
-        protocol: str | None = None,
+        endpoint: str,
         preferences: RoutingPreferences | None = None,
-        endpoint: str | None = None,
     ) -> RouteResult | None:
-        """Pick the best provider for the requested model, following fallbacks.
+        """Pick the best provider for *model_name* on *endpoint*.
 
-        Walks the fallback chain if the requested model has no available
-        provider. *endpoint* is the request path; providers whose last probe
-        found it missing are skipped while another candidate remains.
+        *endpoint* is the request path (``/api/chat``, ``/v1/embeddings``,
+        bare OpenAI paths like ``/chat/completions`` are accepted). It decides
+        which providers may serve the request (the protocol), which upstream
+        it lands on, whether that upstream's last probe found the endpoint,
+        and which live measurements score it. Walks the fallback chain when
+        the requested model has no available provider.
+
+        Raises :class:`UnknownEndpoint` for a path the router does not proxy.
         """
         table = await self._current_table()
-        return self.route_with(table, model_name, protocol, preferences, endpoint)
+        return self.route_with(table, model_name, endpoint, preferences)
 
     def route_with(
         self,
         table: RoutingTable,
         model_name: str,
-        protocol: str | None = None,
+        endpoint: str,
         preferences: RoutingPreferences | None = None,
-        endpoint: str | None = None,
     ) -> RouteResult | None:
         """Route against *table*. Synchronous: no I/O, no awaits."""
+        path = resolve_endpoint(endpoint)
         pins = preferences.pinned_providers if preferences else None
         mode = preferences.mode if preferences else DEFAULT_MODE
         if mode == "chaos" and not (pins and model_name in pins):
-            return self._route_chaos(table, model_name, protocol)
+            return self._route_chaos(table, model_name, ENDPOINTS[path][0])
         if mode not in MODES:
             mode = DEFAULT_MODE
 
@@ -261,14 +257,13 @@ class Router:
             chain: tuple[str, ...] = (model_name,)
         else:
             chain = table.chain(model_name)
-        path = normalize_endpoint(endpoint)
         active = self._pm.active_requests
 
         for candidate_model in chain:
             if pins:
                 pid = pins.get(candidate_model)
                 if pid is not None:
-                    pinned = self._pinned(table, candidate_model, protocol, pid)
+                    pinned = self._pinned(table, candidate_model, path, pid)
                     if pinned is not None:
                         if candidate_model != model_name:
                             logger.info(
@@ -282,10 +277,10 @@ class Router:
                             pinned.backend_model,
                             pinned.model,
                         )
-            ranked = table.ranked.get((candidate_model, protocol, mode))
+            ranked = table.ranked.get((candidate_model, path, mode))
             if not ranked:
                 continue
-            chosen = _pick(ranked, mode, path, active)
+            chosen = _pick(ranked, mode, active)
             if candidate_model != model_name:
                 logger.info(
                     "Model %s unavailable; fell back to %s",
@@ -295,7 +290,7 @@ class Router:
             logger.debug(
                 "Routing model %s (%s, %s) to provider %s",
                 candidate_model,
-                protocol or "any",
+                path,
                 mode,
                 chosen.provider.name,
             )
@@ -307,42 +302,40 @@ class Router:
     async def explain(
         self,
         model_name: str,
-        protocol: str | None = None,
+        endpoint: str,
         preferences: RoutingPreferences | None = None,
-        endpoint: str | None = None,
     ) -> dict[str, Any]:
         """How a request would be routed right now, and why.
 
-        Walks the same fallback chain, pins, circuit breaker, endpoint filter
-        and scoring as :meth:`route`, against the same table and live queue
-        depths, and reports every provider considered. The decision itself is
-        taken from :meth:`route_with`, so the explanation cannot drift from
-        what a real request would get.
+        Walks the same fallback chain, pins, tiers and scores as
+        :meth:`route`, against the same table and live queue depths, and
+        reports every provider considered. The decision itself is taken from
+        :meth:`route_with`, so the explanation cannot drift from what a real
+        request would get.
         """
         table = await self._current_table()
-        decision = self.route_with(table, model_name, protocol, preferences, endpoint)
-        return self.explain_with(
-            table, decision, model_name, protocol, preferences, endpoint
-        )
+        decision = self.route_with(table, model_name, endpoint, preferences)
+        return self.explain_with(table, decision, model_name, endpoint, preferences)
 
     def explain_with(
         self,
         table: RoutingTable,
         decision: RouteResult | None,
         model_name: str,
-        protocol: str | None,
+        endpoint: str,
         preferences: RoutingPreferences | None,
-        endpoint: str | None,
     ) -> dict[str, Any]:
+        path = resolve_endpoint(endpoint)
+        protocol, endpoint_cls = ENDPOINTS[path]
         pins = dict(preferences.pinned_providers) if preferences else {}
         mode = preferences.mode if preferences else DEFAULT_MODE
         allow_fallback = preferences.allow_fallback if preferences else True
-        path = normalize_endpoint(endpoint)
         out: dict[str, Any] = {
             "request": {
                 "model": model_name,
                 "mode": mode,
                 "endpoint": path,
+                "endpoint_class": endpoint_cls,
                 "protocol": protocol or "any",
                 "allow_fallback": allow_fallback,
                 "pins": pins,
@@ -392,7 +385,7 @@ class Router:
                 else None
             )
             step = self._explain_step(
-                table, candidate_model, protocol, mode, path, pins, active, chosen_id
+                table, candidate_model, path, protocol, mode, pins, active, chosen_id
             )
             out["steps"].append(step)
             if decision is not None and decision.resolved_model == candidate_model:
@@ -404,20 +397,19 @@ class Router:
         self,
         table: RoutingTable,
         model: str,
+        path: str,
         protocol: str | None,
         mode: str,
-        path: str | None,
         pins: dict[str, int],
         active,
         chosen_id: int | None = None,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         rows: list[dict[str, Any]] = []
-        all_cands = table.all_candidates.get((model, protocol), ())
-        ranked = table.ranked.get((model, protocol, mode), ())
-        usable_ids = {c.provider_id for c in ranked}
-        serving = [c for c in ranked if path is None or path not in c.missing_endpoints]
-        serving_ids = {c.provider_id for c in (serving or ranked)}
+        all_cands = table.all_candidates.get((model, path), ())
+        ranked = table.ranked.get((model, path, mode), ())
+        ranked_ids = {c.provider_id for c in ranked}
+        best_tier = ranked[0].tier if ranked else TIER_OK
         pid = pins.get(model)
         pinned = None
         if pid is not None:
@@ -434,18 +426,21 @@ class Router:
                     "queue_cost": round(q * c.queue_weight[mode], 2),
                     "total_score": round(c.scores[mode] + q * c.queue_weight[mode], 2),
                     "excluded": None,
+                    "warnings": [],
                 }
             )
-            if pinned is not None and c is not pinned:
-                row["excluded"] = "another provider is pinned for this model"
-            elif pinned is None and c.provider_id not in usable_ids:
-                row["excluded"] = (
-                    "recent failures (circuit open); other providers are healthy"
+            if pinned is not None:
+                if c is not pinned:
+                    row["excluded"] = "another provider is pinned for this model"
+                else:
+                    row["warnings"] = list(c.problems)
+            elif c.provider_id not in ranked_ids:
+                row["excluded"] = "; ".join(c.problems) + (
+                    "; healthier providers are available"
                 )
-            elif (
-                pinned is None and c.provider_id not in serving_ids and path is not None
-            ):
-                row["excluded"] = f"last probe found {path} missing"
+            else:
+                # In the best tier available, so it is used despite problems.
+                row["warnings"] = list(c.problems)
             rows.append(row)
 
         rows.extend(
@@ -458,6 +453,10 @@ class Router:
             step["outcome"] = f"pinned to {pinned.provider.name}"
         elif eligible:
             step["outcome"] = f"lowest {mode} score: {eligible[0]['provider']}"
+            if best_tier != TIER_OK:
+                step[
+                    "outcome"
+                ] += " (every provider has a problem; using the least bad)"
         else:
             step["outcome"] = "no provider can serve this model"
             if pid is not None:
@@ -498,26 +497,33 @@ class Router:
                 reason = "provider does not serve the llama.cpp API"
             else:
                 continue
-            rows.append({"provider_id": p.id, "provider": p.name, "excluded": reason})
+            rows.append(
+                {
+                    "provider_id": p.id,
+                    "provider": p.name,
+                    "excluded": reason,
+                    "warnings": [],
+                }
+            )
         return rows
 
     @staticmethod
     def _pinned(
-        table: RoutingTable, model: str, protocol: str | None, provider_id: int
+        table: RoutingTable, model: str, path: str, provider_id: int
     ) -> Candidate | None:
-        for c in table.all_candidates.get((model, protocol), ()):
+        for c in table.all_candidates.get((model, path), ()):
             if c.provider.id == provider_id:
                 logger.debug(
                     "Pinned routing model %s (%s) -> provider %s",
                     model,
-                    protocol or "any",
+                    path,
                     c.provider.name,
                 )
                 return c
         logger.warning(
             "Pinned route unavailable for model %s (%s) provider_id=%d",
             model,
-            protocol or "any",
+            path,
             provider_id,
         )
         return None
@@ -559,14 +565,8 @@ def _summary(out: dict[str, Any], requested: str) -> str:
     return f"Routes to {chosen['provider']}{via}: {last.get('outcome', '')}."
 
 
-def _pick(
-    ranked: tuple[Candidate, ...], mode: str, path: str | None, active
-) -> Candidate:
+def _pick(ranked: tuple[Candidate, ...], mode: str, active) -> Candidate:
     """Lowest static score plus queue cost; *ranked* is sorted by static score."""
-    if path is not None:
-        serving = [c for c in ranked if path not in c.missing_endpoints]
-        if serving:
-            ranked = tuple(serving)
     first = ranked[0]
     if len(ranked) == 1:
         return first

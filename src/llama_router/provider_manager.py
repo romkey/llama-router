@@ -750,6 +750,8 @@ class ProviderManager:
                 await self._db.set_address_live(addr.id, reachable)
             addr.is_live = reachable
         live = [a for a in addresses if a.is_live]
+        if addresses:
+            self.stats.record_check(pid, ok=bool(live))
 
         detail: str | None = None
         if not live:
@@ -1284,12 +1286,20 @@ class ProviderManager:
         that address pays before the backend starts work.
         """
         started = time.monotonic()
-        ok = await self._probe_address_once(provider, addr)
-        if ok and provider.id is not None and addr.id is not None:
-            self.stats.record_rtt(
-                provider.id, addr.id, (time.monotonic() - started) * 1000
-            )
-        return ok
+        ok = False
+        try:
+            ok = await self._probe_address_once(provider, addr)
+            return ok
+        finally:
+            # Errors and timeouts (including a cancelled check) count as
+            # failed checks in the address's tally.
+            if provider.id is not None and addr.id is not None:
+                self.stats.record_probe(
+                    provider.id,
+                    addr.id,
+                    ok=ok,
+                    ms=(time.monotonic() - started) * 1000,
+                )
 
     async def _probe_address_once(
         self, provider: Provider, addr: ProviderAddress

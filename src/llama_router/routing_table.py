@@ -2,9 +2,11 @@
 
 Routing inputs (providers, models, addresses, benchmarks, fallbacks) are read
 from the database in one pass, combined with in-memory signals (hot models,
-round trips, request outcomes), and turned into an immutable table of
-candidates sorted per routing mode. The request path only reads the table
-and adds the live queue depth, so a routing decision never awaits anything.
+health-check round trips, provider health, request outcomes), and turned into
+an immutable table. The table holds, for every model and every proxied
+endpoint, the candidates ranked per routing mode. The request path only reads
+the table and adds the live queue depth, so a routing decision never awaits
+anything.
 """
 
 from __future__ import annotations
@@ -15,6 +17,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .database import Database
+from .endpoints import (
+    ENDPOINTS,
+    GENERATE,
+    normalize_endpoint,  # noqa: F401  (re-exported for callers)
+)
 from .models import (
     BenchmarkResult,
     Provider,
@@ -23,7 +30,7 @@ from .models import (
     ProviderStatus,
 )
 from .probe import MISSING, SUPPORTED
-from .routing_stats import ProviderStats
+from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
 
 MODES = ("latency", "throughput", "balanced")
 DEFAULT_MODE = "balanced"
@@ -37,24 +44,28 @@ BALANCED_UNKNOWN_STARTUP_MS = 10_000.0
 # Balanced mode estimates the time to finish a typical response.
 NOMINAL_TOKENS = 256
 UNKNOWN_TPS = 10.0
+# Embedding, image and audio calls are scored on measured service time.
+UNKNOWN_SERVICE_MS = 10_000.0
+BALANCED_UNKNOWN_SERVICE_MS = 2_000.0
 # Cost of each request already in flight on a provider.
 QUEUE_WEIGHT = {"latency": 1000.0, "throughput": 100.0}
 # Added per unit of recent failure rate (0..1).
 FAILURE_PENALTY = {"latency": 10_000.0, "throughput": 100.0, "balanced": 10_000.0}
-# Recent failure rate at which a candidate is skipped while others exist.
+# Recent failure rate for one model at which a candidate is skipped while
+# others exist. Provider-wide failures have their own breaker in the stats.
 CIRCUIT_OPEN_RATE = 0.5
 CIRCUIT_MIN_SAMPLES = 3
 # Model larger than the provider's GPU memory: likely CPU offload.
 OVERSIZE_PENALTY_MS = 5_000.0
 
+# Candidate tiers. A request goes to the best tier that has anyone in it.
+TIER_OK = 0
+TIER_FAILING = 1  # circuit open: failing recently, may still work
+TIER_MISSING = 2  # the last probe found the endpoint missing: a near-certain 404
 
-def normalize_endpoint(path: str | None) -> str | None:
-    """Upstream path a request is served on: bare OpenAI routes gain /v1."""
-    if not path:
-        return None
-    if path.startswith("/v1/") or path.startswith("/api/"):
-        return path
-    return "/v1" + path
+SUPPORT_SUPPORTED = "supported"
+SUPPORT_MISSING = "missing"
+SUPPORT_UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
@@ -62,15 +73,24 @@ class Candidate:
     provider: Provider
     model: str
     backend_model: str
+    endpoint: str
+    endpoint_class: str = GENERATE
+    # Which of the provider's upstreams the request would reach.
+    upstream: str = "ollama"
     is_hot: bool = False
     startup_ms: float | None = None
     tokens_per_second: float | None = None
     rtt_ms: float | None = None
     ttft_ms: float | None = None
+    service_ms: float | None = None
+    model_failure_rate: float = 0.0
+    health: ProviderHealth = HEALTHY
     failure_rate: float = 0.0
     circuit_open: bool = False
     oversize: bool = False
-    missing_endpoints: frozenset[str] = frozenset()
+    endpoint_support: str = SUPPORT_UNKNOWN
+    tier: int = TIER_OK
+    problems: tuple[str, ...] = ()
     scores: dict[str, float] = field(default_factory=dict)
     queue_weight: dict[str, float] = field(default_factory=dict)
 
@@ -84,14 +104,23 @@ class Candidate:
             "provider_id": self.provider.id,
             "provider": self.provider.name,
             "backend_model": self.backend_model,
+            "upstream": self.upstream,
             "hot": self.is_hot,
             "startup_ms": self.startup_ms,
             "tokens_per_second": self.tokens_per_second,
-            "rtt_ms": self.rtt_ms,
-            "ttft_ms": self.ttft_ms,
+            "rtt_ms": None if self.rtt_ms is None else round(self.rtt_ms, 2),
+            "ttft_ms": None if self.ttft_ms is None else round(self.ttft_ms, 2),
+            "service_ms": (
+                None if self.service_ms is None else round(self.service_ms, 2)
+            ),
+            "model_failure_rate": round(self.model_failure_rate, 4),
             "failure_rate": round(self.failure_rate, 4),
+            "health_score": self.health.score,
             "circuit_open": self.circuit_open,
             "oversize": self.oversize,
+            "endpoint_support": self.endpoint_support,
+            "tier": self.tier,
+            "problems": list(self.problems),
             "scores": {m: round(s, 2) for m, s in self.scores.items()},
         }
 
@@ -145,13 +174,71 @@ def fallback_chains(
     return chains
 
 
-def _missing_endpoints(provider: Provider) -> frozenset[str]:
-    """Paths the last probe found missing on every probed URL."""
+def best_address(addresses: list[ProviderAddress]) -> ProviderAddress | None:
+    """The address the provider's clients use: live+preferred > live > preferred."""
+    if not addresses:
+        return None
+    for pick in (
+        lambda a: a.is_live and a.is_preferred,
+        lambda a: a.is_live,
+        lambda a: a.is_preferred,
+    ):
+        for a in addresses:
+            if pick(a):
+                return a
+    return addresses[0]
+
+
+def upstream_for(provider: Provider, protocol: str | None) -> str:
+    """Which upstream a request lands on (mirrors V1Client's preference)."""
+    if protocol == "ollama":
+        return "ollama"
+    if protocol == "llamacpp":
+        return "llamacpp"
+    return "llamacpp" if provider.supports_llamacpp else "ollama"
+
+
+def _base_url_matches(
+    base_url: str, provider: Provider, upstream: str, addr: ProviderAddress | None
+) -> bool:
+    if provider.is_worker:
+        return base_url.endswith(f"({upstream})")
+    if addr is None:
+        return False
+    url = addr.url if upstream == "ollama" else (addr.llamacpp_url or addr.url)
+    return base_url.rstrip("/") == url.rstrip("/")
+
+
+def endpoint_support(
+    provider: Provider,
+    path: str,
+    upstream: str,
+    addr: ProviderAddress | None,
+) -> str:
+    """What the last probe said about *path* on the upstream that serves it.
+
+    Uses the probe of that upstream's URL when it can be told apart (a
+    provider serving both APIs can have the endpoint on one and not the
+    other); otherwise all probed URLs.
+    """
     caps = provider.capabilities or {}
-    endpoints = caps.get("endpoints") or []
-    missing = {e.get("path") for e in endpoints if e.get("state") == MISSING}
-    supported = {e.get("path") for e in endpoints if e.get("state") in SUPPORTED}
-    return frozenset(p for p in missing - supported if p)
+    entries = [e for e in caps.get("endpoints") or [] if e.get("path") == path]
+    if not entries:
+        return SUPPORT_UNKNOWN
+    own = [
+        e
+        for e in entries
+        if _base_url_matches(str(e.get("base_url") or ""), provider, upstream, addr)
+    ]
+    for group in (own, entries):
+        if not group:
+            continue
+        if any(e.get("state") in SUPPORTED for e in group):
+            return SUPPORT_SUPPORTED
+        if any(e.get("state") == MISSING for e in group):
+            return SUPPORT_MISSING
+        return SUPPORT_UNKNOWN
+    return SUPPORT_UNKNOWN
 
 
 def _serves(provider: Provider, protocol: str | None) -> bool:
@@ -185,37 +272,90 @@ def _chaos_eligible(
     return out
 
 
+def _cold_ms(c: Candidate) -> tuple[float, float]:
+    """Startup cost for (latency, balanced) scoring."""
+    if c.is_hot:
+        hot = c.ttft_ms if c.ttft_ms is not None else 0.0
+        return hot, hot
+    if c.startup_ms is not None:
+        return c.startup_ms, c.startup_ms
+    if c.ttft_ms is not None:
+        return c.ttft_ms, c.ttft_ms
+    return UNKNOWN_STARTUP_MS, BALANCED_UNKNOWN_STARTUP_MS
+
+
 def score(c: Candidate) -> None:
     """Fill *c.scores* and *c.queue_weight* for every mode. Lower is better."""
-    if c.is_hot:
-        cold = c.ttft_ms if c.ttft_ms is not None else 0.0
-        cold_bal = cold
-    elif c.startup_ms is not None:
-        cold = cold_bal = c.startup_ms
-    elif c.ttft_ms is not None:
-        cold = cold_bal = c.ttft_ms
-    else:
-        cold = UNKNOWN_STARTUP_MS
-        cold_bal = BALANCED_UNKNOWN_STARTUP_MS
+    cold, cold_bal = _cold_ms(c)
     rtt = c.rtt_ms or 0.0
     oversize = OVERSIZE_PENALTY_MS if c.oversize else 0.0
-    tps = c.tokens_per_second
-    gen_ms = NOMINAL_TOKENS / (tps if tps else UNKNOWN_TPS) * 1000.0
     f = c.failure_rate
+    if c.endpoint_class == GENERATE:
+        tps = c.tokens_per_second
+        gen_ms = NOMINAL_TOKENS / (tps if tps else UNKNOWN_TPS) * 1000.0
+        c.scores = {
+            "latency": cold + rtt + oversize + f * FAILURE_PENALTY["latency"],
+            "throughput": -(tps or 0.0) + f * FAILURE_PENALTY["throughput"],
+            "balanced": cold_bal
+            + rtt
+            + gen_ms
+            + oversize
+            + f * FAILURE_PENALTY["balanced"],
+        }
+        c.queue_weight = {
+            "latency": QUEUE_WEIGHT["latency"],
+            "throughput": QUEUE_WEIGHT["throughput"],
+            "balanced": max(1000.0, gen_ms),
+        }
+        return
+    # Embeddings, images, audio: one response, no token stream. What matters
+    # is how long the call takes, measured end to end on real requests.
+    service = c.service_ms
     c.scores = {
-        "latency": cold + rtt + oversize + f * FAILURE_PENALTY["latency"],
-        "throughput": -(tps or 0.0) + f * FAILURE_PENALTY["throughput"],
+        "latency": cold
+        + rtt
+        + (service or 0.0)
+        + oversize
+        + f * FAILURE_PENALTY["latency"],
+        "throughput": (service if service is not None else UNKNOWN_SERVICE_MS)
+        + oversize
+        + f * FAILURE_PENALTY["balanced"],
         "balanced": cold_bal
         + rtt
-        + gen_ms
+        + (service if service is not None else BALANCED_UNKNOWN_SERVICE_MS)
         + oversize
         + f * FAILURE_PENALTY["balanced"],
     }
+    per_request = max(1000.0, service or 1000.0)
     c.queue_weight = {
         "latency": QUEUE_WEIGHT["latency"],
-        "throughput": QUEUE_WEIGHT["throughput"],
-        "balanced": max(1000.0, gen_ms),
+        "throughput": per_request,
+        "balanced": per_request,
     }
+
+
+def _classify(c: Candidate) -> None:
+    problems: list[str] = []
+    tier = TIER_OK
+    if c.circuit_open:
+        tier = TIER_FAILING
+        if c.health.circuit_open:
+            problems.append(
+                f"provider failing {round(c.health.request_failure_rate * 100)}% "
+                "of recent requests (circuit open)"
+            )
+        else:
+            problems.append(
+                f"model failing {round(c.model_failure_rate * 100)}% of recent "
+                f"{c.endpoint_class} requests here (circuit open)"
+            )
+    if c.endpoint_support == SUPPORT_MISSING:
+        tier = TIER_MISSING
+        problems.append(
+            f"last probe found {c.endpoint} missing on its {c.upstream} API"
+        )
+    c.tier = tier
+    c.problems = tuple(problems)
 
 
 @dataclass(slots=True)
@@ -224,12 +364,12 @@ class RoutingTable:
     built_at: float = 0.0
     build_ms: float = 0.0
     reasons: tuple[str, ...] = ()
-    # (model, protocol) -> every online candidate, in database order.
-    all_candidates: dict[tuple[str, str | None], tuple[Candidate, ...]] = field(
+    # (model, endpoint) -> every online candidate, in database order.
+    all_candidates: dict[tuple[str, str], tuple[Candidate, ...]] = field(
         default_factory=dict
     )
-    # (model, protocol, mode) -> usable candidates, best static score first.
-    ranked: dict[tuple[str, str | None, str], tuple[Candidate, ...]] = field(
+    # (model, endpoint, mode) -> the best tier's candidates, best score first.
+    ranked: dict[tuple[str, str, str], tuple[Candidate, ...]] = field(
         default_factory=dict
     )
     chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -237,6 +377,7 @@ class RoutingTable:
         default_factory=dict
     )
     backend_names: dict[tuple[int, str], str] = field(default_factory=dict)
+    health: dict[int, ProviderHealth] = field(default_factory=dict)
 
     def chain(self, model: str) -> tuple[str, ...]:
         return self.chains.get(model) or (model,)
@@ -244,18 +385,24 @@ class RoutingTable:
     def backend_name(self, provider_id: int, model: str) -> str:
         return self.backend_names.get((provider_id, model), model)
 
+    def first_choices(self, endpoint: str) -> dict[str, dict[str, str]]:
+        """model -> mode -> first-choice provider name, for one endpoint."""
+        rows: dict[str, dict[str, str]] = {}
+        for (model, ep, mode), ranked in self.ranked.items():
+            if ep == endpoint and ranked:
+                rows.setdefault(model, {})[mode] = ranked[0].provider.name
+        return rows
+
     def to_dict(self) -> dict[str, Any]:
         models: dict[str, Any] = {}
-        for (model, protocol), cands in sorted(
-            self.all_candidates.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
-        ):
+        for (model, endpoint), cands in sorted(self.all_candidates.items()):
             entry = models.setdefault(model, {})
-            entry[protocol or "any"] = {
+            entry[endpoint] = {
                 "candidates": [c.to_dict() for c in cands],
                 "ranked": {
                     mode: [
                         c.provider.name
-                        for c in self.ranked.get((model, protocol, mode), ())
+                        for c in self.ranked.get((model, endpoint, mode), ())
                     ]
                     for mode in MODES
                 },
@@ -266,6 +413,7 @@ class RoutingTable:
             "build_ms": round(self.build_ms, 3),
             "reasons": list(self.reasons),
             "fallback_chains": {k: list(v) for k, v in self.chains.items()},
+            "provider_health": {str(k): v.to_dict() for k, v in self.health.items()},
             "models": models,
         }
 
@@ -287,7 +435,7 @@ def build_table(
     ]
 
     table = RoutingTable(version=version, reasons=reasons)
-    grouped: dict[tuple[str, str | None], list[Candidate]] = {}
+    grouped: dict[tuple[str, str], list[Candidate]] = {}
     backend_names: dict[tuple[int, str], str] = {}
 
     for p in online:
@@ -295,65 +443,82 @@ def build_table(
         assert pid is not None
         models = inputs.models.get(pid, [])
         hot = hot_models(pid)
-        live_ids = [
-            a.id
-            for a in inputs.addresses.get(pid, [])
-            if a.is_live and a.id is not None
-        ]
+        addresses = inputs.addresses.get(pid, [])
+        live_ids = [a.id for a in addresses if a.is_live and a.id is not None]
         # Only live addresses count: an address that stopped answering keeps
         # its old samples, which must not make the provider look fast.
         rtt = stats.rtt_ms(pid, live_ids) if stats and live_ids else None
-        missing = _missing_endpoints(p)
+        health = stats.provider_health(pid, now) if stats else HEALTHY
+        table.health[pid] = health
+        addr = best_address(addresses)
         gpu_bytes = p.gpu_ram_bytes
+        # Endpoint support depends only on the provider, not the model.
+        support: dict[str, tuple[str, str]] = {}
+        for path, (protocol, _cls) in ENDPOINTS.items():
+            if _serves(p, protocol):
+                up = upstream_for(p, protocol)
+                support[path] = (up, endpoint_support(p, path, up, addr))
+
         for m in models:
             backend = m.backend_name
             backend_names[(pid, m.name)] = backend
             if m.raw_name:
                 backend_names[(pid, m.raw_name)] = backend
-            ms = stats.model(pid, m.name) if stats else None
-            failure = ms.failures.current(now) if ms else 0.0
-            circuit = bool(
-                ms
-                and ms.failures.samples >= CIRCUIT_MIN_SAMPLES
-                and failure >= CIRCUIT_OPEN_RATE
-            )
             is_hot = m.name in hot or bool(stats and stats.is_warm(pid, m.name, now))
-            observed_tps = ms.tokens_per_second.value if ms else None
-            ttft = ms.ttft_ms.value if ms else None
             oversize = bool(gpu_bytes and m.size and m.size > gpu_bytes)
             keys = {m.name}
             if m.raw_name:
                 keys.add(m.raw_name)
-            for protocol in PROTOCOLS:
-                if not _serves(p, protocol):
-                    continue
-                bench = inputs.benchmarks.get((pid, m.name, protocol))
+            for path, (up, sup) in support.items():
+                protocol, cls = ENDPOINTS[path]
+                ms = stats.model(pid, m.name, cls) if stats else None
+                model_rate = ms.failures.current(now) if ms else 0.0
+                model_circuit = bool(
+                    ms
+                    and ms.failures.samples >= CIRCUIT_MIN_SAMPLES
+                    and model_rate >= CIRCUIT_OPEN_RATE
+                )
+                bench = inputs.benchmarks.get((pid, m.name, up))
+                if bench is None and protocol is None:
+                    bench = inputs.benchmarks.get((pid, m.name, None))
+                observed_tps = ms.tokens_per_second.value if ms else None
                 c = Candidate(
                     provider=p,
                     model=m.name,
                     backend_model=backend,
+                    endpoint=path,
+                    endpoint_class=cls,
+                    upstream=up,
                     is_hot=is_hot,
                     startup_ms=bench.startup_time_ms if bench else None,
-                    tokens_per_second=observed_tps
-                    or (bench.tokens_per_second if bench else None),
+                    tokens_per_second=(
+                        observed_tps or (bench.tokens_per_second if bench else None)
+                        if cls == GENERATE
+                        else None
+                    ),
                     rtt_ms=rtt,
-                    ttft_ms=ttft,
-                    failure_rate=failure,
-                    circuit_open=circuit,
+                    ttft_ms=ms.ttft_ms.value if ms else None,
+                    service_ms=ms.duration_ms.value if ms else None,
+                    model_failure_rate=model_rate,
+                    health=health,
+                    failure_rate=1.0 - (1.0 - model_rate) * (1.0 - health.failure_rate),
+                    circuit_open=model_circuit or health.circuit_open,
                     oversize=oversize,
-                    missing_endpoints=missing,
+                    endpoint_support=sup,
                 )
                 score(c)
+                _classify(c)
                 for key in keys:
-                    bucket = grouped.setdefault((key, protocol), [])
+                    bucket = grouped.setdefault((key, path), [])
                     if all(x.provider.id != pid for x in bucket):
                         bucket.append(c)
 
-    for key, cands in grouped.items():
-        table.all_candidates[key] = tuple(cands)
-        usable = [c for c in cands if not c.circuit_open] or cands
+    for (model, path), cands in grouped.items():
+        table.all_candidates[(model, path)] = tuple(cands)
+        best_tier = min(c.tier for c in cands)
+        usable = [c for c in cands if c.tier == best_tier]
         for mode in MODES:
-            table.ranked[(key[0], key[1], mode)] = tuple(
+            table.ranked[(model, path, mode)] = tuple(
                 sorted(usable, key=lambda c, m=mode: c.scores[m])
             )
 

@@ -27,7 +27,7 @@ async def test_route_picks_least_busy(db: Database):
     pm._active_requests[p2.id] = 0
 
     rt = Router(db, pm)
-    result = await rt.route("llama3:8b")
+    result = await rt.route("llama3:8b", "/v1/chat/completions")
     assert result is not None
     assert result.provider.id == p2.id
     assert result.resolved_model == "llama3:8b"
@@ -66,7 +66,7 @@ async def test_route_prefers_faster_when_equal_load(db: Database):
 
     pm = ProviderManager(db)
     rt = Router(db, pm)
-    result = await rt.route("llama3:8b")
+    result = await rt.route("llama3:8b", "/v1/chat/completions")
     assert result is not None
     assert result.provider.id == p1.id
 
@@ -75,7 +75,7 @@ async def test_route_prefers_faster_when_equal_load(db: Database):
 async def test_route_returns_none_for_unknown_model(db: Database):
     pm = ProviderManager(db)
     rt = Router(db, pm)
-    result = await rt.route("nonexistent-model")
+    result = await rt.route("nonexistent-model", "/v1/chat/completions")
     assert result is None
 
 
@@ -95,7 +95,7 @@ async def test_route_skips_offline_providers(db: Database):
 
     pm = ProviderManager(db)
     rt = Router(db, pm)
-    result = await rt.route("llama3:8b")
+    result = await rt.route("llama3:8b", "/v1/chat/completions")
     assert result is not None
     assert result.provider.id == p2.id
 
@@ -113,7 +113,7 @@ async def test_route_follows_fallback_chain(db: Database):
 
     pm = ProviderManager(db)
     rt = Router(db, pm)
-    result = await rt.route("llama3:70b")
+    result = await rt.route("llama3:70b", "/v1/chat/completions")
     assert result is not None
     assert result.provider.id == p1.id
     assert result.resolved_model == "llama3:8b"
@@ -133,7 +133,7 @@ async def test_route_cascading_fallback(db: Database):
 
     pm = ProviderManager(db)
     rt = Router(db, pm)
-    result = await rt.route("llama3:405b")
+    result = await rt.route("llama3:405b", "/v1/chat/completions")
     assert result is not None
     assert result.provider.id == p1.id
     assert result.resolved_model == "llama3:8b"
@@ -146,7 +146,7 @@ async def test_route_fallback_returns_none_if_chain_exhausted(db: Database):
 
     pm = ProviderManager(db)
     rt = Router(db, pm)
-    result = await rt.route("modelA")
+    result = await rt.route("modelA", "/v1/chat/completions")
     assert result is None
 
 
@@ -191,6 +191,6 @@ async def test_route_honors_pinned_provider(db: Database):
         allow_fallback=True,
         pinned_providers={"llama3:8b": p1.id},
     )
-    result = await rt.route("llama3:8b", preferences=prefs)
+    result = await rt.route("llama3:8b", "/v1/chat/completions", preferences=prefs)
     assert result is not None
     assert result.provider.id == p1.id

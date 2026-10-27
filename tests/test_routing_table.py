@@ -73,9 +73,9 @@ async def test_modes_pick_different_providers(db: Database, pm: ProviderManager)
     await _bench(db, fast.id, "m", startup=900, tps=200)
     rt = Router(db, pm)
 
-    lat = await rt.route("m", preferences=_prefs("latency"))
-    thr = await rt.route("m", preferences=_prefs("throughput"))
-    bal = await rt.route("m", preferences=_prefs("balanced"))
+    lat = await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    thr = await rt.route("m", "/v1/chat/completions", preferences=_prefs("throughput"))
+    bal = await rt.route("m", "/v1/chat/completions", preferences=_prefs("balanced"))
     assert lat.provider.id == quick.id
     assert thr.provider.id == fast.id
     # 900 + 256/200 s beats 100 + 256/10 s for a typical response.
@@ -106,7 +106,7 @@ async def test_route_does_no_database_work_once_built(
         monkeypatch.setattr(db, name, spy(name))
 
     for _ in range(50):
-        r = await rt.route("big", protocol="ollama", preferences=_prefs("latency"))
+        r = await rt.route("big", "/api/chat", preferences=_prefs("latency"))
         assert r.provider.id == p.id and r.resolved_model == "m"
     assert calls == 0
 
@@ -119,8 +119,8 @@ async def test_backend_name_comes_from_table(db: Database, pm: ProviderManager):
         [ProviderModel(provider_id=p.id, name="clean", raw_name="reg.io/clean:1")],
     )
     rt = Router(db, pm)
-    by_clean = await rt.route("clean")
-    by_raw = await rt.route("reg.io/clean:1")
+    by_clean = await rt.route("clean", "/v1/chat/completions")
+    by_raw = await rt.route("reg.io/clean:1", "/v1/chat/completions")
     assert by_clean.backend_model == "reg.io/clean:1"
     assert by_raw.backend_model == "reg.io/clean:1"
 
@@ -129,12 +129,12 @@ async def test_database_change_rebuilds_before_next_route(
     db: Database, pm: ProviderManager
 ):
     rt = Router(db, pm)
-    assert await rt.route("new-model") is None
+    assert await rt.route("new-model", "/v1/chat/completions") is None
     p = await _provider(db, "srv", ["new-model"])
-    r = await rt.route("new-model")
+    r = await rt.route("new-model", "/v1/chat/completions")
     assert r is not None and r.provider.id == p.id
     await db.update_provider_status(p.id, ProviderStatus.OFFLINE)
-    assert await rt.route("new-model") is None
+    assert await rt.route("new-model", "/v1/chat/completions") is None
 
 
 async def test_unchanged_status_does_not_dirty_table(db: Database, pm: ProviderManager):
@@ -142,7 +142,7 @@ async def test_unchanged_status_does_not_dirty_table(db: Database, pm: ProviderM
     rt = Router(db, pm)
     table = await rt.rebuild()
     await db.update_provider_status(p.id, ProviderStatus.IDLE)
-    await rt.route("m")
+    await rt.route("m", "/v1/chat/completions")
     assert rt.table is table
 
 
@@ -159,10 +159,10 @@ async def test_background_rebuild_coalesces_bursts(db: Database, pm: ProviderMan
         for _ in range(100):
             await asyncio.sleep(0.02)
             if rt.table.version > start_version and not rt._wake.is_set():
-                r = rt.route_with(rt.table, "a3")
+                r = rt.route_with(rt.table, "a3", "/v1/chat/completions")
                 if r is not None:
                     break
-        r = rt.route_with(rt.table, "a3")
+        r = rt.route_with(rt.table, "a3", "/v1/chat/completions")
         assert r is not None and r.provider.id == p.id
         assert rt.table.version - start_version <= 3
     finally:
@@ -175,9 +175,13 @@ async def test_hot_model_beats_faster_cold_start(db: Database, pm: ProviderManag
     await _bench(db, cold.id, "m", startup=50, tps=50)
     await _bench(db, hot.id, "m", startup=5000, tps=50)
     rt = Router(db, pm)
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == cold.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == cold.id
     pm._set_hot_models(hot.id, [{"name": "m"}])
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == hot.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == hot.id
 
 
 async def test_round_trip_breaks_ties(db: Database, pm: ProviderManager):
@@ -192,7 +196,9 @@ async def test_round_trip_breaks_ties(db: Database, pm: ProviderManager):
     pm.stats.record_rtt(far.id, far_addr.id, 80.0)
     pm.stats.record_rtt(near.id, near_addr.id, 2.0)
     rt = Router(db, pm)
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == near.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == near.id
 
 
 async def test_queue_depth_still_counts(db: Database, pm: ProviderManager):
@@ -201,9 +207,13 @@ async def test_queue_depth_still_counts(db: Database, pm: ProviderManager):
     await _bench(db, a.id, "m", startup=100, tps=50)
     await _bench(db, b.id, "m", startup=300, tps=50)
     rt = Router(db, pm)
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == a.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == a.id
     pm._active_requests[a.id] = 2
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == b.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == b.id
 
 
 async def test_failing_provider_is_skipped_then_retried(
@@ -214,17 +224,25 @@ async def test_failing_provider_is_skipped_then_retried(
     await _bench(db, bad.id, "m", startup=10, tps=500)
     await _bench(db, good.id, "m", startup=900, tps=20)
     rt = Router(db, pm)
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == bad.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == bad.id
     for _ in range(5):
         pm.stats.record_request(bad.id, "m", ok=False)
     for mode in ("latency", "throughput", "balanced"):
-        assert (await rt.route("m", preferences=_prefs(mode))).provider.id == good.id
+        assert (
+            await rt.route("m", "/v1/chat/completions", preferences=_prefs(mode))
+        ).provider.id == good.id
     # Pins still win over an open circuit.
     pinned = _prefs("latency", pinned_providers={"m": bad.id})
-    assert (await rt.route("m", preferences=pinned)).provider.id == bad.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=pinned)
+    ).provider.id == bad.id
     clock.t += 3600
     await rt.rebuild()
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == bad.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == bad.id
 
 
 async def test_only_failing_providers_still_route(db: Database, pm: ProviderManager):
@@ -232,7 +250,7 @@ async def test_only_failing_providers_still_route(db: Database, pm: ProviderMana
     for _ in range(5):
         pm.stats.record_request(bad.id, "m", ok=False)
     rt = Router(db, pm)
-    assert (await rt.route("m")).provider.id == bad.id
+    assert (await rt.route("m", "/v1/chat/completions")).provider.id == bad.id
 
 
 async def test_observed_speed_overrides_benchmark(db: Database, pm: ProviderManager):
@@ -241,9 +259,13 @@ async def test_observed_speed_overrides_benchmark(db: Database, pm: ProviderMana
     await _bench(db, a.id, "m", startup=100, tps=100)
     await _bench(db, b.id, "m", startup=100, tps=50)
     rt = Router(db, pm)
-    assert (await rt.route("m", preferences=_prefs("throughput"))).provider.id == a.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("throughput"))
+    ).provider.id == a.id
     pm.stats.record_request(a.id, "m", ok=True, tokens_per_second=10.0)
-    assert (await rt.route("m", preferences=_prefs("throughput"))).provider.id == b.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("throughput"))
+    ).provider.id == b.id
 
 
 async def test_recent_success_counts_as_warm(
@@ -255,10 +277,14 @@ async def test_recent_success_counts_as_warm(
     await _bench(db, warm.id, "m", startup=4000, tps=50)
     pm.stats.record_request(warm.id, "m", ok=True)
     rt = Router(db, pm)
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == warm.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == warm.id
     clock.t += WARM_WINDOW_S + 1
     await rt.rebuild()
-    assert (await rt.route("m", preferences=_prefs("latency"))).provider.id == cold.id
+    assert (
+        await rt.route("m", "/v1/chat/completions", preferences=_prefs("latency"))
+    ).provider.id == cold.id
 
 
 async def test_endpoint_missing_on_probe_is_avoided(db: Database, pm: ProviderManager):
@@ -276,8 +302,8 @@ async def test_endpoint_missing_on_probe_is_avoided(db: Database, pm: ProviderMa
         },
     )
     rt = Router(db, pm)
-    speech = await rt.route("m", endpoint="/v1/audio/speech")
-    chat = await rt.route("m", endpoint="/chat/completions")
+    speech = await rt.route("m", "/v1/audio/speech")
+    chat = await rt.route("m", "/chat/completions")
     assert speech.provider.id == full.id
     assert chat.provider.id == chat_only.id
 
@@ -293,7 +319,7 @@ def test_fallback_chains_stop_at_cycles_and_depth():
 async def test_chaos_uses_table(db: Database, pm: ProviderManager):
     p = await _provider(db, "srv", ["m1", "m2"])
     rt = Router(db, pm)
-    r = await rt.route("anything", preferences=_prefs("chaos"))
+    r = await rt.route("anything", "/v1/chat/completions", preferences=_prefs("chaos"))
     assert r.provider.id == p.id and r.resolved_model in {"m1", "m2"}
 
 
@@ -310,7 +336,7 @@ async def test_dashboard_routing_table_endpoint(db: Database, pm: ProviderManage
     dash_deps.init(db, pm)
     with TestClient(dash_app) as client:
         data = client.get("/api/routing-table").json()
-    assert data["models"]["m"]["any"]["ranked"]["balanced"] == ["srv"]
+    assert data["models"]["m"]["/v1/chat/completions"]["ranked"]["balanced"] == ["srv"]
 
 
 # --- request sampling ---
@@ -460,10 +486,12 @@ async def test_dead_address_round_trips_are_ignored(db: Database, pm: ProviderMa
     pm.stats.record_rtt(p.id, addr.id, 1.0)
     rt = Router(db, pm)
     table = await rt.rebuild()
-    assert table.all_candidates[("m", None)][0].rtt_ms is None
+    assert table.all_candidates[("m", "/v1/chat/completions")][0].rtt_ms is None
     await db.set_address_live(addr.id, True)
     table = await rt.rebuild()
-    assert table.all_candidates[("m", None)][0].rtt_ms == pytest.approx(1.0)
+    assert table.all_candidates[("m", "/v1/chat/completions")][
+        0
+    ].rtt_ms == pytest.approx(1.0)
 
 
 async def test_raw_name_requests_use_discovered_name_for_stats(
@@ -476,7 +504,7 @@ async def test_raw_name_requests_use_discovered_name_for_stats(
         [ProviderModel(provider_id=p.id, name="clean", raw_name="reg.io/clean:1")],
     )
     rt = Router(db, pm)
-    r = await rt.route("reg.io/clean:1")
+    r = await rt.route("reg.io/clean:1", "/v1/chat/completions")
     assert r.resolved_model == "reg.io/clean:1"
     assert r.model_key == "clean"
 
