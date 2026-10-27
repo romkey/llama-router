@@ -82,6 +82,7 @@ How accounts behave:
 - **Roles follow the provider.** The admin flag is recomputed from the groups claim at every sign-in. A removed admin loses access at their next sign-in. Sessions last up to 14 days.
 - **Groups.** If the ID token has no groups claim, the userinfo endpoint is asked.
 - **No passwords.** SSO accounts cannot use password sign-in and cannot be given a password.
+- **Removing access.** Deleting an SSO account on the **Users** page signs it out, but the account is recreated at the person's next sign-in. To keep someone out, remove them at the provider or set `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`.
 - **Bootstrap.** With no accounts at all, the dashboard is open as before. The first SSO sign-in creates the first account. If an admin group is set, that first person must be in it. Otherwise the first account is an administrator.
 - **Break-glass.** Keep one local administrator, or use the lockout steps above, in case the provider is unreachable.
 
