@@ -511,3 +511,29 @@ async def test_benchmark_check_learns_logprobs_support(
     assert pm.stats.model(good.id, MODEL, DECIDE) is not None
     # The check is not traffic: it never touches the request counters.
     assert pm.idle_seconds(good.id, 10**9) > 0
+
+
+async def test_calibration_written_during_a_cache_load_is_not_lost(db: Database):
+    from llama_router import decision_service as svc
+
+    store = svc.CalibrationStore(db)
+    q = d.NoulQuestion.model_validate(QUESTIONS["is_urgent"])
+    req = d.DecisionRequest.model_validate(
+        {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
+    )
+    real_list = db.list_decision_calibrations
+
+    async def list_then_write():
+        rows = await real_list()  # the snapshot, taken before the write
+        await db.set_decision_calibration(
+            MODEL, d.question_key(q), "noul", q.model_dump(), 1.0, {"true": -1.0}
+        )
+        return rows
+
+    db.list_decision_calibrations = list_then_write
+    try:
+        assert await store.for_request(MODEL, req) == {}  # read before the write
+    finally:
+        db.list_decision_calibrations = real_list
+    # The stale snapshot was not cached: the next request sees the write.
+    assert set(await store.for_request(MODEL, req)) == {"is_urgent"}

@@ -38,11 +38,15 @@ class CalibrationStore:
     def __init__(self, db: Database) -> None:
         self._db = db
         self._cache: dict[tuple[str, str], d.Calibration] | None = None
+        # Bumped on every change, so a read that a change overtook is not
+        # kept as the cache.
+        self._generation = 0
         self._lock = asyncio.Lock()
         db.add_change_listener(self._on_change)
 
     def _on_change(self, reason: str) -> None:
         if reason == CHANGE_DECISIONS:
+            self._generation += 1
             self._cache = None
 
     async def _load(self) -> dict[tuple[str, str], d.Calibration]:
@@ -50,17 +54,23 @@ class CalibrationStore:
         if cache is not None:
             return cache
         async with self._lock:
-            if self._cache is None:
-                built: dict[tuple[str, str], d.Calibration] = {}
-                for r in await self._db.list_decision_calibrations():
-                    try:
-                        cal = d.Calibration.from_dict(r)
-                    except ValueError:
-                        logger.warning("Skipping invalid calibration %s", r["id"])
-                        continue
-                    built[(r["model_name"], r["question_key"])] = cal
+            cache = self._cache
+            if cache is not None:
+                return cache
+            generation = self._generation
+            built: dict[tuple[str, str], d.Calibration] = {}
+            for r in await self._db.list_decision_calibrations():
+                try:
+                    cal = d.Calibration.from_dict(r)
+                except ValueError:
+                    logger.warning("Skipping invalid calibration %s", r["id"])
+                    continue
+                built[(r["model_name"], r["question_key"])] = cal
+            # A change while reading may not be in *built*: answer this
+            # request with it, but let the next one read again.
+            if generation == self._generation:
                 self._cache = built
-            return self._cache
+            return built
 
     async def for_request(
         self, model: str, request: d.DecisionRequest
