@@ -96,9 +96,13 @@ async def _allow_unauthenticated(db: Database, cache: _AuthCache) -> bool:
     return cache.allow_unauthenticated
 
 
-async def _resolve_key(db: Database, key: str) -> tuple[RoutingPreferences, int] | None:
-    """Look the key up in the database. Slow path: hashing and queries."""
-    legacy = key_hash_legacy(key)
+async def _resolve_key(
+    db: Database, key: str, legacy: str
+) -> tuple[RoutingPreferences, int] | None:
+    """Look the key up in the database. Slow path: hashing and queries.
+
+    *legacy* is ``key_hash_legacy(key)``, already computed by the caller.
+    """
     record = await db.lookup_api_key(legacy)
     if not record:
         # PBKDF2 takes tens of milliseconds; keep it off the event loop.
@@ -131,7 +135,9 @@ async def routing_preferences_from_request(
             return None
         raise HTTPException(status_code=401, detail="Missing API-KEY header")
 
-    fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    # The legacy digest is needed for the lookup anyway; it doubles as the
+    # in-memory cache key so the plain key is never kept.
+    fingerprint = key_hash_legacy(key)
     now = time.monotonic()
     hit = cache.prefs.get(fingerprint)
     if hit is not None and now - hit[0] < _PREFS_TTL_S:
@@ -141,7 +147,7 @@ async def routing_preferences_from_request(
             spawn(db.touch_api_key(key_id), name="touch-api-key")
         return prefs
 
-    resolved = await _resolve_key(db, key)
+    resolved = await _resolve_key(db, key, fingerprint)
     if resolved is None:
         if await _allow_unauthenticated(db, cache):
             return None
