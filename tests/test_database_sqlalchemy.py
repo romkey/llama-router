@@ -13,6 +13,25 @@ import pytest
 from sqlalchemy.engine.url import URL
 
 from llama_router.database import Database, _bind_params
+
+
+def _script_heads() -> list[str]:
+    from pathlib import Path
+
+    from alembic.script import ScriptDirectory
+
+    import llama_router
+
+    pkg = Path(llama_router.__file__).resolve().parent
+    return list(ScriptDirectory(str(pkg / "alembic")).get_heads())
+
+
+def test_migrations_have_a_single_head() -> None:
+    """Two branches each adding a migration off the same parent must be chained."""
+    heads = _script_heads()
+    assert len(heads) == 1, f"Alembic has several heads: {heads}"
+
+
 from llama_router.models import ProviderModel, ProviderStatus, RequestLog
 
 
@@ -34,7 +53,7 @@ async def test_alembic_head_recorded_and_core_tables_exist(
     try:
         ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
         assert ver is not None
-        assert ver[0] == "007_benchmark_source"
+        assert ver[0] == _script_heads()[0]
         tables = {
             r[0]
             for r in con.execute(

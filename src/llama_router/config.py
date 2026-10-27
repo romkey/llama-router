@@ -64,6 +64,29 @@ class Settings(BaseSettings):
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
+    # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_scopes: str = "openid profile email groups"
+    # Claim holding the user's groups; dotted paths reach nested claims
+    # (Keycloak: realm_access.roles).
+    oidc_groups_claim: str = "groups"
+    # Members of this group are dashboard administrators.
+    oidc_admin_group: str = ""
+    # If set, only members of this group may sign in at all.
+    oidc_allowed_group: str = ""
+    # External base URL of the dashboard, e.g. https://llm.example.org. The
+    # callback is {base}/login/oidc/callback. Empty uses the request's host.
+    oidc_redirect_base_url: str = ""
+    # Button label: "Sign in with {name}".
+    oidc_display_name: str = "single sign-on"
+    # Hide the password form and refuse password sign-in.
+    oidc_only: bool = False
+    # Also end the session at the identity provider on logout.
+    oidc_logout_at_idp: bool = False
+    # Permit an http:// issuer (local development only).
+    oidc_allow_insecure: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 

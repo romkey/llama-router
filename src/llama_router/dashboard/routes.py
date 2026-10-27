@@ -47,6 +47,7 @@ from .auth_core import (
     sign_session,
     verify_password,
 )
+from . import oidc
 from .middleware import invalidate_dashboard_user_count_cache
 
 logger = logging.getLogger(__name__)
@@ -423,10 +424,31 @@ async def health():
     )
 
 
+def _set_session_cookie(resp: RedirectResponse, user_id: int, secret: str) -> None:
+    resp.set_cookie(
+        AUTH_COOKIE,
+        sign_session(user_id, secret),
+        httponly=True,
+        samesite="lax",
+        max_age=SESSION_MAX_AGE,
+        secure=settings.dashboard_cookie_secure,
+    )
+
+
+def _external_origin(request: Request) -> tuple[str, str]:
+    """Scheme and host the browser used, honoring a reverse proxy's headers."""
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    scheme = proto if proto in ("http", "https") else request.url.scheme
+    return scheme, host or request.headers.get("host") or request.url.netloc
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     db = deps.get_db()
-    if await db.count_dashboard_users() == 0:
+    cfg = oidc.current_config()
+    users_exist = await db.count_dashboard_users() > 0
+    if not users_exist and not cfg.usable:
         return RedirectResponse(url="/", status_code=302)
     err = request.query_params.get("error")
     next_url = _safe_next_url(request.query_params.get("next"))
@@ -438,6 +460,10 @@ async def login_page(request: Request):
             "next_url": next_url,
             "dash_user": None,
             "show_users_tab": False,
+            "oidc_enabled": cfg.usable,
+            "oidc_display_name": cfg.display_name,
+            # With no accounts yet only SSO can sign anyone in.
+            "password_login": cfg.password_login_enabled and users_exist,
         },
     )
 
@@ -449,6 +475,8 @@ async def login_submit(
     password: str = Form(...),
     next: str = Form("/"),
 ):
+    if not oidc.current_config().password_login_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
     db = deps.get_db()
     if await db.count_dashboard_users() == 0:
         return RedirectResponse(url="/", status_code=302)
@@ -457,26 +485,92 @@ async def login_submit(
     except ValueError:
         return RedirectResponse(url="/login?error=invalid", status_code=303)
     row = await db.get_dashboard_user_by_username(un)
-    if not row or not verify_password(password, row["password_hash"]):
+    if (
+        not row
+        or row.get("auth_source", "local") != "local"
+        or not verify_password(password, row["password_hash"])
+    ):
         return RedirectResponse(url="/login?error=invalid", status_code=303)
+    await db.touch_dashboard_user_login(row["id"])
     secret = await deps.get_dashboard_session_secret()
-    token = sign_session(row["id"], secret)
-    dest = _safe_next_url(next)
-    resp = RedirectResponse(url=dest, status_code=303)
+    resp = RedirectResponse(url=_safe_next_url(next), status_code=303)
+    _set_session_cookie(resp, row["id"], secret)
+    return resp
+
+
+@router.get("/login/oidc")
+async def login_oidc_start(request: Request):
+    cfg = oidc.current_config()
+    if not cfg.usable:
+        raise HTTPException(status_code=404, detail="Not Found")
+    try:
+        meta = await oidc.provider_metadata(cfg)
+    except oidc.OIDCError as exc:
+        logger.warning("OIDC sign-in unavailable: %s", exc)
+        return RedirectResponse(url="/login?error=oidc_provider", status_code=303)
+    scheme, host = _external_origin(request)
+    url, state = oidc.begin_login(
+        cfg,
+        meta,
+        callback_url=oidc.redirect_uri(cfg, scheme, host),
+        next_url=_safe_next_url(request.query_params.get("next")),
+        secret=await deps.get_dashboard_session_secret(),
+    )
+    resp = RedirectResponse(url=url, status_code=302)
     resp.set_cookie(
-        AUTH_COOKIE,
-        token,
+        oidc.STATE_COOKIE,
+        state,
         httponly=True,
         samesite="lax",
-        max_age=SESSION_MAX_AGE,
+        max_age=oidc.STATE_MAX_AGE,
+        path="/login/oidc",
         secure=settings.dashboard_cookie_secure,
     )
     return resp
 
 
+@router.get(oidc.CALLBACK_PATH)
+async def login_oidc_callback(request: Request):
+    cfg = oidc.current_config()
+    if not cfg.usable:
+        raise HTTPException(status_code=404, detail="Not Found")
+    db = deps.get_db()
+    secret = await deps.get_dashboard_session_secret()
+    try:
+        claims, next_url = await oidc.complete_login(
+            cfg,
+            request.query_params,
+            request.cookies.get(oidc.STATE_COOKIE),
+            secret,
+        )
+        user = await oidc.sign_in(db, cfg, claims)
+    except oidc.OIDCError as exc:
+        level = logging.WARNING if exc.code in ("provider", "token") else logging.INFO
+        logger.log(level, "OIDC sign-in failed: %s", exc)
+        resp = RedirectResponse(url=f"/login?error=oidc_{exc.code}", status_code=303)
+        resp.delete_cookie(oidc.STATE_COOKIE, path="/login/oidc")
+        return resp
+    invalidate_dashboard_user_count_cache()
+    resp = RedirectResponse(url=_safe_next_url(next_url), status_code=303)
+    resp.delete_cookie(oidc.STATE_COOKIE, path="/login/oidc")
+    _set_session_cookie(resp, user["id"], secret)
+    return resp
+
+
 @router.post("/logout")
-async def logout_post():
-    resp = RedirectResponse(url="/login", status_code=303)
+async def logout_post(request: Request):
+    dest = "/login"
+    user = getattr(request.state, "dashboard_user", None)
+    cfg = oidc.current_config()
+    if user is not None and user.is_sso and cfg.usable and cfg.logout_at_idp:
+        try:
+            meta = await oidc.provider_metadata(cfg)
+            scheme, host = _external_origin(request)
+            base = cfg.redirect_base_url or f"{scheme}://{host}"
+            dest = oidc.logout_url(cfg, meta, base + "/login") or dest
+        except oidc.OIDCError as exc:
+            logger.warning("OIDC logout at the provider skipped: %s", exc)
+    resp = RedirectResponse(url=dest, status_code=303)
     resp.delete_cookie(AUTH_COOKIE)
     return resp
 
@@ -568,6 +662,8 @@ async def users_set_password(
     target = await db.get_dashboard_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if target.get("auth_source", "local") != "local":
+        return RedirectResponse(url="/users?error=sso-password", status_code=303)
     if len(new_password) < 8:
         return RedirectResponse(url="/users?error=password", status_code=303)
     await db.update_dashboard_user_password(user_id, hash_password(new_password))
