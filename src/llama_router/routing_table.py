@@ -35,7 +35,9 @@ from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
 
 MODES = ("latency", "throughput", "balanced")
 DEFAULT_MODE = "balanced"
-PROTOCOLS: tuple[str | None, ...] = (None, "ollama", "llamacpp")
+# Request protocols: None takes any provider, otherwise only providers that
+# speak that protocol.
+PROTOCOLS: tuple[str | None, ...] = (None, "ollama", "openai")
 
 # Startup cost assumed for a cold model nobody has benchmarked. Latency mode
 # keeps the old router's large value so a measured provider always wins;
@@ -76,7 +78,7 @@ class Candidate:
     backend_model: str
     endpoint: str
     endpoint_class: str = GENERATE
-    # Which of the provider's upstreams the request would reach.
+    # The protocol the provider is reached by ("ollama" or "openai").
     upstream: str = "ollama"
     is_hot: bool = False
     startup_ms: float | None = None
@@ -217,87 +219,35 @@ def best_address(addresses: list[ProviderAddress]) -> ProviderAddress | None:
     return addresses[0]
 
 
-def upstream_for(provider: Provider, protocol: str | None) -> str:
-    """Which upstream a request lands on (mirrors V1Client's preference)."""
-    if protocol == "ollama":
-        return "ollama"
-    if protocol == "llamacpp":
-        return "llamacpp"
-    return "llamacpp" if provider.supports_llamacpp else "ollama"
+def upstream_for(provider: Provider) -> str:
+    """The protocol a request to *provider* is sent with."""
+    return provider.protocol.value
 
 
-def _base_url_matches(
-    base_url: str, provider: Provider, upstream: str, addr: ProviderAddress | None
-) -> bool:
-    if provider.is_worker:
-        return base_url.endswith(f"({upstream})")
-    if addr is None:
-        return False
-    url = addr.url if upstream == "ollama" else (addr.llamacpp_url or addr.url)
-    return base_url.rstrip("/") == url.rstrip("/")
-
-
-def endpoint_support(
-    provider: Provider,
-    path: str,
-    upstream: str,
-    addr: ProviderAddress | None,
-) -> str:
-    """What the last probe said about *path* on the upstream that serves it.
-
-    Uses the probe of that upstream's URL when it can be told apart (a
-    provider serving both APIs can have the endpoint on one and not the
-    other); otherwise all probed URLs.
-    """
+def endpoint_support(provider: Provider, path: str) -> str:
+    """What the last probe said about *path* on the provider's upstream."""
     caps = provider.capabilities or {}
     entries = [e for e in caps.get("endpoints") or [] if e.get("path") == path]
     if not entries:
         return SUPPORT_UNKNOWN
-    own = [
-        e
-        for e in entries
-        if _base_url_matches(str(e.get("base_url") or ""), provider, upstream, addr)
-    ]
-    for group in (own, entries):
-        if not group:
-            continue
-        if any(e.get("state") in SUPPORTED for e in group):
-            return SUPPORT_SUPPORTED
-        if any(e.get("state") == MISSING for e in group):
-            return SUPPORT_MISSING
-        return SUPPORT_UNKNOWN
+    if any(e.get("state") in SUPPORTED for e in entries):
+        return SUPPORT_SUPPORTED
+    if any(e.get("state") == MISSING for e in entries):
+        return SUPPORT_MISSING
     return SUPPORT_UNKNOWN
 
 
-def _serves(provider: Provider, protocol: str | None) -> bool:
-    if protocol == "ollama":
-        return provider.supports_ollama
-    if protocol == "llamacpp":
-        return provider.supports_llamacpp
-    return True
+def serves(provider: Provider, protocol: str | None) -> bool:
+    """Whether *provider* can take a request that needs *protocol*."""
+    return protocol is None or provider.protocol.value == protocol
 
 
 def _chaos_eligible(
     provider: Provider, models: list[ProviderModel], protocol: str | None
 ) -> list[str]:
-    out: list[str] = []
-    for m in models:
-        details = m.details or {}
-        if protocol == "ollama":
-            if "_in_ollama" in details:
-                if details.get("_in_ollama"):
-                    out.append(m.name)
-            elif provider.supports_ollama:
-                out.append(m.name)
-        elif protocol == "llamacpp":
-            if "_in_llamacpp" in details:
-                if details.get("_in_llamacpp"):
-                    out.append(m.name)
-            elif provider.supports_llamacpp:
-                out.append(m.name)
-        else:
-            out.append(m.name)
-    return out
+    if not serves(provider, protocol):
+        return []
+    return [m.name for m in models]
 
 
 def combined_failure_rate(model_rate: float, health: ProviderHealth) -> float:
@@ -483,7 +433,8 @@ def build_table(
         pid = p.id
         assert pid is not None
         models = inputs.models.get(pid, [])
-        hot_by_upstream = {up: hot_models(pid, up) for up in ("ollama", "llamacpp")}
+        up = upstream_for(p)
+        hot = hot_models(pid, up)
         addresses = inputs.addresses.get(pid, [])
         live_ids = [a.id for a in addresses if a.is_live and a.id is not None]
         # Only live addresses count: an address that stopped answering keeps
@@ -491,14 +442,13 @@ def build_table(
         rtt = stats.rtt_ms(pid, live_ids) if stats and live_ids else None
         health = stats.provider_health(pid, now) if stats else HEALTHY
         table.health[pid] = health
-        addr = best_address(addresses)
         gpu_bytes = p.gpu_ram_bytes
         # Endpoint support depends only on the provider, not the model.
-        support: dict[str, tuple[str, str]] = {}
-        for path, (protocol, _cls) in ENDPOINTS.items():
-            if _serves(p, protocol):
-                up = upstream_for(p, protocol)
-                support[path] = (up, endpoint_support(p, path, up, addr))
+        support: dict[str, str] = {
+            path: endpoint_support(p, path)
+            for path, (protocol, _cls) in ENDPOINTS.items()
+            if serves(p, protocol)
+        }
 
         for m in models:
             backend = m.backend_name
@@ -510,7 +460,7 @@ def build_table(
             keys = {m.name}
             if m.raw_name:
                 keys.add(m.raw_name)
-            for path, (up, sup) in support.items():
+            for path, sup in support.items():
                 protocol, cls = ENDPOINTS[path]
                 ms = stats.model(pid, m.name, cls) if stats else None
                 model_rate = ms.failures.current(now) if ms else 0.0
@@ -530,9 +480,9 @@ def build_table(
                     endpoint=path,
                     endpoint_class=cls,
                     upstream=up,
-                    # Loaded on the upstream this request reaches: Ollama's
-                    # /api/ps, or the model llama.cpp reports in /props.
-                    is_hot=m.name in hot_by_upstream[up] or recently_used,
+                    # Loaded now: Ollama's /api/ps, or the model llama.cpp
+                    # reports in /props.
+                    is_hot=m.name in hot or recently_used,
                     startup_ms=bench.startup_time_ms if bench else None,
                     tokens_per_second=(
                         observed_tps or (bench.tokens_per_second if bench else None)
@@ -568,8 +518,6 @@ def build_table(
     for protocol in PROTOCOLS:
         entries = []
         for p in online:
-            if not _serves(p, protocol):
-                continue
             eligible = _chaos_eligible(p, inputs.models.get(p.id or 0, []), protocol)
             if eligible:
                 entries.append((p, tuple(eligible)))

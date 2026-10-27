@@ -29,7 +29,7 @@ from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
-from ..models import ProviderType, RequestLog, model_in_api
+from ..models import ProviderProtocol, RequestLog
 from . import deps
 
 from .. import __version__
@@ -205,9 +205,6 @@ async def _pull_one_ollama(
 async def _api_key_exists(db, key_id: int) -> bool:
     keys = await db.list_api_keys()
     return any(int(k["id"]) == int(key_id) for k in keys)
-
-
-_model_in_api = model_in_api
 
 
 def _cache_registry_url() -> str | None:
@@ -589,7 +586,7 @@ async def dashboard(request: Request):
     for b in all_benchmarks:
         benchmarks_by_model.setdefault(b["model_name"], []).append(b)
 
-    ollama_providers = [i for i in infos if i.provider.supports_ollama]
+    ollama_providers = [i for i in infos if i.provider.is_ollama]
     ollama_count = len(ollama_providers)
     model_provider_counts: dict[str, int] = {}
     for info in ollama_providers:
@@ -779,7 +776,7 @@ def _provider_status_payload(info: Any) -> dict[str, Any]:
         "name": info.provider.name,
         "status": info.provider.status.value,
         "status_detail": info.status_detail,
-        "provider_type": info.provider.provider_type.value,
+        "protocol": info.provider.protocol.value,
         "is_worker": info.provider.is_worker,
         "model_count": len(info.models),
         "model_names": sorted({m.name for m in info.models}),
@@ -1188,8 +1185,7 @@ async def provider_detail(request: Request, provider_id: int):
 async def add_provider(
     name: str = Form(...),
     url: str = Form(...),
-    provider_type: str = Form("ollama"),
-    llamacpp_url: Optional[str] = Form(None),
+    protocol: str = Form("ollama"),
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
@@ -1197,16 +1193,17 @@ async def add_provider(
     api_key_header: Optional[str] = Form(None),
     probe_after_add: Optional[str] = Form(None),
 ):
-    """Create a provider; *url* and *llamacpp_url* become its first address."""
+    """Create a provider; *url* becomes its first address."""
     pm = deps.get_pm()
-    ptype = ProviderType(provider_type)
-    lcpp_url = llamacpp_url if llamacpp_url else None
+    try:
+        proto = ProviderProtocol.parse(protocol)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid protocol")
     try:
         provider = await pm.add_provider(
             name,
             url,
-            ptype,
-            lcpp_url,
+            proto,
             machine_type=machine_type or None,
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
@@ -1266,7 +1263,7 @@ async def api_probe_provider(provider_id: int):
 async def edit_provider(
     provider_id: int,
     name: str = Form(...),
-    provider_type: str = Form("ollama"),
+    protocol: str = Form("ollama"),
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
@@ -1276,12 +1273,15 @@ async def edit_provider(
 ):
     """Edit provider details. A blank API key keeps the stored one."""
     pm = deps.get_pm()
-    ptype = ProviderType(provider_type)
+    try:
+        proto = ProviderProtocol.parse(protocol)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid protocol")
     try:
         await pm.update_provider(
             provider_id,
             name,
-            ptype,
+            proto,
             machine_type=machine_type or None,
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
@@ -1318,7 +1318,7 @@ async def api_start_benchmark(request: Request):
     provider_id = int(body["provider_id"])
     model_name = body["model"]
     benchmark_api = (body.get("benchmark_api") or "auto").strip().lower()
-    if benchmark_api not in {"auto", "ollama", "llamacpp"}:
+    if benchmark_api not in {"auto", "ollama", "openai", "llamacpp"}:
         raise HTTPException(status_code=400, detail="Invalid benchmark_api value")
 
     pm = deps.get_pm()
@@ -1481,13 +1481,11 @@ async def delete_model(provider_id: int, model_name: str):
 async def add_address(
     provider_id: int,
     url: str = Form(...),
-    llamacpp_url: Optional[str] = Form(None),
     is_preferred: Optional[str] = Form(None),
 ):
     pm = deps.get_pm()
-    lcpp = llamacpp_url if llamacpp_url else None
     try:
-        await pm.add_address(provider_id, url, lcpp, is_preferred=bool(is_preferred))
+        await pm.add_address(provider_id, url, is_preferred=bool(is_preferred))
     except Exception:
         logger.exception("add_address failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not add address")
@@ -1498,25 +1496,23 @@ async def add_address(
 async def save_provider_address(
     provider_id: int,
     url: str = Form(...),
-    llamacpp_url: Optional[str] = Form(None),
     is_preferred: Optional[str] = Form(None),
     address_id: Optional[str] = Form(None),
 ):
     """Add or update an address; used by dashboard forms with a stable action URL."""
     db = deps.get_db()
     pm = deps.get_pm()
-    lcpp = llamacpp_url if llamacpp_url else None
     pref = bool(is_preferred)
     raw_id = (address_id or "").strip()
     try:
         if not raw_id:
-            await pm.add_address(provider_id, url, lcpp, is_preferred=pref)
+            await pm.add_address(provider_id, url, is_preferred=pref)
         else:
             aid = int(raw_id)
             addr = await db.get_address(aid)
             if addr is None or addr.provider_id != provider_id:
                 raise HTTPException(status_code=400, detail="Invalid address")
-            await pm.update_address(aid, url, lcpp, is_preferred=pref)
+            await pm.update_address(aid, url, is_preferred=pref)
     except HTTPException:
         raise
     except ValueError:
@@ -1536,13 +1532,11 @@ async def edit_address(
     provider_id: int,
     address_id: int,
     url: str = Form(...),
-    llamacpp_url: Optional[str] = Form(None),
     is_preferred: Optional[str] = Form(None),
 ):
     pm = deps.get_pm()
-    lcpp = llamacpp_url if llamacpp_url else None
     try:
-        await pm.update_address(address_id, url, lcpp, is_preferred=bool(is_preferred))
+        await pm.update_address(address_id, url, is_preferred=bool(is_preferred))
     except Exception:
         logger.exception(
             "update_address failed (provider_id=%s address_id=%s)",
@@ -1576,12 +1570,12 @@ async def api_pull_model(request: Request):
     pull_api = (body.get("pull_api") or "auto").strip().lower()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
-    if pull_api not in {"auto", "ollama", "llamacpp"}:
+    if pull_api not in {"auto", "ollama", "openai", "llamacpp"}:
         raise HTTPException(status_code=400, detail="Invalid pull_api value")
-    if pull_api == "llamacpp":
+    if pull_api in {"openai", "llamacpp"}:
         raise HTTPException(
             status_code=400,
-            detail="llama.cpp pull is not supported yet; use ollama",
+            detail="pulling over the OpenAI API is not supported; use ollama",
         )
 
     pm = deps.get_pm()
@@ -1594,7 +1588,7 @@ async def api_pull_model(request: Request):
         provider_ids = [
             i.provider.id
             for i in infos
-            if i.provider.supports_ollama and i.provider.id is not None
+            if i.provider.is_ollama and i.provider.id is not None
         ]
 
     _active_pulls[pull_id] = {
@@ -1938,13 +1932,9 @@ async def api_fill_missing_pulls():
     provider_names: dict[int, str] = {}
     for info in infos:
         provider = info.provider
-        if not provider.supports_ollama or provider.id is None:
+        if not provider.is_ollama or provider.id is None:
             continue
-        existing_ollama = {
-            m.name
-            for m in info.models
-            if _model_in_api(m, "ollama", provider.provider_type)
-        }
+        existing_ollama = {m.name for m in info.models}
         missing = [name for name in all_model_names if name not in existing_ollama]
         if missing:
             provider_missing[provider.id] = missing
@@ -2078,20 +2068,12 @@ async def api_fill_missing_benchmarks():
         provider = info.provider
         if provider.id is None:
             continue
-        runs: list[tuple[str, str]] = []
-        for m in info.models:
-            if provider.supports_ollama and _model_in_api(
-                m, "ollama", provider.provider_type
-            ):
-                key = (provider.id, m.name, "ollama")
-                if key not in existing:
-                    runs.append((m.name, "ollama"))
-            if provider.supports_llamacpp and _model_in_api(
-                m, "llamacpp", provider.provider_type
-            ):
-                key = (provider.id, m.name, "llamacpp")
-                if key not in existing:
-                    runs.append((m.name, "llamacpp"))
+        api = provider.protocol.value
+        runs: list[tuple[str, str]] = [
+            (m.name, api)
+            for m in info.models
+            if (provider.id, m.name, api) not in existing
+        ]
         if runs:
             provider_runs[provider.id] = runs
             provider_names[provider.id] = provider.name
@@ -2212,7 +2194,7 @@ async def pull_model_all_legacy(model: str = Form(...)):
     provider_ids = [
         i.provider.id
         for i in infos
-        if i.provider.supports_ollama and i.provider.id is not None
+        if i.provider.is_ollama and i.provider.id is not None
     ]
     pull_id = str(uuid.uuid4())
     _active_pulls[pull_id] = {
@@ -2375,7 +2357,7 @@ async def delete_model_all_providers(model: str = Form(...)):
     targets = [
         i
         for i in infos
-        if i.provider.supports_ollama and any(m.name == model for m in i.models)
+        if i.provider.is_ollama and any(m.name == model for m in i.models)
     ]
 
     async def _delete_one(info):

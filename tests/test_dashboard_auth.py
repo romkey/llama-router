@@ -329,7 +329,7 @@ async def test_viewer_post_providers_add_redirects_forbidden(dash_client) -> Non
         data={
             "name": "evil",
             "url": "http://127.0.0.1:11434",
-            "provider_type": "ollama",
+            "protocol": "ollama",
         },
         follow_redirects=False,
     )

@@ -1,11 +1,11 @@
 # llama-router
 
-An LLM router that aggregates multiple Ollama and llama.cpp backends behind unified APIs.
+An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (llama.cpp, vLLM, LiteLLM and others) behind unified APIs.
 
 ## Features
 
 - **Unified Ollama API** — Ollama-compatible API on port 11434 that routes to the best available backend
-- **Unified llama.cpp / OpenAI API** — OpenAI-compatible API on port 8080 for llama.cpp server backends
+- **Unified OpenAI API** — OpenAI-compatible API on port 8080 that routes to any backend
 - **Web Dashboard** — Bootstrap-based management UI on port 80 with provider status, model inventory, benchmarks, request log, and cache management
 - **Auto-Discovery** — Queries backends for models and capabilities on registration
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
@@ -260,7 +260,7 @@ curl 'http://localhost/api/routing/explain?model=qwen2.5-coder:32b&session_id=my
 
 ### Endpoints
 
-Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to providers that serve the Ollama API. OpenAI-style routes such as `/v1/chat/completions` go to any provider and reach its llama.cpp API when it has one. For each provider the table records which of its APIs a request on that endpoint reaches, and whether that API's last probe found the endpoint. A provider can have `/v1/audio/speech` on its Ollama URL and not on its llama.cpp URL, and that is taken into account.
+Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to Ollama providers. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.
 
 Measurements are kept per kind of endpoint: text generation, embeddings, images and audio. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
 

@@ -34,7 +34,7 @@ async def test_alembic_head_recorded_and_core_tables_exist(
     try:
         ver = con.execute("SELECT version_num FROM alembic_version").fetchone()
         assert ver is not None
-        assert ver[0] == "008_api_key_session_affinity"
+        assert ver[0] == "009_single_protocol_providers"
         tables = {
             r[0]
             for r in con.execute(

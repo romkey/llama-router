@@ -9,7 +9,7 @@ import pytest
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 
-HEAD = "008_api_key_session_affinity"
+HEAD = "009_single_protocol_providers"
 
 
 def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -207,7 +207,8 @@ def test_upgrade_004_moves_provider_urls_and_worker_identity(
     finally:
         con.close()
 
-    run_upgrade_sync(sync_url)
+    # Stop at 004: 009 later splits the 'both' provider (see its own test).
+    command.upgrade(_alembic_cfg(sync_url), "004_provider_api_key")
 
     con = sqlite3.connect(dbfile)
     try:
@@ -233,6 +234,137 @@ def test_upgrade_004_moves_provider_urls_and_worker_identity(
             (3, "worker://edge", None),
         ]
         assert con.execute("SELECT COUNT(*) FROM provider_models").fetchone()[0] == 1
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        con.close()
+
+
+def test_upgrade_009_splits_both_providers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A 'both' provider becomes an Ollama provider plus an OpenAI one."""
+    import json
+
+    from alembic import command
+
+    dbfile = tmp_path / "pre_009.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    sync_url = config.settings.sync_database_url_for_alembic()
+    command.upgrade(_alembic_cfg(sync_url), "008_api_key_session_affinity")
+
+    def d(**kw) -> str:
+        return json.dumps(kw)
+
+    con = sqlite3.connect(dbfile)
+    try:
+        con.executemany(
+            "INSERT INTO providers (id, name, provider_type, gpu_type, worker_name, "
+            "api_key_enc, capabilities) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "gpu", "both", "4090", None, "enc", '{"x": 1}'),
+                (2, "lcpp", "llamacpp", None, None, None, None),
+                (3, "edge", "both", None, "edge", None, None),
+                (4, "gpu (llama.cpp)", "ollama", None, None, None, None),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO provider_addresses (provider_id, url, llamacpp_url, "
+            "is_preferred) VALUES (?, ?, ?, ?)",
+            [
+                (1, "http://g:11434", "http://g:8080/", 1),
+                (1, "http://g2:11434", None, 0),
+                (2, "http://l:8080", None, 1),
+                (3, "worker://edge", None, 1),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO provider_models (provider_id, name, details) VALUES (?, ?, ?)",
+            [
+                (1, "a", d(_in_ollama=True, _in_llamacpp=False, family="llama")),
+                (1, "b", d(_in_ollama=False, _in_llamacpp=True)),
+                (1, "c", d(_in_ollama=True, _in_llamacpp=True)),
+                (1, "d", None),
+                (2, "e", d(_in_ollama=False, _in_llamacpp=True)),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO benchmarks (provider_id, model_name, protocol) VALUES (?, ?, ?)",
+            [(1, "a", "ollama"), (1, "b", "llamacpp"), (2, "e", "llamacpp")],
+        )
+        con.execute(
+            "INSERT INTO api_keys (id, key_prefix, key_hash) VALUES (1, 'p', 'h')"
+        )
+        con.executemany(
+            "INSERT INTO api_key_model_pins (api_key_id, model_name, provider_id) "
+            "VALUES (1, ?, 1)",
+            [("a",), ("b",)],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    run_upgrade_sync(sync_url)
+
+    con = sqlite3.connect(dbfile)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(providers)")}
+        assert "provider_type" not in cols and "protocol" in cols
+        addr_cols = {r[1] for r in con.execute("PRAGMA table_info(provider_addresses)")}
+        assert "llamacpp_url" not in addr_cols
+
+        providers = {
+            r[1]: r
+            for r in con.execute(
+                "SELECT id, name, protocol, gpu_type, api_key_enc, capabilities "
+                "FROM providers"
+            )
+        }
+        assert {n: r[2] for n, r in providers.items()} == {
+            "gpu": "ollama",
+            "lcpp": "openai",
+            "edge": "ollama",
+            "gpu (llama.cpp)": "ollama",
+            "gpu (llama.cpp) 2": "openai",
+        }
+        new = providers["gpu (llama.cpp) 2"]
+        new_id = new[0]
+        # Hardware and key carry over; the mixed probe is dropped on both halves.
+        assert (new[3], new[4], new[5]) == ("4090", "enc", None)
+        assert providers["gpu"][5] is None
+
+        addrs = con.execute(
+            "SELECT url, is_preferred FROM provider_addresses WHERE provider_id = ? "
+            "ORDER BY id",
+            (new_id,),
+        ).fetchall()
+        assert addrs == [("http://g:8080", 1), ("http://g2:11434", 0)]
+
+        def models(pid: int) -> dict[str, dict]:
+            return {
+                name: json.loads(det) if det else {}
+                for name, det in con.execute(
+                    "SELECT name, details FROM provider_models WHERE provider_id = ?",
+                    (pid,),
+                )
+            }
+
+        assert models(1) == {"a": {"family": "llama"}, "c": {}, "d": {}}
+        assert models(new_id) == {"b": {}, "c": {}}
+        assert models(2) == {"e": {}}
+
+        benches = con.execute(
+            "SELECT provider_id, model_name, protocol FROM benchmarks ORDER BY id"
+        ).fetchall()
+        assert benches == [
+            (1, "a", "ollama"),
+            (new_id, "b", "openai"),
+            (2, "e", "openai"),
+        ]
+        pins = dict(
+            con.execute("SELECT model_name, provider_id FROM api_key_model_pins")
+        )
+        assert pins == {"a": 1, "b": new_id}
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         con.close()

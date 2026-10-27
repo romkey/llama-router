@@ -1,9 +1,16 @@
 # Hub and worker links
 
 A worker llama-router keeps one outbound WebSocket open to a hub. The hub
-treats the worker as an ordinary provider. Its Ollama and llama.cpp clients use
-an `httpx` transport that relays each HTTP request over the socket, so routing,
-streaming, model discovery, health checks and benchmarks need no special cases.
+treats the worker as an ordinary provider. Its client uses an `httpx` transport
+that relays each HTTP request over the socket, so routing, streaming, model
+discovery, health checks and benchmarks need no special cases.
+
+Like every provider, a worker speaks one protocol. The hub uses the worker's
+`ollama` target whenever the worker offers it: a worker that relays its own
+router serves every OpenAI-style route on its Ollama port too. Only a worker
+that offers just the `llamacpp` target becomes an OpenAI-protocol provider. The
+target names on the wire are unchanged, so hubs and workers of different
+versions still connect.
 
 ```
 client ──HTTP──▶ hub router ──WebSocket (outbound from worker)──▶ worker ──HTTP──▶ local Ollama / llama.cpp

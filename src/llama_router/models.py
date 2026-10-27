@@ -24,16 +24,39 @@ class ProviderStatus(str, Enum):
     UNKNOWN = "unknown"
 
 
-class ProviderType(str, Enum):
+class ProviderProtocol(str, Enum):
+    """The wire protocol the router speaks to a provider.
+
+    Each provider has exactly one. ``ollama`` is the Ollama native API
+    (``/api/*``); Ollama also serves the OpenAI-style routes. ``openai`` is the
+    OpenAI-style API (``/v1/*``) that llama.cpp, vLLM, LiteLLM, Lemonade,
+    LM Studio and the cloud services speak.
+    """
+
     OLLAMA = "ollama"
-    LLAMACPP = "llamacpp"
-    BOTH = "both"
+    OPENAI = "openai"
+
+    @classmethod
+    def parse(cls, value: str | None) -> "ProviderProtocol":
+        """Accept the protocol names, plus ``llamacpp`` from older clients."""
+        v = (value or "").strip().lower()
+        if v == "llamacpp":
+            return cls.OPENAI
+        return cls(v or cls.OLLAMA.value)
+
+
+# The worker link names its upstreams by the older protocol names; keep the
+# wire format so hubs and workers of different versions still talk.
+WORKER_TARGETS: dict[ProviderProtocol, str] = {
+    ProviderProtocol.OLLAMA: "ollama",
+    ProviderProtocol.OPENAI: "llamacpp",
+}
 
 
 class Provider(BaseModel):
     id: int | None = None
     name: str
-    provider_type: ProviderType = ProviderType.OLLAMA
+    protocol: ProviderProtocol = ProviderProtocol.OLLAMA
     status: ProviderStatus = ProviderStatus.UNKNOWN
     machine_type: str | None = None
     gpu_type: str | None = None
@@ -67,12 +90,17 @@ class Provider(BaseModel):
         return bool(self.api_key_enc)
 
     @property
-    def supports_ollama(self) -> bool:
-        return self.provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
+    def is_ollama(self) -> bool:
+        return self.protocol is ProviderProtocol.OLLAMA
 
     @property
-    def supports_llamacpp(self) -> bool:
-        return self.provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
+    def is_openai(self) -> bool:
+        return self.protocol is ProviderProtocol.OPENAI
+
+    @property
+    def worker_target(self) -> str:
+        """The worker link target that carries this provider's protocol."""
+        return WORKER_TARGETS[self.protocol]
 
     @property
     def gpu_ram_bytes(self) -> int | None:
@@ -133,25 +161,10 @@ def measured_cold_start(startup_ms: float | None) -> float | None:
     return startup_ms
 
 
-def model_in_api(model: "ProviderModel", api: str, provider_type: ProviderType) -> bool:
-    """Whether *model* is served on the provider's *api* ("ollama"/"llamacpp")."""
-    details = model.details or {}
-    if api == "ollama":
-        if "_in_ollama" in details:
-            return bool(details.get("_in_ollama"))
-        return provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
-    if api == "llamacpp":
-        if "_in_llamacpp" in details:
-            return bool(details.get("_in_llamacpp"))
-        return provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
-    return False
-
-
 class ProviderAddress(BaseModel):
     id: int | None = None
     provider_id: int
     url: str
-    llamacpp_url: str | None = None
     is_preferred: bool = False
     is_live: bool = False
     created_at: datetime | None = None
@@ -161,7 +174,7 @@ class RequestLog(BaseModel):
     id: int | None = None
     provider_id: int | None = None
     provider_name: str | None = None
-    protocol: str  # "ollama" or "llamacpp"
+    protocol: str  # API the request arrived on: "ollama" or "v1"
     endpoint: str  # e.g. "/api/chat", "/v1/chat/completions"
     source_ip: str | None = None
     model: str | None = None

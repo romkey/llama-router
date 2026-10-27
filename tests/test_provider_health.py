@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llama_router.models import ProviderStatus, ProviderType
+from llama_router.models import ProviderStatus, ProviderProtocol
 from llama_router.provider_manager import ProviderManager
 
 pytestmark = pytest.mark.httpx_mock(
@@ -43,8 +43,8 @@ def _routes(httpx_mock, by_host: dict) -> None:
 
 
 async def _provider(db, name: str, url: str, status: ProviderStatus):
-    p = await db.add_provider(name, ProviderType.OLLAMA)
-    await db.add_address(p.id, url, None, True)
+    p = await db.add_provider(name, ProviderProtocol.OLLAMA)
+    await db.add_address(p.id, url, True)
     await db.update_provider_status(p.id, status)
     return await db.get_provider(p.id)
 
@@ -138,13 +138,13 @@ async def test_rebuild_uses_this_cycles_liveness(db, httpx_mock) -> None:
     p = await _provider(db, "two", "http://dead:11434", ProviderStatus.IDLE)
     dead = (await db.get_addresses(p.id))[0]
     await db.set_address_live(dead.id, True)  # stale: it was live last cycle
-    await db.add_address(p.id, "http://backup:11434", None, False)
+    await db.add_address(p.id, "http://backup:11434", False)
     pm = ProviderManager(db)
     await pm._rebuild_clients(p)
-    assert pm._active_urls[p.id][0] == "http://dead:11434"
+    assert pm._active_urls[p.id] == "http://dead:11434"
 
     status = await pm.check_provider(p)
 
     assert status == ProviderStatus.IDLE
-    assert pm._active_urls[p.id][0] == "http://backup:11434"
+    assert pm._active_urls[p.id] == "http://backup:11434"
     await pm.stop()

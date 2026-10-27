@@ -46,6 +46,8 @@ from .routing_table import (
 
 logger = logging.getLogger(__name__)
 
+_API_NAMES = {"ollama": "Ollama", "openai": "OpenAI"}
+
 ROUTING_MODES = frozenset({*MODES, "chaos"})
 
 # Wait this long after the first change before rebuilding, to batch a burst.
@@ -655,10 +657,9 @@ class Router:
                 continue
             if p.status == ProviderStatus.OFFLINE:
                 reason = "provider is offline"
-            elif protocol == "ollama" and not p.supports_ollama:
-                reason = "provider does not serve the Ollama API"
-            elif protocol == "llamacpp" and not p.supports_llamacpp:
-                reason = "provider does not serve the llama.cpp API"
+            elif protocol is not None and p.protocol.value != protocol:
+                api = _API_NAMES.get(protocol, protocol)
+                reason = f"provider does not serve the {api} API"
             else:
                 continue
             rows.append(

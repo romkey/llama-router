@@ -165,7 +165,7 @@
                                 </h5>
                                 <div>
                                     {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
-                                    <span class="badge bg-info text-dark me-1">{{ info.provider.provider_type.value }}</span>
+                                    <span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>
                                     <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status title="{{ info.status_detail or '' }}">
                                         {{ info.provider.status.value }}
                                     </span>
@@ -267,7 +267,7 @@
                                     {{ info.provider.name }}
                                 </a>
                             </td>
-                            <td><span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span></td>
+                            <td><span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span></td>
                             <td class="text-muted small" data-list-addresses>
                                 {% for addr in info.addresses %}
                                 <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
@@ -475,7 +475,7 @@
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Push to Ollama providers</div>
-                            {% for info in providers if info.provider.supports_ollama and not info.provider.is_worker %}
+                            {% for info in providers if info.provider.is_ollama and not info.provider.is_worker %}
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" id="hf-push-{{ info.provider.id }}" data-hf-push="{{ info.provider.id }}">
                                 <label class="form-check-label" for="hf-push-{{ info.provider.id }}">{{ info.provider.name }}</label>
@@ -489,13 +489,13 @@
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Refresh llama.cpp providers (shared volume)</div>
-                            {% for info in providers if info.provider.supports_llamacpp %}
+                            {% for info in providers if info.provider.is_openai %}
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" id="hf-refresh-{{ info.provider.id }}" data-hf-refresh="{{ info.provider.id }}">
                                 <label class="form-check-label" for="hf-refresh-{{ info.provider.id }}">{{ info.provider.name }}</label>
                             </div>
                             {% else %}
-                            <div class="text-muted">No llama.cpp providers.</div>
+                            <div class="text-muted">No OpenAI-API providers.</div>
                             {% endfor %}
                         </div>
                     </div>
@@ -1163,7 +1163,7 @@
                         <select class="form-select form-select-sm" id="log-filter-protocol">
                             <option value="">All protocols</option>
                             <option value="ollama">Ollama</option>
-                            <option value="llamacpp">llama.cpp</option>
+                            <option value="openai">OpenAI</option>
                             <option value="v1">v1</option>
                             <option value="system">System</option>
                         </select>
@@ -1523,22 +1523,18 @@
                     <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. gpu-server-1">
                 </div>
                 <div class="mb-3">
-                    <label for="provider_type" class="form-label">Type</label>
-                    <select class="form-select" id="provider_type" name="provider_type" onchange="toggleUrlFields()">
+                    <label for="protocol" class="form-label">Protocol</label>
+                    <select class="form-select" id="protocol" name="protocol" onchange="toggleUrlFields()">
                         <option value="ollama">Ollama</option>
-                        <option value="llamacpp">llama.cpp</option>
-                        <option value="both">Both</option>
+                        <option value="openai">OpenAI-compatible (llama.cpp, vLLM, LiteLLM, ...)</option>
                     </select>
+                    <div class="form-text">One protocol per provider. To use both APIs of one server, add it twice.</div>
                 </div>
                 <p class="text-muted small mb-2">First address (add more later on the provider page)</p>
                 <div class="mb-3" id="url-group">
                     <label for="url" class="form-label">URL</label>
                     <input type="url" class="form-control" id="url" name="url" required placeholder="http://192.168.1.100:11434">
                     <div class="form-text" id="url-help">Ollama API URL</div>
-                </div>
-                <div class="mb-3" id="llamacpp-url-group" style="display: none;">
-                    <label for="llamacpp_url" class="form-label">llama.cpp URL</label>
-                    <input type="url" class="form-control" id="llamacpp_url" name="llamacpp_url" placeholder="http://192.168.1.100:8080">
                 </div>
                 <hr>
                 <p class="text-muted small mb-2">Upstream authentication (optional)</p>
@@ -1648,18 +1644,15 @@ function dashRequireWrite() {
     return !DASH_READ_ONLY;
 }
 function toggleUrlFields() {
-    const ptype = document.getElementById('provider_type').value;
+    const protocol = document.getElementById('protocol').value;
     const urlHelp = document.getElementById('url-help');
-    const lcppGroup = document.getElementById('llamacpp-url-group');
-    if (ptype === 'ollama') {
-        urlHelp.textContent = 'Ollama API URL';
-        lcppGroup.style.display = 'none';
-    } else if (ptype === 'llamacpp') {
-        urlHelp.textContent = 'llama.cpp server URL';
-        lcppGroup.style.display = 'none';
+    const url = document.getElementById('url');
+    if (protocol === 'openai') {
+        urlHelp.textContent = 'Base URL of the OpenAI-style API';
+        url.placeholder = 'http://192.168.1.100:8080';
     } else {
         urlHelp.textContent = 'Ollama API URL';
-        lcppGroup.style.display = '';
+        url.placeholder = 'http://192.168.1.100:11434';
     }
 }
 
@@ -1710,8 +1703,8 @@ function renderProbeResult(box, data) {
     details.appendChild(table);
     box.appendChild(details);
     if (data.suggested_type) {
-        const sel = document.getElementById('provider_type');
-        const apply = probeEl('button', 'btn btn-sm btn-link p-0 mt-1', 'Use type: ' + data.suggested_type);
+        const sel = document.getElementById('protocol');
+        const apply = probeEl('button', 'btn btn-sm btn-link p-0 mt-1', 'Use protocol: ' + data.suggested_type);
         apply.type = 'button';
         apply.addEventListener('click', function() {
             sel.value = data.suggested_type;
@@ -1914,10 +1907,9 @@ var PF_GROUPS = [
         {value: 'some-down', label: 'Some down', test: p => addrHealth(p) === 'some-down'},
         {value: 'none-live', label: 'None live', test: p => addrHealth(p) === 'none-live'},
     ]},
-    {key: 'type', label: 'Type', pills: [
-        {value: 'ollama', label: 'Ollama', test: p => p.provider_type === 'ollama'},
-        {value: 'llamacpp', label: 'llama.cpp', test: p => p.provider_type === 'llamacpp'},
-        {value: 'both', label: 'Both', test: p => p.provider_type === 'both'},
+    {key: 'type', label: 'Protocol', pills: [
+        {value: 'ollama', label: 'Ollama', test: p => p.protocol === 'ollama'},
+        {value: 'openai', label: 'OpenAI', test: p => p.protocol === 'openai'},
     ]},
     {key: 'link', label: 'Link', pills: [
         {value: 'direct', label: 'Direct', test: p => !p.is_worker},

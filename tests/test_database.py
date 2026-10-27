@@ -7,7 +7,7 @@ from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
     RequestLog,
 )
 
@@ -110,26 +110,24 @@ async def test_list_all_models_deduplicates(db: Database):
 @pytest.mark.asyncio
 async def test_providers_for_model_protocol_filter(db: Database):
     p1 = await db.add_provider("ollama-srv")
-    p2 = await db.add_provider("lcpp-srv", ProviderType.LLAMACPP)
-    p3 = await db.add_provider("both-srv", ProviderType.BOTH)
-    for p in [p1, p2, p3]:
+    p2 = await db.add_provider("lcpp-srv", ProviderProtocol.OPENAI)
+    for p in [p1, p2]:
         await db.update_provider_status(p.id, ProviderStatus.IDLE)
         await db.set_provider_models(
             p.id, [ProviderModel(provider_id=p.id, name="llama3:8b")]
         )
 
     all_providers = await db.get_providers_for_model("llama3:8b")
-    assert len(all_providers) == 3
+    assert {p.name for p in all_providers} == {"ollama-srv", "lcpp-srv"}
 
     ollama_providers = await db.get_providers_for_model("llama3:8b", protocol="ollama")
-    assert len(ollama_providers) == 2
-    names = {p.name for p in ollama_providers}
-    assert names == {"ollama-srv", "both-srv"}
+    assert {p.name for p in ollama_providers} == {"ollama-srv"}
 
-    lcpp_providers = await db.get_providers_for_model("llama3:8b", protocol="llamacpp")
-    assert len(lcpp_providers) == 2
-    names = {p.name for p in lcpp_providers}
-    assert names == {"lcpp-srv", "both-srv"}
+    openai_providers = await db.get_providers_for_model("llama3:8b", protocol="openai")
+    assert {p.name for p in openai_providers} == {"lcpp-srv"}
+    # The old name still selects the OpenAI-style providers.
+    legacy = await db.get_providers_for_model("llama3:8b", protocol="llamacpp")
+    assert {p.name for p in legacy} == {"lcpp-srv"}
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import (
@@ -24,7 +24,7 @@ from llama_router.router import (
 
 async def _provider(db: Database, name: str, models: list[str], **kw):
     status = kw.pop("status", ProviderStatus.IDLE)
-    p = await db.add_provider(name, kw.pop("ptype", ProviderType.OLLAMA))
+    p = await db.add_provider(name, kw.pop("ptype", ProviderProtocol.OLLAMA))
     await db.update_provider_status(p.id, status)
     await db.set_provider_models(
         p.id, [ProviderModel(provider_id=p.id, name=m) for m in models]
@@ -99,7 +99,7 @@ async def test_explanation_matches_real_decision(
 async def test_explains_unusable_providers(db: Database, pm: ProviderManager):
     good = await _provider(db, "good", ["m"])
     await _provider(db, "down", ["m"], status=ProviderStatus.OFFLINE)
-    await _provider(db, "lcpp", ["m"], ptype=ProviderType.LLAMACPP)
+    await _provider(db, "lcpp", ["m"], ptype=ProviderProtocol.OPENAI)
     flaky = await _provider(db, "flaky", ["m"])
     for _ in range(5):
         pm.stats.record_request(flaky.id, "m", ok=False)
@@ -114,8 +114,8 @@ async def test_explains_unusable_providers(db: Database, pm: ProviderManager):
 
 
 async def test_explains_missing_endpoint(db: Database, pm: ProviderManager):
-    speechless = await _provider(db, "speechless", ["m"], ptype=ProviderType.LLAMACPP)
-    full = await _provider(db, "full", ["m"], ptype=ProviderType.LLAMACPP)
+    speechless = await _provider(db, "speechless", ["m"], ptype=ProviderProtocol.OPENAI)
+    full = await _provider(db, "full", ["m"], ptype=ProviderProtocol.OPENAI)
     await _bench(db, speechless.id, "m", startup=60, tps=500)
     await db.set_provider_capabilities(
         speechless.id, {"endpoints": [{"path": "/v1/audio/speech", "state": "missing"}]}
@@ -125,7 +125,7 @@ async def test_explains_missing_endpoint(db: Database, pm: ProviderManager):
     rows = _by_name(out["steps"][0])
     assert out["chosen"]["provider_id"] == full.id
     assert rows["speechless"]["excluded"].startswith(
-        "last probe found /v1/audio/speech missing on its llamacpp API"
+        "last probe found /v1/audio/speech missing on its openai API"
     )
 
 

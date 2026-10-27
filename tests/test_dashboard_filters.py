@@ -7,13 +7,13 @@ import re
 
 import pytest
 
-from llama_router.models import ProviderModel, ProviderType
+from llama_router.models import ProviderModel, ProviderProtocol
 from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 
 async def _seed(db):
-    p = await db.add_provider("gpu-1", ProviderType.OLLAMA)
-    await db.add_address(p.id, "http://10.0.0.5:11434", None, True)
+    p = await db.add_provider("gpu-1", ProviderProtocol.OLLAMA)
+    await db.add_address(p.id, "http://10.0.0.5:11434", True)
     await db.set_provider_models(
         p.id,
         [
@@ -32,7 +32,7 @@ async def test_status_api_carries_filter_fields(dash_client) -> None:  # noqa: F
     p = data["providers"][0]
     assert p["model_names"] == ["llama3.2:latest", "qwen3:8b"]
     assert p["is_worker"] is False
-    assert p["provider_type"] == "ollama"
+    assert p["protocol"] == "ollama"
     assert "status_detail" in p
 
 

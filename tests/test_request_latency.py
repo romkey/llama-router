@@ -9,7 +9,12 @@ from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
 from llama_router.background import drain
 from llama_router.database import Database
-from llama_router.models import ProviderModel, ProviderStatus, ProviderType, RequestLog
+from llama_router.models import (
+    ProviderModel,
+    ProviderStatus,
+    ProviderProtocol,
+    RequestLog,
+)
 from llama_router.provider_manager import ProviderManager
 from llama_router.request_logger import StreamLogger, log_request_background
 from llama_router.router import Router
@@ -106,7 +111,7 @@ async def test_stream_logs_first_byte_and_overhead(db: Database):
 
 
 async def test_proxied_request_records_latency_end_to_end(db: Database, httpx_mock):
-    p = await db.add_provider("srv", ProviderType.OLLAMA)
+    p = await db.add_provider("srv", ProviderProtocol.OLLAMA)
     await db.add_address(p.id, "http://backend.test:11434", is_preferred=True)
     await db.update_provider_status(p.id, ProviderStatus.IDLE)
     await db.set_provider_models(p.id, [ProviderModel(provider_id=p.id, name="m")])

@@ -370,7 +370,7 @@ def _detect(
     if "ollama" in servers or "llama-router" in servers:
         result.suggested_type = "ollama"
     elif servers:
-        result.suggested_type = "llamacpp"
+        result.suggested_type = "openai"
 
     # Servers answer with all sorts of shapes; never let one crash the probe.
     names: list[str] = []

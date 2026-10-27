@@ -26,7 +26,7 @@ from .models import (
     ProviderAddress,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
     RequestLog,
 )
 
@@ -198,7 +198,7 @@ class Database:
     async def add_provider(
         self,
         name: str,
-        provider_type: ProviderType = ProviderType.OLLAMA,
+        protocol: ProviderProtocol = ProviderProtocol.OLLAMA,
         *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
@@ -207,11 +207,11 @@ class Database:
     ) -> Provider:
         """Create a provider. Addresses are added separately with add_address."""
         pid = await self._insert_get_id(
-            "INSERT INTO providers (name, provider_type, machine_type, gpu_type, "
+            "INSERT INTO providers (name, protocol, machine_type, gpu_type, "
             "gpu_ram, worker_name) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 name,
-                provider_type.value,
+                protocol.value,
                 machine_type,
                 gpu_type,
                 gpu_ram,
@@ -221,7 +221,7 @@ class Database:
         return Provider(
             id=pid,
             name=name,
-            provider_type=provider_type,
+            protocol=protocol,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
@@ -251,20 +251,20 @@ class Database:
         self,
         provider_id: int,
         name: str,
-        provider_type: ProviderType | None = None,
+        protocol: ProviderProtocol | None = None,
         *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
     ) -> None:
-        if provider_type is not None:
+        if protocol is not None:
             await self._execute(
-                "UPDATE providers SET name = ?, provider_type = ?, machine_type = ?, "
+                "UPDATE providers SET name = ?, protocol = ?, machine_type = ?, "
                 "gpu_type = ?, gpu_ram = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = ?",
                 (
                     name,
-                    provider_type.value,
+                    protocol.value,
                     machine_type,
                     gpu_type,
                     gpu_ram,
@@ -324,27 +324,16 @@ class Database:
     async def get_providers_for_model(
         self, model_name: str, protocol: str | None = None
     ) -> list[Provider]:
-        if protocol == "ollama":
-            query = (
-                "SELECT p.* FROM providers p "
-                "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline' "
-                "AND p.provider_type IN ('ollama', 'both')"
-            )
-        elif protocol == "llamacpp":
-            query = (
-                "SELECT p.* FROM providers p "
-                "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline' "
-                "AND p.provider_type IN ('llamacpp', 'both')"
-            )
-        else:
-            query = (
-                "SELECT p.* FROM providers p "
-                "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline'"
-            )
-        rows = await self._select_all(query, (model_name, model_name))
+        query = (
+            "SELECT p.* FROM providers p "
+            "JOIN provider_models pm ON p.id = pm.provider_id "
+            "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline'"
+        )
+        params: tuple[Any, ...] = (model_name, model_name)
+        if protocol is not None:
+            query += " AND p.protocol = ?"
+            params += (ProviderProtocol.parse(protocol).value,)
+        rows = await self._select_all(query, params)
         return [_row_to_provider(r) for r in rows]
 
     # --- Addresses ---
@@ -354,22 +343,18 @@ class Database:
         self,
         provider_id: int,
         url: str,
-        llamacpp_url: str | None = None,
         is_preferred: bool = False,
     ) -> ProviderAddress:
         url = url.rstrip("/")
-        if llamacpp_url:
-            llamacpp_url = llamacpp_url.rstrip("/")
         aid = await self._insert_get_id(
-            "INSERT INTO provider_addresses (provider_id, url, llamacpp_url, is_preferred) "
-            "VALUES (?, ?, ?, ?)",
-            (provider_id, url, llamacpp_url, int(is_preferred)),
+            "INSERT INTO provider_addresses (provider_id, url, is_preferred) "
+            "VALUES (?, ?, ?)",
+            (provider_id, url, int(is_preferred)),
         )
         return ProviderAddress(
             id=aid,
             provider_id=provider_id,
             url=url,
-            llamacpp_url=llamacpp_url,
             is_preferred=is_preferred,
         )
 
@@ -378,22 +363,18 @@ class Database:
         self,
         address_id: int,
         url: str,
-        llamacpp_url: str | None = None,
         is_preferred: bool | None = None,
     ) -> None:
         url = url.rstrip("/")
-        if llamacpp_url:
-            llamacpp_url = llamacpp_url.rstrip("/")
         if is_preferred is not None:
             await self._execute(
-                "UPDATE provider_addresses SET url = ?, llamacpp_url = ?, "
-                "is_preferred = ? WHERE id = ?",
-                (url, llamacpp_url, int(is_preferred), address_id),
+                "UPDATE provider_addresses SET url = ?, is_preferred = ? WHERE id = ?",
+                (url, int(is_preferred), address_id),
             )
         else:
             await self._execute(
-                "UPDATE provider_addresses SET url = ?, llamacpp_url = ? WHERE id = ?",
-                (url, llamacpp_url, address_id),
+                "UPDATE provider_addresses SET url = ? WHERE id = ?",
+                (url, address_id),
             )
 
     @_notifies(CHANGE_ADDRESSES)
@@ -1068,7 +1049,7 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
     return Provider(
         id=row["id"],
         name=row["name"],
-        provider_type=ProviderType(row["provider_type"]),
+        protocol=ProviderProtocol(row["protocol"]),
         status=ProviderStatus(row["status"]),
         machine_type=row["machine_type"],
         gpu_type=row["gpu_type"],
@@ -1124,7 +1105,6 @@ def _row_to_address(row: Mapping[str, Any]) -> ProviderAddress:
         id=row["id"],
         provider_id=row["provider_id"],
         url=row["url"],
-        llamacpp_url=row["llamacpp_url"],
         is_preferred=bool(row["is_preferred"]),
         is_live=bool(row["is_live"]),
         created_at=row["created_at"],

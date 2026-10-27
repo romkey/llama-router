@@ -14,7 +14,7 @@ from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
@@ -31,7 +31,7 @@ class FakeClock:
 
 
 async def _provider(db: Database, name: str, models: list[str], **kw):
-    p = await db.add_provider(name, kw.pop("ptype", ProviderType.OLLAMA), **kw)
+    p = await db.add_provider(name, kw.pop("ptype", ProviderProtocol.OLLAMA), **kw)
     await db.update_provider_status(p.id, ProviderStatus.IDLE)
     await db.set_provider_models(
         p.id, [ProviderModel(provider_id=p.id, name=m) for m in models]
@@ -288,8 +288,8 @@ async def test_recent_success_counts_as_warm(
 
 
 async def test_endpoint_missing_on_probe_is_avoided(db: Database, pm: ProviderManager):
-    chat_only = await _provider(db, "chat-only", ["m"], ptype=ProviderType.LLAMACPP)
-    full = await _provider(db, "full", ["m"], ptype=ProviderType.LLAMACPP)
+    chat_only = await _provider(db, "chat-only", ["m"], ptype=ProviderProtocol.OPENAI)
+    full = await _provider(db, "full", ["m"], ptype=ProviderProtocol.OPENAI)
     await _bench(db, chat_only.id, "m", startup=60, tps=500)
     await _bench(db, full.id, "m", startup=900, tps=10)
     await db.set_provider_capabilities(

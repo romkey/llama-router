@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
 from llama_router.database import Database
-from llama_router.models import ProviderStatus, ProviderType
+from llama_router.models import ProviderStatus, ProviderProtocol
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.worker_link import protocol as p
@@ -254,7 +254,7 @@ async def test_worker_connects_and_models_are_discovered(link) -> None:
     models = await db.get_provider_models(pid)
     assert [m.name for m in models] == ["tiny:1b"]
     prov = await db.get_provider(pid)
-    assert prov.provider_type == ProviderType.OLLAMA
+    assert prov.protocol == ProviderProtocol.OLLAMA
     assert prov.is_worker
     assert w.worker_name == "alice-gpu"
     row = await db.get_worker(link["worker_id"])
