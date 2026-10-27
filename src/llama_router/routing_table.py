@@ -28,6 +28,7 @@ from .models import (
     ProviderAddress,
     ProviderModel,
     ProviderStatus,
+    measured_cold_start,
 )
 from .probe import MISSING, SUPPORTED
 from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
@@ -158,20 +159,25 @@ def latest_benchmarks(
     newest first. Startup and speed are taken separately, each from the
     newest run that measured it: a run on an already-loaded model records no
     startup and must not erase the last real cold-start measurement.
+
+    Only real cold starts count as startup measurements. Older rows can hold
+    near-zero values from warm runs, and llama.cpp benchmarks used to store
+    0 for every run.
     """
     merged: dict[tuple[int, str, str | None], BenchmarkResult] = {}
     for b in rows:
+        startup = measured_cold_start(b.startup_time_ms)
         for key in (
             (b.provider_id, b.model_name, b.protocol),
             (b.provider_id, b.model_name, None),
         ):
             cur = merged.get(key)
             if cur is None:
-                merged[key] = b.model_copy()
+                merged[key] = b.model_copy(update={"startup_time_ms": startup})
                 continue
-            if cur.startup_time_ms is None and b.startup_time_ms is not None:
-                cur.startup_time_ms = b.startup_time_ms
-            if not cur.tokens_per_second and b.tokens_per_second:
+            if cur.startup_time_ms is None and startup is not None:
+                cur.startup_time_ms = startup
+            if cur.tokens_per_second is None and b.tokens_per_second is not None:
                 cur.tokens_per_second = b.tokens_per_second
     return merged
 
@@ -499,7 +505,13 @@ def build_table(
             backend_names[(pid, m.name)] = backend
             if m.raw_name:
                 backend_names[(pid, m.raw_name)] = backend
-            is_hot = m.name in hot or bool(stats and stats.is_warm(pid, m.name, now))
+            # A llama.cpp server reports the model it has loaded (/props);
+            # a single-model server never cold-starts it.
+            is_hot = (
+                m.name in hot
+                or bool((m.details or {}).get("_from_props"))
+                or bool(stats and stats.is_warm(pid, m.name, now))
+            )
             oversize = bool(gpu_bytes and m.size and m.size > gpu_bytes)
             keys = {m.name}
             if m.raw_name:

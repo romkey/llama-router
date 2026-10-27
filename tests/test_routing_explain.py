@@ -116,7 +116,7 @@ async def test_explains_unusable_providers(db: Database, pm: ProviderManager):
 async def test_explains_missing_endpoint(db: Database, pm: ProviderManager):
     speechless = await _provider(db, "speechless", ["m"], ptype=ProviderType.LLAMACPP)
     full = await _provider(db, "full", ["m"], ptype=ProviderType.LLAMACPP)
-    await _bench(db, speechless.id, "m", startup=10, tps=500)
+    await _bench(db, speechless.id, "m", startup=60, tps=500)
     await db.set_provider_capabilities(
         speechless.id, {"endpoints": [{"path": "/v1/audio/speech", "state": "missing"}]}
     )
@@ -132,7 +132,7 @@ async def test_explains_missing_endpoint(db: Database, pm: ProviderManager):
 async def test_explains_fallback_and_pins(db: Database, pm: ProviderManager):
     a = await _provider(db, "a", ["small"])
     b = await _provider(db, "b", ["small"])
-    await _bench(db, a.id, "small", startup=10, tps=100)
+    await _bench(db, a.id, "small", startup=60, tps=100)
     await db.set_model_fallback("big", "small")
     rt = Router(db, pm)
 

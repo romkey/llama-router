@@ -205,12 +205,14 @@ class _FakeOllama:
 
 async def test_warm_runs_do_not_record_startup(db: Database, pm: ProviderManager):
     p = await _provider(db, "a", ["m"])
+    # The backend's own load time decides, whatever the router thinks is
+    # loaded: here the router believes nothing is.
     pm._ollama_clients[p.id] = _FakeOllama(startup_ms=2.0)
-    pm._set_hot_models(p.id, [{"name": "m"}])
     warm = await pm.benchmark_provider(p.id, "m", source="auto")
     assert warm.startup_time_ms is None and warm.source == "auto"
 
-    pm._set_hot_models(p.id, [])
+    # ...and a real load is recorded even if the router thinks it is loaded.
+    pm._set_hot_models(p.id, [{"name": "m"}])
     pm._ollama_clients[p.id] = _FakeOllama(startup_ms=4200.0)
     cold = await pm.benchmark_provider(p.id, "m")
     assert cold.startup_time_ms == 4200.0 and cold.source == "manual"
@@ -219,6 +221,51 @@ async def test_warm_runs_do_not_record_startup(db: Database, pm: ProviderManager
     assert {r.source for r in rows} == {"auto", "manual"}
     logs = [e.endpoint for e in await db.get_request_logs(10, 0)]
     assert "auto-benchmark" in logs and "benchmark" in logs
+
+
+async def test_llamacpp_loaded_model_counts_as_hot(db: Database, pm: ProviderManager):
+    from llama_router.router import Router
+
+    p = await db.add_provider("lcpp", ProviderType.LLAMACPP)
+    await db.update_provider_status(p.id, ProviderStatus.IDLE)
+    await db.set_provider_models(
+        p.id,
+        [ProviderModel(provider_id=p.id, name="m", details={"_from_props": True})],
+    )
+    table = await Router(db, pm).rebuild()
+    cand = table.all_candidates[("m", "/v1/chat/completions")][0]
+    assert cand.is_hot
+
+
+def test_latest_benchmarks_ignore_fake_zero_startups():
+    rows = [  # newest first
+        BenchmarkResult(
+            provider_id=1,
+            model_name="m",
+            protocol="llamacpp",
+            startup_time_ms=None,
+            tokens_per_second=0.0,
+        ),
+        # What llama.cpp benchmarks stored before: always 0.
+        BenchmarkResult(
+            provider_id=1,
+            model_name="m",
+            protocol="llamacpp",
+            startup_time_ms=0.0,
+            tokens_per_second=30.0,
+        ),
+        BenchmarkResult(
+            provider_id=1,
+            model_name="m",
+            protocol="llamacpp",
+            startup_time_ms=12.0,
+            tokens_per_second=30.0,
+        ),
+    ]
+    merged = latest_benchmarks(rows)[(1, "m", "llamacpp")]
+    assert merged.startup_time_ms is None
+    # The newest run measured a speed (0), so older speeds do not replace it.
+    assert merged.tokens_per_second == 0.0
 
 
 def test_latest_benchmarks_keep_last_measured_startup():

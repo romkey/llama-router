@@ -120,6 +120,19 @@ class BenchmarkResult(BaseModel):
     created_at: datetime | None = None
 
 
+# A load faster than this means the model was already loaded: the run did not
+# measure a cold start. Even a small model read from the page cache takes
+# longer to load.
+COLD_START_MIN_MS = 50.0
+
+
+def measured_cold_start(startup_ms: float | None) -> float | None:
+    """*startup_ms* if it is a real cold-start measurement, else None."""
+    if startup_ms is None or startup_ms < COLD_START_MIN_MS:
+        return None
+    return startup_ms
+
+
 def model_in_api(model: "ProviderModel", api: str, provider_type: ProviderType) -> bool:
     """Whether *model* is served on the provider's *api* ("ollama"/"llamacpp")."""
     details = model.details or {}

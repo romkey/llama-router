@@ -20,6 +20,7 @@ from .llamacpp_client import LlamaCppClient
 from .models import (
     BenchmarkResult,
     HotModel,
+    measured_cold_start,
     Provider,
     ProviderAddress,
     ProviderInfo,
@@ -939,9 +940,6 @@ class ProviderManager:
             raise RuntimeError(f"Provider {provider_id} not found")
 
         backend_name = await self._db.get_backend_model_name(provider_id, model_name)
-        was_loaded = model_name in self.hot_model_names(
-            provider_id
-        ) or self.stats.is_warm(provider_id, model_name)
         log_endpoint = "auto-benchmark" if source == "auto" else "benchmark"
 
         start = time.monotonic()
@@ -995,7 +993,9 @@ class ProviderManager:
                 provider_id=provider_id,
                 model_name=model_name,
                 protocol=protocol,
-                startup_time_ms=None if was_loaded else metrics["startup_time_ms"],
+                # The backend's own load time says whether this was a cold
+                # start; the router's view of what is loaded can be stale.
+                startup_time_ms=measured_cold_start(metrics["startup_time_ms"]),
                 tokens_per_second=metrics["tokens_per_second"],
                 source=source,
             )
