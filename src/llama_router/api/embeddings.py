@@ -36,7 +36,7 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
         )
 
     provider = result.provider
-    routed = result.resolved_model
+    routed = result.model_key
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 

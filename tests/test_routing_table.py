@@ -187,6 +187,8 @@ async def test_round_trip_breaks_ties(db: Database, pm: ProviderManager):
         await _bench(db, p.id, "m", startup=200, tps=50)
     near_addr = await db.add_address(near.id, "http://near")
     far_addr = await db.add_address(far.id, "http://far")
+    await db.set_address_live(near_addr.id, True)
+    await db.set_address_live(far_addr.id, True)
     pm.stats.record_rtt(far.id, far_addr.id, 80.0)
     pm.stats.record_rtt(near.id, near_addr.id, 2.0)
     rt = Router(db, pm)
@@ -450,3 +452,56 @@ async def test_legacy_sha256_keys_still_work(db: Database):
     await db.set_allow_unauthenticated(False)
     prefs = await routing_preferences_from_request(db, _key_request(key))
     assert prefs.mode == "latency" and prefs.allow_fallback is False
+
+
+async def test_dead_address_round_trips_are_ignored(db: Database, pm: ProviderManager):
+    p = await _provider(db, "srv", ["m"])
+    addr = await db.add_address(p.id, "http://srv")
+    pm.stats.record_rtt(p.id, addr.id, 1.0)
+    rt = Router(db, pm)
+    table = await rt.rebuild()
+    assert table.all_candidates[("m", None)][0].rtt_ms is None
+    await db.set_address_live(addr.id, True)
+    table = await rt.rebuild()
+    assert table.all_candidates[("m", None)][0].rtt_ms == pytest.approx(1.0)
+
+
+async def test_raw_name_requests_use_discovered_name_for_stats(
+    db: Database, pm: ProviderManager
+):
+    p = await db.add_provider("srv")
+    await db.update_provider_status(p.id, ProviderStatus.IDLE)
+    await db.set_provider_models(
+        p.id,
+        [ProviderModel(provider_id=p.id, name="clean", raw_name="reg.io/clean:1")],
+    )
+    rt = Router(db, pm)
+    r = await rt.route("reg.io/clean:1")
+    assert r.resolved_model == "reg.io/clean:1"
+    assert r.model_key == "clean"
+
+
+async def test_key_deleted_during_lookup_is_not_cached(db: Database, monkeypatch):
+    key = "lrk_racing"
+    key_id = await db.create_api_key("lrk_racing", key_hash(key), "latency", True)
+    await db.set_allow_unauthenticated(False)
+    orig = db.lookup_api_key
+    deleted = False
+
+    async def lookup_then_delete(h):
+        nonlocal deleted
+        row = await orig(h)
+        if row and not deleted:
+            deleted = True
+            await db.delete_api_key(key_id)
+        return row
+
+    monkeypatch.setattr(db, "lookup_api_key", lookup_then_delete)
+    # The in-flight request still gets its answer...
+    assert await routing_preferences_from_request(db, _key_request(key)) is not None
+    # ...but the deleted key must not keep working from the cache.
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as err:
+        await routing_preferences_from_request(db, _key_request(key))
+    assert err.value.status_code == 401

@@ -63,6 +63,9 @@ class _AuthCache:
         self.allow_unauthenticated: bool | None = None
         self.prefs: dict[str, tuple[float, int, RoutingPreferences]] = {}
         self.touched: dict[int, float] = {}
+        # Bumped on every clear. A lookup that started before a clear must
+        # not store its (possibly stale) answer afterwards.
+        self.generation = 0
         db.add_change_listener(self._on_change)
 
     def _on_change(self, reason: str) -> None:
@@ -70,6 +73,7 @@ class _AuthCache:
             self.clear()
 
     def clear(self) -> None:
+        self.generation += 1
         self.allow_unauthenticated = None
         self.prefs.clear()
 
@@ -91,9 +95,14 @@ def invalidate_auth_cache(db: Database) -> None:
 
 
 async def _allow_unauthenticated(db: Database, cache: _AuthCache) -> bool:
-    if cache.allow_unauthenticated is None:
-        cache.allow_unauthenticated = await db.get_allow_unauthenticated()
-    return cache.allow_unauthenticated
+    cached = cache.allow_unauthenticated
+    if cached is not None:
+        return cached
+    generation = cache.generation
+    value = await db.get_allow_unauthenticated()
+    if cache.generation == generation:
+        cache.allow_unauthenticated = value
+    return value
 
 
 async def _resolve_key(
@@ -147,6 +156,7 @@ async def routing_preferences_from_request(
             spawn(db.touch_api_key(key_id), name="touch-api-key")
         return prefs
 
+    generation = cache.generation
     resolved = await _resolve_key(db, key, fingerprint)
     if resolved is None:
         if await _allow_unauthenticated(db, cache):
@@ -155,6 +165,10 @@ async def routing_preferences_from_request(
     prefs, key_id = resolved
     # lookup_api_key just wrote last_used_at.
     cache.touched[key_id] = now
+    if cache.generation != generation:
+        # A key, pin or policy changed while we looked it up; answer this
+        # request but do not cache what may already be stale.
+        return prefs
     if len(cache.prefs) >= _MAX_CACHED_KEYS:
         cache.prefs.clear()
     cache.prefs[fingerprint] = (now, key_id, prefs)

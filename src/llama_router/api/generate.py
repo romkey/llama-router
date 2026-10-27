@@ -37,7 +37,7 @@ async def generate(request: Request):
         )
 
     provider = route_result.provider
-    routed = route_result.resolved_model
+    routed = route_result.model_key
     if route_result.resolved_model != model:
         body["model"] = route_result.resolved_model
 

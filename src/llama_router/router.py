@@ -46,18 +46,22 @@ _MAX_REASONS = 20
 class RouteResult:
     """Wraps a routing decision, including which model was actually resolved."""
 
-    __slots__ = ("provider", "resolved_model", "backend_model")
+    __slots__ = ("provider", "resolved_model", "backend_model", "model_key")
 
     def __init__(
         self,
         provider: Provider,
         resolved_model: str,
         backend_model: str | None = None,
+        model_key: str | None = None,
     ):
         self.provider = provider
         self.resolved_model = resolved_model
         # The name the chosen backend knows the model by.
         self.backend_model = backend_model or resolved_model
+        # The model's discovered name, which live stats are keyed by. Differs
+        # from resolved_model when the client asked by raw (backend) name.
+        self.model_key = model_key or resolved_model
 
 
 @dataclass(slots=True)
@@ -249,7 +253,10 @@ class Router:
                                 candidate_model,
                             )
                         return RouteResult(
-                            pinned.provider, candidate_model, pinned.backend_model
+                            pinned.provider,
+                            candidate_model,
+                            pinned.backend_model,
+                            pinned.model,
                         )
             ranked = table.ranked.get((candidate_model, protocol, mode))
             if not ranked:
@@ -268,7 +275,9 @@ class Router:
                 mode,
                 chosen.provider.name,
             )
-            return RouteResult(chosen.provider, candidate_model, chosen.backend_model)
+            return RouteResult(
+                chosen.provider, candidate_model, chosen.backend_model, chosen.model
+            )
         return None
 
     @staticmethod

@@ -300,7 +300,9 @@ def build_table(
             for a in inputs.addresses.get(pid, [])
             if a.is_live and a.id is not None
         ]
-        rtt = stats.rtt_ms(pid, live_ids or None) if stats else None
+        # Only live addresses count: an address that stopped answering keeps
+        # its old samples, which must not make the provider look fast.
+        rtt = stats.rtt_ms(pid, live_ids) if stats and live_ids else None
         missing = _missing_endpoints(p)
         gpu_bytes = p.gpu_ram_bytes
         for m in models:

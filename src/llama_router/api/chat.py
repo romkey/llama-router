@@ -37,7 +37,7 @@ async def chat(request: Request):
         )
 
     provider = result.provider
-    routed = result.resolved_model
+    routed = result.model_key
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 

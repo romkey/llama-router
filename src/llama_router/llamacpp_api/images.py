@@ -36,7 +36,7 @@ async def images_generations(request: Request):
         )
 
     provider = result.provider
-    routed = result.resolved_model
+    routed = result.model_key
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
@@ -136,7 +136,7 @@ async def images_edits(request: Request):
         )
 
     provider = result.provider
-    routed = result.resolved_model
+    routed = result.model_key
     assert provider.id is not None
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
