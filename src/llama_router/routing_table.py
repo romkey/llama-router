@@ -144,14 +144,36 @@ async def load_inputs(db: Database) -> RoutingInputs:
     addresses: dict[int, list[ProviderAddress]] = {}
     for a in await db.get_all_addresses():
         addresses.setdefault(a.provider_id, []).append(a)
-    # Newest first: keep the first row seen per (provider, model, protocol)
-    # and per (provider, model) for protocol-agnostic routing.
-    benchmarks: dict[tuple[int, str, str | None], BenchmarkResult] = {}
-    for b in await db.get_all_benchmark_results():
-        benchmarks.setdefault((b.provider_id, b.model_name, b.protocol), b)
-        benchmarks.setdefault((b.provider_id, b.model_name, None), b)
+    benchmarks = latest_benchmarks(await db.get_all_benchmark_results())
     fallbacks = await db.get_all_model_fallbacks()
     return RoutingInputs(providers, models, addresses, benchmarks, fallbacks)
+
+
+def latest_benchmarks(
+    rows: list[BenchmarkResult],
+) -> dict[tuple[int, str, str | None], BenchmarkResult]:
+    """Latest measured startup and speed per (provider, model, protocol).
+
+    Also keyed with protocol None for protocol-agnostic routing. *rows* are
+    newest first. Startup and speed are taken separately, each from the
+    newest run that measured it: a run on an already-loaded model records no
+    startup and must not erase the last real cold-start measurement.
+    """
+    merged: dict[tuple[int, str, str | None], BenchmarkResult] = {}
+    for b in rows:
+        for key in (
+            (b.provider_id, b.model_name, b.protocol),
+            (b.provider_id, b.model_name, None),
+        ):
+            cur = merged.get(key)
+            if cur is None:
+                merged[key] = b.model_copy()
+                continue
+            if cur.startup_time_ms is None and b.startup_time_ms is not None:
+                cur.startup_time_ms = b.startup_time_ms
+            if not cur.tokens_per_second and b.tokens_per_second:
+                cur.tokens_per_second = b.tokens_per_second
+    return merged
 
 
 def fallback_chains(

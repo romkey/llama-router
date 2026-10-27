@@ -14,6 +14,7 @@ _db: Database | None = None
 _pm: ProviderManager | None = None
 _blob_cache: BlobCache | None = None
 _worker_link: WorkerLinkManager | None = None
+_auto_benchmark = None
 _dashboard_session_secret_cache: str | None = None
 
 
@@ -31,6 +32,22 @@ def init_cache(cache: BlobCache) -> None:
 def init_worker_link(manager: WorkerLinkManager) -> None:
     global _worker_link
     _worker_link = manager
+
+
+def init_auto_benchmark(manager) -> None:
+    global _auto_benchmark
+    _auto_benchmark = manager
+
+
+def get_auto_benchmark():
+    """The auto-benchmarker, creating an idle (not started) one for tests."""
+    global _auto_benchmark
+    from ..auto_benchmark import AutoBenchmarker
+
+    db, pm = get_db(), get_pm()
+    if _auto_benchmark is None or _auto_benchmark._db is not db:
+        _auto_benchmark = AutoBenchmarker(db, pm)
+    return _auto_benchmark
 
 
 def get_worker_link() -> WorkerLinkManager:

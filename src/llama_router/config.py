@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     llamacpp_port: int = 8080
     health_check_interval_seconds: int = 30
     benchmark_prompt: str = "Write a short sentence about the weather."
+    # Idle auto-benchmarking. Defaults for the dashboard settings of the same
+    # name; the dashboard values win once saved.
+    auto_benchmark_enabled: bool = True
+    # A provider counts as idle after this long without a proxied request.
+    auto_benchmark_idle_seconds: int = 300
+    # Benchmarks older than this are run again.
+    auto_benchmark_max_age_days: float = 7.0
+    # How often the scheduler looks for work.
+    auto_benchmark_check_seconds: int = 60
+    # Providers benchmarked at once (each provider runs one at a time).
+    auto_benchmark_concurrency: int = 1
     cache_enabled: bool = True
     cache_dir: str = "./model_cache"
     cache_host: str = "0.0.0.0"

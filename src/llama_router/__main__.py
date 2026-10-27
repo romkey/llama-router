@@ -9,6 +9,7 @@ import uvicorn
 
 from .config import settings
 from .database import Database
+from .auto_benchmark import AutoBenchmarker
 from .provider_manager import ProviderManager
 from .request_logger import attach_stats
 from .router import Router
@@ -45,10 +46,13 @@ async def run() -> None:
     attach_stats(pm.stats)
     # Build the first routing table before any API accepts requests.
     await rt.start()
+    auto_bench = AutoBenchmarker(db, pm)
+    await auto_bench.start()
 
     api_deps.init(db, pm, rt)
     dash_deps.init(db, pm)
     dash_deps.init_worker_link(worker_link)
+    dash_deps.init_auto_benchmark(auto_bench)
     lcpp_deps.init(db, pm, rt)
 
     dashboard_config = uvicorn.Config(
@@ -115,6 +119,7 @@ async def run() -> None:
         await asyncio.gather(*(s.serve() for s in servers))
     finally:
         await worker_link.stop()
+        await auto_bench.stop()
         await rt.stop()
         await pm.worker_hub.close_all()
         await pm.stop()

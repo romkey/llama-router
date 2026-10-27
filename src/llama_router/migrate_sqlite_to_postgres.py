@@ -93,6 +93,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "protocol",
             "startup_time_ms",
             "tokens_per_second",
+            "source",
             "created_at",
         ],
     ),
