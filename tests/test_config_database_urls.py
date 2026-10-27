@@ -79,3 +79,21 @@ def test_sync_url_accepts_explicit_async_url_argument() -> None:
         "postgresql+asyncpg://localhost/db"
     )
     assert "postgresql+psycopg" in out
+
+
+@pytest.mark.parametrize(
+    "async_url",
+    [
+        "postgresql+asyncpg://user:s3cr%40t@db:5432/app",
+        "mysql+asyncmy://root:s3cr%40t@db:3306/router",
+        "mariadb+asyncmy://root:s3cr%40t@db:3306/router",
+    ],
+)
+def test_sync_url_keeps_the_password(
+    monkeypatch: pytest.MonkeyPatch, async_url: str
+) -> None:
+    """Alembic must receive the real password, not SQLAlchemy's "***" mask."""
+    monkeypatch.setattr(config.settings, "database_url", async_url)
+    sync_url = config.settings.sync_database_url_for_alembic()
+    assert "***" not in sync_url
+    assert make_url(sync_url).password == "s3cr@t"
