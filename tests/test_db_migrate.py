@@ -9,7 +9,7 @@ import pytest
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 
-HEAD = "011_provider_presets"
+HEAD = "012_locality"
 
 
 def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -366,5 +366,61 @@ def test_upgrade_009_splits_both_providers(
         )
         assert pins == {"a": 1, "b": new_id}
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        con.close()
+
+
+def test_upgrade_012_classes_existing_providers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from alembic import command
+
+    dbfile = tmp_path / "pre_012.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    sync_url = config.settings.sync_database_url_for_alembic()
+    command.upgrade(_alembic_cfg(sync_url), "011_provider_presets")
+    con = sqlite3.connect(dbfile)
+    try:
+        con.executemany(
+            "INSERT INTO providers (id, name, protocol, preset, worker_name) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (1, "lan", "ollama", None, None),
+                (2, "openai", "openai", "openai", None),
+                (3, "public", "openai", None, None),
+                (4, "edge", "ollama", None, "edge"),
+                (5, "bare", "ollama", None, None),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO provider_addresses (provider_id, url, is_preferred) "
+            "VALUES (?, ?, 1)",
+            [
+                (1, "http://192.168.1.9:11434"),
+                (2, "http://10.0.0.1"),  # the preset decides, not the URL
+                (3, "https://llm.example.com/v1"),
+                (4, "worker://edge"),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    run_upgrade_sync(sync_url)
+
+    con = sqlite3.connect(dbfile)
+    try:
+        got = dict(con.execute("SELECT name, locality FROM providers"))
+        assert got == {
+            "lan": "local",
+            "openai": "cloud",
+            "public": "cloud",
+            "edge": "local",
+            "bare": "local",
+        }
+        for table in ("api_keys", "request_log"):
+            cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+            assert "locality" in cols
     finally:
         con.close()

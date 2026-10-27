@@ -30,7 +30,7 @@
     <div>
         <h2>
             {{ info.provider.name }}
-            <span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body fs-6 align-middle me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
+            {% if info.provider.is_cloud %}<span class="badge bg-warning text-dark fs-6 align-middle me-1" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud me-1"></i>cloud</span>{% endif %}<span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body fs-6 align-middle me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
             {% if info.provider.has_api_key %}<span class="badge bg-secondary fs-6 align-middle me-1" title="Requests to this provider carry an API key"><i class="bi bi-key"></i></span>{% endif %}
             <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle" title="{{ info.status_detail or '' }}">
                 {{ info.provider.status.value }}
@@ -458,6 +458,14 @@
                 </div>
                 <p class="form-text">Change where this provider is reached under <strong>Addresses</strong>.</p>
                 <input type="hidden" name="settings_form" value="1">
+                <div class="mb-3">
+                    <label for="edit-locality" class="form-label">Where it runs</label>
+                    <select class="form-select" id="edit-locality" name="locality">
+                        <option value="local" {% if not info.provider.is_cloud %}selected{% endif %}>Local: this machine, the LAN or a tailnet</option>
+                        <option value="cloud" {% if info.provider.is_cloud %}selected{% endif %}>Cloud: prompts leave your network</option>
+                    </select>
+                    <div class="form-text">API keys limited to local providers never reach a cloud one.</div>
+                </div>
                 {% if not info.provider.is_worker %}
                 <div class="mb-3">
                     <label for="edit-extra-headers" class="form-label">Extra headers</label>

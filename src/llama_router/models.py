@@ -88,6 +88,13 @@ class Provider(BaseModel):
     extra_headers: dict[str, str] | None = None
     # Models added by hand, for services that cannot list (all of) theirs.
     manual_models: list[str] | None = None
+    # "local" (this machine, the LAN, a tailnet) or "cloud". API keys can be
+    # limited to one; see upstream_url.guess_locality for the default.
+    locality: str = "local"
+
+    @property
+    def is_cloud(self) -> bool:
+        return self.locality == "cloud"
 
     @property
     def is_worker(self) -> bool:
@@ -234,6 +241,8 @@ class RequestLog(BaseModel):
     status: str = "ok"  # "ok" or "error"
     streamed: bool = False
     error_detail: str | None = None
+    # Locality of the provider that served it: "local" or "cloud".
+    locality: str | None = None
     created_at: datetime | None = None
 
 

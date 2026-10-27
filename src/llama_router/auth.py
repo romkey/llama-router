@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import time
 import weakref
+from dataclasses import replace
 from secrets import token_urlsafe
+from typing import Any
 
 from fastapi import HTTPException, Request
 
@@ -13,6 +15,7 @@ from .config import settings
 from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
 from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
+from .upstream_url import LOCALITIES
 
 _PBKDF2_ROUNDS = 390_000
 # Resolved keys are reused for this long unless an edit invalidates them.
@@ -130,13 +133,43 @@ async def _resolve_key(
         pinned_providers={str(p["model_name"]): int(p["provider_id"]) for p in pins},
         session_affinity=record.get("session_affinity"),
         key_id=int(record["id"]),
+        locality=_locality(record.get("locality")),
     )
     return prefs, int(record["id"])
+
+
+LOCALITY_HEADER = "X-Llama-Router-Locality"
+
+
+def _locality(value: Any) -> str | None:
+    v = str(value or "").strip().lower()
+    return v if v in LOCALITIES else None
+
+
+def _narrow_locality(
+    request: Request, prefs: RoutingPreferences | None
+) -> RoutingPreferences | None:
+    """Apply the request's locality header, which may narrow the key's
+    setting (from either to local or cloud) but never widen or flip it."""
+    wanted = _locality(request.headers.get(LOCALITY_HEADER))
+    if wanted is None:
+        return prefs
+    if prefs is None:
+        return RoutingPreferences(locality=wanted)
+    if prefs.locality is not None:
+        return prefs
+    return replace(prefs, locality=wanted)
 
 
 async def routing_preferences_from_request(
     db: Database, request: Request
 ) -> RoutingPreferences | None:
+    """The request's routing preferences: its API key's, narrowed by the
+    X-Llama-Router-Locality header."""
+    return _narrow_locality(request, await _key_preferences(db, request))
+
+
+async def _key_preferences(db: Database, request: Request) -> RoutingPreferences | None:
     cache = _cache_for(db)
     raw_key = request.headers.get("API-KEY")
     key = (raw_key or "").strip()

@@ -11,6 +11,7 @@ any other URL is a server root with the API at ``/v1`` below it.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from urllib.parse import urlsplit
 
@@ -53,3 +54,50 @@ def api_path_for(url: str, path: str) -> str:
     if path == "/v1" or path.startswith("/v1/"):
         return api + path[3:]
     return path
+
+
+LOCAL = "local"
+CLOUD = "cloud"
+LOCALITIES = (LOCAL, CLOUD)
+
+_LOCAL_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa", ".ts.net")
+_LOCAL_NETWORKS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "100.64.0.0/10",  # carrier-grade NAT, used by Tailscale
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
+
+
+def guess_locality(url: str) -> str:
+    """``local`` for an address on this machine or a private network, else
+    ``cloud``.
+
+    Private, loopback, link-local and Tailscale (100.64.0.0/10) addresses,
+    hostnames without a dot, and names under .local, .lan, .home, .internal,
+    .home.arpa or .ts.net count as local. A home server reached through a
+    public name guesses wrong; the provider's setting can be changed.
+    """
+    raw = (url or "").strip()
+    if raw.startswith("worker://"):
+        return LOCAL
+    host = (urlsplit(raw).hostname or "").lower().rstrip(".")
+    if not host:
+        return LOCAL
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        if "." not in host or host.endswith(_LOCAL_SUFFIXES) or host == "localhost":
+            return LOCAL
+        return CLOUD
+    if any(ip in net for net in _LOCAL_NETWORKS):
+        return LOCAL
+    return CLOUD

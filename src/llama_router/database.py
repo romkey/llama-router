@@ -299,6 +299,7 @@ class Database:
         "preset": False,
         "extra_headers": True,
         "manual_models": True,
+        "locality": False,
     }
 
     @_notifies(CHANGE_PROVIDERS)
@@ -624,8 +625,8 @@ class Database:
             "INSERT INTO request_log "
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
-            "router_ms, status, streamed, error_detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "router_ms, status, streamed, error_detail, locality) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -642,6 +643,7 @@ class Database:
                 entry.status,
                 int(entry.streamed),
                 entry.error_detail,
+                entry.locality,
             ),
         )
 
@@ -792,30 +794,41 @@ class Database:
         routing_mode: str,
         allow_fallback: bool,
         session_affinity: bool | None = None,
+        locality: str | None = None,
     ) -> int:
         return await self._insert_get_id(
             "INSERT INTO api_keys "
-            "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
+            "locality) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
                 routing_mode,
                 int(allow_fallback),
                 None if session_affinity is None else int(session_affinity),
+                locality,
             ),
+        )
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_locality(self, key_id: int, locality: str | None) -> bool:
+        """Limit a key to local or cloud providers (None: either)."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET locality = ? WHERE id = ?", (locality, key_id)
+            )
         )
 
     async def list_api_keys(self) -> list[dict]:
         rows = await self._select_all(
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
-            "k.created_at, k.last_used_at, "
+            "k.locality, k.created_at, k.last_used_at, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
             "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
-            "k.session_affinity, k.created_at, k.last_used_at "
+            "k.session_affinity, k.locality, k.created_at, k.last_used_at "
             "ORDER BY k.created_at DESC"
         )
         return [
@@ -825,6 +838,7 @@ class Database:
                 "routing_mode": r["routing_mode"],
                 "allow_fallback": bool(r["allow_fallback"]),
                 "session_affinity": _tristate(r["session_affinity"]),
+                "locality": r["locality"],
                 "created_at": r["created_at"],
                 "last_used_at": r["last_used_at"],
                 "pin_count": int(r["pin_count"] or 0),
@@ -838,8 +852,8 @@ class Database:
 
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
-            "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity "
-            "FROM api_keys "
+            "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
+            "locality FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -855,6 +869,7 @@ class Database:
             "routing_mode": row["routing_mode"],
             "allow_fallback": bool(row["allow_fallback"]),
             "session_affinity": _tristate(row["session_affinity"]),
+            "locality": row["locality"],
         }
 
     async def touch_api_key(self, key_id: int) -> None:
@@ -1095,6 +1110,7 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         preset=row["preset"],
         extra_headers=_json_or_none(row["extra_headers"]),
         manual_models=_json_list_or_none(row["manual_models"]),
+        locality=row["locality"] or "local",
     )
 
 
@@ -1173,5 +1189,6 @@ def _row_to_request_log(row: Mapping[str, Any]) -> RequestLog:
         status=row["status"],
         streamed=bool(row["streamed"]),
         error_detail=row["error_detail"],
+        locality=row.get("locality"),
         created_at=row["created_at"],
     )

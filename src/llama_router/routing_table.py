@@ -34,6 +34,7 @@ from .models import (
     measured_cold_start,
 )
 from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
+from .upstream_url import LOCALITIES
 
 MODES = ("latency", "throughput", "balanced")
 DEFAULT_MODE = "balanced"
@@ -357,6 +358,11 @@ class RoutingTable:
     ranked: dict[tuple[str, str, str], tuple[Candidate, ...]] = field(
         default_factory=dict
     )
+    # The same, for keys limited to one locality: (model, endpoint, mode,
+    # locality). The best tier is chosen among that locality's providers only.
+    ranked_by_locality: dict[tuple[str, str, str, str], tuple[Candidate, ...]] = field(
+        default_factory=dict
+    )
     chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
     chaos: dict[str | None, tuple[tuple[Provider, tuple[str, ...]], ...]] = field(
         default_factory=dict
@@ -366,6 +372,14 @@ class RoutingTable:
 
     def chain(self, model: str) -> tuple[str, ...]:
         return self.chains.get(model) or (model,)
+
+    def ranked_for(
+        self, model: str, endpoint: str, mode: str, locality: str | None = None
+    ) -> tuple[Candidate, ...]:
+        """Ranked candidates, limited to *locality* when given."""
+        if locality is None:
+            return self.ranked.get((model, endpoint, mode), ())
+        return self.ranked_by_locality.get((model, endpoint, mode, locality), ())
 
     def backend_name(self, provider_id: int, model: str) -> str:
         return self.backend_names.get((provider_id, model), model)
@@ -500,14 +514,23 @@ def build_table(
                     if all(x.provider.id != pid for x in bucket):
                         bucket.append(c)
 
-    for (model, path), cands in grouped.items():
-        table.all_candidates[(model, path)] = tuple(cands)
+    def _rank(cands: list[Candidate]) -> dict[str, tuple[Candidate, ...]]:
         best_tier = min(c.tier for c in cands)
         usable = [c for c in cands if c.tier == best_tier]
-        for mode in MODES:
-            table.ranked[(model, path, mode)] = tuple(
-                sorted(usable, key=lambda c, m=mode: c.scores[m])
-            )
+        return {
+            mode: tuple(sorted(usable, key=lambda c, m=mode: c.scores[m]))
+            for mode in MODES
+        }
+
+    for (model, path), cands in grouped.items():
+        table.all_candidates[(model, path)] = tuple(cands)
+        for mode, ranked in _rank(cands).items():
+            table.ranked[(model, path, mode)] = ranked
+        for locality in LOCALITIES:
+            subset = [c for c in cands if c.provider.locality == locality]
+            if subset:
+                for mode, ranked in _rank(subset).items():
+                    table.ranked_by_locality[(model, path, mode, locality)] = ranked
 
     for protocol in PROTOCOLS:
         entries = []

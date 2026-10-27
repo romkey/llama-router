@@ -33,6 +33,7 @@ from ..cloud_presets import PRESETS, get_preset
 from ..models import ProviderProtocol, RequestLog
 from ..provider_manager import preset_settings
 from ..provider_secrets import format_extra_headers, parse_extra_headers
+from ..upstream_url import LOCALITIES
 from . import deps
 
 from .. import __version__
@@ -782,6 +783,7 @@ def _provider_status_payload(info: Any) -> dict[str, Any]:
         "status_detail": info.status_detail,
         "protocol": info.provider.protocol.value,
         "flavor": info.provider.flavor,
+        "locality": info.provider.locality,
         "is_worker": info.provider.is_worker,
         "model_count": len(info.models),
         "model_names": sorted({m.name for m in info.models}),
@@ -1017,6 +1019,7 @@ async def api_explain_routing(request: Request):
             },
             session_affinity=key.get("session_affinity"),
             key_id=key_id,
+            locality=key.get("locality"),
         )
         key_info = {"id": key_id, "key_prefix": key["key_prefix"]}
     else:
@@ -1031,6 +1034,7 @@ async def api_explain_routing(request: Request):
             mode=mode,
             allow_fallback=allow not in ("0", "false", "no", "off"),
             session_affinity=_tristate(q.get("session_affinity")),
+            locality=_key_locality(q.get("locality")),
         )
     session_id = (q.get("session_id") or "").strip()
     session = (
@@ -1065,6 +1069,7 @@ async def api_generate_key(request: Request):
     routing_mode = (body.get("routing_mode") or DEFAULT_MODE).strip().lower()
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
+    locality = _key_locality(body.get("locality"))
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     # PBKDF2 is slow; keep it off the event loop.
@@ -1077,6 +1082,7 @@ async def api_generate_key(request: Request):
         routing_mode=routing_mode,
         allow_fallback=allow_fallback,
         session_affinity=session_affinity,
+        locality=locality,
     )
     return JSONResponse(
         {
@@ -1084,8 +1090,22 @@ async def api_generate_key(request: Request):
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,
+            "locality": locality,
         }
     )
+
+
+@router.post("/api/keys/{key_id}/locality")
+async def api_set_key_locality(key_id: int, request: Request):
+    """Limit a key to local or cloud providers, or allow either (``any``)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    locality = _key_locality(body.get("locality"))
+    if not await deps.get_db().set_api_key_locality(key_id, locality):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse({"id": key_id, "locality": locality})
 
 
 @router.delete("/api/keys/{key_id}")
@@ -1188,6 +1208,25 @@ async def provider_detail(request: Request, provider_id: int):
     )
 
 
+def _parse_locality(value: str | None) -> str:
+    v = (value or "").strip().lower()
+    if v not in LOCALITIES:
+        raise ValueError("locality must be local or cloud")
+    return v
+
+
+def _key_locality(value: Any) -> str | None:
+    """An API key's locality from a request body: local, cloud, or any."""
+    v = str(value or "").strip().lower()
+    if v in ("", "any", "none", "either"):
+        return None
+    if v not in LOCALITIES:
+        raise HTTPException(
+            status_code=400, detail="locality must be local, cloud or any"
+        )
+    return v
+
+
 def _model_lines(text: str | None) -> list[str]:
     """Model names, one per line or comma-separated."""
     out: list[str] = []
@@ -1214,6 +1253,7 @@ async def add_provider(
     preset_resource: Optional[str] = Form(None),
     extra_headers: Optional[str] = Form(None),
     manual_models: Optional[str] = Form(None),
+    locality: Optional[str] = Form(None),
 ):
     """Create a provider; *url* becomes its first address. It is probed in the
     background, so the stored endpoint list does not wait on the dialog.
@@ -1241,6 +1281,8 @@ async def add_provider(
             settings_["manual_models"] = _model_lines(manual_models)
         if not url.strip():
             raise ValueError("URL is required")
+        if (locality or "auto") != "auto":
+            settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
@@ -1316,6 +1358,7 @@ async def edit_provider(
     extra_headers: Optional[str] = Form(None),
     manual_models: Optional[str] = Form(None),
     settings_form: Optional[str] = Form(None),
+    locality: Optional[str] = Form(None),
 ):
     """Edit provider details. A blank API key keeps the stored one.
 
@@ -1329,6 +1372,8 @@ async def edit_provider(
         if settings_form:
             settings_["extra_headers"] = parse_extra_headers(extra_headers) or None
             settings_["manual_models"] = _model_lines(manual_models) or None
+        if locality:
+            settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "Invalid protocol")
     try:

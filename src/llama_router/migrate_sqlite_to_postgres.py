@@ -59,6 +59,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "preset",
             "extra_headers",
             "manual_models",
+            "locality",
         ],
     ),
     (
@@ -120,6 +121,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "status",
             "streamed",
             "error_detail",
+            "locality",
             "created_at",
         ],
     ),
@@ -147,6 +149,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "routing_mode",
             "allow_fallback",
             "session_affinity",
+            "locality",
             "created_at",
             "last_used_at",
         ],

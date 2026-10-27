@@ -165,7 +165,7 @@
                                 </h5>
                                 <div>
                                     {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
-                                    <span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
+                                    {% if info.provider.is_cloud %}<span class="badge bg-warning text-dark me-1" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud me-1"></i>cloud</span>{% endif %}<span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
                                     <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status title="{{ info.status_detail or '' }}">
                                         {{ info.provider.status.value }}
                                     </span>
@@ -267,7 +267,7 @@
                                     {{ info.provider.name }}
                                 </a>
                             </td>
-                            <td><span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %} <span class="badge bg-body-secondary text-body" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}</td>
+                            <td>{% if info.provider.is_cloud %}<span class="badge bg-warning text-dark" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud"></i></span> {% endif %}<span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %} <span class="badge bg-body-secondary text-body" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}</td>
                             <td class="text-muted small" data-list-addresses>
                                 {% for addr in info.addresses %}
                                 <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
@@ -699,6 +699,14 @@
                             <input class="form-check-input" type="checkbox" id="new-key-fallback" checked>
                             <label class="form-check-label" for="new-key-fallback">Allow fallback models</label>
                         </div>
+                        <div class="mb-2">
+                            <label for="new-key-locality" class="form-label small text-muted mb-1">Providers</label>
+                            <select id="new-key-locality" class="form-select form-select-sm">
+                                <option value="any" selected>Local or cloud</option>
+                                <option value="local">Local only: prompts never leave your network</option>
+                                <option value="cloud">Cloud only</option>
+                            </select>
+                        </div>
                         <div class="mb-3">
                             <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
                             <select id="new-key-affinity" class="form-select form-select-sm">
@@ -898,7 +906,15 @@
                                     {% endif %}
                                 </select>
                             </div>
-                            <div class="col-12">
+                            <div class="col-sm-6">
+                                <label for="rx-locality" class="form-label small text-muted mb-1">Providers (routing modes only)</label>
+                                <select id="rx-locality" class="form-select form-select-sm">
+                                    <option value="any" selected>Local or cloud</option>
+                                    <option value="local">Local only</option>
+                                    <option value="cloud">Cloud only</option>
+                                </select>
+                            </div>
+                            <div class="col-sm-6">
                                 <label for="rx-session" class="form-label small text-muted mb-1">Session ID (optional)</label>
                                 <input id="rx-session" class="form-control form-control-sm" placeholder="X-Session-ID a client would send">
                             </div>
@@ -941,6 +957,8 @@
                                 '<div class="text-muted">' + esc(facts.join(" · ")) + "</div></td></tr>";
                         }).join("");
                         return '<div class="fw-semibold mt-2"><code>' + esc(s.model) + "</code> — " + esc(s.outcome) + "</div>" +
+                            (s.locality ? '<div class="text-muted">' + esc(s.locality) + "</div>" : "") +
+                            (s.pin_ignored ? '<div class="text-warning">Pin ignored: ' + esc(s.pin_ignored) + "</div>" : "") +
                             (rows ? '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Provider</th><th class="text-end">Score</th><th>Result</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "");
                     }
                     window.explainRoute = async function (ev) {
@@ -952,6 +970,7 @@
                             endpoint: document.getElementById("rx-endpoint").value
                         });
                         params.set(level[0] === "key" ? "key_id" : "mode", level[1]);
+                        if (level[0] !== "key") params.set("locality", document.getElementById("rx-locality").value);
                         var sid = document.getElementById("rx-session").value.trim();
                         if (sid) params.set("session_id", sid);
                         out.innerHTML = '<div class="text-muted">Working…</div>';
@@ -1000,6 +1019,7 @@
                                         <th>Priority</th>
                                         <th>Fallback</th>
                                         <th>Sessions</th>
+                                        <th>Providers</th>
                                         <th>Pins</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
@@ -1017,6 +1037,17 @@
                                         </td>
                                         <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
                                         <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
+                                        <td>
+                                            {% if read_only %}
+                                            {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
+                                            {% else %}
+                                            <select class="form-select form-select-sm" style="min-width: 7rem" onchange="setKeyLocality({{ k.id }}, this.value)" aria-label="Providers for key {{ k.key_prefix }}">
+                                                <option value="any" {% if not k.locality %}selected{% endif %}>any</option>
+                                                <option value="local" {% if k.locality == 'local' %}selected{% endif %}>local only</option>
+                                                <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
+                                            </select>
+                                            {% endif %}
+                                        </td>
                                         <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
                                         <td class="small text-muted">{{ k.created_at | localtime }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | localtime }}</td>
@@ -1169,6 +1200,13 @@
                         </select>
                     </div>
                     <div class="col-md-2">
+                        <select class="form-select form-select-sm" id="log-filter-locality">
+                            <option value="">Local and cloud</option>
+                            <option value="local">Local</option>
+                            <option value="cloud">Cloud (left the network)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
                         <select class="form-select form-select-sm" id="log-filter-status">
                             <option value="">All statuses</option>
                             <option value="ok">OK</option>
@@ -1219,6 +1257,7 @@
                         class="log-entry-row {% if entry.status == 'error' %}table-danger{% endif %}"
                         data-entry-id="{{ entry.id }}"
                         data-protocol="{{ entry.protocol }}"
+                        data-locality="{{ entry.locality or '' }}"
                         data-status="{{ entry.status }}"
                         data-endpoint="{{ entry.endpoint | lower }}"
                         data-model="{{ (entry.model or '') | lower }}"
@@ -1232,7 +1271,7 @@
                         <td class="small text-muted">{{ entry.request_meta or "—" }}</td>
                         <td class="small">
                             {% if entry.provider_id %}
-                            <a href="/providers/{{ entry.provider_id }}" class="text-decoration-none">{{ entry.provider_name }}</a>
+                            <a href="/providers/{{ entry.provider_id }}" class="text-decoration-none">{{ entry.provider_name }}</a>{% if entry.locality == 'cloud' %} <i class="bi bi-cloud text-warning" title="Served by a cloud provider"></i>{% endif %}
                             {% else %}
                             —
                             {% endif %}
@@ -1546,6 +1585,15 @@
                     </select>
                     <div class="form-text">One protocol per provider. To use both APIs of one server, add it twice.</div>
                 </div>
+                <div class="mb-3">
+                    <label for="locality" class="form-label">Where it runs</label>
+                    <select class="form-select" id="locality" name="locality">
+                        <option value="auto" selected>Work it out from the URL</option>
+                        <option value="local">Local: this machine, the LAN or a tailnet</option>
+                        <option value="cloud">Cloud: prompts leave your network</option>
+                    </select>
+                    <div class="form-text">API keys can be limited to local or cloud providers.</div>
+                </div>
                 <p class="text-muted small mb-2">First address (add more later on the provider page)</p>
                 <div class="mb-3" id="url-group">
                     <label for="url" class="form-label">URL</label>
@@ -1815,6 +1863,7 @@ function applyPreset(id) {
     url.readOnly = !!(p && p.url_params.resource !== undefined);
     url.value = p ? presetUrl(p) : '';
     document.getElementById('protocol').value = p ? p.protocol : 'ollama';
+    document.getElementById('locality').value = p ? 'cloud' : 'auto';
     toggleUrlFields();
     document.getElementById('api_key_header').value = p ? (p.api_key_header || '') : '';
     document.getElementById('extra_headers').value = p
@@ -2246,6 +2295,7 @@ function initLogFilters() {
 
     const controls = {
         protocol: document.getElementById('log-filter-protocol'),
+        locality: document.getElementById('log-filter-locality'),
         status: document.getElementById('log-filter-status'),
         meta: document.getElementById('log-filter-meta'),
         endpoint: document.getElementById('log-filter-endpoint'),
@@ -2254,7 +2304,7 @@ function initLogFilters() {
     };
 
     const apply = function() { applyLogFilters(); };
-    ['protocol', 'status', 'meta'].forEach(function(k) {
+    ['protocol', 'locality', 'status', 'meta'].forEach(function(k) {
         if (controls[k]) controls[k].addEventListener('change', apply);
     });
     ['endpoint', 'model'].forEach(function(k) {
@@ -2263,6 +2313,7 @@ function initLogFilters() {
     if (controls.clear) {
         controls.clear.addEventListener('click', function() {
             if (controls.protocol) controls.protocol.value = '';
+            if (controls.locality) controls.locality.value = '';
             if (controls.status) controls.status.value = '';
             if (controls.meta) controls.meta.value = '';
             if (controls.endpoint) controls.endpoint.value = '';
@@ -2276,6 +2327,7 @@ function initLogFilters() {
 function applyLogFilters() {
     const protocol = (document.getElementById('log-filter-protocol')?.value || '').toLowerCase();
     const status = (document.getElementById('log-filter-status')?.value || '').toLowerCase();
+    const locality = (document.getElementById('log-filter-locality')?.value || '').toLowerCase();
     const metaMode = (document.getElementById('log-filter-meta')?.value || '').toLowerCase();
     const endpoint = (document.getElementById('log-filter-endpoint')?.value || '').trim().toLowerCase();
     const model = (document.getElementById('log-filter-model')?.value || '').trim().toLowerCase();
@@ -2292,6 +2344,7 @@ function applyLogFilters() {
         let ok = true;
         if (protocol && p !== protocol) ok = false;
         if (status && s !== status) ok = false;
+        if (locality && (row.dataset.locality || '') !== locality) ok = false;
         if (endpoint && !e.includes(endpoint)) ok = false;
         if (model && !m.includes(model)) ok = false;
         if (metaMode === 'with' && !meta) ok = false;
@@ -2526,10 +2579,12 @@ function generateApiKey() {
     var allowFallback = document.getElementById('new-key-fallback').checked;
     var affinityEl = document.getElementById('new-key-affinity');
     var affinity = affinityEl ? affinityEl.value : 'default';
+    var localityEl = document.getElementById('new-key-locality');
+    var locality = localityEl ? localityEl.value : 'any';
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -2546,6 +2601,17 @@ function generateApiKey() {
         setTimeout(function() { location.reload(); }, 1000);
     })
     .catch(function(err) { alert(err.message || 'Failed to generate key'); });
+}
+
+function setKeyLocality(keyId, locality) {
+    if (!dashRequireWrite()) return;
+    fetch('/api/keys/' + keyId + '/locality', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({locality: locality})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+    }).catch(function(err) { alert(err.message || 'Failed to update key'); location.reload(); });
 }
 
 function copyGeneratedKey() {

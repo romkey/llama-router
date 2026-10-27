@@ -258,6 +258,7 @@ async def log_request(
         status=status,
         streamed=streamed,
         error_detail=error_detail,
+        locality=provider.locality if provider else None,
     )
     await db.save_request_log(entry)
 

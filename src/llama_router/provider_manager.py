@@ -33,7 +33,7 @@ from .models import (
 )
 from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
-from .upstream_url import split_api_base
+from .upstream_url import guess_locality, split_api_base
 from .routing_stats import ProviderStats
 from .provider_secrets import (
     DEFAULT_HEADER,
@@ -115,6 +115,7 @@ def preset_settings(preset) -> dict[str, Any]:
         "preset": preset.id,
         "extra_headers": dict(preset.extra_headers) or None,
         "manual_models": list(preset.models) or None,
+        "locality": "cloud",
     }
 
 
@@ -423,6 +424,9 @@ class ProviderManager:
         manual_models, ...) written before the first check.
         """
         header = normalize_header(api_key_header) if api_key else None
+        provider_settings = dict(provider_settings or {})
+        if not provider_settings.get("locality"):
+            provider_settings["locality"] = guess_locality(url)
         provider = await self._db.add_provider(
             name,
             protocol,

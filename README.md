@@ -279,6 +279,21 @@ Affinity is on by default. Turn it off with `LLAMA_ROUTER_SESSION_AFFINITY_ENABL
 curl 'http://localhost/api/routing/explain?model=qwen2.5-coder:32b&session_id=my-session'
 ```
 
+### Local and cloud providers
+
+Every provider is **local** (this machine, the LAN, a tailnet) or **cloud**. The router works it out from the first address: private, loopback and Tailscale addresses, hostnames without a dot, and names under `.local`, `.lan`, `.home`, `.internal`, `.home.arpa` and `.ts.net` are local; everything else, and every cloud preset, is cloud. A home server reached through a public name is guessed wrong; change it on the provider's page.
+
+Each API key allows **local or cloud** (the default), **local only** or **cloud only**. A local-only key's prompts never reach a cloud provider: fallbacks, chaos mode and session affinity all stay within the key's providers, and a pin to a provider of the other kind is ignored (the Route Explorer says so). A key limited to local is routed among local providers even when a cloud one would score better.
+
+A client can narrow a key that allows both, for one request, with a header:
+
+```bash
+curl http://localhost:8080/v1/chat/completions -H 'API-KEY: lr_...' \
+  -H 'X-Llama-Router-Locality: local' -d '{"model": "qwen3:8b", "messages": [...]}'
+```
+
+The header never widens or flips a key's setting. The request log records whether each request was served locally or in the cloud and can be filtered on it.
+
 ### Endpoints
 
 Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to Ollama providers. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.

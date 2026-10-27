@@ -88,6 +88,8 @@ class RoutingPreferences:
     session_affinity: bool | None = None
     # The API key these came from, which scopes session affinity.
     key_id: int | None = None
+    # "local" or "cloud" limits routing to those providers; None allows both.
+    locality: str | None = None
 
 
 class Router:
@@ -321,8 +323,9 @@ class Router:
             session = None
         pins = preferences.pinned_providers if preferences else None
         mode = preferences.mode if preferences else DEFAULT_MODE
+        locality = preferences.locality if preferences else None
         if mode == "chaos" and not (pins and model_name in pins):
-            return self._route_chaos(table, model_name, ENDPOINTS[path][0])
+            return self._route_chaos(table, model_name, ENDPOINTS[path][0], locality)
         if mode not in MODES:
             mode = DEFAULT_MODE
 
@@ -337,6 +340,20 @@ class Router:
                 pid = pins.get(candidate_model)
                 if pid is not None:
                     pinned = self._pinned(table, candidate_model, path, pid)
+                    if pinned is not None and not _locality_ok(
+                        pinned.provider, locality
+                    ):
+                        # The key's locality outranks its pin: never send a
+                        # local-only key's request to a cloud provider.
+                        logger.warning(
+                            "Pin for %s to %s ignored: provider is %s, key "
+                            "requires %s",
+                            candidate_model,
+                            pinned.provider.name,
+                            pinned.provider.locality,
+                            locality,
+                        )
+                        pinned = None
                     if pinned is not None:
                         if candidate_model != model_name:
                             logger.info(
@@ -350,7 +367,7 @@ class Router:
                             pinned.backend_model,
                             pinned.model,
                         )
-            ranked = table.ranked.get((candidate_model, path, mode))
+            ranked = table.ranked_for(candidate_model, path, mode, locality)
             if not ranked:
                 continue
             chosen = None
@@ -434,10 +451,12 @@ class Router:
         pins = dict(preferences.pinned_providers) if preferences else {}
         mode = preferences.mode if preferences else DEFAULT_MODE
         allow_fallback = preferences.allow_fallback if preferences else True
+        locality = preferences.locality if preferences else None
         out: dict[str, Any] = {
             "request": {
                 "model": model_name,
                 "mode": mode,
+                "locality": locality or "any",
                 "endpoint": path,
                 "endpoint_class": endpoint_cls,
                 "protocol": protocol or "any",
@@ -468,6 +487,7 @@ class Router:
             out["chaos_pool"] = [
                 {"provider_id": p.id, "provider": p.name, "models": list(models)}
                 for p, models in table.chaos.get(protocol, ())
+                if _locality_ok(p, locality)
             ]
             if not out["chaos_pool"]:
                 out["summary"] = (
@@ -504,6 +524,7 @@ class Router:
                 active,
                 chosen_id,
                 bound,
+                locality,
             )
             out["steps"].append(step)
             if decision is not None and decision.resolved_model == candidate_model:
@@ -522,11 +543,12 @@ class Router:
         active,
         chosen_id: int | None = None,
         bound: int | None = None,
+        locality: str | None = None,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         rows: list[dict[str, Any]] = []
         all_cands = table.all_candidates.get((model, path), ())
-        ranked = table.ranked.get((model, path, mode), ())
+        ranked = table.ranked_for(model, path, mode, locality)
         ranked_ids = {c.provider_id for c in ranked}
         best_tier = ranked[0].tier if ranked else TIER_OK
         pid = pins.get(model)
@@ -534,6 +556,13 @@ class Router:
         if pid is not None:
             step["pinned_provider_id"] = pid
             pinned = next((c for c in all_cands if c.provider_id == pid), None)
+            if pinned is not None and not _locality_ok(pinned.provider, locality):
+                step["pin_ignored"] = (
+                    f"{pinned.provider.name} is {pinned.provider.locality}; "
+                    f"the key requires {locality}"
+                )
+                pinned = None
+        skipped = 0
 
         for c in all_cands:
             q = active(c.provider_id)
@@ -549,7 +578,12 @@ class Router:
                     "session_bound": bound is not None and c.provider_id == bound,
                 }
             )
-            if pinned is not None:
+            if not _locality_ok(c.provider, locality):
+                row["excluded"] = (
+                    f"provider is {c.provider.locality}; the key requires {locality}"
+                )
+                skipped += 1
+            elif pinned is not None:
                 if c is not pinned:
                     row["excluded"] = "another provider is pinned for this model"
                 else:
@@ -563,6 +597,12 @@ class Router:
                 row["warnings"] = list(c.problems)
             rows.append(row)
 
+        if locality is not None:
+            step["locality"] = (
+                f"key requires {locality}; {skipped} "
+                f"{'cloud' if locality == 'local' else 'local'} "
+                f"provider{'' if skipped == 1 else 's'} skipped"
+            )
         rows.extend(
             self._unroutable(model, protocol, {c.provider_id for c in all_cands})
         )
@@ -695,10 +735,15 @@ class Router:
 
     @staticmethod
     def _route_chaos(
-        table: RoutingTable, requested_model: str, protocol: str | None
+        table: RoutingTable,
+        requested_model: str,
+        protocol: str | None,
+        locality: str | None = None,
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model."""
-        entries = table.chaos.get(protocol)
+        entries = [
+            e for e in table.chaos.get(protocol, ()) if _locality_ok(e[0], locality)
+        ]
         if not entries:
             return None
         provider, eligible = random.choice(entries)
@@ -714,6 +759,10 @@ class Router:
         return RouteResult(
             provider, resolved_model, table.backend_name(provider.id, resolved_model)
         )
+
+
+def _locality_ok(provider: Provider, locality: str | None) -> bool:
+    return locality is None or provider.locality == locality
 
 
 def _summary(out: dict[str, Any], requested: str) -> str:
