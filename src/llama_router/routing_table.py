@@ -462,7 +462,7 @@ class RoutingTable:
 def build_table(
     inputs: RoutingInputs,
     *,
-    hot_models: Callable[[int], set[str]],
+    hot_models: Callable[[int, str], set[str]],
     stats: ProviderStats | None,
     version: int = 0,
     reasons: tuple[str, ...] = (),
@@ -483,7 +483,7 @@ def build_table(
         pid = p.id
         assert pid is not None
         models = inputs.models.get(pid, [])
-        hot = hot_models(pid)
+        hot_by_upstream = {up: hot_models(pid, up) for up in ("ollama", "llamacpp")}
         addresses = inputs.addresses.get(pid, [])
         live_ids = [a.id for a in addresses if a.is_live and a.id is not None]
         # Only live addresses count: an address that stopped answering keeps
@@ -505,13 +505,7 @@ def build_table(
             backend_names[(pid, m.name)] = backend
             if m.raw_name:
                 backend_names[(pid, m.raw_name)] = backend
-            # A llama.cpp server reports the model it has loaded (/props);
-            # a single-model server never cold-starts it.
-            is_hot = (
-                m.name in hot
-                or bool((m.details or {}).get("_from_props"))
-                or bool(stats and stats.is_warm(pid, m.name, now))
-            )
+            recently_used = bool(stats and stats.is_warm(pid, m.name, now))
             oversize = bool(gpu_bytes and m.size and m.size > gpu_bytes)
             keys = {m.name}
             if m.raw_name:
@@ -536,7 +530,9 @@ def build_table(
                     endpoint=path,
                     endpoint_class=cls,
                     upstream=up,
-                    is_hot=is_hot,
+                    # Loaded on the upstream this request reaches: Ollama's
+                    # /api/ps, or the model llama.cpp reports in /props.
+                    is_hot=m.name in hot_by_upstream[up] or recently_used,
                     startup_ms=bench.startup_time_ms if bench else None,
                     tokens_per_second=(
                         observed_tps or (bench.tokens_per_second if bench else None)
