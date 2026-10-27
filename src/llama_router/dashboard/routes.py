@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.templating import Jinja2Templates
 
+from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
 from ..router import (
     ENDPOINT_PROTOCOLS,
@@ -841,6 +842,11 @@ async def dashboard(request: Request):
                 "model_request_counts": model_request_counts,
                 "model_fallbacks": model_fallbacks,
                 "api_keys": api_keys,
+                "session_affinity_default": (
+                    deps.get_pm().router.session_affinity_default
+                    if deps.get_pm().router is not None
+                    else settings.session_affinity_enabled
+                ),
                 "routing_summary": routing_summary,
                 "allow_unauthenticated": allow_unauthenticated,
                 "key_routing_preview": key_routing_preview,
@@ -1020,10 +1026,31 @@ async def api_routing_table():
     if rt is None:
         raise HTTPException(status_code=503, detail="router not running")
     table = rt.table or await rt.rebuild()
-    return JSONResponse(table.to_dict())
+    out = table.to_dict()
+    out["session_affinity"] = {
+        "enabled_by_default": rt.session_affinity_default,
+        **rt.affinity.stats(),
+    }
+    return JSONResponse(out)
 
 
 _DEFAULT_EXPLAIN_ENDPOINT = "/v1/chat/completions"
+
+
+def _tristate(value) -> bool | None:
+    """Parse an optional on/off flag: None, "", "default" mean unset."""
+    if value is None or isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("", "default", "none", "null"):
+        return None
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    raise HTTPException(
+        status_code=400, detail="session_affinity must be on, off or default"
+    )
 
 
 def _is_admin(request: Request) -> bool:
@@ -1039,8 +1066,10 @@ async def api_explain_routing(request: Request):
 
     Query: ``model`` (required), ``endpoint`` (default /v1/chat/completions),
     and either ``mode`` (balanced, latency, throughput, chaos) with optional
-    ``allow_fallback`` or ``key_id`` to use an API key's mode, fallback
-    setting and pins (admins only).
+    ``allow_fallback`` and ``session_affinity``, or ``key_id`` to use an API
+    key's mode, fallback, session affinity setting and pins (admins only).
+    ``session_id`` shows how a client sending that ``X-Session-ID`` would be
+    routed, including its current binding.
     """
     q = request.query_params
     model = (q.get("model") or "").strip()
@@ -1060,6 +1089,7 @@ async def api_explain_routing(request: Request):
 
     db = deps.get_db()
     key_info = None
+    key_id = None
     raw_key_id = (q.get("key_id") or "").strip()
     if raw_key_id:
         if not _is_admin(request):
@@ -1079,6 +1109,8 @@ async def api_explain_routing(request: Request):
             pinned_providers={
                 str(p["model_name"]): int(p["provider_id"]) for p in pins
             },
+            session_affinity=key.get("session_affinity"),
+            key_id=key_id,
         )
         key_info = {"id": key_id, "key_prefix": key["key_prefix"]}
     else:
@@ -1090,13 +1122,21 @@ async def api_explain_routing(request: Request):
             )
         allow = (q.get("allow_fallback") or "true").strip().lower()
         prefs = RoutingPreferences(
-            mode=mode, allow_fallback=allow not in ("0", "false", "no", "off")
+            mode=mode,
+            allow_fallback=allow not in ("0", "false", "no", "off"),
+            session_affinity=_tristate(q.get("session_affinity")),
         )
+    session_id = (q.get("session_id") or "").strip()
+    session = (
+        session_key({"x-session-id": session_id}, {"model": model}, key_id)
+        if session_id
+        else None
+    )
 
     rt = deps.get_pm().router
     if rt is None:
         raise HTTPException(status_code=503, detail="router not running")
-    result = await rt.explain(model, normalized, prefs)
+    result = await rt.explain(model, normalized, prefs, session=session)
     result["api_key"] = key_info
     return JSONResponse(result)
 
@@ -1118,6 +1158,7 @@ async def api_generate_key(request: Request):
     body = await request.json()
     routing_mode = (body.get("routing_mode") or DEFAULT_MODE).strip().lower()
     allow_fallback = bool(body.get("allow_fallback", True))
+    session_affinity = _tristate(body.get("session_affinity"))
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     # PBKDF2 is slow; keep it off the event loop.
@@ -1129,12 +1170,14 @@ async def api_generate_key(request: Request):
         key_hash=hashed,
         routing_mode=routing_mode,
         allow_fallback=allow_fallback,
+        session_affinity=session_affinity,
     )
     return JSONResponse(
         {
             "api_key": plaintext,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
+            "session_affinity": session_affinity,
         }
     )
 

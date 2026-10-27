@@ -695,9 +695,17 @@
                                 <option value="chaos">Chaos mode (random provider/model)</option>
                             </select>
                         </div>
-                        <div class="form-check mb-3">
+                        <div class="form-check mb-2">
                             <input class="form-check-input" type="checkbox" id="new-key-fallback" checked>
                             <label class="form-check-label" for="new-key-fallback">Allow fallback models</label>
+                        </div>
+                        <div class="mb-3">
+                            <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
+                            <select id="new-key-affinity" class="form-select form-select-sm">
+                                <option value="default" selected>Server default ({{ 'on' if session_affinity_default else 'off' }})</option>
+                                <option value="on">On: keep each conversation on one provider</option>
+                                <option value="off">Off: route every request afresh</option>
+                            </select>
                         </div>
                         <button class="btn btn-sm btn-primary" onclick="generateApiKey()">
                             <i class="bi bi-plus-lg me-1"></i>Generate Key
@@ -891,6 +899,10 @@
                                 </select>
                             </div>
                             <div class="col-12">
+                                <label for="rx-session" class="form-label small text-muted mb-1">Session ID (optional)</label>
+                                <input id="rx-session" class="form-control form-control-sm" placeholder="X-Session-ID a client would send">
+                            </div>
+                            <div class="col-12">
                                 <button class="btn btn-sm btn-outline-primary" type="submit"><i class="bi bi-signpost-split me-1"></i>Explain route</button>
                             </div>
                         </form>
@@ -914,6 +926,7 @@
                                 why += '<div class="text-warning">' + esc(c.warnings.join("; ")) + "</div>";
                             }
                             var facts = [];
+                            if (c.session_bound) facts.push("session bound here");
                             if (c.hot) facts.push("loaded");
                             if (c.startup_ms != null) facts.push("startup " + ms(c.startup_ms));
                             if (c.ttft_ms != null) facts.push("first token " + ms(c.ttft_ms));
@@ -939,6 +952,8 @@
                             endpoint: document.getElementById("rx-endpoint").value
                         });
                         params.set(level[0] === "key" ? "key_id" : "mode", level[1]);
+                        var sid = document.getElementById("rx-session").value.trim();
+                        if (sid) params.set("session_id", sid);
                         out.innerHTML = '<div class="text-muted">Working…</div>';
                         try {
                             var resp = await fetch("/api/routing/explain?" + params.toString());
@@ -950,6 +965,10 @@
                             }
                             if (data.fallback_chain && data.fallback_chain.length > 1) {
                                 html += '<div class="text-muted">Fallback chain: ' + data.fallback_chain.map(function (m) { return "<code>" + esc(m) + "</code>"; }).join(" → ") + "</div>";
+                            }
+                            if (data.session) {
+                                html += '<div class="text-muted">Session <code>' + esc(data.session.key) + "</code>: " + esc(data.session.reason) +
+                                    (data.session.bound_provider ? " (bound to " + esc(data.session.bound_provider) + ")" : "") + ".</div>";
                             }
                             if (data.chaos_pool) {
                                 html += '<ul class="mb-0 ps-3">' + data.chaos_pool.map(function (p) { return "<li>" + esc(p.provider) + ' <span class="text-muted">(' + p.models.length + " models)</span></li>"; }).join("") + "</ul>";
@@ -980,6 +999,7 @@
                                         <th>Prefix</th>
                                         <th>Priority</th>
                                         <th>Fallback</th>
+                                        <th>Sessions</th>
                                         <th>Pins</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
@@ -996,6 +1016,7 @@
                                             </span>
                                         </td>
                                         <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
+                                        <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
                                         <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
                                         <td class="small text-muted">{{ k.created_at | localtime }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | localtime }}</td>
@@ -2409,10 +2430,12 @@ function generateApiKey() {
     if (!dashRequireWrite()) return;
     var mode = document.getElementById('new-key-mode').value;
     var allowFallback = document.getElementById('new-key-fallback').checked;
+    var affinityEl = document.getElementById('new-key-affinity');
+    var affinity = affinityEl ? affinityEl.value : 'default';
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });

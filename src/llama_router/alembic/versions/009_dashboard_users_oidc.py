@@ -5,7 +5,7 @@ identity it is bound to, and profile fields refreshed at each sign-in.
 ``password_hash`` becomes nullable: OIDC accounts have no password.
 
 Revision ID: 009_dashboard_users_oidc
-Revises: 007_benchmark_source
+Revises: 008_api_key_session_affinity
 Create Date: 2026-10-27
 """
 
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "009_dashboard_users_oidc"
-down_revision = "007_benchmark_source"
+down_revision = "008_api_key_session_affinity"
 branch_labels = None
 depends_on = None
 

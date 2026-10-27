@@ -257,7 +257,7 @@ def test_oidc_migration_keeps_local_users_and_allows_passwordless(
     cfg = Config()
     cfg.set_main_option("script_location", str(pkg / "alembic"))
     cfg.set_main_option("sqlalchemy.url", sync_url)
-    command.upgrade(cfg, "007_benchmark_source")
+    command.upgrade(cfg, "008_api_key_session_affinity")
 
     con = sqlite3.connect(dbfile)
     try:

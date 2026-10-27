@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .affinity import SessionAffinity, session_key, short_key
+from .config import settings
 from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
     ENDPOINT_PROTOCOLS,
@@ -80,6 +82,10 @@ class RoutingPreferences:
     mode: str = DEFAULT_MODE  # "latency", "throughput", "balanced" or "chaos"
     allow_fallback: bool = True
     pinned_providers: dict[str, int] = field(default_factory=dict)
+    # None follows the router's default (LLAMA_ROUTER_SESSION_AFFINITY_ENABLED).
+    session_affinity: bool | None = None
+    # The API key these came from, which scopes session affinity.
+    key_id: int | None = None
 
 
 class Router:
@@ -90,6 +96,8 @@ class Router:
         *,
         debounce_s: float = REBUILD_DEBOUNCE_S,
         min_interval_s: float = REBUILD_MIN_INTERVAL_S,
+        affinity: SessionAffinity | None = None,
+        session_affinity: bool | None = None,
     ):
         self._db = db
         self._pm = provider_manager
@@ -104,6 +112,15 @@ class Router:
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        self.affinity = affinity or SessionAffinity(
+            settings.session_affinity_ttl_seconds,
+            settings.session_affinity_max_sessions,
+        )
+        self.session_affinity_default = (
+            settings.session_affinity_enabled
+            if session_affinity is None
+            else session_affinity
+        )
         db.add_change_listener(self._on_db_change)
         provider_manager.stats.add_listener(self._on_stats_change)
         provider_manager.attach_router(self)
@@ -168,6 +185,12 @@ class Router:
                 self._need_rescore = True
                 raise
             self._table = table
+            if reload:
+                gone = self.affinity.forget_providers_not_in(
+                    {p.id for p in self._inputs.providers if p.id is not None}
+                )
+                if gone:
+                    logger.debug("Dropped %d sessions bound to removed providers", gone)
             elapsed = (time.perf_counter() - started) * 1000
             log = logger.info if reload else logger.debug
             log(
@@ -215,6 +238,35 @@ class Router:
             table = await self.rebuild()
         return table
 
+    # --- Session affinity ---
+
+    def affinity_enabled(self, preferences: RoutingPreferences | None) -> bool:
+        if preferences is not None and preferences.session_affinity is not None:
+            return preferences.session_affinity
+        return self.session_affinity_default
+
+    def session_for(
+        self,
+        headers,
+        body: dict[str, Any],
+        preferences: RoutingPreferences | None,
+    ) -> str | None:
+        """The affinity key for a request, or None when affinity does not apply.
+
+        Called by the handlers before :meth:`route`. Costs one hash over the
+        start of the conversation; skipped when affinity is off for the key.
+        """
+        if not self.affinity_enabled(preferences):
+            return None
+        if preferences is not None and preferences.mode == "chaos":
+            return None
+        key_id = preferences.key_id if preferences is not None else None
+        return session_key(headers, body, key_id)
+
+    def forget_session(self, session: str | None) -> None:
+        """Let the session's next request be placed afresh (after a failure)."""
+        self.affinity.forget(session)
+
     # --- Routing ---
 
     async def route(
@@ -222,6 +274,8 @@ class Router:
         model_name: str,
         endpoint: str,
         preferences: RoutingPreferences | None = None,
+        *,
+        session: str | None = None,
     ) -> RouteResult | None:
         """Pick the best provider for *model_name* on *endpoint*.
 
@@ -232,10 +286,18 @@ class Router:
         and which live measurements score it. Walks the fallback chain when
         the requested model has no available provider.
 
+        *session* is the request's affinity key from :meth:`session_for`. A
+        session already bound to a provider stays there while that provider
+        is among the eligible candidates, whatever its queue; otherwise the
+        normal choice is made and the session is bound to it. Pins and chaos
+        mode take precedence.
+
         Raises :class:`UnknownEndpoint` for a path the router does not proxy.
         """
         table = await self._current_table()
-        return self.route_with(table, model_name, endpoint, preferences)
+        return self.route_with(
+            table, model_name, endpoint, preferences, session=session
+        )
 
     def route_with(
         self,
@@ -243,9 +305,18 @@ class Router:
         model_name: str,
         endpoint: str,
         preferences: RoutingPreferences | None = None,
+        *,
+        session: str | None = None,
+        record: bool = True,
     ) -> RouteResult | None:
-        """Route against *table*. Synchronous: no I/O, no awaits."""
+        """Route against *table*. Synchronous: no I/O, no awaits.
+
+        With *record* false the session binding is consulted but not changed,
+        as :meth:`explain` needs.
+        """
         path = resolve_endpoint(endpoint)
+        if session is not None and not self.affinity_enabled(preferences):
+            session = None
         pins = preferences.pinned_providers if preferences else None
         mode = preferences.mode if preferences else DEFAULT_MODE
         if mode == "chaos" and not (pins and model_name in pins):
@@ -280,7 +351,29 @@ class Router:
             ranked = table.ranked.get((candidate_model, path, mode))
             if not ranked:
                 continue
-            chosen = _pick(ranked, mode, active)
+            chosen = None
+            sticky = None
+            if session is not None:
+                affinity = self.affinity
+                sticky = affinity.get(session) if record else affinity.peek(session)
+                if sticky is not None:
+                    for c in ranked:
+                        if c.provider_id == sticky:
+                            chosen = c
+                            break
+            if chosen is None:
+                chosen = _pick(ranked, mode, active)
+            if session is not None and record:
+                self.affinity.bind(session, chosen.provider_id, sticky)
+                if sticky is not None and sticky != chosen.provider_id:
+                    logger.info(
+                        "Session %s moved from provider %d to %s: bound "
+                        "provider is not eligible for %s",
+                        short_key(session),
+                        sticky,
+                        chosen.provider.name,
+                        candidate_model,
+                    )
             if candidate_model != model_name:
                 logger.info(
                     "Model %s unavailable; fell back to %s",
@@ -304,6 +397,8 @@ class Router:
         model_name: str,
         endpoint: str,
         preferences: RoutingPreferences | None = None,
+        *,
+        session: str | None = None,
     ) -> dict[str, Any]:
         """How a request would be routed right now, and why.
 
@@ -314,8 +409,12 @@ class Router:
         request would get.
         """
         table = await self._current_table()
-        decision = self.route_with(table, model_name, endpoint, preferences)
-        return self.explain_with(table, decision, model_name, endpoint, preferences)
+        decision = self.route_with(
+            table, model_name, endpoint, preferences, session=session, record=False
+        )
+        return self.explain_with(
+            table, decision, model_name, endpoint, preferences, session=session
+        )
 
     def explain_with(
         self,
@@ -324,8 +423,11 @@ class Router:
         model_name: str,
         endpoint: str,
         preferences: RoutingPreferences | None,
+        *,
+        session: str | None = None,
     ) -> dict[str, Any]:
         path = resolve_endpoint(endpoint)
+        affinity_on = self.affinity_enabled(preferences)
         protocol, endpoint_cls = ENDPOINTS[path]
         pins = dict(preferences.pinned_providers) if preferences else {}
         mode = preferences.mode if preferences else DEFAULT_MODE
@@ -339,6 +441,7 @@ class Router:
                 "protocol": protocol or "any",
                 "allow_fallback": allow_fallback,
                 "pins": pins,
+                "session_affinity": affinity_on,
             },
             "table_version": table.version,
             "table_built_at": table.built_at,
@@ -353,6 +456,11 @@ class Router:
                 "backend_model": decision.backend_model,
                 "fell_back": decision.resolved_model != model_name,
             }
+        bound = self.affinity.peek(session) if session and affinity_on else None
+        if session:
+            out["session"] = self._explain_session(
+                session, bound, decision, mode, affinity_on, model_name in pins
+            )
 
         if mode == "chaos" and model_name not in pins:
             out["chaos_pool"] = [
@@ -385,7 +493,15 @@ class Router:
                 else None
             )
             step = self._explain_step(
-                table, candidate_model, path, protocol, mode, pins, active, chosen_id
+                table,
+                candidate_model,
+                path,
+                protocol,
+                mode,
+                pins,
+                active,
+                chosen_id,
+                bound,
             )
             out["steps"].append(step)
             if decision is not None and decision.resolved_model == candidate_model:
@@ -403,6 +519,7 @@ class Router:
         pins: dict[str, int],
         active,
         chosen_id: int | None = None,
+        bound: int | None = None,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         rows: list[dict[str, Any]] = []
@@ -427,6 +544,7 @@ class Router:
                     "total_score": round(c.scores[mode] + q * c.queue_weight[mode], 2),
                     "excluded": None,
                     "warnings": [],
+                    "session_bound": bound is not None and c.provider_id == bound,
                 }
             )
             if pinned is not None:
@@ -451,6 +569,8 @@ class Router:
         eligible.sort(key=lambda r: (r["provider_id"] != chosen_id, r["total_score"]))
         if pinned is not None:
             step["outcome"] = f"pinned to {pinned.provider.name}"
+        elif eligible and bound is not None and chosen_id == bound:
+            step["outcome"] = f"kept on {eligible[0]['provider']} for this session"
         elif eligible:
             step["outcome"] = f"lowest {mode} score: {eligible[0]['provider']}"
             if best_tier != TIER_OK:
@@ -469,6 +589,50 @@ class Router:
         rows.sort(key=lambda r: (r["rank"] is None, r["rank"] or 0, r["provider"]))
         step["candidates"] = rows
         return step
+
+    def _explain_session(
+        self,
+        session: str,
+        bound: int | None,
+        decision: RouteResult | None,
+        mode: str,
+        enabled: bool,
+        pinned: bool,
+    ) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "key": short_key(session),
+            "bound_provider_id": bound,
+            "bound_provider": self._provider_name(bound),
+            "honored": False,
+        }
+        if not enabled:
+            info["reason"] = "session affinity is off for this request"
+        elif mode == "chaos" and not pinned:
+            info["reason"] = "chaos mode ignores session affinity"
+        elif pinned:
+            info["reason"] = "the model is pinned, which overrides session affinity"
+        elif bound is None:
+            info["reason"] = (
+                "no live binding; the first request binds the session "
+                "to the normal choice"
+            )
+        elif decision is not None and decision.provider.id == bound:
+            info["honored"] = True
+            info["reason"] = "the session stays on the provider that served it"
+        else:
+            info["reason"] = (
+                "the bound provider is not an eligible candidate, so the next "
+                "request moves the session"
+            )
+        return info
+
+    def _provider_name(self, provider_id: int | None) -> str | None:
+        if provider_id is None or self._inputs is None:
+            return None
+        for p in self._inputs.providers:
+            if p.id == provider_id:
+                return p.name
+        return None
 
     def _unroutable(
         self, model: str, protocol: str | None, seen: set[int]
