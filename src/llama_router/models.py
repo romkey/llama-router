@@ -146,17 +146,34 @@ class Provider(BaseModel):
     def is_openai(self) -> bool:
         return self.protocol is ProviderProtocol.OPENAI
 
+    @property
+    def declared_endpoints(self) -> tuple[str, ...] | None:
+        """The only routes the provider's cloud preset says it serves.
+
+        None for a provider whose routes the probe finds out (most of them).
+        """
+        from .cloud_presets import get_preset
+
+        caps = self.capabilities or {}
+        preset = get_preset(self.preset or caps.get("preset"))
+        return preset.endpoints if preset and preset.endpoints else None
+
     def endpoint_state(self, path: str) -> str:
         """What the last probe said about *path*: supported, missing or unknown.
 
         An OpenAI route also counts under its bare form (``/v1/models`` as
         ``/models``): for an address that is itself the API base
         (``https://api.openai.com/v1``) the bare form is the one that answers.
+        A provider whose preset declares its routes serves those and no other.
         """
-        caps = self.capabilities or {}
         paths = {path}
         if path.startswith("/v1/"):
             paths.add(path[3:])
+        declared = self.declared_endpoints
+        if declared is not None:
+            served = set(declared) | {p[3:] for p in declared if p.startswith("/v1/")}
+            return ENDPOINT_SUPPORTED if paths & served else ENDPOINT_MISSING
+        caps = self.capabilities or {}
         entries = [e for e in caps.get("endpoints") or [] if e.get("path") in paths]
         if not entries:
             return ENDPOINT_UNKNOWN

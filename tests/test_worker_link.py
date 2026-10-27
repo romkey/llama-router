@@ -120,6 +120,7 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
         "api_keys": [],
         "v1_chat_bodies": [],
         "systemone_bodies": [],
+        "serve_systemone": True,
     }
 
     @app.get("/api/version")
@@ -184,6 +185,8 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
 
     @app.post("/v1/systemone")
     async def systemone(request: Request):
+        if not seen["serve_systemone"]:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         body = await request.json()
         if not body.get("questions"):
             return JSONResponse({"error": "questions required"}, status_code=422)
@@ -742,7 +745,8 @@ async def _probed_worker(ctx) -> None:
 
 async def test_emulated_decision_through_worker(link) -> None:
     # The upstream behind the worker serves chat completions but no
-    # /v1/decisions of its own, so the hub asks for logprobs.
+    # decision route of its own, so the hub asks for logprobs.
+    link["seen"]["serve_systemone"] = False
     await _probed_worker(link)
     prov = await link["db"].get_provider(link["provider_id"])
     assert prov.endpoint_state("/v1/decisions") == "missing"
@@ -815,20 +819,23 @@ async def test_worker_is_probed_when_it_connects_with_a_new_version(
     real_probe = pm.probe_provider
     probes: list[str] = []
     monkeypatch.setattr(pm, "schedule_probe", lambda i, r="": probes.append(r))
+    handled: list[object] = []
+    on_connect = pm.worker_hub._on_connect
+
+    async def counted(conn) -> None:
+        await on_connect(conn)
+        handled.append(conn)
+
+    monkeypatch.setattr(pm.worker_hub, "_on_connect", counted)
     await _connected_worker(link)
-    await _wait_for(lambda: probes == ["worker connected"])
+    await _wait_for(lambda: len(handled) == 1)
+    assert probes == ["worker connected"]
     await real_probe(pid)
 
     async def reconnect() -> None:
-        first = pm.worker_hub.get(pid)
+        seen = len(handled)
         await pm.worker_hub.disconnect(pid, 1001, "restart")
-        await _wait_for(
-            lambda: pm.worker_hub.get(pid) not in (None, first)
-            and pm.worker_hub.is_connected(pid),
-            timeout=10,
-        )
-        # The hub runs connect and disconnect handlers as background tasks.
-        await _wait_for(lambda: not pm.worker_hub._bg, timeout=10)
+        await _wait_for(lambda: len(handled) > seen, timeout=10)
 
     # Back as the same version: nothing new to relay.
     await reconnect()
