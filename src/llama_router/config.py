@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     auto_benchmark_check_seconds: int = 60
     # Providers benchmarked at once (each provider runs one at a time).
     auto_benchmark_concurrency: int = 1
+    # Session affinity: keep each conversation on the provider that served it,
+    # so the backend's prompt cache stays warm. An API key can override
+    # the enabled flag.
+    session_affinity_enabled: bool = True
+    # A session forgets its provider after this long without a request.
+    session_affinity_ttl_seconds: int = 1800
+    # Most sessions remembered at once; the least recently used go first.
+    session_affinity_max_sessions: int = 1000
     cache_enabled: bool = True
     cache_dir: str = "./model_cache"
     cache_host: str = "0.0.0.0"

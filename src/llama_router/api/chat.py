@@ -27,8 +27,9 @@ async def chat(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
+    session = rt.session_for(request.headers, body, prefs)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await rt.route(model, request.url.path, prefs, session=session)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -48,9 +49,13 @@ async def chat(request: Request):
     if stream:
 
         async def generate():
-            async with pm.acquire_provider(provider.id):
-                async for chunk in client.chat_stream(body):
-                    yield chunk
+            try:
+                async with pm.acquire_provider(provider.id):
+                    async for chunk in client.chat_stream(body):
+                        yield chunk
+            except Exception:
+                rt.forget_session(session)
+                raise
 
         logged = StreamLogger(
             generate(),
@@ -84,6 +89,7 @@ async def chat(request: Request):
             )
             return JSONResponse(content=result)
     except httpx.HTTPStatusError as exc:
+        rt.forget_session(session)
         duration = (time.monotonic() - start) * 1000
         logger.warning(
             "Backend %s returned HTTP %d for /api/chat %s",
@@ -107,6 +113,7 @@ async def chat(request: Request):
         )
         return forward_upstream_http_error(exc)
     except Exception as exc:
+        rt.forget_session(session)
         duration = (time.monotonic() - start) * 1000
         err_detail = str(exc)[:500]
         if isinstance(exc, httpx.HTTPError):

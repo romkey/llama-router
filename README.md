@@ -11,6 +11,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
 - **Benchmarking** — Measure startup time and tokens/sec per model per provider, by hand or automatically while providers are idle
 - **Precomputed Routing** — Routing tables are rebuilt in the background from models, liveness, benchmarks, measured round trips and live request outcomes, so picking a backend costs microseconds and no database work
+- **Session Affinity** — Each coding-agent conversation stays on the backend that served it, so the backend's prompt cache stays warm
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
 - **API Key Routing Policies** — Per-key balanced/latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
 - **Hub and Worker Links** — Member routers dial out to a hub over one WebSocket and serve its jobs, with no inbound ports or VPN
@@ -88,6 +89,9 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
 | `LLAMACPP_PORT` | `8080` | llama.cpp API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
+| `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
+| `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
+| `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
 | `WORKER_HUB_ENABLED` | `true` | Accept worker connections at `/worker/ws` on the Ollama API port |
 | `WORKER_HUB_URL` | *(empty)* | Hub to connect to as a worker. With `WORKER_TOKEN`, overrides the dashboard setting |
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub |
@@ -215,7 +219,7 @@ docker compose exec llama-router traceroute 192.168.1.100
 
 ## Routing
 
-Every request is routed from an in-memory routing table. Building the table reads the database once, combines it with live measurements, and ranks each model's providers separately for every proxied endpoint and every routing mode. A request only looks up its model and endpoint, adds the number of requests already in flight on each candidate, and takes the best one. It does no database queries and no hashing on the way to the backend. Request logging happens after the response is sent.
+Every request is routed from an in-memory routing table. Building the table reads the database once, combines it with live measurements, and ranks each model's providers separately for every proxied endpoint and every routing mode. A request only looks up its model and endpoint, adds the number of requests already in flight on each candidate, and takes the best one. It does no database queries on the way to the backend. The only hashing is the session fingerprint described under **Session affinity**, which takes tens of microseconds. Request logging happens after the response is sent.
 
 ### Routing modes
 
@@ -229,6 +233,30 @@ Each API key picks a mode. Requests without a key use **balanced**.
 | `chaos` | is chosen at random, with a random model |
 
 Pins on the key override the mode for the pinned models.
+
+### Session affinity
+
+Coding agents such as Claude Code, Cursor, Continue, aider and Codex send a conversation as a series of requests. Each one repeats the same long system prompt and history. llama.cpp and Ollama only reuse their prompt cache when the next request reaches the same backend. Without affinity, two equally good providers can take turns serving one conversation, and each re-reads the whole prompt every time.
+
+With session affinity, the router remembers which provider served each conversation. Later requests in that conversation go to the same provider, even when another provider is idle. A session moves only when its provider stops being eligible: it goes offline, its circuit opens, or it no longer serves the model. It then stays on its new provider. Pins and chaos mode take precedence over affinity.
+
+The router identifies a conversation by the first of these it finds:
+
+1. An `X-Session-ID`, `Session-ID` or `session_id` request header.
+2. `prompt_cache_key`, `metadata.session_id`, `user` or `metadata.user_id` in the request body.
+3. A fingerprint of how the conversation starts. For chat, that is the system prompt and the first user message. For `/v1/responses`, it is the instructions and the first input item. For `/v1/completions` and `/api/generate`, it is the system prompt and the first 2 KB of a prompt at least that long. Shorter prompts, such as autocomplete requests, get no session.
+
+Sessions are kept separately per API key and per requested model. Affinity applies to chat, completions, generate and responses. Embeddings, images and audio are routed per request.
+
+Bindings live in memory only. Nothing is written to the database per request, and a restart forgets every binding. A session is forgotten after `SESSION_AFFINITY_TTL_SECONDS` without a request, or right after a request in it fails upstream.
+
+Affinity is on by default. Turn it off with `LLAMA_ROUTER_SESSION_AFFINITY_ENABLED=false`. Each API key can follow that default, or force affinity on or off. Choose this when you create the key.
+
+`/api/routing-table` reports the number of live sessions, sessions per provider, and hit, miss and rebind counts. The **Route Explorer** takes an optional session ID and shows where that session is bound and whether the binding is kept:
+
+```bash
+curl 'http://localhost/api/routing/explain?model=qwen2.5-coder:32b&session_id=my-session'
+```
 
 ### Endpoints
 
@@ -293,7 +321,7 @@ curl 'http://localhost/api/routing/explain?model=llama3.2:latest&endpoint=/api/c
 curl 'http://localhost/api/routing/explain?model=llama3.2:latest&key_id=1'
 ```
 
-`endpoint` defaults to `/v1/chat/completions`. `mode` is `balanced`, `latency`, `throughput` or `chaos`, and defaults to `balanced`. Add `allow_fallback=false` to skip fallbacks. `key_id` is admin-only.
+`endpoint` defaults to `/v1/chat/completions`. `mode` is `balanced`, `latency`, `throughput` or `chaos`, and defaults to `balanced`. Add `allow_fallback=false` to skip fallbacks. Add `session_affinity=on` or `off` to override the default, and `session_id` to explain one session. `key_id` is admin-only.
 
 ## Benchmarks
 
