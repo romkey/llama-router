@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,6 +29,47 @@ from .models import (
     ProviderType,
     RequestLog,
 )
+
+logger = logging.getLogger(__name__)
+
+# Reasons passed to change listeners. The router rebuilds its table on the
+# routing ones; the auth cache drops entries on the auth ones.
+CHANGE_PROVIDERS = "providers"
+CHANGE_STATUS = "status"
+CHANGE_ADDRESSES = "addresses"
+CHANGE_MODELS = "models"
+CHANGE_BENCHMARKS = "benchmarks"
+CHANGE_FALLBACKS = "fallbacks"
+CHANGE_CAPABILITIES = "capabilities"
+CHANGE_API_KEYS = "api_keys"
+CHANGE_AUTH_SETTINGS = "auth_settings"
+ROUTING_CHANGES = frozenset(
+    {
+        CHANGE_PROVIDERS,
+        CHANGE_STATUS,
+        CHANGE_ADDRESSES,
+        CHANGE_MODELS,
+        CHANGE_BENCHMARKS,
+        CHANGE_FALLBACKS,
+        CHANGE_CAPABILITIES,
+    }
+)
+AUTH_CHANGES = frozenset({CHANGE_API_KEYS, CHANGE_AUTH_SETTINGS})
+
+
+def _notifies(reason: str):
+    """Tell change listeners about *reason* after the wrapped write succeeds."""
+
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def inner(self: "Database", *args: Any, **kwargs: Any):
+            result = await fn(self, *args, **kwargs)
+            self._changed(reason)
+            return result
+
+        return inner
+
+    return wrap
 
 
 def _bind_params(*args: Any) -> tuple[Any, ...]:
@@ -52,6 +96,24 @@ class Database:
         self._engine: AsyncEngine | None = None
         self._session_factory: async_sessionmaker[AsyncSession] | None = None
         self._dialect_name: str = "sqlite"
+        self._listeners: list[Callable[[str], None]] = []
+
+    def add_change_listener(self, fn: Callable[[str], None]) -> None:
+        """Call *fn(reason)* after writes that can change routing or auth."""
+        self._listeners.append(fn)
+
+    def remove_change_listener(self, fn: Callable[[str], None]) -> None:
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
+
+    def _changed(self, reason: str) -> None:
+        for fn in list(self._listeners):
+            try:
+                fn(reason)
+            except Exception:
+                logger.exception("Change listener failed for %s", reason)
 
     async def connect(self) -> None:
         sync_url = settings.sync_database_url_for_alembic(self._url)
@@ -127,6 +189,7 @@ class Database:
 
     # --- Providers ---
 
+    @_notifies(CHANGE_PROVIDERS)
     async def add_provider(
         self,
         name: str,
@@ -160,6 +223,7 @@ class Database:
             worker_name=worker_name,
         )
 
+    @_notifies(CHANGE_PROVIDERS)
     async def remove_provider(self, provider_id: int) -> None:
         await self._execute("DELETE FROM providers WHERE id = ?", (provider_id,))
 
@@ -177,6 +241,7 @@ class Database:
         rows = await self._select_all("SELECT * FROM providers ORDER BY name")
         return [_row_to_provider(r) for r in rows]
 
+    @_notifies(CHANGE_PROVIDERS)
     async def update_provider(
         self,
         provider_id: int,
@@ -208,6 +273,7 @@ class Database:
                 (name, machine_type, gpu_type, gpu_ram, provider_id),
             )
 
+    @_notifies(CHANGE_CAPABILITIES)
     async def set_provider_capabilities(
         self, provider_id: int, capabilities: dict | None
     ) -> None:
@@ -235,10 +301,20 @@ class Database:
     async def update_provider_status(
         self, provider_id: int, status: ProviderStatus
     ) -> None:
-        await self._execute(
-            "UPDATE providers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (status.value, provider_id),
+        changed = await self._execute_rowcount(
+            "UPDATE providers SET status = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ? AND status != ?",
+            (status.value, provider_id, status.value),
         )
+        if changed:
+            # Only a real transition matters to routing; health checks write
+            # the same status every cycle.
+            self._changed(CHANGE_STATUS)
+        else:
+            await self._execute(
+                "UPDATE providers SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (provider_id,),
+            )
 
     async def get_providers_for_model(
         self, model_name: str, protocol: str | None = None
@@ -268,6 +344,7 @@ class Database:
 
     # --- Addresses ---
 
+    @_notifies(CHANGE_ADDRESSES)
     async def add_address(
         self,
         provider_id: int,
@@ -291,6 +368,7 @@ class Database:
             is_preferred=is_preferred,
         )
 
+    @_notifies(CHANGE_ADDRESSES)
     async def update_address(
         self,
         address_id: int,
@@ -313,6 +391,7 @@ class Database:
                 (url, llamacpp_url, address_id),
             )
 
+    @_notifies(CHANGE_ADDRESSES)
     async def remove_address(self, address_id: int) -> None:
         await self._execute(
             "DELETE FROM provider_addresses WHERE id = ?", (address_id,)
@@ -324,6 +403,7 @@ class Database:
             (int(is_preferred), address_id),
         )
 
+    @_notifies(CHANGE_ADDRESSES)
     async def set_address_live(self, address_id: int, is_live: bool) -> None:
         await self._execute(
             "UPDATE provider_addresses SET is_live = ? WHERE id = ?",
@@ -346,6 +426,7 @@ class Database:
 
     # --- Models ---
 
+    @_notifies(CHANGE_MODELS)
     async def set_provider_models(
         self, provider_id: int, models: list[ProviderModel]
     ) -> None:
@@ -389,6 +470,20 @@ class Database:
         )
         return [_row_to_model(r) for r in rows]
 
+    async def get_all_provider_models(self) -> list[ProviderModel]:
+        """Every provider's models in one query, for the routing table."""
+        rows = await self._select_all(
+            "SELECT * FROM provider_models ORDER BY provider_id, id"
+        )
+        return [_row_to_model(r) for r in rows]
+
+    async def get_all_addresses(self) -> list[ProviderAddress]:
+        rows = await self._select_all(
+            "SELECT * FROM provider_addresses "
+            "ORDER BY provider_id, is_preferred DESC, id ASC"
+        )
+        return [_row_to_address(r) for r in rows]
+
     async def list_all_models(self) -> list[dict]:
         q = text("""
             SELECT name, size, digest, modified_at, details FROM (
@@ -420,6 +515,7 @@ class Database:
 
     # --- Benchmarks ---
 
+    @_notifies(CHANGE_BENCHMARKS)
     async def save_benchmark(self, result: BenchmarkResult) -> None:
         await self._execute(
             "INSERT INTO benchmarks "
@@ -452,6 +548,13 @@ class Database:
         row = await self._select_one(query, params)
         return _row_to_benchmark(row) if row else None
 
+    async def get_all_benchmark_results(self) -> list[BenchmarkResult]:
+        """Every benchmark, newest first, for the routing table."""
+        rows = await self._select_all(
+            "SELECT * FROM benchmarks ORDER BY created_at DESC, id DESC"
+        )
+        return [_row_to_benchmark(r) for r in rows]
+
     async def get_benchmarks_for_provider(
         self, provider_id: int
     ) -> list[BenchmarkResult]:
@@ -482,14 +585,17 @@ class Database:
             for r in rows
         ]
 
+    @_notifies(CHANGE_BENCHMARKS)
     async def delete_benchmark(self, benchmark_id: int) -> None:
         await self._execute("DELETE FROM benchmarks WHERE id = ?", (benchmark_id,))
 
+    @_notifies(CHANGE_BENCHMARKS)
     async def delete_benchmarks_for_model(self, model_name: str) -> int:
         return await self._execute_rowcount(
             "DELETE FROM benchmarks WHERE model_name = ?", (model_name,)
         )
 
+    @_notifies(CHANGE_BENCHMARKS)
     async def delete_all_benchmarks(self) -> int:
         return await self._execute_rowcount("DELETE FROM benchmarks")
 
@@ -540,6 +646,7 @@ class Database:
 
     # ── Model fallbacks ───────────────────────────────────────────────
 
+    @_notifies(CHANGE_FALLBACKS)
     async def set_model_fallback(self, model_name: str, fallback_model: str) -> None:
         if self._dialect_name in ("mysql", "mariadb"):
             await self._execute(
@@ -554,6 +661,7 @@ class Database:
                 (model_name, fallback_model, fallback_model),
             )
 
+    @_notifies(CHANGE_FALLBACKS)
     async def remove_model_fallback(self, model_name: str) -> None:
         await self._execute(
             "DELETE FROM model_fallbacks WHERE model_name = ?", (model_name,)
@@ -655,6 +763,7 @@ class Database:
 
     # --- API Keys / Auth settings ---
 
+    @_notifies(CHANGE_API_KEYS)
     async def create_api_key(
         self, key_prefix: str, key_hash: str, routing_mode: str, allow_fallback: bool
     ) -> int:
@@ -687,6 +796,7 @@ class Database:
             for r in rows
         ]
 
+    @_notifies(CHANGE_API_KEYS)
     async def delete_api_key(self, key_id: int) -> None:
         await self._execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
 
@@ -709,6 +819,13 @@ class Database:
             "allow_fallback": bool(row["allow_fallback"]),
         }
 
+    async def touch_api_key(self, key_id: int) -> None:
+        await self._execute(
+            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (key_id,),
+        )
+
+    @_notifies(CHANGE_API_KEYS)
     async def set_api_key_model_pin(
         self, key_id: int, model_name: str, provider_id: int
     ) -> None:
@@ -736,6 +853,7 @@ class Database:
                 (key_id, model_name, provider_id),
             )
 
+    @_notifies(CHANGE_API_KEYS)
     async def remove_api_key_model_pin(self, key_id: int, model_name: str) -> None:
         await self._execute(
             "DELETE FROM api_key_model_pins WHERE api_key_id = ? AND model_name = ?",
@@ -768,6 +886,7 @@ class Database:
             return True
         return str(row["value"]).lower() in ("1", "true", "yes", "on")
 
+    @_notifies(CHANGE_AUTH_SETTINGS)
     async def set_allow_unauthenticated(self, allow: bool) -> None:
         val = "true" if allow else "false"
         if self._dialect_name in ("mysql", "mariadb"):

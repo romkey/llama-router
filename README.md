@@ -10,9 +10,9 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 - **Auto-Discovery** — Queries backends for models and capabilities on registration
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
 - **Benchmarking** — Measure startup time and tokens/sec per model per provider
-- **Smart Routing** — Routes to the least-busy, most-capable provider based on active requests and benchmark data
+- **Precomputed Routing** — Routing tables are rebuilt in the background from models, liveness, benchmarks, measured round trips and live request outcomes, so picking a backend costs microseconds and no database work
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
-- **API Key Routing Policies** — Per-key latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
+- **API Key Routing Policies** — Per-key balanced/latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
 - **Hub and Worker Links** — Member routers dial out to a hub over one WebSocket and serve its jobs, with no inbound ports or VPN
 - **OCI Registry Cache** — Built-in pull-through cache for Ollama model downloads, serving cached layers at LAN speed
 
@@ -212,6 +212,52 @@ docker compose exec llama-router wget -qO- http://192.168.1.100:8080/health
 docker compose exec llama-router ip route
 docker compose exec llama-router traceroute 192.168.1.100
 ```
+
+## Routing
+
+Every request is routed from an in-memory routing table. Building the table reads the database once, combines it with live measurements, and ranks each model's providers for every routing mode. A request only looks up its model, adds the number of requests already in flight on each candidate, and takes the best one. It does no database queries and no hashing on the way to the backend. Request logging happens after the response is sent.
+
+### Routing modes
+
+Each API key picks a mode. Requests without a key use **balanced**.
+
+| Mode | Picks the provider that |
+|------|-------------------------|
+| `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed |
+| `latency` | starts answering soonest: a model already loaded wins, then the lowest startup time and round trip |
+| `throughput` | generates the most tokens per second |
+| `chaos` | is chosen at random, with a random model |
+
+Pins on the key override the mode for the pinned models.
+
+### What goes into the table
+
+| Input | Source |
+|-------|--------|
+| Which providers serve which models, and under which backend name | Model discovery |
+| Online or offline, and which addresses answer | Health checks |
+| Startup time and tokens per second | Benchmarks, replaced by measured speed once real requests report it |
+| Model already loaded | Ollama `/api/ps`, or a successful request in the last four minutes |
+| Network round trip | Timed health-check probes, best live address |
+| Time to first token | Measured on streamed requests |
+| Recent failures | Upstream errors and timeouts. Client mistakes such as HTTP 400 do not count. A provider failing at least half its recent requests is skipped while another can serve the model, and is retried as the failures age out over a few minutes |
+| Endpoint support | The provider's last probe. A provider whose probe found the endpoint missing is skipped while another can serve it |
+| Model larger than GPU memory | Provider GPU RAM and model size, as a small penalty |
+
+### When the table is rebuilt
+
+The table is rebuilt whenever one of its inputs changes: models are discovered or deleted, a provider changes status, an address goes up or down, a benchmark is added or removed, a fallback or provider is edited, a probe runs, the set of loaded models changes, or new round-trip and request measurements arrive. Changes within a quarter of a second are batched into one rebuild, and rebuilds run at most once a second. Measurement-only rebuilds reuse the last database read.
+
+Resolved API keys are cached for five minutes. Creating or deleting a key, editing its pins, or changing the authentication policy takes effect on the next request.
+
+Inspect the current table, with each candidate's inputs and scores, or force a rebuild:
+
+```bash
+curl http://localhost/api/routing-table
+curl -X POST http://localhost/api/routing-table/rebuild
+```
+
+The **API Keys** tab shows each model's first choice per mode.
 
 ## Model Fallbacks
 

@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import time
+import weakref
 from secrets import token_urlsafe
 
 from fastapi import HTTPException, Request
 
+from .background import spawn
 from .config import settings
-from .database import Database
-from .router import RoutingPreferences
+from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
+from .router import ROUTING_MODES, RoutingPreferences
+from .routing_table import DEFAULT_MODE
 
 _PBKDF2_ROUNDS = 390_000
+# Resolved keys are reused for this long unless an edit invalidates them.
+_PREFS_TTL_S = 300.0
+# last_used_at is written at most this often per key.
+_TOUCH_INTERVAL_S = 60.0
+_MAX_CACHED_KEYS = 1024
 
 
 def generate_api_key() -> str:
@@ -38,39 +48,108 @@ def key_hash(key: str) -> str:
         key.encode("utf-8"),
         pepper,
         _PBKDF2_ROUNDS,
-    ).hexdigest()
+    ).hex()
+
+
+class _AuthCache:
+    """Resolved API keys and the unauthenticated-access flag for one database.
+
+    Keys are cached by their SHA-256, never in plain text. Entries expire after
+    a few minutes and are dropped at once when keys, pins, providers or the
+    auth setting change, so dashboard edits apply to the next request.
+    """
+
+    def __init__(self, db: Database) -> None:
+        self.allow_unauthenticated: bool | None = None
+        self.prefs: dict[str, tuple[float, int, RoutingPreferences]] = {}
+        self.touched: dict[int, float] = {}
+        db.add_change_listener(self._on_change)
+
+    def _on_change(self, reason: str) -> None:
+        if reason in AUTH_CHANGES or reason == CHANGE_PROVIDERS:
+            self.clear()
+
+    def clear(self) -> None:
+        self.allow_unauthenticated = None
+        self.prefs.clear()
+
+
+_caches: "weakref.WeakKeyDictionary[Database, _AuthCache]" = weakref.WeakKeyDictionary()
+
+
+def _cache_for(db: Database) -> _AuthCache:
+    cache = _caches.get(db)
+    if cache is None:
+        cache = _caches[db] = _AuthCache(db)
+    return cache
+
+
+def invalidate_auth_cache(db: Database) -> None:
+    cache = _caches.get(db)
+    if cache is not None:
+        cache.clear()
+
+
+async def _allow_unauthenticated(db: Database, cache: _AuthCache) -> bool:
+    if cache.allow_unauthenticated is None:
+        cache.allow_unauthenticated = await db.get_allow_unauthenticated()
+    return cache.allow_unauthenticated
+
+
+async def _resolve_key(db: Database, key: str) -> tuple[RoutingPreferences, int] | None:
+    """Look the key up in the database. Slow path: hashing and queries."""
+    legacy = key_hash_legacy(key)
+    record = await db.lookup_api_key(legacy)
+    if not record:
+        # PBKDF2 takes tens of milliseconds; keep it off the event loop.
+        modern = await asyncio.to_thread(key_hash, key)
+        if modern != legacy:
+            record = await db.lookup_api_key(modern)
+    if not record:
+        return None
+    mode = str(record["routing_mode"]).lower()
+    if mode not in ROUTING_MODES:
+        mode = DEFAULT_MODE
+    pins = await db.list_api_key_model_pins(int(record["id"]))
+    prefs = RoutingPreferences(
+        mode=mode,
+        allow_fallback=bool(record["allow_fallback"]),
+        pinned_providers={str(p["model_name"]): int(p["provider_id"]) for p in pins},
+    )
+    return prefs, int(record["id"])
 
 
 async def routing_preferences_from_request(
     db: Database, request: Request
 ) -> RoutingPreferences | None:
-    allow_unauthenticated = await db.get_allow_unauthenticated()
+    cache = _cache_for(db)
     raw_key = request.headers.get("API-KEY")
     key = (raw_key or "").strip()
 
     if not key:
-        if allow_unauthenticated:
+        if await _allow_unauthenticated(db, cache):
             return None
         raise HTTPException(status_code=401, detail="Missing API-KEY header")
 
-    legacy = key_hash_legacy(key)
-    record = await db.lookup_api_key(legacy)
-    if not record:
-        modern = key_hash(key)
-        if modern != legacy:
-            record = await db.lookup_api_key(modern)
-    if not record:
-        if allow_unauthenticated:
+    fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    hit = cache.prefs.get(fingerprint)
+    if hit is not None and now - hit[0] < _PREFS_TTL_S:
+        _, key_id, prefs = hit
+        if now - cache.touched.get(key_id, 0.0) >= _TOUCH_INTERVAL_S:
+            cache.touched[key_id] = now
+            spawn(db.touch_api_key(key_id), name="touch-api-key")
+        return prefs
+
+    resolved = await _resolve_key(db, key)
+    if resolved is None:
+        if await _allow_unauthenticated(db, cache):
             return None
         raise HTTPException(status_code=401, detail="Invalid API-KEY")
-
-    mode = str(record["routing_mode"]).lower()
-    if mode not in {"latency", "throughput", "chaos"}:
-        mode = "latency"
-    pins = await db.list_api_key_model_pins(int(record["id"]))
-    pinned_providers = {str(p["model_name"]): int(p["provider_id"]) for p in pins}
-    return RoutingPreferences(
-        mode=mode,
-        allow_fallback=bool(record["allow_fallback"]),
-        pinned_providers=pinned_providers,
-    )
+    prefs, key_id = resolved
+    # lookup_api_key just wrote last_used_at.
+    cache.touched[key_id] = now
+    if len(cache.prefs) >= _MAX_CACHED_KEYS:
+        cache.prefs.clear()
+    cache.prefs[fingerprint] = (now, key_id, prefs)
+    return prefs

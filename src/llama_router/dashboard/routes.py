@@ -17,6 +17,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..auth import generate_api_key, key_hash, key_prefix
+from ..router import ROUTING_MODES
+from ..routing_table import DEFAULT_MODE, MODES
 from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
@@ -610,6 +612,7 @@ async def dashboard(request: Request):
         api_keys: list[Any] = []
         allow_unauthenticated = False
         key_routing_preview = {"latency": [], "throughput": [], "chaos": []}
+        routing_summary = None
         log_page = 1
         log_pages = 1
         log_total = 0
@@ -679,6 +682,7 @@ async def dashboard(request: Request):
             "throughput": throughput_preview,
             "chaos": chaos_preview,
         }
+        routing_summary = _routing_summary(pm)
 
         log_page = int(request.query_params.get("log_page", "1"))
         log_per_page = 100
@@ -732,6 +736,7 @@ async def dashboard(request: Request):
                 "model_request_counts": model_request_counts,
                 "model_fallbacks": model_fallbacks,
                 "api_keys": api_keys,
+                "routing_summary": routing_summary,
                 "allow_unauthenticated": allow_unauthenticated,
                 "key_routing_preview": key_routing_preview,
                 "log_entries": log_entries,
@@ -849,19 +854,64 @@ async def api_status(request: Request):
     return JSONResponse(payload)
 
 
+def _routing_summary(pm) -> dict[str, Any] | None:
+    """First choice per model and mode from the current routing table."""
+    rt = pm.router
+    table = rt.table if rt is not None else None
+    if table is None:
+        return None
+    rows: dict[str, dict[str, str]] = {}
+    for (model, protocol, mode), ranked in table.ranked.items():
+        if protocol is not None or not ranked:
+            continue
+        rows.setdefault(model, {})[mode] = ranked[0].provider.name
+    return {
+        "version": table.version,
+        "built_at": datetime.fromtimestamp(table.built_at, tz=timezone.utc),
+        "build_ms": table.build_ms,
+        "reasons": list(table.reasons),
+        "modes": list(MODES),
+        "rows": sorted(rows.items()),
+    }
+
+
+@router.get("/api/routing-table")
+async def api_routing_table():
+    """The current routing table: candidates, scores and order per mode."""
+    pm = deps.get_pm()
+    rt = pm.router
+    if rt is None:
+        raise HTTPException(status_code=503, detail="router not running")
+    table = rt.table or await rt.rebuild()
+    return JSONResponse(table.to_dict())
+
+
+@router.post("/api/routing-table/rebuild")
+async def api_rebuild_routing_table():
+    pm = deps.get_pm()
+    rt = pm.router
+    if rt is None:
+        raise HTTPException(status_code=503, detail="router not running")
+    rt.mark_dirty("manual")
+    table = await rt.rebuild()
+    return JSONResponse({"version": table.version, "build_ms": table.build_ms})
+
+
 @router.post("/api/keys/generate")
 async def api_generate_key(request: Request):
     db = deps.get_db()
     body = await request.json()
-    routing_mode = (body.get("routing_mode") or "latency").strip().lower()
+    routing_mode = (body.get("routing_mode") or DEFAULT_MODE).strip().lower()
     allow_fallback = bool(body.get("allow_fallback", True))
-    if routing_mode not in {"latency", "throughput", "chaos"}:
+    if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
-
+    # PBKDF2 is slow; keep it off the event loop.
     plaintext = generate_api_key()
+    hashed = await asyncio.to_thread(key_hash, plaintext)
+
     await db.create_api_key(
         key_prefix=key_prefix(plaintext),
-        key_hash=key_hash(plaintext),
+        key_hash=hashed,
         routing_mode=routing_mode,
         allow_fallback=allow_fallback,
     )

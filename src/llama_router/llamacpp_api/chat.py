@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..request_logger import StreamLogger, log_request
+from ..request_logger import StreamLogger, log_request_background
 from ..v1_client import get_v1_client
 from . import deps
 
@@ -31,18 +31,19 @@ async def chat_completions(request: Request):
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, preferences=prefs)
+    result = await rt.route(model, preferences=prefs, endpoint=request.url.path)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
         )
 
     provider = result.provider
+    routed = result.resolved_model
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
     assert provider.id is not None
-    body["model"] = await db.get_backend_model_name(provider.id, body["model"])
+    body["model"] = result.backend_model
     client = get_v1_client(pm, provider.id)
     stream = body.get("stream", False)
     start = time.monotonic()
@@ -62,6 +63,7 @@ async def chat_completions(request: Request):
             endpoint=endpoint_path,
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             start_time=start,
         )
@@ -70,19 +72,17 @@ async def chat_completions(request: Request):
     try:
         async with pm.acquire_provider(provider.id):
             resp = await client.chat_completions(body)
-            import json as _json
-
-            resp_size = len(_json.dumps(resp).encode())
             duration = (time.monotonic() - start) * 1000
-            await log_request(
+            log_request_background(
                 db,
                 provider=provider,
                 protocol="v1",
                 endpoint=endpoint_path,
                 request=request,
                 model=model,
+                routed_model=routed,
                 request_body=body,
-                response_size=resp_size,
+                response_body=resp,
                 duration_ms=duration,
             )
             return JSONResponse(content=resp)
@@ -95,13 +95,14 @@ async def chat_completions(request: Request):
             endpoint_path,
             model,
         )
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="v1",
             endpoint=endpoint_path,
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             response_size=0,
             duration_ms=duration,
@@ -121,13 +122,14 @@ async def chat_completions(request: Request):
                 provider.name,
                 describe_httpx_error(exc),
             )
-        await log_request(
+        log_request_background(
             db,
             provider=provider,
             protocol="v1",
             endpoint=endpoint_path,
             request=request,
             model=model,
+            routed_model=routed,
             request_body=body,
             response_size=0,
             duration_ms=duration,
