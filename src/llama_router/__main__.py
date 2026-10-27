@@ -2,33 +2,48 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import contextlib
 import logging
+import signal
+from collections.abc import Iterator
 
 import uvicorn
 
+from . import __version__
+from .api import deps as api_deps
+from .api.app import app as api_app
+from .auto_benchmark import AutoBenchmarker
 from .config import settings
+from .dashboard import deps as dash_deps
+from .dashboard.app import app as dash_app
 from .dashboard.oidc import CALLBACK_PATH, OIDCConfig
 from .database import Database
-from .auto_benchmark import AutoBenchmarker
+from .llamacpp_api import deps as lcpp_deps
+from .llamacpp_api.app import app as lcpp_app
 from .provider_manager import ProviderManager
 from .request_logger import attach_pricer, attach_stats
 from .router import Router
 from .sentry import init_sentry
-from .worker_link.worker import WorkerLinkManager
-from .api import deps as api_deps
-from .api.app import app as api_app
-from .dashboard import deps as dash_deps
-from .dashboard.app import app as dash_app
-from .llamacpp_api import deps as lcpp_deps
-from .llamacpp_api.app import app as lcpp_app
 from .shared_port import SharedPortApp
+from .worker_link.worker import WorkerLinkManager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
 logger = logging.getLogger("llama_router")
+
+
+class _Server(uvicorn.Server):
+    """A uvicorn server that leaves signal handling to ``run``.
+
+    Each uvicorn server installs its own SIGINT/SIGTERM handlers, so with
+    several in one process only the last one sees the signal, and on exit it
+    re-raises it with the default handler, killing the process before the
+    database and links are closed.
+    """
+
+    @contextlib.contextmanager
+    def capture_signals(self) -> Iterator[None]:
+        yield
 
 
 def _log_oidc_config() -> None:
@@ -110,15 +125,16 @@ async def run() -> None:
     )
 
     servers = [
-        uvicorn.Server(dashboard_config),
-        uvicorn.Server(api_config),
-        uvicorn.Server(lcpp_config),
+        _Server(dashboard_config),
+        _Server(api_config),
+        _Server(lcpp_config),
     ]
 
     cache_blob_cache = None
     if settings.cache_enabled:
+        from .registry_cache.app import app as cache_app
+        from .registry_cache.app import init_cache
         from .registry_cache.cache import BlobCache
-        from .registry_cache.app import app as cache_app, init_cache
 
         cache_blob_cache = BlobCache(
             settings.cache_dir, settings.cache_manifest_ttl_hours
@@ -132,7 +148,7 @@ async def run() -> None:
             port=settings.cache_port,
             log_level="info",
         )
-        servers.append(uvicorn.Server(cache_config))
+        servers.append(_Server(cache_config))
         logger.info(
             "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
             "OpenAI API on :%d, registry cache on :%d",
@@ -156,6 +172,15 @@ async def run() -> None:
             settings.dashboard_port,
         )
 
+    def stop(sig: signal.Signals) -> None:
+        logger.info("Received %s, shutting down", sig.name)
+        for s in servers:
+            s.should_exit = True
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop, sig)
+
     try:
         await asyncio.gather(*(s.serve() for s in servers))
     finally:
@@ -167,9 +192,23 @@ async def run() -> None:
         await db.close()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="llama-router",
+        description="Route Ollama and OpenAI API requests across LLM backends.",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     asyncio.run(run())
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

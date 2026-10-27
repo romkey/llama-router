@@ -59,7 +59,7 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        if path == "/health":
+        if path in ("/health", "/healthz"):
             return await call_next(request)
 
         if path == "/login" or path.startswith("/login"):
