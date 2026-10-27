@@ -2,8 +2,8 @@
 
 ``POST /v1/systemone`` (Jev's route) and ``POST /v1/decisions`` take a state
 and typed questions and answer each with a probability distribution; see
-:mod:`llama_router.decisions`. An upstream that serves the same route gets
-the request as it came. Any other provider that serves chat completions
+:mod:`llama_router.decisions`. An upstream that serves either route gets the
+request as it came, on the route it serves (the bodies are the same). Any other provider that serves chat completions
 answers it from first-token logprobs, with the stored calibration for the
 model and question applied.
 
@@ -29,7 +29,7 @@ from ..auth import routing_preferences_from_request
 from ..endpoints import normalize_endpoint
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import log_request_background
-from ..routing_table import decides_natively
+from ..routing_table import native_decision_path
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -89,10 +89,14 @@ async def decide(request: Request):
             request_body=body,
         )
         calibrated = 0
+        native_path = native_decision_path(provider, path)
         try:
-            if decides_natively(provider, path):
+            if native_path is not None:
                 out = await svc.native(
-                    pm, provider.id, path, {**body, "model": result.backend_model}
+                    pm,
+                    provider.id,
+                    native_path,
+                    {**body, "model": result.backend_model},
                 )
             else:
                 cal = await svc.calibrations(db).for_request(result.model_key, req)
