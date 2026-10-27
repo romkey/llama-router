@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 
+import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 
-from llama_router.config import Settings
+from llama_router.config import Settings, settings
 from llama_router.database import Database
 
 # Point the ``db`` fixture at a real server instead of a temporary SQLite file,
@@ -23,6 +24,13 @@ def _empty_database(async_url: str) -> None:
         meta.drop_all(bind=engine)
     finally:
         engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_probes(monkeypatch):
+    """Background endpoint probes would hit every fake upstream; tests that
+    exercise them turn them back on."""
+    monkeypatch.setattr(settings, "auto_probe_enabled", False)
 
 
 @pytest_asyncio.fixture

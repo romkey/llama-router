@@ -12,7 +12,7 @@ from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.routing_table import latest_benchmarks
@@ -20,7 +20,7 @@ from llama_router.routing_table import latest_benchmarks
 
 async def _provider(db: Database, name: str, models: list[str], **kw):
     status = kw.pop("status", ProviderStatus.IDLE)
-    p = await db.add_provider(name, kw.pop("ptype", ProviderType.OLLAMA))
+    p = await db.add_provider(name, kw.pop("ptype", ProviderProtocol.OLLAMA))
     await db.update_provider_status(p.id, status)
     await db.set_provider_models(
         p.id, [ProviderModel(provider_id=p.id, name=m) for m in models]
@@ -92,11 +92,11 @@ async def test_plan_orders_missing_then_oldest(db: Database, pm: ProviderManager
 
 
 async def test_plan_follows_each_providers_apis(db: Database, pm: ProviderManager):
-    await _provider(db, "lcpp", ["m"], ptype=ProviderType.LLAMACPP)
-    await _provider(db, "both", ["m"], ptype=ProviderType.BOTH)
+    await _provider(db, "lcpp", ["m"], ptype=ProviderProtocol.OPENAI)
+    await _provider(db, "oll", ["m"])
     ab = AutoBenchmarker(db, pm)
     jobs = {(j.provider_name, j.api) for j in await ab.plan()}
-    assert jobs == {("lcpp", "llamacpp"), ("both", "ollama"), ("both", "llamacpp")}
+    assert jobs == {("lcpp", "openai"), ("oll", "ollama")}
 
 
 async def test_runs_only_when_idle(db: Database, pm: ProviderManager):
@@ -234,12 +234,10 @@ class _FakeLlamaCpp:
         pass
 
 
-async def test_llamacpp_loaded_model_is_hot_on_its_own_upstream(
-    db: Database, pm: ProviderManager
-):
+async def test_llamacpp_loaded_model_is_hot(db: Database, pm: ProviderManager):
     from llama_router.router import Router
 
-    p = await _provider(db, "both", ["m", "n"], ptype=ProviderType.BOTH)
+    p = await _provider(db, "lcpp", ["m", "n"], ptype=ProviderProtocol.OPENAI)
     provider = await db.get_provider(p.id)
     lcpp = _FakeLlamaCpp("m")
     pm._llamacpp_clients[p.id] = lcpp
@@ -254,9 +252,8 @@ async def test_llamacpp_loaded_model_is_hot_on_its_own_upstream(
         ).is_hot
 
     await rt.rebuild()
-    # v1 routes reach llama.cpp, where m is loaded; Ollama routes do not.
-    assert hot("m", "/v1/chat/completions") and not hot("m", "/api/chat")
-    assert not hot("n", "/v1/chat/completions")
+    # m is loaded per /props; an OpenAI provider takes no Ollama routes.
+    assert hot("m", "/v1/chat/completions") and not hot("n", "/v1/chat/completions")
 
     # The health check re-reads /props: a swapped model stops counting.
     lcpp.model = "n"
@@ -274,7 +271,7 @@ def test_latest_benchmarks_ignore_fake_zero_startups():
         BenchmarkResult(
             provider_id=1,
             model_name="m",
-            protocol="llamacpp",
+            protocol="openai",
             startup_time_ms=None,
             tokens_per_second=0.0,
         ),
@@ -282,19 +279,19 @@ def test_latest_benchmarks_ignore_fake_zero_startups():
         BenchmarkResult(
             provider_id=1,
             model_name="m",
-            protocol="llamacpp",
+            protocol="openai",
             startup_time_ms=0.0,
             tokens_per_second=30.0,
         ),
         BenchmarkResult(
             provider_id=1,
             model_name="m",
-            protocol="llamacpp",
+            protocol="openai",
             startup_time_ms=12.0,
             tokens_per_second=30.0,
         ),
     ]
-    merged = latest_benchmarks(rows)[(1, "m", "llamacpp")]
+    merged = latest_benchmarks(rows)[(1, "m", "openai")]
     assert merged.startup_time_ms is None
     # The newest run measured a speed (0), so older speeds do not replace it.
     assert merged.tokens_per_second == 0.0

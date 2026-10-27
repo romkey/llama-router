@@ -85,7 +85,7 @@ async def test_detects_llamacpp() -> None:
     transport, _ = _server(LLAMACPP)
     r = await probe_url("http://box:8080", transport=transport)
     assert "llama.cpp" in r.servers
-    assert r.suggested_type == "llamacpp"
+    assert r.suggested_type == "openai"
     assert r.version == "b6000-abc"
     assert r.models == ["gemma-3-4b"]
     assert _state(r, "POST", "/rerank") == "exists"
@@ -253,7 +253,7 @@ async def test_detects_vllm() -> None:
     assert "vllm" in r.servers and "openai-compatible" in r.servers
     assert "llama.cpp" not in r.servers
     assert r.version == "0.11.2"
-    assert r.suggested_type == "llamacpp"
+    assert r.suggested_type == "openai"
     assert r.models == ["Qwen/Qwen3-8B"]
     assert _state(r, "GET", "/version") == "available"
     assert _state(r, "POST", "/pooling") == "exists"

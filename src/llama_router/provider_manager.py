@@ -9,7 +9,8 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -26,13 +27,14 @@ from .models import (
     ProviderInfo,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
     RequestLog,
     WORKER_URL_SCHEME,
 )
 from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
-from .routing_stats import ProviderStats
+from .upstream_url import guess_locality, split_api_base
+from .routing_stats import ProviderStats, retry_after_seconds
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailable,
@@ -95,6 +97,29 @@ def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
     return False
 
 
+def worker_protocol(targets: list[str]) -> ProviderProtocol:
+    """The one protocol a worker provider is reached by.
+
+    A worker that relays its own router offers both targets, and the router's
+    Ollama port also serves every OpenAI-style route, so the Ollama target
+    reaches everything. Use the OpenAI target only when it is all there is.
+    """
+    if "ollama" in targets or "llamacpp" not in targets:
+        return ProviderProtocol.OLLAMA
+    return ProviderProtocol.OPENAI
+
+
+def preset_settings(preset) -> dict[str, Any]:
+    """Provider settings a cloud preset starts with."""
+    return {
+        "preset": preset.id,
+        "extra_headers": dict(preset.extra_headers) or None,
+        "manual_models": list(preset.models) or None,
+        "locality": "cloud",
+        "model_filter": preset.model_filter or None,
+    }
+
+
 class ProviderManager:
     _cached_prefixes: list[str] | None = None
 
@@ -111,7 +136,7 @@ class ProviderManager:
         self._hot_models: dict[int, list[HotModel]] = {}
         # The model each llama.cpp upstream reports as loaded (/props).
         self._llamacpp_loaded: dict[int, set[str]] = {}
-        self._active_urls: dict[int, tuple[str, str]] = {}
+        self._active_urls: dict[int, str] = {}
         self._router: Router | None = None
         # Live round-trip and request samples that feed the routing table.
         self.stats = ProviderStats()
@@ -127,6 +152,8 @@ class ProviderManager:
         # Last offline reason written to the Log, so automatic checks log a
         # failure once rather than on every cycle.
         self._logged_detail: dict[int, str] = {}
+        # Endpoint probes running in the background, one per provider.
+        self._probing: dict[int, asyncio.Task] = {}
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -139,6 +166,47 @@ class ProviderManager:
         """In-memory routing input changed (database writes notify on their own)."""
         if self._router is not None:
             self._router.mark_dirty(reason, reload=False)
+
+    def schedule_probe(self, provider_id: int, reason: str = "auto") -> None:
+        """Probe a provider's endpoints in the background, once at a time.
+
+        Probes never run inference, so they run on add, on every edit and
+        address change, when a provider comes back, and when the last one is
+        older than LLAMA_ROUTER_PROBE_MAX_AGE_HOURS.
+        """
+        if not settings.auto_probe_enabled:
+            return
+        running = self._probing.get(provider_id)
+        if running is not None and not running.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self.probe_provider(provider_id)
+            except ValueError as exc:
+                logger.debug("Probe of provider %d skipped: %s", provider_id, exc)
+            except Exception:
+                logger.exception(
+                    "Background probe failed (provider_id=%s, %s)", provider_id, reason
+                )
+            finally:
+                self._probing.pop(provider_id, None)
+
+        self._probing[provider_id] = asyncio.create_task(
+            _run(), name=f"probe-{provider_id}"
+        )
+
+    def _probe_is_stale(self, provider: Provider) -> bool:
+        max_age = settings.probe_max_age_hours
+        if max_age <= 0:
+            return False
+        at = provider.probed_at
+        if at is None:
+            return True
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - at).total_seconds()
+        return age >= max_age * 3600
 
     @classmethod
     def _get_cache_prefixes(cls) -> list[str]:
@@ -155,14 +223,77 @@ class ProviderManager:
         return cls._cached_prefixes
 
     @staticmethod
-    def _address_url_sig(provider: Provider, addr: ProviderAddress) -> tuple[str, str]:
-        o = addr.url.rstrip("/") if provider.supports_ollama else ""
-        lcpp = ""
-        if provider.supports_llamacpp:
-            lcpp = (addr.llamacpp_url or addr.url).rstrip("/")
-        return (o, lcpp)
+    def _address_url_sig(addr: ProviderAddress) -> str:
+        return addr.url.rstrip("/")
+
+    async def provision_from_env(self) -> list[Provider]:
+        """Create or update the providers named by LLAMA_ROUTER_PROVIDER_*_API_KEY.
+
+        A docker-compose file can attach cloud services without the
+        dashboard: each preset whose key is set gets a provider (the first one
+        created from that preset, else a new one named after it), and its key
+        is replaced when the variable holds a different one.
+        """
+        from .cloud_presets import env_provisioned
+
+        out: list[Provider] = []
+        existing = await self._db.list_providers()
+        for preset, key, params in env_provisioned():
+            try:
+                url = preset.url(**params)
+            except ValueError as exc:
+                logger.warning("%s set but %s; skipped", preset.env_var, exc)
+                continue
+            match = next((p for p in existing if p.preset == preset.id), None)
+            if match is None:
+                name = preset.name
+                taken = {p.name for p in existing}
+                n = 2
+                while name in taken:
+                    name = f"{preset.name} {n}"
+                    n += 1
+                provider = await self._db.add_provider(
+                    name, ProviderProtocol(preset.protocol)
+                )
+                assert provider.id is not None
+                await self._db.update_provider_settings(
+                    provider.id, **preset_settings(preset)
+                )
+                await self._db.add_address(provider.id, url, is_preferred=True)
+                provider = await self._db.get_provider(provider.id) or provider
+                await self._store_api_key(
+                    provider, key, normalize_header(preset.api_key_header)
+                )
+                existing.append(provider)
+                logger.info("Added provider %s from %s", name, preset.env_var)
+            else:
+                provider = match
+                try:
+                    current = (
+                        decrypt_api_key(provider.api_key_enc)
+                        if provider.api_key_enc
+                        else None
+                    )
+                except ApiKeyUnavailable:
+                    current = None
+                if current != key:
+                    await self._store_api_key(
+                        provider,
+                        key,
+                        normalize_header(
+                            provider.api_key_header or preset.api_key_header
+                        ),
+                    )
+                    logger.info(
+                        "Updated the key of provider %s from %s",
+                        provider.name,
+                        preset.env_var,
+                    )
+            out.append(provider)
+        return out
 
     async def start(self) -> None:
+        await self.provision_from_env()
         providers = await self._db.list_providers()
         http_providers: list[Provider] = []
         for p in providers:
@@ -186,6 +317,14 @@ class ProviderManager:
                 await self._health_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._probing.values()):
+            task.cancel()
+        for task in list(self._probing.values()):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._probing.clear()
         for client in self._ollama_clients.values():
             await client.close()
         for client in self._llamacpp_clients.values():
@@ -215,14 +354,17 @@ class ProviderManager:
         Worker providers never get them: the link strips Authorization and
         API-KEY, and the worker adds its own upstream key.
         """
-        if provider.is_worker or not provider.api_key_enc:
+        if provider.is_worker:
             return None
-        try:
-            key = decrypt_api_key(provider.api_key_enc)
-        except ApiKeyUnavailable as exc:
-            logger.warning("Provider %s: %s", provider.name, exc)
-            return None
-        return auth_headers(key, provider.api_key_header)
+        headers = dict(provider.extra_headers or {})
+        if provider.api_key_enc:
+            try:
+                key = decrypt_api_key(provider.api_key_enc)
+            except ApiKeyUnavailable as exc:
+                logger.warning("Provider %s: %s", provider.name, exc)
+            else:
+                headers.update(auth_headers(key, provider.api_key_header))
+        return headers or None
 
     async def _rebuild_clients(self, provider: Provider) -> None:
         """Close existing clients and create new ones from the best live address."""
@@ -233,25 +375,36 @@ class ProviderManager:
         if not addr:
             self._active_urls.pop(provider.id, None)
             return
+        kw: dict[str, Any] = {"on_response": self._response_hook(provider.id)}
+        if provider.read_timeout_s:
+            kw["timeout"] = httpx.Timeout(10.0, read=provider.read_timeout_s)
         if provider.is_worker:
-            hub = self.worker_hub
-            if provider.supports_ollama:
-                self._ollama_clients[provider.id] = OllamaClient(
-                    addr.url, transport=hub.transport(provider.id, "ollama")
+            kw["transport"] = self.worker_hub.transport(
+                provider.id, provider.worker_target
+            )
+        else:
+            kw["headers"] = self._upstream_headers(provider)
+        if provider.is_ollama:
+            self._ollama_clients[provider.id] = OllamaClient(addr.url, **kw)
+        else:
+            self._llamacpp_clients[provider.id] = LlamaCppClient(addr.url, **kw)
+        self._active_urls[provider.id] = self._address_url_sig(addr)
+
+    def _response_hook(self, provider_id: int):
+        """Every upstream response passes here: a 429 marks the provider busy."""
+
+        async def on_response(resp: httpx.Response) -> None:
+            if resp.status_code == 429:
+                seconds = retry_after_seconds(resp.headers.get("retry-after"))
+                self.stats.mark_busy(provider_id, seconds)
+                logger.info(
+                    "Provider %d rate-limited (HTTP 429); routing around it for "
+                    "%.0fs",
+                    provider_id,
+                    min(seconds, 300.0),
                 )
-            if provider.supports_llamacpp:
-                self._llamacpp_clients[provider.id] = LlamaCppClient(
-                    addr.url, transport=hub.transport(provider.id, "llamacpp")
-                )
-            self._active_urls[provider.id] = (addr.url, addr.url)
-            return
-        headers = self._upstream_headers(provider)
-        if provider.supports_ollama:
-            self._ollama_clients[provider.id] = OllamaClient(addr.url, headers=headers)
-        if provider.supports_llamacpp:
-            url = addr.llamacpp_url or addr.url
-            self._llamacpp_clients[provider.id] = LlamaCppClient(url, headers=headers)
-        self._active_urls[provider.id] = self._address_url_sig(provider, addr)
+
+        return on_response
 
     async def _close_clients(self, provider_id: int) -> None:
         if provider_id in self._ollama_clients:
@@ -267,29 +420,40 @@ class ProviderManager:
         self,
         name: str,
         url: str,
-        provider_type: ProviderType = ProviderType.OLLAMA,
-        llamacpp_url: str | None = None,
+        protocol: ProviderProtocol = ProviderProtocol.OLLAMA,
+        *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
-        *,
         api_key: str | None = None,
         api_key_header: str | None = None,
+        provider_settings: dict[str, Any] | None = None,
     ) -> Provider:
-        """Create a provider with *url* (and *llamacpp_url*) as its first address."""
+        """Create a provider with *url* as its first address.
+
+        *provider_settings* are optional columns (preset, extra_headers,
+        manual_models, ...) written before the first check.
+        """
         header = normalize_header(api_key_header) if api_key else None
+        provider_settings = dict(provider_settings or {})
+        if not provider_settings.get("locality"):
+            provider_settings["locality"] = guess_locality(url)
         provider = await self._db.add_provider(
             name,
-            provider_type,
+            protocol,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
         )
         assert provider.id is not None
+        if provider_settings:
+            await self._db.update_provider_settings(provider.id, **provider_settings)
+            provider = await self._db.get_provider(provider.id) or provider
         if api_key:
             await self._store_api_key(provider, api_key, header)
-        await self._db.add_address(provider.id, url, llamacpp_url, is_preferred=True)
+        await self._db.add_address(provider.id, url, is_preferred=True)
         await self._rebuild_clients(provider)
+        self.schedule_probe(provider.id, "add")
         await self.check_provider(provider, rediscover=True, source="add")
         return provider
 
@@ -297,7 +461,7 @@ class ProviderManager:
         self,
         provider_id: int,
         name: str,
-        provider_type: ProviderType | None = None,
+        protocol: ProviderProtocol | None = None,
         *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
@@ -305,10 +469,12 @@ class ProviderManager:
         api_key: str | None = None,
         api_key_header: str | None = None,
         clear_api_key: bool = False,
+        provider_settings: dict[str, Any] | None = None,
     ) -> None:
         """Update provider details. Addresses are edited separately.
 
         *api_key* None keeps the stored key; *clear_api_key* removes it.
+        *provider_settings* writes optional columns; ones left out are kept.
         """
         existing = await self._db.get_provider(provider_id)
         if existing is None:
@@ -319,16 +485,20 @@ class ProviderManager:
             normalize_header(api_key_header) if api_key_header is not None else None
         )
         if existing.is_worker:
-            # A worker's name ties it to its token on the hub.
+            # A worker's name ties it to its token on the hub, and its protocol
+            # follows what the worker offers when it connects.
             name = existing.name
+            protocol = None
         await self._db.update_provider(
             provider_id,
             name,
-            provider_type,
+            protocol,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
         )
+        if provider_settings:
+            await self._db.update_provider_settings(provider_id, **provider_settings)
         if not existing.is_worker:
             if clear_api_key:
                 await self._db.set_provider_api_key(provider_id, None, None)
@@ -344,6 +514,7 @@ class ProviderManager:
         if not provider:
             return
         await self._rebuild_clients(provider)
+        self.schedule_probe(provider_id, "edit")
         await self.check_provider(provider, rediscover=True, source="edit")
 
     async def _store_api_key(
@@ -414,29 +585,30 @@ class ProviderManager:
         self,
         provider_id: int,
         url: str,
-        llamacpp_url: str | None = None,
         is_preferred: bool = False,
     ) -> ProviderAddress:
-        addr = await self._db.add_address(provider_id, url, llamacpp_url, is_preferred)
+        addr = await self._db.add_address(provider_id, url, is_preferred)
         provider = await self._db.get_provider(provider_id)
         if provider:
             await self._rebuild_clients(provider)
+            self.schedule_probe(provider_id, "address")
         return addr
 
     async def update_address(
         self,
         address_id: int,
         url: str,
-        llamacpp_url: str | None = None,
         is_preferred: bool | None = None,
     ) -> None:
         addr = await self._db.get_address(address_id)
         if not addr:
             return
-        await self._db.update_address(address_id, url, llamacpp_url, is_preferred)
+        await self._db.update_address(address_id, url, is_preferred)
         provider = await self._db.get_provider(addr.provider_id)
         if provider:
             await self._rebuild_clients(provider)
+            if url.rstrip("/") != addr.url.rstrip("/"):
+                self.schedule_probe(addr.provider_id, "address")
 
     async def remove_address(self, address_id: int) -> None:
         addr = await self._db.get_address(address_id)
@@ -513,6 +685,16 @@ class ProviderManager:
     def get_llamacpp_client(self, provider_id: int) -> LlamaCppClient:
         return self._llamacpp_clients[provider_id]
 
+    def ollama_api_client(self, provider_id: int):
+        """What the Ollama API handlers call: the provider's Ollama client, or
+        for an OpenAI-style provider, one that translates (see translate)."""
+        client = self._ollama_clients.get(provider_id)
+        if client is not None:
+            return client
+        from .translate import OllamaOverOpenAI
+
+        return OllamaOverOpenAI(self._llamacpp_clients[provider_id])
+
     def get_client(self, provider_id: int) -> OllamaClient:
         """Backward compat: return Ollama client."""
         return self._ollama_clients[provider_id]
@@ -566,15 +748,15 @@ class ProviderManager:
     def hot_model_names(
         self, provider_id: int, upstream: str | None = None
     ) -> set[str]:
-        """Models loaded right now: on the Ollama upstream (/api/ps), the
-        llama.cpp upstream (/props), or either when *upstream* is None."""
+        """Models loaded right now: reported by Ollama's /api/ps (*upstream*
+        "ollama"), by llama.cpp's /props ("openai"), or either when None."""
         ollama = {
             hm["name"] for hm in self._hot_models.get(provider_id, []) if hm.get("name")
         }
         if upstream == "ollama":
             return ollama
         llamacpp = self._llamacpp_loaded.get(provider_id, set())
-        if upstream == "llamacpp":
+        if upstream == "openai":
             return set(llamacpp)
         return ollama | llamacpp
 
@@ -602,7 +784,8 @@ class ProviderManager:
     async def _refresh_llamacpp_loaded(self, provider: Provider) -> None:
         assert provider.id is not None
         client = self._llamacpp_clients.get(provider.id)
-        if not provider.supports_llamacpp or client is None:
+        if not provider.is_openai or client is None or provider.lacks("/props"):
+            # Only llama.cpp-style servers report their loaded model in /props.
             self._set_llamacpp_loaded(provider.id, set())
             return
         try:
@@ -618,7 +801,7 @@ class ProviderManager:
 
     async def _refresh_ollama_hot(self, provider: Provider) -> None:
         assert provider.id is not None
-        if not provider.supports_ollama or provider.id not in self._ollama_clients:
+        if not provider.is_ollama or provider.id not in self._ollama_clients:
             self._set_hot_models(provider.id, [])
             return
         try:
@@ -918,6 +1101,9 @@ class ProviderManager:
             )
         elif online and not was_online:
             logger.info("Provider %s is online (%s)", provider.name, live_urls)
+            if prev_status == ProviderStatus.OFFLINE:
+                # It may have come back as a different server or version.
+                self.schedule_probe(pid, "recovered")
             await self._log_event(
                 provider,
                 source,
@@ -947,7 +1133,7 @@ class ProviderManager:
         if best is None:
             return
         has_clients = pid in self._ollama_clients or pid in self._llamacpp_clients
-        new_sig = self._address_url_sig(provider, best)
+        new_sig = self._address_url_sig(best)
         if has_clients and (
             provider.is_worker or new_sig == self._active_urls.get(pid)
         ):
@@ -993,45 +1179,24 @@ class ProviderManager:
             metrics: dict[str, float] | None = None
 
             api_choice = (benchmark_api or "auto").strip().lower()
-
-            if api_choice == "ollama":
-                if not (
-                    provider.supports_ollama and provider_id in self._ollama_clients
-                ):
+            if api_choice != "auto":
+                wanted = ProviderProtocol.parse(api_choice)
+                if wanted is not provider.protocol:
                     raise RuntimeError(
-                        f"Provider {provider.name} does not support ollama benchmarks"
+                        f"Provider {provider.name} speaks the "
+                        f"{provider.protocol.value} API, not {wanted.value}"
                     )
-                client = self._ollama_clients[provider_id]
-                protocol = "ollama"
-                metrics = await self._try_benchmark(
-                    client, backend_name, model_name, provider_id
-                )
-            elif api_choice == "llamacpp":
-                if not (
-                    provider.supports_llamacpp and provider_id in self._llamacpp_clients
-                ):
-                    raise RuntimeError(
-                        f"Provider {provider.name} does not support llama.cpp benchmarks"
-                    )
-                client = self._llamacpp_clients[provider_id]
-                protocol = "llamacpp"
-                metrics = await self._try_benchmark(
-                    client, backend_name, model_name, provider_id
-                )
-            elif provider.supports_ollama and provider_id in self._ollama_clients:
-                client = self._ollama_clients[provider_id]
-                protocol = "ollama"
-                metrics = await self._try_benchmark(
-                    client, backend_name, model_name, provider_id
-                )
-            elif provider.supports_llamacpp and provider_id in self._llamacpp_clients:
-                client = self._llamacpp_clients[provider_id]
-                protocol = "llamacpp"
-                metrics = await self._try_benchmark(
-                    client, backend_name, model_name, provider_id
-                )
+            client: OllamaClient | LlamaCppClient | None
+            if provider.is_ollama:
+                client = self._ollama_clients.get(provider_id)
             else:
+                client = self._llamacpp_clients.get(provider_id)
+            if client is None:
                 raise RuntimeError(f"No client available for provider {provider.name}")
+            protocol = provider.protocol.value
+            metrics = await self._try_benchmark(
+                client, backend_name, model_name, provider_id
+            )
 
             result = BenchmarkResult(
                 provider_id=provider_id,
@@ -1039,7 +1204,12 @@ class ProviderManager:
                 protocol=protocol,
                 # The backend's own load time says whether this was a cold
                 # start; the router's view of what is loaded can be stale.
-                startup_time_ms=measured_cold_start(metrics["startup_time_ms"]),
+                # A cloud service has no cold start the router can measure.
+                startup_time_ms=(
+                    None
+                    if provider.is_cloud
+                    else measured_cold_start(metrics["startup_time_ms"])
+                ),
                 tokens_per_second=metrics["tokens_per_second"],
                 source=source,
             )
@@ -1184,7 +1354,6 @@ class ProviderManager:
 
         def _upsert_model(
             *,
-            source: str,
             clean_name: str,
             raw_name: str | None,
             size: int | None = None,
@@ -1194,9 +1363,6 @@ class ProviderManager:
         ) -> None:
             existing = models_by_name.get(clean_name)
             if existing is None:
-                merged_details = dict(details or {})
-                merged_details["_in_ollama"] = source == "ollama"
-                merged_details["_in_llamacpp"] = source == "llamacpp"
                 models_by_name[clean_name] = ProviderModel(
                     provider_id=provider.id,
                     name=clean_name,
@@ -1204,19 +1370,13 @@ class ProviderManager:
                     size=size,
                     digest=digest,
                     modified_at=modified_at,
-                    details=merged_details,
+                    details=dict(details) if details else None,
                 )
                 return
 
             merged_details = dict(existing.details or {})
             if details:
                 merged_details.update(details)
-            merged_details["_in_ollama"] = bool(
-                merged_details.get("_in_ollama", False) or source == "ollama"
-            )
-            merged_details["_in_llamacpp"] = bool(
-                merged_details.get("_in_llamacpp", False) or source == "llamacpp"
-            )
 
             # Prefer the first non-null raw_name and metadata values.
             if existing.raw_name is None and raw_name is not None:
@@ -1227,17 +1387,39 @@ class ProviderManager:
                 existing.digest = digest
             if existing.modified_at is None and modified_at is not None:
                 existing.modified_at = modified_at
-            existing.details = merged_details
+            existing.details = merged_details or None
 
-        if provider.supports_ollama and provider.id in self._ollama_clients:
-            tags = await self._ollama_clients[provider.id].get_tags()
+        manual = [m for m in (provider.manual_models or []) if m]
+
+        async def _listed(fetch):
+            """The provider's own list; with hand-added models, a failed list
+            only costs the listed ones."""
+            try:
+                return await fetch()
+            except (httpx.HTTPError, ValueError) as exc:
+                if not manual:
+                    raise
+                logger.warning(
+                    "Provider %s: model list failed (%s); using its %d added models",
+                    provider.name,
+                    (
+                        describe_httpx_error(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else exc
+                    ),
+                    len(manual),
+                )
+                return []
+
+        if provider.is_ollama and provider.id in self._ollama_clients:
+            tags = await _listed(self._ollama_clients[provider.id].get_tags)
+            tags = [m for m in tags if provider.keeps_model(m.name)]
             for m in tags:
                 clean_name = self._strip_cache_prefix(m.name)
                 raw_name = m.name if clean_name != m.name else None
                 if raw_name:
                     cache_prefixed += 1
                 _upsert_model(
-                    source="ollama",
                     clean_name=clean_name,
                     raw_name=raw_name,
                     size=m.size,
@@ -1246,15 +1428,15 @@ class ProviderManager:
                     details=m.details,
                 )
 
-        if provider.supports_llamacpp and provider.id in self._llamacpp_clients:
-            lcpp_models = await self._llamacpp_clients[provider.id].get_models()
+        if provider.is_openai and provider.id in self._llamacpp_clients:
+            lcpp_models = await _listed(self._llamacpp_clients[provider.id].get_models)
+            lcpp_models = [m for m in lcpp_models if provider.keeps_model(m.name)]
             for m in lcpp_models:
                 clean_name = self._strip_cache_prefix(m.name)
                 raw_name = m.name if clean_name != m.name else None
                 if raw_name:
                     cache_prefixed += 1
                 _upsert_model(
-                    source="llamacpp",
                     clean_name=clean_name,
                     raw_name=raw_name,
                     size=m.size,
@@ -1263,30 +1445,33 @@ class ProviderManager:
 
             # Also probe each configured llama.cpp instance for its currently loaded
             # model via /props; some instances expose active model there even when
-            # /v1/models is sparse.
-            if provider.is_worker:
+            # /v1/models is sparse. Skip servers whose probe found no /props.
+            if provider.lacks("/props"):
+                pass
+            elif provider.is_worker:
                 props = await self._llamacpp_clients[provider.id].get_props()
                 current = self._extract_llamacpp_current_model(props)
                 if current:
                     clean_name = self._strip_cache_prefix(current)
                     raw_name = current if clean_name != current else None
                     _upsert_model(
-                        source="llamacpp",
                         clean_name=clean_name,
                         raw_name=raw_name,
                         details={"_from_props": True},
                     )
             addresses = (
-                [] if provider.is_worker else await self._db.get_addresses(provider.id)
+                []
+                if provider.is_worker or provider.lacks("/props")
+                else await self._db.get_addresses(provider.id)
             )
             timeout = httpx.Timeout(10.0)
             async with httpx.AsyncClient(
                 timeout=timeout, headers=self._upstream_headers(provider)
             ) as probe_client:
                 for addr in addresses:
-                    probe_url = (addr.llamacpp_url or addr.url).rstrip("/")
+                    base = split_api_base(addr.url)[0]
                     try:
-                        resp = await probe_client.get(f"{probe_url}/props")
+                        resp = await probe_client.get(f"{base}/props")
                         props = resp.json() if resp.status_code == 200 else None
                     except httpx.HTTPError:
                         props = None
@@ -1298,15 +1483,17 @@ class ProviderManager:
                     if raw_name:
                         cache_prefixed += 1
                     _upsert_model(
-                        source="llamacpp",
                         clean_name=clean_name,
                         raw_name=raw_name,
                         details={
                             "_from_props": True,
-                            "_llamacpp_source_url": probe_url,
+                            "_llamacpp_source_url": base,
                         },
                     )
 
+        for name in manual:
+            if name not in models_by_name:
+                _upsert_model(clean_name=name, raw_name=None, details={"_manual": True})
         all_models = list(models_by_name.values())
         await self._db.set_provider_models(provider.id, all_models)
         if cache_prefixed:
@@ -1357,6 +1544,13 @@ class ProviderManager:
     async def _run_health_checks(self) -> None:
         providers = await self._db.list_providers()
         await self._check_many(providers, rediscover=False, source="health")
+        for p in providers:
+            if (
+                p.id is not None
+                and p.status != ProviderStatus.OFFLINE
+                and self._probe_is_stale(p)
+            ):
+                self.schedule_probe(p.id, "stale")
 
     async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
         """Check one address and record how long a successful check took.
@@ -1383,43 +1577,37 @@ class ProviderManager:
     async def _probe_address_once(
         self, provider: Provider, addr: ProviderAddress
     ) -> bool:
-        """Check if a single address is reachable via the provider's protocol(s)."""
+        """Check if a single address is reachable via the provider's protocol."""
         if provider.is_worker:
             return await self._probe_worker(provider)
-        if provider.supports_ollama:
-            tmp = OllamaClient(
-                addr.url,
-                timeout=_PROBE_TIMEOUT,
-                headers=self._upstream_headers(provider),
-            )
+        liveness = provider.liveness_path
+        if liveness:
+            # The probe found this GET answers cheaply on this server.
             try:
-                if await tmp.is_reachable():
-                    return True
-            finally:
-                await tmp.close()
-
-        if provider.supports_llamacpp:
-            url = addr.llamacpp_url or addr.url
-            tmp = LlamaCppClient(
-                url,
-                timeout=_PROBE_TIMEOUT,
-                headers=self._upstream_headers(provider),
-            )
-            try:
-                if await tmp.is_reachable():
-                    return True
-            finally:
-                await tmp.close()
-
-        return False
+                async with httpx.AsyncClient(
+                    timeout=_PROBE_TIMEOUT, headers=self._upstream_headers(provider)
+                ) as http:
+                    resp = await http.get(addr.url.rstrip("/") + liveness)
+                return 200 <= resp.status_code < 300
+            except httpx.HTTPError:
+                return False
+        client_cls = OllamaClient if provider.is_ollama else LlamaCppClient
+        tmp = client_cls(
+            addr.url,
+            timeout=_PROBE_TIMEOUT,
+            headers=self._upstream_headers(provider),
+        )
+        try:
+            return await tmp.is_reachable()
+        finally:
+            await tmp.close()
 
     # --- Endpoint probing ---
 
     async def probe_provider(self, provider_id: int) -> dict | None:
         """Probe the provider's best address and store what its upstream supports.
 
-        Direct providers are probed at the address URL and, when different, the
-        address's llama.cpp URL. Workers are probed through their socket.
+        Workers are probed through their socket.
         """
         provider = await self._db.get_provider(provider_id)
         if provider is None:
@@ -1432,29 +1620,22 @@ class ProviderManager:
         if provider.is_worker:
             if not self.worker_hub.is_connected(provider_id):
                 raise ValueError("worker is not connected")
-            targets = []
-            if provider.supports_ollama:
-                targets.append("ollama")
-            if provider.supports_llamacpp:
-                targets.append("llamacpp")
-            for target in targets:
-                r = await probe_url(
-                    "http://worker",
-                    transport=self.worker_hub.transport(provider_id, target),
-                )
-                # Each target is a different upstream behind the worker; label
-                # it so the two catalogs are not shown as duplicate rows.
-                r.base_url = f"{provider.worker_address} ({target})"
-                results.append(r)
+            r = await probe_url(
+                "http://worker",
+                transport=self.worker_hub.transport(
+                    provider_id, provider.worker_target
+                ),
+            )
+            r.base_url = provider.worker_address or r.base_url
+            results.append(r)
         else:
-            urls = [best.url]
-            if best.llamacpp_url and best.llamacpp_url.rstrip("/") != best.url.rstrip(
-                "/"
-            ):
-                urls.append(best.llamacpp_url)
-            headers = self._upstream_headers(provider)
-            for url in urls:
-                results.append(await probe_url(url, headers=headers))
+            results.append(
+                await probe_url(
+                    best.url,
+                    headers=self._upstream_headers(provider),
+                    key_sent=provider.has_api_key,
+                )
+            )
         caps = merge_results(results)
         await self._db.set_provider_capabilities(provider_id, caps)
         await self._log_event(
@@ -1494,11 +1675,11 @@ class ProviderManager:
     async def add_worker_provider(self, name: str) -> Provider:
         """Create the provider record a worker attaches to when it dials in."""
         provider = await self._db.add_provider(
-            name, ProviderType.OLLAMA, worker_name=name
+            name, ProviderProtocol.OLLAMA, worker_name=name
         )
         assert provider.id is not None
         url = f"{WORKER_URL_SCHEME}{name}"
-        await self._db.add_address(provider.id, url, None, is_preferred=True)
+        await self._db.add_address(provider.id, url, is_preferred=True)
         await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
         provider.status = ProviderStatus.OFFLINE
         return provider
@@ -1526,23 +1707,17 @@ class ProviderManager:
             provider = await self._db.get_provider(provider_id)
             if provider is None or not provider.is_worker:
                 return
-            protocols = conn.protocols
-            if "ollama" in protocols and "llamacpp" in protocols:
-                ptype = ProviderType.BOTH
-            elif "llamacpp" in protocols:
-                ptype = ProviderType.LLAMACPP
-            else:
-                ptype = ProviderType.OLLAMA
-            if ptype != provider.provider_type:
+            protocol = worker_protocol(conn.protocols)
+            if protocol is not provider.protocol:
                 await self._db.update_provider(
                     provider_id,
                     provider.name,
-                    ptype,
+                    protocol,
                     machine_type=provider.machine_type,
                     gpu_type=provider.gpu_type,
                     gpu_ram=provider.gpu_ram,
                 )
-                provider.provider_type = ptype
+                provider.protocol = protocol
             await self._rebuild_clients(provider)
             detail: str | None = None
             try:

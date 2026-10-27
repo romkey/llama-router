@@ -40,11 +40,15 @@ from .routing_table import (
     Candidate,
     RoutingInputs,
     RoutingTable,
+    alias_groups,
     build_table,
+    reaches,
     load_inputs,
 )
 
 logger = logging.getLogger(__name__)
+
+_API_NAMES = {"ollama": "Ollama", "openai": "OpenAI"}
 
 ROUTING_MODES = frozenset({*MODES, "chaos"})
 
@@ -86,6 +90,12 @@ class RoutingPreferences:
     session_affinity: bool | None = None
     # The API key these came from, which scopes session affinity.
     key_id: int | None = None
+    # "local" or "cloud" limits routing to those providers; None allows both.
+    locality: str | None = None
+    # USD per UTC day; past it the key is limited to local providers.
+    daily_spend_cap_usd: float | None = None
+    # Set when the cap was reached and the locality narrowed because of it.
+    spend_capped: bool = False
 
 
 class Router:
@@ -263,6 +273,21 @@ class Router:
         key_id = preferences.key_id if preferences is not None else None
         return session_key(headers, body, key_id)
 
+    def _not_busy(self, ranked: tuple[Candidate, ...]) -> tuple[Candidate, ...]:
+        """Drop providers cooling down after a 429, unless all of them are."""
+        busy = self._pm.stats.busy_for
+        if not any(busy(c.provider_id) > 0 for c in ranked):
+            return ranked
+        ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
+        return ready or ranked
+
+    def price_for(self, provider_id: int, model: str):
+        """The model's price on the provider from the current table, or None."""
+        table = self._table
+        if table is None or table.prices is None:
+            return None
+        return table.prices.price(provider_id, model)
+
     def forget_session(self, session: str | None) -> None:
         """Let the session's next request be placed afresh (after a failure)."""
         self.affinity.forget(session)
@@ -319,8 +344,9 @@ class Router:
             session = None
         pins = preferences.pinned_providers if preferences else None
         mode = preferences.mode if preferences else DEFAULT_MODE
+        locality = preferences.locality if preferences else None
         if mode == "chaos" and not (pins and model_name in pins):
-            return self._route_chaos(table, model_name, ENDPOINTS[path][0])
+            return self._route_chaos(table, model_name, ENDPOINTS[path][0], locality)
         if mode not in MODES:
             mode = DEFAULT_MODE
 
@@ -335,6 +361,20 @@ class Router:
                 pid = pins.get(candidate_model)
                 if pid is not None:
                     pinned = self._pinned(table, candidate_model, path, pid)
+                    if pinned is not None and not _locality_ok(
+                        pinned.provider, locality
+                    ):
+                        # The key's locality outranks its pin: never send a
+                        # local-only key's request to a cloud provider.
+                        logger.warning(
+                            "Pin for %s to %s ignored: provider is %s, key "
+                            "requires %s",
+                            candidate_model,
+                            pinned.provider.name,
+                            pinned.provider.locality,
+                            locality,
+                        )
+                        pinned = None
                     if pinned is not None:
                         if candidate_model != model_name:
                             logger.info(
@@ -348,9 +388,10 @@ class Router:
                             pinned.backend_model,
                             pinned.model,
                         )
-            ranked = table.ranked.get((candidate_model, path, mode))
+            ranked = table.ranked_for(candidate_model, path, mode, locality)
             if not ranked:
                 continue
+            ranked = self._not_busy(ranked)
             chosen = None
             sticky = None
             if session is not None:
@@ -432,10 +473,13 @@ class Router:
         pins = dict(preferences.pinned_providers) if preferences else {}
         mode = preferences.mode if preferences else DEFAULT_MODE
         allow_fallback = preferences.allow_fallback if preferences else True
+        locality = preferences.locality if preferences else None
         out: dict[str, Any] = {
             "request": {
                 "model": model_name,
                 "mode": mode,
+                "locality": locality or "any",
+                "spend_capped": bool(preferences and preferences.spend_capped),
                 "endpoint": path,
                 "endpoint_class": endpoint_cls,
                 "protocol": protocol or "any",
@@ -466,6 +510,7 @@ class Router:
             out["chaos_pool"] = [
                 {"provider_id": p.id, "provider": p.name, "models": list(models)}
                 for p, models in table.chaos.get(protocol, ())
+                if _locality_ok(p, locality)
             ]
             if not out["chaos_pool"]:
                 out["summary"] = (
@@ -502,6 +547,7 @@ class Router:
                 active,
                 chosen_id,
                 bound,
+                locality,
             )
             out["steps"].append(step)
             if decision is not None and decision.resolved_model == candidate_model:
@@ -520,11 +566,14 @@ class Router:
         active,
         chosen_id: int | None = None,
         bound: int | None = None,
+        locality: str | None = None,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         rows: list[dict[str, Any]] = []
         all_cands = table.all_candidates.get((model, path), ())
-        ranked = table.ranked.get((model, path, mode), ())
+        ranked = table.ranked_for(model, path, mode, locality)
+        ready = self._not_busy(ranked)
+        busy = self._pm.stats.busy_for
         ranked_ids = {c.provider_id for c in ranked}
         best_tier = ranked[0].tier if ranked else TIER_OK
         pid = pins.get(model)
@@ -532,6 +581,13 @@ class Router:
         if pid is not None:
             step["pinned_provider_id"] = pid
             pinned = next((c for c in all_cands if c.provider_id == pid), None)
+            if pinned is not None and not _locality_ok(pinned.provider, locality):
+                step["pin_ignored"] = (
+                    f"{pinned.provider.name} is {pinned.provider.locality}; "
+                    f"the key requires {locality}"
+                )
+                pinned = None
+        skipped = 0
 
         for c in all_cands:
             q = active(c.provider_id)
@@ -547,7 +603,12 @@ class Router:
                     "session_bound": bound is not None and c.provider_id == bound,
                 }
             )
-            if pinned is not None:
+            if not _locality_ok(c.provider, locality):
+                row["excluded"] = (
+                    f"provider is {c.provider.locality}; the key requires {locality}"
+                )
+                skipped += 1
+            elif pinned is not None:
                 if c is not pinned:
                     row["excluded"] = "another provider is pinned for this model"
                 else:
@@ -556,11 +617,26 @@ class Router:
                 row["excluded"] = "; ".join(c.problems) + (
                     "; healthier providers are available"
                 )
+            elif c not in ready:
+                row["excluded"] = (
+                    f"rate limited (HTTP 429) for {busy(c.provider_id):.0f}s more; "
+                    "other providers are ready"
+                )
             else:
                 # In the best tier available, so it is used despite problems.
                 row["warnings"] = list(c.problems)
+                if busy(c.provider_id) > 0:
+                    row["warnings"].append(
+                        f"rate limited (HTTP 429) for {busy(c.provider_id):.0f}s more"
+                    )
             rows.append(row)
 
+        if locality is not None:
+            step["locality"] = (
+                f"key requires {locality}; {skipped} "
+                f"{'cloud' if locality == 'local' else 'local'} "
+                f"provider{'' if skipped == 1 else 's'} skipped"
+            )
         rows.extend(
             self._unroutable(model, protocol, {c.provider_id for c in all_cands})
         )
@@ -651,14 +727,16 @@ class Router:
                 for n in (m.name, m.raw_name)
                 if n
             }
+            groups = alias_groups(inputs.aliases)
+            for n in list(names):
+                names |= groups.get(n, frozenset())
             if model not in names:
                 continue
             if p.status == ProviderStatus.OFFLINE:
                 reason = "provider is offline"
-            elif protocol == "ollama" and not p.supports_ollama:
-                reason = "provider does not serve the Ollama API"
-            elif protocol == "llamacpp" and not p.supports_llamacpp:
-                reason = "provider does not serve the llama.cpp API"
+            elif not reaches(p, protocol):
+                api = _API_NAMES.get(protocol, protocol)
+                reason = f"provider does not serve the {api} API"
             else:
                 continue
             rows.append(
@@ -694,10 +772,15 @@ class Router:
 
     @staticmethod
     def _route_chaos(
-        table: RoutingTable, requested_model: str, protocol: str | None
+        table: RoutingTable,
+        requested_model: str,
+        protocol: str | None,
+        locality: str | None = None,
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model."""
-        entries = table.chaos.get(protocol)
+        entries = [
+            e for e in table.chaos.get(protocol, ()) if _locality_ok(e[0], locality)
+        ]
         if not entries:
             return None
         provider, eligible = random.choice(entries)
@@ -713,6 +796,10 @@ class Router:
         return RouteResult(
             provider, resolved_model, table.backend_name(provider.id, resolved_model)
         )
+
+
+def _locality_ok(provider: Provider, locality: str | None) -> bool:
+    return locality is None or provider.locality == locality
 
 
 def _summary(out: dict[str, Any], requested: str) -> str:

@@ -13,7 +13,7 @@ from llama_router.affinity import (
 )
 from llama_router.auth import key_hash, routing_preferences_from_request
 from llama_router.database import Database
-from llama_router.models import ProviderModel, ProviderStatus, ProviderType
+from llama_router.models import ProviderModel, ProviderStatus, ProviderProtocol
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_stats import ProviderStats
@@ -55,7 +55,7 @@ def _router(db, pm, clock, **kw) -> Router:
 
 
 async def _provider(db: Database, name: str, models: list[str]):
-    p = await db.add_provider(name, ProviderType.OLLAMA)
+    p = await db.add_provider(name, ProviderProtocol.OLLAMA)
     await db.update_provider_status(p.id, ProviderStatus.IDLE)
     await db.set_provider_models(
         p.id, [ProviderModel(provider_id=p.id, name=m) for m in models]

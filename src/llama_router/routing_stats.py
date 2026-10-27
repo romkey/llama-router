@@ -170,6 +170,33 @@ class ProviderHealth:
 HEALTHY = ProviderHealth(0.0, 0.0, 0, False)
 
 
+# Cooldown after a 429 without a usable Retry-After, and the longest one.
+DEFAULT_BUSY_S = 10.0
+MAX_BUSY_S = 300.0
+
+
+def retry_after_seconds(value: str | None) -> float:
+    """Seconds from a Retry-After header (delta or HTTP date), else the default."""
+    raw = (value or "").strip()
+    if not raw:
+        return DEFAULT_BUSY_S
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_BUSY_S
+    import datetime as _dt
+
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_dt.timezone.utc)
+    return max((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds(), 1.0)
+
+
 class ProviderStats:
     """Health-check tallies, provider health and per-model request outcomes."""
 
@@ -181,6 +208,8 @@ class ProviderStats:
         self._probes: dict[int, DecayingRate] = {}
         self._last_ok: dict[tuple[int, str], float] = {}
         self._listeners: list[Callable[[str], None]] = []
+        # Until when each provider asked for no more requests (HTTP 429).
+        self._busy_until: dict[int, float] = {}
 
     def now(self) -> float:
         return self._clock()
@@ -304,7 +333,32 @@ class ProviderStats:
             and req_rate >= PROVIDER_CIRCUIT_RATE,
         )
 
+    # --- Rate limits ---
+
+    def mark_busy(self, provider_id: int, seconds: float) -> None:
+        """The provider answered 429: route around it for *seconds*.
+
+        Not a failure: the provider is fine, just full (a cloud rate limit,
+        or llama.cpp with every slot taken).
+        """
+        seconds = min(max(seconds, 1.0), MAX_BUSY_S)
+        until = self._clock() + seconds
+        if until > self._busy_until.get(provider_id, 0.0):
+            self._busy_until[provider_id] = until
+
+    def busy_for(self, provider_id: int, now: float | None = None) -> float:
+        """Seconds left of the provider's rate-limit cooldown (0 when none)."""
+        until = self._busy_until.get(provider_id)
+        if until is None:
+            return 0.0
+        left = until - (self._clock() if now is None else now)
+        if left <= 0:
+            self._busy_until.pop(provider_id, None)
+            return 0.0
+        return left
+
     def forget_provider(self, provider_id: int) -> None:
+        self._busy_until.pop(provider_id, None)
         self._tallies.pop(provider_id, None)
         self._requests.pop(provider_id, None)
         self._probes.pop(provider_id, None)

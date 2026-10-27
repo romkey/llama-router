@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from llama_router.config import settings
-from llama_router.models import ProviderStatus, ProviderType
+from llama_router.models import ProviderStatus, ProviderProtocol
 from llama_router.provider_manager import ProviderManager
 from llama_router.provider_secrets import (
     ApiKeyUnavailable,
@@ -70,7 +70,7 @@ async def test_key_is_sent_upstream_and_brings_provider_online(db, httpx_mock) -
     assert without.status == ProviderStatus.OFFLINE
     assert "authentication required" in (pm.status_detail(without.id) or "")
 
-    await pm.update_provider(without.id, "locked", ProviderType.OLLAMA, api_key=KEY)
+    await pm.update_provider(without.id, "locked", ProviderProtocol.OLLAMA, api_key=KEY)
     p = await db.get_provider(without.id)
     assert p.status == ProviderStatus.IDLE
     assert p.has_api_key and KEY not in (p.api_key_enc or "")
@@ -119,7 +119,7 @@ async def test_dashboard_keeps_replaces_and_clears_key(
     assert KEY not in page.text and stored not in page.text
     assert "Replace API key" in page.text
 
-    form = {"name": "gpu", "provider_type": "ollama"}
+    form = {"name": "gpu", "protocol": "ollama"}
     await client.post(f"/providers/{p.id}/edit", data=form)
     assert (await db.get_provider(p.id)).api_key_enc == stored  # blank keeps
 
@@ -129,20 +129,20 @@ async def test_dashboard_keeps_replaces_and_clears_key(
 
 async def test_bad_header_rejects_edit_without_partial_write(db) -> None:
     pm = ProviderManager(db)
-    p = await db.add_provider("gpu", ProviderType.OLLAMA, machine_type="old box")
+    p = await db.add_provider("gpu", ProviderProtocol.OLLAMA, machine_type="old box")
     with pytest.raises(ValueError):
         await pm.update_provider(
             p.id,
             "renamed",
-            ProviderType.LLAMACPP,
+            ProviderProtocol.OPENAI,
             machine_type="new box",
             api_key=KEY,
             api_key_header="Bad Header: x",
         )
     after = await db.get_provider(p.id)
-    assert (after.name, after.provider_type, after.machine_type) == (
+    assert (after.name, after.protocol, after.machine_type) == (
         "gpu",
-        ProviderType.OLLAMA,
+        ProviderProtocol.OLLAMA,
         "old box",
     )
     assert after.api_key_enc is None
@@ -163,7 +163,7 @@ async def test_check_uses_key_saved_after_the_cycle_listed_providers(
     pm = ProviderManager(db)
     p = await pm.add_provider("locked", "http://locked:11434")
     stale = await db.get_provider(p.id)  # a cycle's snapshot: no key yet
-    await pm.update_provider(p.id, "locked", ProviderType.OLLAMA, api_key=KEY)
+    await pm.update_provider(p.id, "locked", ProviderProtocol.OLLAMA, api_key=KEY)
     assert (await db.get_provider(p.id)).status == ProviderStatus.IDLE
 
     # The in-flight cycle now checks its stale snapshot; it must use the key.

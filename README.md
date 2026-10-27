@@ -1,13 +1,13 @@
 # llama-router
 
-An LLM router that aggregates multiple Ollama and llama.cpp backends behind unified APIs.
+An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (llama.cpp, vLLM, LiteLLM and others) behind unified APIs.
 
 ## Features
 
 - **Unified Ollama API** — Ollama-compatible API on port 11434 that routes to the best available backend
-- **Unified llama.cpp / OpenAI API** — OpenAI-compatible API on port 8080 for llama.cpp server backends
+- **Unified OpenAI API** — OpenAI-compatible API on port 8080 that routes to any backend
 - **Web Dashboard** — Bootstrap-based management UI on port 80 with provider status, model inventory, benchmarks, request log, and cache management
-- **Auto-Discovery** — Queries backends for models and capabilities on registration
+- **Auto-Discovery** — Probes each backend to recognise the server (Ollama, llama.cpp, vLLM, LiteLLM, Lemonade, LM Studio, SGLang, TGI, KoboldCpp, LocalAI or a cloud service), its protocol, its endpoints and its cheapest health check, and lists its models
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
 - **Benchmarking** — Measure startup time and tokens/sec per model per provider, by hand or automatically while providers are idle
 - **Precomputed Routing** — Routing tables are rebuilt in the background from models, liveness, benchmarks, measured round trips and live request outcomes, so picking a backend costs microseconds and no database work
@@ -121,7 +121,7 @@ LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 
 The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
 
-**What a worker serves.** Jobs run against the worker's own Ollama and llama.cpp APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
 **Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 
@@ -145,9 +145,12 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `DASHBOARD_PORT` | `80` | Dashboard port |
 | `API_HOST` | `0.0.0.0` | Ollama API bind address |
 | `API_PORT` | `11434` | Ollama API port |
-| `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
-| `LLAMACPP_PORT` | `8080` | llama.cpp API port |
+| `LLAMACPP_HOST` | `0.0.0.0` | OpenAI API bind address (the name predates other backends) |
+| `LLAMACPP_PORT` | `8080` | OpenAI API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
+| `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
+| `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
+| `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
@@ -155,7 +158,7 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `WORKER_HUB_URL` | *(empty)* | Hub to connect to as a worker. With `WORKER_TOKEN`, overrides the dashboard setting |
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub |
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
-| `WORKER_LLAMACPP_URL` | *(this router)* | llama.cpp API the worker relays jobs to; `none` disables llama.cpp jobs |
+| `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
 | `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
@@ -229,6 +232,32 @@ Use the **Cache** tab on the dashboard, or call the API directly:
 curl -X POST http://localhost/api/cache/clear
 ```
 
+## Cloud Services
+
+The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud and Azure OpenAI. A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.
+
+To attach a service without the dashboard, set its key in the environment. At startup the router creates a provider for each preset whose key is set, or updates the key of the one it created before:
+
+```bash
+LLAMA_ROUTER_PROVIDER_OPENAI_API_KEY=sk-...
+LLAMA_ROUTER_PROVIDER_OPENROUTER_API_KEY=sk-or-...
+LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_API_KEY=...
+LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_RESOURCE=my-resource
+```
+
+An OpenAI-compatible address can be the server root (`http://gpu:8080`, API under `/v1`) or the API base itself (`https://openrouter.ai/api/v1`); a URL ending in a version segment is taken as the API base.
+
+Each provider can also carry extra headers (one `Name: value` per line) and models added by hand, for services whose model list is missing or incomplete. Added models stay listed if the service's own list fails.
+
+`tests/test_cloud_presets_live.py` checks each preset against the real service when its key variable is set.
+
+### Running cloud providers
+
+- **Benchmarks cost money.** The idle auto-benchmarker and **Fill missing benchmarks** skip cloud providers; a provider's **Auto-benchmark** setting overrides that either way. A manual benchmark on a cloud provider asks first. Cloud benchmarks record no cold start, and cloud models always count as loaded.
+- **429 means busy, not broken.** When any provider answers HTTP 429, it is routed around for its `Retry-After` period (10 seconds without one, at most five minutes) as long as another provider can take the request. A 429 does not count toward its failure rate.
+- **Big catalogs.** A provider's **Model filter** (patterns such as `anthropic/claude-*`, one per line) keeps only the listed models that match; models added by hand are always kept. The OpenRouter preset starts with a filter for the main model families.
+- **Slow responses.** A provider's **Read timeout** replaces the default 120 seconds.
+
 ## Health Check
 
 All three API ports expose a `GET /health` endpoint that returns JSON:
@@ -237,7 +266,7 @@ All three API ports expose a `GET /health` endpoint that returns JSON:
 {"status": "ok", "version": "0.7.8", "providers": 3, "providers_online": 2}
 ```
 
-The dashboard port (80) includes provider counts; the Ollama (11434) and llama.cpp (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
+The dashboard port (80) includes provider counts; the Ollama (11434) and OpenAI (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
 
 ## Hugging Face Downloads
 
@@ -289,6 +318,7 @@ Each API key picks a mode. Requests without a key use **balanced**.
 | `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed. For embeddings, images and audio, the measured time those calls take |
 | `latency` | starts answering soonest: a model already loaded wins, then the lowest startup time and round trip |
 | `throughput` | generates the most tokens per second. For embeddings, images and audio, completes calls fastest |
+| `cheapest` | charges least for a typical request (see [Cost](#cost)); local providers with no price set cost nothing |
 | `chaos` | is chosen at random, with a random model |
 
 Pins on the key override the mode for the pinned models.
@@ -317,9 +347,24 @@ Affinity is on by default. Turn it off with `LLAMA_ROUTER_SESSION_AFFINITY_ENABL
 curl 'http://localhost/api/routing/explain?model=qwen2.5-coder:32b&session_id=my-session'
 ```
 
+### Local and cloud providers
+
+Every provider is **local** (this machine, the LAN, a tailnet) or **cloud**. The router works it out from the first address: private, loopback and Tailscale addresses, hostnames without a dot, and names under `.local`, `.lan`, `.home`, `.internal`, `.home.arpa` and `.ts.net` are local; everything else, and every cloud preset, is cloud. A home server reached through a public name is guessed wrong; change it on the provider's page.
+
+Each API key allows **local or cloud** (the default), **local only** or **cloud only**. A local-only key's prompts never reach a cloud provider: fallbacks, chaos mode and session affinity all stay within the key's providers, and a pin to a provider of the other kind is ignored (the Route Explorer says so). A key limited to local is routed among local providers even when a cloud one would score better.
+
+A client can narrow a key that allows both, for one request, with a header:
+
+```bash
+curl http://localhost:8080/v1/chat/completions -H 'API-KEY: lr_...' \
+  -H 'X-Llama-Router-Locality: local' -d '{"model": "qwen3:8b", "messages": [...]}'
+```
+
+The header never widens or flips a key's setting. The request log records whether each request was served locally or in the cloud and can be filtered on it.
+
 ### Endpoints
 
-Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to providers that serve the Ollama API. OpenAI-style routes such as `/v1/chat/completions` go to any provider and reach its llama.cpp API when it has one. For each provider the table records which of its APIs a request on that endpoint reaches, and whether that API's last probe found the endpoint. A provider can have `/v1/audio/speech` on its Ollama URL and not on its llama.cpp URL, and that is taken into account.
+Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. Ollama routes (`/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`) go to Ollama providers and, translated, to OpenAI-compatible ones, so Ollama clients can use llama.cpp, vLLM and cloud services. Translation carries messages, images, tools and tool calls, `format`, the common sampling options and token counts; `suffix` and `raw` are refused with 400, and Ollama-only options such as `top_k` and `num_ctx` are dropped. Set `LLAMA_ROUTER_OLLAMA_API_TRANSLATION=false` to keep Ollama routes on Ollama providers. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.
 
 Measurements are kept per kind of endpoint: text generation, embeddings, images and audio. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
 
@@ -443,6 +488,30 @@ curl http://localhost/api/fallbacks
 # Remove a fallback
 curl -X DELETE http://localhost/api/fallbacks/llama3:70b
 ```
+
+## Cost
+
+The request log records each request's tokens in and out, the API key that made it, and its cost when the provider's price for the model is known. Tokens come from the response's `usage` (or Ollama's counts); a streamed OpenAI-style response carries usage only when the client sends `stream_options: {"include_usage": true}`.
+
+**Prices** are USD per million tokens, set per provider on its page: a model name, a pattern such as `gpt-4o*`, or `*` for every model. A price set by hand wins over one from the provider's own model list (OpenRouter lists one for every model). Local providers cost nothing unless priced; a cloud model with no price has an unknown cost.
+
+**Cheapest** routing ranks candidates by the price of a typical request (1,000 tokens in, 256 out), then by the balanced score. A cloud model with an unknown price comes last.
+
+**Daily spend caps.** An API key can have a cap in USD per UTC day. Once its logged spend reaches the cap, the key is limited to local providers until the next day; a cloud-only key is refused with HTTP 429. The key list shows each key's spend today.
+
+## Model Aliases
+
+The same model often has different names at different providers: `claude-sonnet-4-5` at Anthropic, `anthropic/claude-sonnet-4-5` at OpenRouter, `llama3.2:latest` and `llama3.2` across Ollama and llama.cpp. An alias joins them. A request for any name in the group can go to any provider that serves one of them, and each provider is sent its own name for the model. Aliases chain, so `a → b → c` is one group.
+
+Add them in **Model Aliases** on the Models tab; **Suggest aliases** proposes `vendor/model` and `model:latest` names whose bare form another provider serves. Or use the API:
+
+```bash
+curl -X POST http://localhost/api/model-aliases \
+  -H 'Content-Type: application/json' \
+  -d '{"alias": "anthropic/claude-sonnet-4-5", "canonical": "claude-sonnet-4-5"}'
+```
+
+Aliases combine with API key locality: a local-only key asking for `vendor/model` reaches a local provider that serves `model`.
 
 ## API Key Model Pinning
 

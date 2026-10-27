@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     llamacpp_host: str = "0.0.0.0"
     llamacpp_port: int = 8080
     health_check_interval_seconds: int = 30
+    # Re-probe a provider's endpoints when the last probe is older than this
+    # (0 turns periodic re-probing off; probes on add, edit and recovery stay).
+    probe_max_age_hours: float = 24.0
+    # Probe providers automatically (on add, edit, recovery and when stale).
+    auto_probe_enabled: bool = True
+    # Serve Ollama API requests (/api/chat, /api/generate, /api/embed) from
+    # OpenAI-style providers too, translating both ways.
+    ollama_api_translation: bool = True
     benchmark_prompt: str = "Write a short sentence about the weather."
     # Idle auto-benchmarking. Defaults for the dashboard settings of the same
     # name; the dashboard values win once saved.

@@ -1,16 +1,18 @@
-"""Async HTTP client for communicating with llama.cpp server backends."""
+"""Async HTTP client for OpenAI-style backends: llama.cpp, vLLM, LiteLLM, cloud APIs."""
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from .httpx_errors import describe_httpx_error
 from .models import ProviderModel
+from .upstream_url import split_api_base
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,14 @@ def _chat_metrics(data: dict, elapsed_s: float) -> dict[str, float | None]:
     return {"startup_time_ms": None, "tokens_per_second": tps}
 
 
-class LlamaCppClient:
+class OpenAIClient:
+    """Client for an OpenAI-style upstream: llama.cpp, vLLM, LiteLLM, cloud APIs.
+
+    Routes are written as ``/v1/...`` and land on the address's API base (see
+    ``upstream_url``); server-native routes such as ``/health`` and ``/props``
+    go to the server root.
+    """
+
     def __init__(
         self,
         base_url: str,
@@ -60,18 +69,40 @@ class LlamaCppClient:
         *,
         timeout: httpx.Timeout | None = None,
         headers: dict[str, str] | None = None,
+        on_response: Callable[[httpx.Response], Awaitable[None]] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
+        root, api_path = split_api_base(self._base_url)
+        self._root = root
+        self._root_path = urlsplit(root).path
+        self._api_path = api_path
         self._http = httpx.AsyncClient(
-            base_url=self._base_url,
+            base_url=root,
             timeout=timeout or _TIMEOUT,
             transport=transport,
             headers=headers,
+            event_hooks={
+                "request": [self._to_api_base],
+                "response": [on_response] if on_response else [],
+            },
         )
+
+    def _map_path(self, path: str) -> str:
+        """Origin-relative path that a root-relative *path* reaches."""
+        if path == "/v1" or path.startswith("/v1/"):
+            return self._api_path + path[3:]
+        return self._root_path + path
+
+    async def _to_api_base(self, request: httpx.Request) -> None:
+        prefix = self._root_path + "/v1"
+        p = request.url.path
+        if self._api_path != prefix and (p == prefix or p.startswith(prefix + "/")):
+            request.url = request.url.copy_with(path=self._api_path + p[len(prefix) :])
 
     def _upstream_url(self, path: str) -> str:
         p = path if path.startswith("/") else f"/{path}"
-        return f"{self._base_url}{p}"
+        origin = self._root[: len(self._root) - len(self._root_path)]
+        return f"{origin}{self._map_path(p)}"
 
     def _log_httpx(
         self, exc: httpx.HTTPError, *, op: str, method: str, path: str
@@ -102,27 +133,38 @@ class LlamaCppClient:
         await self._http.aclose()
 
     async def is_reachable(self, timeout: httpx.Timeout | None = None) -> bool:
-        try:
-            resp = await self._http.get(
-                "/health", **({"timeout": timeout} if timeout else {})
-            )
-            return resp.status_code == 200
-        except httpx.HTTPError:
-            return False
+        """llama.cpp-style ``/health``, else the model list most servers have."""
+        kw = {"timeout": timeout} if timeout else {}
+        for path in ("/health", "/v1/models"):
+            try:
+                resp = await self._http.get(path, **kw)
+            except httpx.HTTPError:
+                return False
+            if resp.status_code == 200:
+                return True
+        return False
 
     async def get_models(self) -> list[ProviderModel]:
         resp = await self._get("/v1/models", op="List llama.cpp models (/v1/models)")
         resp.raise_for_status()
         data = resp.json()
-        return [
-            ProviderModel(
-                provider_id=0,
-                name=m["id"],
-                size=None,
-                details=m.get("meta"),
+        # Most servers wrap the list in {"data": [...]}; some return it bare.
+        items = data if isinstance(data, list) else data.get("data", [])
+        out = []
+        for m in items:
+            if not isinstance(m, dict) or not m.get("id"):
+                continue
+            details = dict(m.get("meta") or {})
+            # Kept for routing and cost: OpenRouter lists prices and context.
+            for key in ("pricing", "context_length", "owned_by"):
+                if m.get(key) is not None:
+                    details[key] = m[key]
+            out.append(
+                ProviderModel(
+                    provider_id=0, name=str(m["id"]), size=None, details=details or None
+                )
             )
-            for m in data.get("data", [])
-        ]
+        return out
 
     async def get_props(self) -> dict | None:
         try:
@@ -330,3 +372,7 @@ class LlamaCppClient:
 
         # llama-server does not report a load time for embeddings.
         return {"startup_time_ms": None, "tokens_per_second": tps}
+
+
+# The client served llama.cpp first; older code and tests use this name.
+LlamaCppClient = OpenAIClient

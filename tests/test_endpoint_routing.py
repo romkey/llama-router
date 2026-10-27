@@ -8,7 +8,7 @@ from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
@@ -39,7 +39,7 @@ def pm(db: Database, clock: FakeClock) -> ProviderManager:
 
 
 async def _provider(db: Database, name: str, models: list[str], **kw):
-    p = await db.add_provider(name, kw.pop("ptype", ProviderType.OLLAMA))
+    p = await db.add_provider(name, kw.pop("ptype", ProviderProtocol.OLLAMA))
     await db.update_provider_status(p.id, ProviderStatus.IDLE)
     await db.set_provider_models(
         p.id, [ProviderModel(provider_id=p.id, name=m) for m in models]
@@ -73,44 +73,44 @@ async def test_unknown_endpoint_is_rejected(db: Database, pm: ProviderManager):
         await rt.route("m", "/api/tags")
 
 
-async def test_table_is_built_for_every_endpoint(db: Database, pm: ProviderManager):
+@pytest.mark.parametrize("translation", [False, True])
+async def test_table_is_built_for_every_endpoint(
+    db: Database, pm: ProviderManager, monkeypatch, translation: bool
+):
+    from llama_router.config import settings
+
+    monkeypatch.setattr(settings, "ollama_api_translation", translation)
     await _provider(db, "ollama-box", ["m"])
-    await _provider(db, "lcpp-box", ["m"], ptype=ProviderType.LLAMACPP)
+    await _provider(db, "lcpp-box", ["m"], ptype=ProviderProtocol.OPENAI)
     rt = Router(db, pm)
     table = await rt.rebuild()
     for path, (protocol, _cls) in ENDPOINTS.items():
         names = {c.provider.name for c in table.all_candidates[("m", path)]}
-        if protocol == "ollama":
+        if protocol == "ollama" and not translation:
             assert names == {"ollama-box"}, path
         else:
             assert names == {"ollama-box", "lcpp-box"}, path
-    # Ollama-native routes never reach a llama.cpp-only provider.
-    r = await rt.route("m", "/api/embed")
-    assert r.provider.name == "ollama-box"
+    if not translation:
+        # Without translation, Ollama routes never reach an OpenAI provider.
+        r = await rt.route("m", "/api/embed")
+        assert r.provider.name == "ollama-box"
 
 
-async def test_probe_of_the_serving_upstream_decides(db: Database, pm: ProviderManager):
-    both = await _provider(db, "both", ["m"], ptype=ProviderType.BOTH)
-    await db.add_address(
-        both.id, "http://box:11434", "http://box:8080", is_preferred=True
-    )
-    other = await _provider(db, "other", ["m"], ptype=ProviderType.LLAMACPP)
-    await _bench(db, both.id, "m", startup=60, tps=500, protocol="llamacpp")
-    await _bench(db, other.id, "m", startup=900, tps=10, protocol="llamacpp")
-    # The Ollama URL has speech, the llama.cpp URL (which v1 calls use) does not.
+async def test_probed_missing_endpoint_demotes_only_that_endpoint(
+    db: Database, pm: ProviderManager
+):
+    fast = await _provider(db, "fast", ["m"], ptype=ProviderProtocol.OPENAI)
+    other = await _provider(db, "other", ["m"], ptype=ProviderProtocol.OPENAI)
+    await _bench(db, fast.id, "m", startup=60, tps=500, protocol="openai")
+    await _bench(db, other.id, "m", startup=900, tps=10, protocol="openai")
     await db.set_provider_capabilities(
-        both.id,
+        fast.id,
         {
             "endpoints": [
                 {
                     "path": "/v1/audio/speech",
-                    "state": "available",
-                    "base_url": "http://box:11434",
-                },
-                {
-                    "path": "/v1/audio/speech",
                     "state": "missing",
-                    "base_url": "http://box:8080",
+                    "base_url": "http://fast:8080",
                 },
             ]
         },
@@ -120,18 +120,18 @@ async def test_probe_of_the_serving_upstream_decides(db: Database, pm: ProviderM
     cand = next(
         c
         for c in table.all_candidates[("m", "/v1/audio/speech")]
-        if c.provider.name == "both"
+        if c.provider.name == "fast"
     )
-    assert cand.upstream == "llamacpp"
+    assert cand.upstream == "openai"
     assert cand.endpoint_support == "missing" and cand.tier == TIER_MISSING
     assert (await rt.route("m", "/v1/audio/speech")).provider.id == other.id
     # Chat is unaffected.
-    assert (await rt.route("m", CHAT, _mode("latency"))).provider.id == both.id
+    assert (await rt.route("m", CHAT, _mode("latency"))).provider.id == fast.id
 
 
 async def test_failing_beats_certainly_missing(db: Database, pm: ProviderManager):
-    missing = await _provider(db, "missing", ["m"], ptype=ProviderType.LLAMACPP)
-    failing = await _provider(db, "failing", ["m"], ptype=ProviderType.LLAMACPP)
+    missing = await _provider(db, "missing", ["m"], ptype=ProviderProtocol.OPENAI)
+    failing = await _provider(db, "failing", ["m"], ptype=ProviderProtocol.OPENAI)
     await db.set_provider_capabilities(
         missing.id,
         {"endpoints": [{"path": "/v1/embeddings", "state": "missing"}]},
@@ -280,7 +280,7 @@ def test_latency_tally(clock: FakeClock):
 
 
 async def test_provider_checks_feed_the_tally(db: Database, pm: ProviderManager):
-    p = await db.add_provider("box", ProviderType.OLLAMA)
+    p = await db.add_provider("box", ProviderProtocol.OLLAMA)
     good = await db.add_address(p.id, "http://good", is_preferred=True)
     bad = await db.add_address(p.id, "http://bad")
     provider = await db.get_provider(p.id)

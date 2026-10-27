@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import time
 import weakref
+from dataclasses import replace
 from secrets import token_urlsafe
+from typing import Any
 
 from fastapi import HTTPException, Request
 
@@ -13,6 +15,8 @@ from .config import settings
 from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
 from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
+from .spend import tracker_for
+from .upstream_url import LOCALITIES
 
 _PBKDF2_ROUNDS = 390_000
 # Resolved keys are reused for this long unless an edit invalidates them.
@@ -130,13 +134,70 @@ async def _resolve_key(
         pinned_providers={str(p["model_name"]): int(p["provider_id"]) for p in pins},
         session_affinity=record.get("session_affinity"),
         key_id=int(record["id"]),
+        locality=_locality(record.get("locality")),
+        daily_spend_cap_usd=record.get("daily_spend_cap_usd"),
     )
     return prefs, int(record["id"])
+
+
+LOCALITY_HEADER = "X-Llama-Router-Locality"
+
+
+def _locality(value: Any) -> str | None:
+    v = str(value or "").strip().lower()
+    return v if v in LOCALITIES else None
+
+
+def _narrow_locality(
+    request: Request, prefs: RoutingPreferences | None
+) -> RoutingPreferences | None:
+    """Apply the request's locality header, which may narrow the key's
+    setting (from either to local or cloud) but never widen or flip it."""
+    wanted = _locality(request.headers.get(LOCALITY_HEADER))
+    if wanted is None:
+        return prefs
+    if prefs is None:
+        return RoutingPreferences(locality=wanted)
+    if prefs.locality is not None:
+        return prefs
+    return replace(prefs, locality=wanted)
 
 
 async def routing_preferences_from_request(
     db: Database, request: Request
 ) -> RoutingPreferences | None:
+    """The request's routing preferences: its API key's, narrowed by the
+    X-Llama-Router-Locality header and the key's daily spend cap.
+
+    Also records the key on ``request.state.api_key_id`` for the request log.
+    """
+    prefs = _narrow_locality(request, await _key_preferences(db, request))
+    if prefs is not None and prefs.key_id is not None:
+        request.state.api_key_id = prefs.key_id
+        prefs = await _apply_spend_cap(db, prefs)
+    return prefs
+
+
+async def _apply_spend_cap(
+    db: Database, prefs: RoutingPreferences
+) -> RoutingPreferences:
+    """A key over its daily cap is limited to local providers, which cost
+    nothing; a cloud-only key over its cap is refused until the next UTC day."""
+    cap = prefs.daily_spend_cap_usd
+    if cap is None or prefs.key_id is None:
+        return prefs
+    spent = await tracker_for(db).spent_today(prefs.key_id)
+    if spent < cap:
+        return prefs
+    if prefs.locality == "cloud":
+        raise HTTPException(
+            status_code=429,
+            detail=f"daily spend cap of ${cap:.2f} reached for this API key",
+        )
+    return replace(prefs, locality="local", spend_capped=True)
+
+
+async def _key_preferences(db: Database, request: Request) -> RoutingPreferences | None:
     cache = _cache_for(db)
     raw_key = request.headers.get("API-KEY")
     key = (raw_key or "").strip()

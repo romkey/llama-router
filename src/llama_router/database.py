@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,7 +27,7 @@ from .models import (
     ProviderAddress,
     ProviderModel,
     ProviderStatus,
-    ProviderType,
+    ProviderProtocol,
     RequestLog,
 )
 
@@ -40,6 +41,8 @@ CHANGE_ADDRESSES = "addresses"
 CHANGE_MODELS = "models"
 CHANGE_BENCHMARKS = "benchmarks"
 CHANGE_FALLBACKS = "fallbacks"
+CHANGE_ALIASES = "aliases"
+CHANGE_PRICES = "prices"
 CHANGE_CAPABILITIES = "capabilities"
 CHANGE_API_KEYS = "api_keys"
 CHANGE_AUTH_SETTINGS = "auth_settings"
@@ -51,6 +54,8 @@ ROUTING_CHANGES = frozenset(
         CHANGE_MODELS,
         CHANGE_BENCHMARKS,
         CHANGE_FALLBACKS,
+        CHANGE_ALIASES,
+        CHANGE_PRICES,
         CHANGE_CAPABILITIES,
     }
 )
@@ -198,7 +203,7 @@ class Database:
     async def add_provider(
         self,
         name: str,
-        provider_type: ProviderType = ProviderType.OLLAMA,
+        protocol: ProviderProtocol = ProviderProtocol.OLLAMA,
         *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
@@ -207,11 +212,11 @@ class Database:
     ) -> Provider:
         """Create a provider. Addresses are added separately with add_address."""
         pid = await self._insert_get_id(
-            "INSERT INTO providers (name, provider_type, machine_type, gpu_type, "
+            "INSERT INTO providers (name, protocol, machine_type, gpu_type, "
             "gpu_ram, worker_name) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 name,
-                provider_type.value,
+                protocol.value,
                 machine_type,
                 gpu_type,
                 gpu_ram,
@@ -221,7 +226,7 @@ class Database:
         return Provider(
             id=pid,
             name=name,
-            provider_type=provider_type,
+            protocol=protocol,
             machine_type=machine_type,
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
@@ -251,20 +256,20 @@ class Database:
         self,
         provider_id: int,
         name: str,
-        provider_type: ProviderType | None = None,
+        protocol: ProviderProtocol | None = None,
         *,
         machine_type: str | None = None,
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
     ) -> None:
-        if provider_type is not None:
+        if protocol is not None:
             await self._execute(
-                "UPDATE providers SET name = ?, provider_type = ?, machine_type = ?, "
+                "UPDATE providers SET name = ?, protocol = ?, machine_type = ?, "
                 "gpu_type = ?, gpu_ram = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE id = ?",
                 (
                     name,
-                    provider_type.value,
+                    protocol.value,
                     machine_type,
                     gpu_type,
                     gpu_ram,
@@ -282,15 +287,51 @@ class Database:
     async def set_provider_capabilities(
         self, provider_id: int, capabilities: dict | None
     ) -> None:
-        """Store the last probe result (or clear it with None)."""
+        """Store the last probe result (or clear it with None), and its flavor."""
         await self._execute(
-            "UPDATE providers SET capabilities = ?, probed_at = "
+            "UPDATE providers SET capabilities = ?, flavor = ?, probed_at = "
             + ("CURRENT_TIMESTAMP" if capabilities is not None else "NULL")
             + " WHERE id = ?",
             (
                 json.dumps(capabilities) if capabilities is not None else None,
+                (capabilities or {}).get("flavor"),
                 provider_id,
             ),
+        )
+
+    # Columns update_provider_settings may write, and whether each holds JSON.
+    _PROVIDER_SETTINGS = {
+        "preset": False,
+        "extra_headers": True,
+        "manual_models": True,
+        "locality": False,
+        "model_filter": False,
+        "read_timeout_s": False,
+        "auto_benchmark": False,
+    }
+
+    @_notifies(CHANGE_PROVIDERS)
+    async def update_provider_settings(self, provider_id: int, **fields: Any) -> None:
+        """Write optional provider settings; None clears one."""
+        if not fields:
+            return
+        unknown = set(fields) - set(self._PROVIDER_SETTINGS)
+        if unknown:
+            raise ValueError(f"unknown provider settings: {sorted(unknown)}")
+        sets = []
+        params: list[Any] = []
+        for name, value in fields.items():
+            sets.append(f"{name} = ?")
+            if self._PROVIDER_SETTINGS[name] and value is not None:
+                value = json.dumps(value) if value else None
+            elif isinstance(value, bool):
+                value = int(value)  # integer columns; asyncpg refuses a bool
+            params.append(value)
+        params.append(provider_id)
+        await self._execute(
+            f"UPDATE providers SET {', '.join(sets)}, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            tuple(params),
         )
 
     async def set_provider_api_key(
@@ -324,27 +365,16 @@ class Database:
     async def get_providers_for_model(
         self, model_name: str, protocol: str | None = None
     ) -> list[Provider]:
-        if protocol == "ollama":
-            query = (
-                "SELECT p.* FROM providers p "
-                "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline' "
-                "AND p.provider_type IN ('ollama', 'both')"
-            )
-        elif protocol == "llamacpp":
-            query = (
-                "SELECT p.* FROM providers p "
-                "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline' "
-                "AND p.provider_type IN ('llamacpp', 'both')"
-            )
-        else:
-            query = (
-                "SELECT p.* FROM providers p "
-                "JOIN provider_models pm ON p.id = pm.provider_id "
-                "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline'"
-            )
-        rows = await self._select_all(query, (model_name, model_name))
+        query = (
+            "SELECT p.* FROM providers p "
+            "JOIN provider_models pm ON p.id = pm.provider_id "
+            "WHERE (pm.name = ? OR pm.raw_name = ?) AND p.status != 'offline'"
+        )
+        params: tuple[Any, ...] = (model_name, model_name)
+        if protocol is not None:
+            query += " AND p.protocol = ?"
+            params += (ProviderProtocol.parse(protocol).value,)
+        rows = await self._select_all(query, params)
         return [_row_to_provider(r) for r in rows]
 
     # --- Addresses ---
@@ -354,22 +384,18 @@ class Database:
         self,
         provider_id: int,
         url: str,
-        llamacpp_url: str | None = None,
         is_preferred: bool = False,
     ) -> ProviderAddress:
         url = url.rstrip("/")
-        if llamacpp_url:
-            llamacpp_url = llamacpp_url.rstrip("/")
         aid = await self._insert_get_id(
-            "INSERT INTO provider_addresses (provider_id, url, llamacpp_url, is_preferred) "
-            "VALUES (?, ?, ?, ?)",
-            (provider_id, url, llamacpp_url, int(is_preferred)),
+            "INSERT INTO provider_addresses (provider_id, url, is_preferred) "
+            "VALUES (?, ?, ?)",
+            (provider_id, url, int(is_preferred)),
         )
         return ProviderAddress(
             id=aid,
             provider_id=provider_id,
             url=url,
-            llamacpp_url=llamacpp_url,
             is_preferred=is_preferred,
         )
 
@@ -378,22 +404,18 @@ class Database:
         self,
         address_id: int,
         url: str,
-        llamacpp_url: str | None = None,
         is_preferred: bool | None = None,
     ) -> None:
         url = url.rstrip("/")
-        if llamacpp_url:
-            llamacpp_url = llamacpp_url.rstrip("/")
         if is_preferred is not None:
             await self._execute(
-                "UPDATE provider_addresses SET url = ?, llamacpp_url = ?, "
-                "is_preferred = ? WHERE id = ?",
-                (url, llamacpp_url, int(is_preferred), address_id),
+                "UPDATE provider_addresses SET url = ?, is_preferred = ? WHERE id = ?",
+                (url, int(is_preferred), address_id),
             )
         else:
             await self._execute(
-                "UPDATE provider_addresses SET url = ?, llamacpp_url = ? WHERE id = ?",
-                (url, llamacpp_url, address_id),
+                "UPDATE provider_addresses SET url = ? WHERE id = ?",
+                (url, address_id),
             )
 
     @_notifies(CHANGE_ADDRESSES)
@@ -614,8 +636,9 @@ class Database:
             "INSERT INTO request_log "
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
-            "router_ms, status, streamed, error_detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "router_ms, status, streamed, error_detail, locality, api_key_id, "
+            "prompt_tokens, completion_tokens, cost_usd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -632,7 +655,91 @@ class Database:
                 entry.status,
                 int(entry.streamed),
                 entry.error_detail,
+                entry.locality,
+                entry.api_key_id,
+                entry.prompt_tokens,
+                entry.completion_tokens,
+                entry.cost_usd,
             ),
+        )
+
+    async def spend_since(self, key_id: int, since: datetime) -> float:
+        """USD a key has spent on requests logged since *since* (UTC)."""
+        when: Any = since
+        if self._dialect_name == "sqlite":
+            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        row = await self._select_one(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
+            "WHERE api_key_id = ? AND created_at >= ?",
+            (key_id, when),
+        )
+        return float(row["total"] or 0) if row else 0.0
+
+    async def spend_by_key_since(self, since: datetime) -> dict[int, float]:
+        when: Any = since
+        if self._dialect_name == "sqlite":
+            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        rows = await self._select_all(
+            "SELECT api_key_id, COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
+            "WHERE api_key_id IS NOT NULL AND created_at >= ? GROUP BY api_key_id",
+            (when,),
+        )
+        return {int(r["api_key_id"]): float(r["total"] or 0) for r in rows}
+
+    # ── Model prices ──────────────────────────────────────────────────
+
+    async def list_model_prices(self, provider_id: int | None = None) -> list[dict]:
+        if provider_id is None:
+            rows = await self._select_all(
+                "SELECT * FROM model_prices ORDER BY provider_id, model_pattern"
+            )
+        else:
+            rows = await self._select_all(
+                "SELECT * FROM model_prices WHERE provider_id = ? "
+                "ORDER BY model_pattern",
+                (provider_id,),
+            )
+        return [dict(r) for r in rows]
+
+    @_notifies(CHANGE_PRICES)
+    async def set_model_price(
+        self,
+        provider_id: int,
+        model_pattern: str,
+        input_per_mtok: float,
+        output_per_mtok: float,
+    ) -> None:
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO model_prices (provider_id, model_pattern, input_per_mtok, "
+                "output_per_mtok) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE "
+                "input_per_mtok = VALUES(input_per_mtok), "
+                "output_per_mtok = VALUES(output_per_mtok)",
+                (provider_id, model_pattern, input_per_mtok, output_per_mtok),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO model_prices (provider_id, model_pattern, input_per_mtok, "
+                "output_per_mtok) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (provider_id, model_pattern) DO UPDATE SET "
+                "input_per_mtok = ?, output_per_mtok = ?",
+                (
+                    provider_id,
+                    model_pattern,
+                    input_per_mtok,
+                    output_per_mtok,
+                    input_per_mtok,
+                    output_per_mtok,
+                ),
+            )
+
+    @_notifies(CHANGE_PRICES)
+    async def remove_model_price(self, provider_id: int, price_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM model_prices WHERE id = ? AND provider_id = ?",
+                (price_id, provider_id),
+            )
         )
 
     async def get_request_logs(
@@ -692,6 +799,39 @@ class Database:
             "SELECT model_name, fallback_model FROM model_fallbacks ORDER BY model_name"
         )
         return {r["model_name"]: r["fallback_model"] for r in rows}
+
+    # ── Model aliases ─────────────────────────────────────────────────
+
+    @_notifies(CHANGE_ALIASES)
+    async def set_model_alias(self, alias: str, canonical: str) -> None:
+        """Make *alias* another name for *canonical*."""
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO model_aliases (alias, canonical) VALUES (?, ?) "
+                "ON DUPLICATE KEY UPDATE canonical = VALUES(canonical)",
+                (alias, canonical),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO model_aliases (alias, canonical) VALUES (?, ?) "
+                "ON CONFLICT (alias) DO UPDATE SET canonical = ?",
+                (alias, canonical, canonical),
+            )
+
+    @_notifies(CHANGE_ALIASES)
+    async def remove_model_alias(self, alias: str) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM model_aliases WHERE alias = ?", (alias,)
+            )
+        )
+
+    async def get_model_aliases(self) -> dict[str, str]:
+        """alias -> canonical name."""
+        rows = await self._select_all(
+            "SELECT alias, canonical FROM model_aliases ORDER BY canonical, alias"
+        )
+        return {r["alias"]: r["canonical"] for r in rows}
 
     # --- Workers (hub side) ---
 
@@ -784,30 +924,54 @@ class Database:
         routing_mode: str,
         allow_fallback: bool,
         session_affinity: bool | None = None,
+        locality: str | None = None,
+        daily_spend_cap_usd: float | None = None,
     ) -> int:
         return await self._insert_get_id(
             "INSERT INTO api_keys "
-            "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
+            "locality, daily_spend_cap_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
                 routing_mode,
                 int(allow_fallback),
                 None if session_affinity is None else int(session_affinity),
+                locality,
+                daily_spend_cap_usd,
             ),
+        )
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_spend_cap(self, key_id: int, cap_usd: float | None) -> bool:
+        """USD a key may spend per UTC day before it is limited to local."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET daily_spend_cap_usd = ? WHERE id = ?",
+                (cap_usd, key_id),
+            )
+        )
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_locality(self, key_id: int, locality: str | None) -> bool:
+        """Limit a key to local or cloud providers (None: either)."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET locality = ? WHERE id = ?", (locality, key_id)
+            )
         )
 
     async def list_api_keys(self) -> list[dict]:
         rows = await self._select_all(
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
-            "k.created_at, k.last_used_at, "
+            "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
             "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
-            "k.session_affinity, k.created_at, k.last_used_at "
+            "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
+            "k.last_used_at "
             "ORDER BY k.created_at DESC, k.id DESC"
         )
         return [
@@ -817,6 +981,8 @@ class Database:
                 "routing_mode": r["routing_mode"],
                 "allow_fallback": bool(r["allow_fallback"]),
                 "session_affinity": _tristate(r["session_affinity"]),
+                "locality": r["locality"],
+                "daily_spend_cap_usd": r["daily_spend_cap_usd"],
                 "created_at": r["created_at"],
                 "last_used_at": r["last_used_at"],
                 "pin_count": int(r["pin_count"] or 0),
@@ -830,8 +996,8 @@ class Database:
 
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
-            "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity "
-            "FROM api_keys "
+            "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
+            "locality, daily_spend_cap_usd FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -847,6 +1013,8 @@ class Database:
             "routing_mode": row["routing_mode"],
             "allow_fallback": bool(row["allow_fallback"]),
             "session_affinity": _tristate(row["session_affinity"]),
+            "locality": row["locality"],
+            "daily_spend_cap_usd": row["daily_spend_cap_usd"],
         }
 
     async def touch_api_key(self, key_id: int) -> None:
@@ -1123,7 +1291,7 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
     return Provider(
         id=row["id"],
         name=row["name"],
-        provider_type=ProviderType(row["provider_type"]),
+        protocol=ProviderProtocol(row["protocol"]),
         status=ProviderStatus(row["status"]),
         machine_type=row["machine_type"],
         gpu_type=row["gpu_type"],
@@ -1135,6 +1303,14 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         api_key_header=row["api_key_header"],
         capabilities=_json_or_none(row["capabilities"]),
         probed_at=row["probed_at"],
+        flavor=row["flavor"],
+        preset=row["preset"],
+        extra_headers=_json_or_none(row["extra_headers"]),
+        manual_models=_json_list_or_none(row["manual_models"]),
+        locality=row["locality"] or "local",
+        model_filter=row["model_filter"],
+        read_timeout_s=row["read_timeout_s"],
+        auto_benchmark=_tristate(row["auto_benchmark"]),
     )
 
 
@@ -1146,6 +1322,16 @@ def _json_or_none(raw: Any) -> dict | None:
     except (TypeError, ValueError):
         return None
     return val if isinstance(val, dict) else None
+
+
+def _json_list_or_none(raw: Any) -> list | None:
+    if not raw:
+        return None
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return val if isinstance(val, list) else None
 
 
 def _row_to_model(row: Mapping[str, Any]) -> ProviderModel:
@@ -1179,7 +1365,6 @@ def _row_to_address(row: Mapping[str, Any]) -> ProviderAddress:
         id=row["id"],
         provider_id=row["provider_id"],
         url=row["url"],
-        llamacpp_url=row["llamacpp_url"],
         is_preferred=bool(row["is_preferred"]),
         is_live=bool(row["is_live"]),
         created_at=row["created_at"],
@@ -1204,5 +1389,10 @@ def _row_to_request_log(row: Mapping[str, Any]) -> RequestLog:
         status=row["status"],
         streamed=bool(row["streamed"]),
         error_detail=row["error_detail"],
+        locality=row.get("locality"),
+        api_key_id=row.get("api_key_id"),
+        prompt_tokens=row.get("prompt_tokens"),
+        completion_tokens=row.get("completion_tokens"),
+        cost_usd=row.get("cost_usd"),
         created_at=row["created_at"],
     )

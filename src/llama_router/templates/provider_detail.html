@@ -30,7 +30,7 @@
     <div>
         <h2>
             {{ info.provider.name }}
-            <span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.provider_type.value }}</span>
+            {% if info.provider.is_cloud %}<span class="badge bg-warning text-dark fs-6 align-middle me-1" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud me-1"></i>cloud</span>{% endif %}<span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body fs-6 align-middle me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
             {% if info.provider.has_api_key %}<span class="badge bg-secondary fs-6 align-middle me-1" title="Requests to this provider carry an API key"><i class="bi bi-key"></i></span>{% endif %}
             <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle" title="{{ info.status_detail or '' }}">
                 {{ info.provider.status.value }}
@@ -90,9 +90,6 @@
                     <tr>
                         <th style="width:2rem"></th>
                         <th>URL</th>
-                        {% if info.provider.provider_type.value == 'both' %}
-                        <th>llama.cpp URL</th>
-                        {% endif %}
                         <th>Preferred</th>
                         {% if not read_only %}<th></th>{% endif %}
                     </tr>
@@ -108,9 +105,6 @@
                             {% endif %}
                         </td>
                         <td class="small"><code>{{ addr.url }}</code></td>
-                        {% if info.provider.provider_type.value == 'both' %}
-                        <td class="small"><code>{{ addr.llamacpp_url or '—' }}</code></td>
-                        {% endif %}
                         <td>
                             {% if not read_only %}
                             <form method="post" action="/providers/{{ info.provider.id }}/addresses/{{ addr.id }}/toggle-preferred" class="d-inline">
@@ -132,7 +126,6 @@
                                 data-edit-address
                                 data-addr-id="{{ addr.id }}"
                                 data-addr-url="{{ addr.url }}"
-                                data-addr-lcpp="{{ addr.llamacpp_url or '' }}"
                                 data-addr-preferred="{{ 'true' if addr.is_preferred else 'false' }}">
                                 <i class="bi bi-pencil"></i>
                             </button>
@@ -249,7 +242,7 @@
                                     <button class="btn btn-sm btn-outline-info btn-benchmark" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" title="Benchmark">
                                         <i class="bi bi-speedometer"></i>
                                     </button>
-                                    {% if info.provider.supports_ollama %}
+                                    {% if info.provider.is_ollama and not info.provider.lacks('/api/delete') %}
                                     <form method="post" action="/providers/{{ info.provider.id }}/delete-model/{{ m.name }}" class="d-inline">
                                         <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick="return confirm('Delete {{ m.name }} from this provider?')">
                                             <i class="bi bi-trash"></i>
@@ -269,7 +262,7 @@
             </div>
         </div>
 
-        {% if info.provider.supports_ollama and not read_only %}
+        {% if info.provider.is_ollama and not info.provider.lacks('/api/pull') and not read_only %}
         <div class="card mt-4">
             <div class="card-header">
                 <h5 class="mb-0">Pull Model</h5>
@@ -280,16 +273,6 @@
                 <div class="alert alert-warning py-2 mb-2 small">
                     <i class="bi bi-exclamation-triangle-fill me-1"></i>
                     <strong>Cache not reachable.</strong> This provider will download from the internet. Set <code>LLAMA_ROUTER_CACHE_EXTERNAL_HOST</code> to this router's address.
-                </div>
-                {% endif %}
-                {% if info.provider.supports_ollama and info.provider.supports_llamacpp %}
-                <div class="mb-2 d-flex align-items-center gap-2">
-                    <label for="pull-api" class="small text-muted mb-0">Pull API</label>
-                    <select id="pull-api" class="form-select form-select-sm" style="max-width: 220px;">
-                        <option value="auto" selected>Auto (ollama)</option>
-                        <option value="ollama">Ollama</option>
-                        <option value="llamacpp" disabled>llama.cpp (not supported yet)</option>
-                    </select>
                 </div>
                 {% endif %}
                 <div class="d-flex gap-2" id="pull-form-inline">
@@ -332,20 +315,6 @@
 
     <div class="col-lg-5">
         <div id="benchmark-status-area" class="mb-2"></div>
-        {% if not read_only and info.provider.supports_ollama and info.provider.supports_llamacpp %}
-        <div class="card mb-2">
-            <div class="card-body py-2">
-                <div class="d-flex align-items-center gap-2">
-                    <label for="benchmark-api" class="small text-muted mb-0">Benchmark API</label>
-                    <select id="benchmark-api" class="form-select form-select-sm" style="max-width: 180px;">
-                        <option value="auto" selected>Auto</option>
-                        <option value="ollama">Ollama</option>
-                        <option value="llamacpp">llama.cpp</option>
-                    </select>
-                </div>
-            </div>
-        </div>
-        {% endif %}
         <div class="card">
             <div class="card-header">
                 <h5 class="mb-0">Benchmarks</h5>
@@ -398,14 +367,44 @@
             </div>
         </div>
 
+        <div class="card mt-4" id="prices-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Prices</h5>
+                <span class="small text-muted">USD per million tokens</span>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">
+                    {% if info.provider.is_cloud %}Used for request costs, spend caps and <em>cheapest</em> routing. A price set here wins over one from the provider's model list; a cloud model with neither has an unknown cost.{% else %}Local providers cost nothing unless priced here.{% endif %}
+                </p>
+                <table class="table table-sm mb-2"><thead><tr><th>Model</th><th class="text-end">In</th><th class="text-end">Out</th><th></th></tr></thead><tbody id="prices-body"><tr><td colspan="4" class="text-muted">Loading…</td></tr></tbody></table>
+                <div id="prices-listed" class="small text-muted mb-2"></div>
+                {% if not read_only %}
+                <form class="row g-2 align-items-end" onsubmit="addPrice(event)">
+                    <div class="col-5"><label class="form-label small text-muted mb-1" for="price-model">Model or pattern</label><input id="price-model" class="form-control form-control-sm font-monospace" placeholder="* or gpt-4o*" required></div>
+                    <div class="col-3"><label class="form-label small text-muted mb-1" for="price-in">In</label><input id="price-in" type="number" min="0" step="0.001" class="form-control form-control-sm" required></div>
+                    <div class="col-3"><label class="form-label small text-muted mb-1" for="price-out">Out</label><input id="price-out" type="number" min="0" step="0.001" class="form-control form-control-sm" required></div>
+                    <div class="col-1"><button class="btn btn-sm btn-outline-primary" type="submit" title="Save price"><i class="bi bi-plus-lg"></i></button></div>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="card mt-4">
             <div class="card-header">
                 <h5 class="mb-0">Info</h5>
             </div>
             <ul class="list-group list-group-flush">
                 <li class="list-group-item d-flex justify-content-between">
-                    <span class="text-muted">Type</span>
-                    <span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span>
+                    <span class="text-muted">Protocol</span>
+                    <span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Server</span>
+                    <span>{{ info.provider.flavor or 'not recognised yet' }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Health check</span>
+                    <code>{{ info.provider.liveness_path or 'default' }}</code>
                 </li>
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Status</span>
@@ -473,14 +472,53 @@
                     <input type="text" class="form-control" id="edit-name" name="name" required value="{{ info.provider.name }}">
                 </div>
                 <div class="mb-3">
-                    <label for="edit-provider-type" class="form-label">Type</label>
-                    <select class="form-select" id="edit-provider-type" name="provider_type">
-                        <option value="ollama" {% if info.provider.provider_type.value == 'ollama' %}selected{% endif %}>Ollama</option>
-                        <option value="llamacpp" {% if info.provider.provider_type.value == 'llamacpp' %}selected{% endif %}>llama.cpp</option>
-                        <option value="both" {% if info.provider.provider_type.value == 'both' %}selected{% endif %}>Both</option>
+                    <label for="edit-provider-protocol" class="form-label">Protocol</label>
+                    <select class="form-select" id="edit-provider-protocol" name="protocol"{% if info.provider.is_worker %} disabled title="A worker's protocol follows what it offers when it connects"{% endif %}>
+                        <option value="ollama" {% if info.provider.is_ollama %}selected{% endif %}>Ollama</option>
+                        <option value="openai" {% if info.provider.is_openai %}selected{% endif %}>OpenAI-compatible (llama.cpp, vLLM, LiteLLM, ...)</option>
                     </select>
                 </div>
                 <p class="form-text">Change where this provider is reached under <strong>Addresses</strong>.</p>
+                <input type="hidden" name="settings_form" value="1">
+                <div class="mb-3">
+                    <label for="edit-locality" class="form-label">Where it runs</label>
+                    <select class="form-select" id="edit-locality" name="locality">
+                        <option value="local" {% if not info.provider.is_cloud %}selected{% endif %}>Local: this machine, the LAN or a tailnet</option>
+                        <option value="cloud" {% if info.provider.is_cloud %}selected{% endif %}>Cloud: prompts leave your network</option>
+                    </select>
+                    <div class="form-text">API keys limited to local providers never reach a cloud one.</div>
+                </div>
+                {% if not info.provider.is_worker %}
+                <div class="mb-3">
+                    <label for="edit-extra-headers" class="form-label">Extra headers</label>
+                    <textarea class="form-control font-monospace" id="edit-extra-headers" name="extra_headers" rows="2" placeholder="anthropic-version: 2023-06-01">{{ extra_headers_text }}</textarea>
+                    <div class="form-text">One <code>Name: value</code> per line, sent with every request.</div>
+                </div>
+                {% endif %}
+                <div class="mb-3">
+                    <label for="edit-model-filter" class="form-label">Model filter</label>
+                    <textarea class="form-control font-monospace" id="edit-model-filter" name="model_filter" rows="2" placeholder="anthropic/claude-*">{{ (info.provider.model_patterns() | join('\n')) }}</textarea>
+                    <div class="form-text">Keep only listed models matching these patterns (one per line, <code>*</code> wildcards). Empty keeps all.</div>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-sm-6">
+                        <label for="edit-read-timeout" class="form-label">Read timeout (s)</label>
+                        <input type="number" min="1" max="3600" step="1" class="form-control" id="edit-read-timeout" name="read_timeout_s" placeholder="120" value="{{ info.provider.read_timeout_s | int if info.provider.read_timeout_s else '' }}">
+                    </div>
+                    <div class="col-sm-6">
+                        <label for="edit-auto-benchmark" class="form-label">Auto-benchmark</label>
+                        <select class="form-select" id="edit-auto-benchmark" name="auto_benchmark">
+                            <option value="" {% if info.provider.auto_benchmark is none %}selected{% endif %}>Default ({{ 'off for cloud' if info.provider.is_cloud else 'on' }})</option>
+                            <option value="on" {% if info.provider.auto_benchmark == true %}selected{% endif %}>On</option>
+                            <option value="off" {% if info.provider.auto_benchmark == false %}selected{% endif %}>Off</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="edit-manual-models" class="form-label">Models added by hand</label>
+                    <textarea class="form-control font-monospace" id="edit-manual-models" name="manual_models" rows="2">{{ manual_models_text }}</textarea>
+                    <div class="form-text">One per line; kept alongside the models the provider lists.</div>
+                </div>
                 <hr>
                 <p class="text-muted small mb-2">Upstream authentication (optional)</p>
                 {% if info.provider.is_worker %}
@@ -550,12 +588,6 @@
                     <label class="form-label">URL</label>
                     <input type="url" class="form-control" name="url" required placeholder="http://192.168.1.100:11434">
                 </div>
-                {% if info.provider.provider_type.value == 'both' %}
-                <div class="mb-3">
-                    <label class="form-label">llama.cpp URL</label>
-                    <input type="url" class="form-control" name="llamacpp_url" placeholder="http://192.168.1.100:8080">
-                </div>
-                {% endif %}
                 <div class="form-check">
                     <input type="checkbox" class="form-check-input" id="add-addr-preferred" name="is_preferred" value="1">
                     <label class="form-check-label" for="add-addr-preferred">Preferred</label>
@@ -583,12 +615,6 @@
                     <label class="form-label">URL</label>
                     <input type="url" class="form-control" id="edit-addr-url" name="url" required>
                 </div>
-                {% if info.provider.provider_type.value == 'both' %}
-                <div class="mb-3">
-                    <label class="form-label">llama.cpp URL</label>
-                    <input type="url" class="form-control" id="edit-addr-lcpp" name="llamacpp_url">
-                </div>
-                {% endif %}
                 <div class="form-check">
                     <input type="checkbox" class="form-check-input" id="edit-addr-preferred" name="is_preferred" value="1">
                     <label class="form-check-label" for="edit-addr-preferred">Preferred</label>
@@ -608,6 +634,63 @@
 {% block scripts %}
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
+const PROVIDER_IS_CLOUD = {{ info.provider.is_cloud | tojson }};
+const PROVIDER_ID = {{ info.provider.id | tojson }};
+
+function loadPrices() {
+    fetch('/api/providers/' + PROVIDER_ID + '/prices').then(function(r) { return r.json(); }).then(function(d) {
+        var body = document.getElementById('prices-body');
+        body.innerHTML = '';
+        if (!d.prices.length) {
+            var tr = document.createElement('tr');
+            var td = document.createElement('td');
+            td.colSpan = 4; td.className = 'text-muted'; td.textContent = 'None set by hand.';
+            tr.appendChild(td); body.appendChild(tr);
+        }
+        d.prices.forEach(function(p) {
+            var tr = document.createElement('tr');
+            [p.model_pattern, p.input_per_mtok, p.output_per_mtok].forEach(function(v, i) {
+                var td = document.createElement('td');
+                if (i) td.className = 'text-end';
+                if (i === 0) { var c = document.createElement('code'); c.textContent = v; td.appendChild(c); } else { td.textContent = '$' + Number(v).toFixed(3); }
+                tr.appendChild(td);
+            });
+            var td = document.createElement('td'); td.className = 'text-end';
+            if (!DASH_READ_ONLY) {
+                var b = document.createElement('button');
+                b.className = 'btn btn-sm btn-outline-danger py-0'; b.title = 'Remove price';
+                b.innerHTML = '<i class="bi bi-trash"></i>';
+                b.addEventListener('click', function() {
+                    fetch('/api/providers/' + PROVIDER_ID + '/prices/' + p.id, {method: 'DELETE'}).then(loadPrices);
+                });
+                td.appendChild(b);
+            }
+            tr.appendChild(td); body.appendChild(tr);
+        });
+        document.getElementById('prices-listed').textContent = d.listed.length
+            ? d.listed.length + ' model' + (d.listed.length === 1 ? '' : 's') + ' priced by the provider\'s own list.' : '';
+    });
+}
+
+function addPrice(ev) {
+    ev.preventDefault();
+    if (DASH_READ_ONLY) return;
+    fetch('/api/providers/' + PROVIDER_ID + '/prices', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            model_pattern: document.getElementById('price-model').value.trim(),
+            input_per_mtok: document.getElementById('price-in').value,
+            output_per_mtok: document.getElementById('price-out').value,
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        ev.target.reset();
+        loadPrices();
+    }).catch(function(err) { alert(err.message); });
+}
+
+document.addEventListener('DOMContentLoaded', loadPrices);
 
 document.addEventListener('click', function (ev) {
     const probeBtn = ev.target.closest('#probe-provider');
@@ -641,16 +724,13 @@ document.addEventListener('click', function (ev) {
     openEditAddress(
         btn.dataset.addrId,
         btn.dataset.addrUrl,
-        btn.dataset.addrLcpp,
         btn.dataset.addrPreferred === 'true'
     );
 });
 
-function openEditAddress(addrId, url, lcppUrl, preferred) {
+function openEditAddress(addrId, url, preferred) {
     document.getElementById('edit-addr-id').value = String(addrId);
     document.getElementById('edit-addr-url').value = url;
-    const lcppField = document.getElementById('edit-addr-lcpp');
-    if (lcppField) lcppField.value = lcppUrl;
     document.getElementById('edit-addr-preferred').checked = preferred;
     new bootstrap.Modal(document.getElementById('editAddressModal')).show();
 }
@@ -668,6 +748,10 @@ document.addEventListener('click', function(e) {
         var apiSel = document.getElementById('benchmark-api');
         var benchmarkApi = apiSel ? apiSel.value : 'auto';
         if (!model) return;
+        if (PROVIDER_IS_CLOUD && !window._cloudBenchOk) {
+            if (!confirm('This is a cloud provider: a benchmark sends real requests and may cost money. Run it?')) return;
+            window._cloudBenchOk = true;
+        }
         benchBtn.disabled = true;
         var origHtml = benchBtn.innerHTML;
         benchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';

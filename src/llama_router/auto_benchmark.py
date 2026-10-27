@@ -31,7 +31,7 @@ from typing import Any
 
 from .config import settings
 from .database import Database
-from .models import ProviderStatus, model_in_api
+from .models import ProviderStatus
 from .provider_manager import ProviderManager
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,6 @@ SETTING_MAX_AGE_DAYS = "auto_benchmark_max_age_days"
 FAILURE_BACKOFF_S = 24 * 3600.0
 # Results kept for the dashboard.
 _RECENT = 20
-
-APIS = ("ollama", "llamacpp")
 
 
 @dataclass(slots=True)
@@ -227,23 +225,19 @@ class AutoBenchmarker:
         for p in await self._db.list_providers():
             if p.id is None or p.status == ProviderStatus.OFFLINE:
                 continue
+            if not p.auto_benchmarks:
+                continue  # cloud providers cost money; see Provider.auto_benchmark
+            api = p.protocol.value
             for m in models_by_provider.get(p.id, []):
-                for api in APIS:
-                    if api == "ollama" and not p.supports_ollama:
-                        continue
-                    if api == "llamacpp" and not p.supports_llamacpp:
-                        continue
-                    if not model_in_api(m, api, p.provider_type):
-                        continue
-                    key = (p.id, m.name, api)
-                    if self._backoff.get(key, 0.0) > now:
-                        continue
-                    if key not in latest:
-                        missing.append(Job(p.id, p.name, m.name, api, "missing"))
-                        continue
-                    age = _age_days(latest[key], now_wall)
-                    if age is not None and age >= cfg.max_age_days:
-                        stale.append(Job(p.id, p.name, m.name, api, "stale", age))
+                key = (p.id, m.name, api)
+                if self._backoff.get(key, 0.0) > now:
+                    continue
+                if key not in latest:
+                    missing.append(Job(p.id, p.name, m.name, api, "missing"))
+                    continue
+                age = _age_days(latest[key], now_wall)
+                if age is not None and age >= cfg.max_age_days:
+                    stale.append(Job(p.id, p.name, m.name, api, "stale", age))
         stale.sort(key=lambda j: -(j.age_days or 0.0))
         return missing + stale
 

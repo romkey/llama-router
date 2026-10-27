@@ -43,7 +43,7 @@ _TABLES: list[tuple[str, list[str]]] = [
         [
             "id",
             "name",
-            "provider_type",
+            "protocol",
             "status",
             "machine_type",
             "gpu_type",
@@ -55,6 +55,14 @@ _TABLES: list[tuple[str, list[str]]] = [
             "api_key_header",
             "capabilities",
             "probed_at",
+            "flavor",
+            "preset",
+            "extra_headers",
+            "manual_models",
+            "locality",
+            "model_filter",
+            "read_timeout_s",
+            "auto_benchmark",
         ],
     ),
     (
@@ -116,6 +124,11 @@ _TABLES: list[tuple[str, list[str]]] = [
             "status",
             "streamed",
             "error_detail",
+            "locality",
+            "api_key_id",
+            "prompt_tokens",
+            "completion_tokens",
+            "cost_usd",
             "created_at",
         ],
     ),
@@ -129,7 +142,6 @@ _TABLES: list[tuple[str, list[str]]] = [
             "id",
             "provider_id",
             "url",
-            "llamacpp_url",
             "is_preferred",
             "is_live",
             "created_at",
@@ -144,9 +156,19 @@ _TABLES: list[tuple[str, list[str]]] = [
             "routing_mode",
             "allow_fallback",
             "session_affinity",
+            "locality",
+            "daily_spend_cap_usd",
             "created_at",
             "last_used_at",
         ],
+    ),
+    (
+        "model_prices",
+        ["id", "provider_id", "model_pattern", "input_per_mtok", "output_per_mtok"],
+    ),
+    (
+        "model_aliases",
+        ["id", "alias", "canonical", "created_at"],
     ),
     (
         "api_key_model_pins",
@@ -158,7 +180,19 @@ _TABLES: list[tuple[str, list[str]]] = [
     ),
     (
         "dashboard_users",
-        ["id", "username", "password_hash", "is_admin", "created_at"],
+        [
+            "id",
+            "username",
+            "password_hash",
+            "is_admin",
+            "created_at",
+            "auth_source",
+            "oidc_issuer",
+            "oidc_subject",
+            "email",
+            "display_name",
+            "last_login_at",
+        ],
     ),
 ]
 
@@ -174,6 +208,8 @@ _SEQUENCE_TABLES = [
     "api_keys",
     "api_key_model_pins",
     "dashboard_users",
+    "model_aliases",
+    "model_prices",
 ]
 
 

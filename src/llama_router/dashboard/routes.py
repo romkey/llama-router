@@ -29,7 +29,11 @@ from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
-from ..models import ProviderType, RequestLog, model_in_api
+from ..cloud_presets import PRESETS, get_preset
+from ..models import ProviderProtocol, RequestLog
+from ..provider_manager import preset_settings
+from ..provider_secrets import format_extra_headers, parse_extra_headers
+from ..upstream_url import LOCALITIES
 from . import deps
 
 from .. import __version__
@@ -206,9 +210,6 @@ async def _pull_one_ollama(
 async def _api_key_exists(db, key_id: int) -> bool:
     keys = await db.list_api_keys()
     return any(int(k["id"]) == int(key_id) for k in keys)
-
-
-_model_in_api = model_in_api
 
 
 def _cache_registry_url() -> str | None:
@@ -690,7 +691,7 @@ async def dashboard(request: Request):
     for b in all_benchmarks:
         benchmarks_by_model.setdefault(b["model_name"], []).append(b)
 
-    ollama_providers = [i for i in infos if i.provider.supports_ollama]
+    ollama_providers = [i for i in infos if i.provider.is_ollama]
     ollama_count = len(ollama_providers)
     model_provider_counts: dict[str, int] = {}
     for info in ollama_providers:
@@ -704,6 +705,7 @@ async def dashboard(request: Request):
 
     model_request_counts = await db.get_model_request_counts()
     model_fallbacks = await db.get_all_model_fallbacks()
+    model_aliases = await db.get_model_aliases()
 
     if read_only:
         api_keys: list[Any] = []
@@ -725,6 +727,9 @@ async def dashboard(request: Request):
         worker_link_status: dict[str, Any] | None = None
     else:
         api_keys = await db.list_api_keys()
+        spent = await db.spend_by_key_since(_utc_day_start())
+        for k in api_keys:
+            k["spent_today_usd"] = spent.get(int(k["id"]), 0.0)
         allow_unauthenticated = await db.get_allow_unauthenticated()
         bench_by_provider: dict[int, list[dict]] = {}
         for b in all_benchmarks:
@@ -838,6 +843,7 @@ async def dashboard(request: Request):
             {
                 "providers": infos,
                 "providers_seed": [_provider_status_payload(i) for i in infos],
+                "cloud_presets": [p.to_dict() for p in PRESETS],
                 "hf_models_dir": settings.hf_models_dir,
                 "models": all_models,
                 "benchmarks_by_model": benchmarks_by_model,
@@ -846,6 +852,7 @@ async def dashboard(request: Request):
                 "all_provider_counts": all_provider_counts,
                 "model_request_counts": model_request_counts,
                 "model_fallbacks": model_fallbacks,
+                "model_aliases": model_aliases,
                 "api_keys": api_keys,
                 "session_affinity_default": (
                     deps.get_pm().router.session_affinity_default
@@ -880,7 +887,9 @@ def _provider_status_payload(info: Any) -> dict[str, Any]:
         "name": info.provider.name,
         "status": info.provider.status.value,
         "status_detail": info.status_detail,
-        "provider_type": info.provider.provider_type.value,
+        "protocol": info.provider.protocol.value,
+        "flavor": info.provider.flavor,
+        "locality": info.provider.locality,
         "is_worker": info.provider.is_worker,
         "model_count": len(info.models),
         "model_names": sorted({m.name for m in info.models}),
@@ -1116,6 +1125,7 @@ async def api_explain_routing(request: Request):
             },
             session_affinity=key.get("session_affinity"),
             key_id=key_id,
+            locality=key.get("locality"),
         )
         key_info = {"id": key_id, "key_prefix": key["key_prefix"]}
     else:
@@ -1130,6 +1140,7 @@ async def api_explain_routing(request: Request):
             mode=mode,
             allow_fallback=allow not in ("0", "false", "no", "off"),
             session_affinity=_tristate(q.get("session_affinity")),
+            locality=_key_locality(q.get("locality")),
         )
     session_id = (q.get("session_id") or "").strip()
     session = (
@@ -1164,6 +1175,8 @@ async def api_generate_key(request: Request):
     routing_mode = (body.get("routing_mode") or DEFAULT_MODE).strip().lower()
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
+    locality = _key_locality(body.get("locality"))
+    cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     # PBKDF2 is slow; keep it off the event loop.
@@ -1176,15 +1189,96 @@ async def api_generate_key(request: Request):
         routing_mode=routing_mode,
         allow_fallback=allow_fallback,
         session_affinity=session_affinity,
+        locality=locality,
+        daily_spend_cap_usd=cap,
     )
     return JSONResponse(
         {
             "api_key": plaintext,
+            "daily_spend_cap_usd": cap,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,
+            "locality": locality,
         }
     )
+
+
+@router.post("/api/keys/{key_id}/spend-cap")
+async def api_set_key_spend_cap(key_id: int, request: Request):
+    """Body: {daily_spend_cap_usd: number or null}. Past the cap, the key is
+    limited to local providers until the next UTC day."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
+    if not await deps.get_db().set_api_key_spend_cap(key_id, cap):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse({"id": key_id, "daily_spend_cap_usd": cap})
+
+
+@router.get("/api/providers/{provider_id}/prices")
+async def api_list_prices(provider_id: int):
+    """Prices set by hand, and how many models the provider's list prices."""
+    db = deps.get_db()
+    if await db.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    from ..pricing import listed_price
+
+    listed = [
+        {
+            "model": m.name,
+            "input_per_mtok": p.input_per_mtok,
+            "output_per_mtok": p.output_per_mtok,
+        }
+        for m in await db.get_provider_models(provider_id)
+        if (p := listed_price(m)) is not None
+    ]
+    return JSONResponse(
+        {"prices": await db.list_model_prices(provider_id), "listed": listed}
+    )
+
+
+@router.post("/api/providers/{provider_id}/prices")
+async def api_set_price(provider_id: int, request: Request):
+    """Body: {model_pattern, input_per_mtok, output_per_mtok} in USD per
+    million tokens. "*" prices every model of the provider."""
+    db = deps.get_db()
+    if await db.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    body = await request.json()
+    pattern = str(body.get("model_pattern") or "").strip()
+    if not pattern or len(pattern) > 255:
+        raise HTTPException(status_code=400, detail="model_pattern is required")
+    inp = _usd(body.get("input_per_mtok"), "input price")
+    out = _usd(body.get("output_per_mtok"), "output price")
+    if inp is None or out is None:
+        raise HTTPException(status_code=400, detail="both prices are required")
+    await db.set_model_price(provider_id, pattern, inp, out)
+    return JSONResponse(
+        {"model_pattern": pattern, "input_per_mtok": inp, "output_per_mtok": out}
+    )
+
+
+@router.delete("/api/providers/{provider_id}/prices/{price_id}")
+async def api_delete_price(provider_id: int, price_id: int):
+    if not await deps.get_db().remove_model_price(provider_id, price_id):
+        raise HTTPException(status_code=404, detail="price not found")
+    return JSONResponse({"status": "ok"})
+
+
+@router.post("/api/keys/{key_id}/locality")
+async def api_set_key_locality(key_id: int, request: Request):
+    """Limit a key to local or cloud providers, or allow either (``any``)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    locality = _key_locality(body.get("locality"))
+    if not await deps.get_db().set_api_key_locality(key_id, locality):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse({"id": key_id, "locality": locality})
 
 
 @router.delete("/api/keys/{key_id}")
@@ -1272,6 +1366,8 @@ async def provider_detail(request: Request, provider_id: int):
             request,
             {
                 "info": info,
+                "extra_headers_text": format_extra_headers(info.provider.extra_headers),
+                "manual_models_text": "\n".join(info.provider.manual_models or []),
                 "missing_models": missing_models,
                 "cached_models": cached_models,
                 "cached_only_models": cached_only_models,
@@ -1285,49 +1381,139 @@ async def provider_detail(request: Request, provider_id: int):
     )
 
 
+def _utc_day_start() -> datetime:
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+
+def _usd(value: Any, what: str) -> float | None:
+    """A non-negative USD amount from a form or JSON value; blank is None."""
+    raw = str(value if value is not None else "").strip().lstrip("$")
+    if not raw:
+        return None
+    try:
+        amount = float(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{what} must be a number")
+    if amount < 0 or amount > 1_000_000:
+        raise HTTPException(status_code=400, detail=f"{what} is out of range")
+    return amount
+
+
+def _parse_locality(value: str | None) -> str:
+    v = (value or "").strip().lower()
+    if v not in LOCALITIES:
+        raise ValueError("locality must be local or cloud")
+    return v
+
+
+def _key_locality(value: Any) -> str | None:
+    """An API key's locality from a request body: local, cloud, or any."""
+    v = str(value or "").strip().lower()
+    if v in ("", "any", "none", "either"):
+        return None
+    if v not in LOCALITIES:
+        raise HTTPException(
+            status_code=400, detail="locality must be local, cloud or any"
+        )
+    return v
+
+
+def _model_filter(text: str | None) -> str | None:
+    """Model filter patterns, normalised to one per line; None for none."""
+    patterns = _model_lines(text)
+    return "\n".join(patterns) or None
+
+
+def _timeout(value: str | None) -> float | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError("read timeout must be a number of seconds")
+    if not 1 <= seconds <= 3600:
+        raise ValueError("read timeout must be between 1 and 3600 seconds")
+    return seconds
+
+
+def _model_lines(text: str | None) -> list[str]:
+    """Model names, one per line or comma-separated."""
+    out: list[str] = []
+    for part in (text or "").replace(",", "\n").splitlines():
+        name = part.strip()
+        if name and name not in out:
+            if len(name) > 200:
+                raise ValueError("model name too long")
+            out.append(name)
+    return out
+
+
 @router.post("/providers/add")
 async def add_provider(
     name: str = Form(...),
-    url: str = Form(...),
-    provider_type: str = Form("ollama"),
-    llamacpp_url: Optional[str] = Form(None),
+    url: str = Form(""),
+    protocol: str = Form("ollama"),
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
     api_key_header: Optional[str] = Form(None),
-    probe_after_add: Optional[str] = Form(None),
+    preset: Optional[str] = Form(None),
+    preset_resource: Optional[str] = Form(None),
+    extra_headers: Optional[str] = Form(None),
+    manual_models: Optional[str] = Form(None),
+    locality: Optional[str] = Form(None),
+    model_filter: Optional[str] = Form(None),
 ):
-    """Create a provider; *url* and *llamacpp_url* become its first address."""
+    """Create a provider; *url* becomes its first address. It is probed in the
+    background, so the stored endpoint list does not wait on the dialog.
+
+    With *preset*, the cloud preset's URL, protocol, key header and extra
+    headers fill whatever the form left blank.
+    """
     pm = deps.get_pm()
-    ptype = ProviderType(provider_type)
-    lcpp_url = llamacpp_url if llamacpp_url else None
+    settings_: dict[str, Any] = {}
     try:
-        provider = await pm.add_provider(
+        proto = ProviderProtocol.parse(protocol)
+        chosen = get_preset(preset) if preset else None
+        if preset and chosen is None:
+            raise ValueError("unknown preset")
+        if chosen is not None:
+            settings_ = preset_settings(chosen)
+            proto = ProviderProtocol(chosen.protocol)
+            if chosen.url_params or not url.strip():
+                url = chosen.url(resource=preset_resource or "")
+            if not (api_key_header or "").strip():
+                api_key_header = chosen.api_key_header
+        if extra_headers is not None and extra_headers.strip():
+            settings_["extra_headers"] = parse_extra_headers(extra_headers)
+        if manual_models is not None and manual_models.strip():
+            settings_["manual_models"] = _model_lines(manual_models)
+        if not url.strip():
+            raise ValueError("URL is required")
+        if (locality or "auto") != "auto":
+            settings_["locality"] = _parse_locality(locality)
+        if model_filter is not None and model_filter.strip():
+            settings_["model_filter"] = _model_filter(model_filter)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        await pm.add_provider(
             name,
             url,
-            ptype,
-            lcpp_url,
+            proto,
             machine_type=machine_type or None,
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
             api_key=(api_key or "").strip() or None,
             api_key_header=api_key_header or None,
+            provider_settings=settings_ or None,
         )
     except Exception:
         logger.exception("add_provider failed")
         raise HTTPException(status_code=400, detail="Could not add provider")
-    if probe_after_add and provider.id is not None:
-        # Record the endpoint list in the background; the dialog already showed it.
-        pid = provider.id
-
-        async def _probe() -> None:
-            try:
-                await pm.probe_provider(pid)
-            except Exception:
-                logger.exception("probe after add failed (provider_id=%s)", pid)
-
-        asyncio.create_task(_probe())
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -1342,7 +1528,16 @@ async def api_probe_url(request: Request):
     api_key = (str(body.get("api_key") or "")).strip() or None
     header = (str(body.get("api_key_header") or "")).strip() or None
     try:
-        result = await probe_url(url, api_key=api_key, api_key_header=header)
+        headers = parse_extra_headers(str(body.get("extra_headers") or ""))
+        chosen = get_preset(str(body.get("preset") or ""))
+        if chosen is not None:
+            headers = {**chosen.extra_headers, **headers}
+            header = header or chosen.api_key_header
+        if api_key:
+            from ..provider_secrets import auth_headers
+
+            headers.update(auth_headers(api_key, header))
+        result = await probe_url(url, headers=headers or None, key_sent=bool(api_key))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     data = result.to_dict()
@@ -1367,28 +1562,52 @@ async def api_probe_provider(provider_id: int):
 async def edit_provider(
     provider_id: int,
     name: str = Form(...),
-    provider_type: str = Form("ollama"),
+    protocol: str = Form("ollama"),
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
     api_key_header: Optional[str] = Form(None),
     clear_api_key: Optional[str] = Form(None),
+    extra_headers: Optional[str] = Form(None),
+    manual_models: Optional[str] = Form(None),
+    settings_form: Optional[str] = Form(None),
+    locality: Optional[str] = Form(None),
+    model_filter: Optional[str] = Form(None),
+    read_timeout_s: Optional[str] = Form(None),
+    auto_benchmark: Optional[str] = Form(None),
 ):
-    """Edit provider details. A blank API key keeps the stored one."""
+    """Edit provider details. A blank API key keeps the stored one.
+
+    The extra headers and added models are written only when the form says
+    it carries them (*settings_form*): an empty field then clears them.
+    """
     pm = deps.get_pm()
-    ptype = ProviderType(provider_type)
+    settings_: dict[str, Any] = {}
+    try:
+        proto = ProviderProtocol.parse(protocol)
+        if settings_form:
+            settings_["extra_headers"] = parse_extra_headers(extra_headers) or None
+            settings_["manual_models"] = _model_lines(manual_models) or None
+            settings_["model_filter"] = _model_filter(model_filter)
+            settings_["read_timeout_s"] = _timeout(read_timeout_s)
+            settings_["auto_benchmark"] = _tristate(auto_benchmark)
+        if locality:
+            settings_["locality"] = _parse_locality(locality)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid protocol")
     try:
         await pm.update_provider(
             provider_id,
             name,
-            ptype,
+            proto,
             machine_type=machine_type or None,
             gpu_type=gpu_type or None,
             gpu_ram=gpu_ram or None,
             api_key=(api_key or "").strip() or None,
             api_key_header=api_key_header,
             clear_api_key=bool(clear_api_key),
+            provider_settings=settings_ or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1419,7 +1638,7 @@ async def api_start_benchmark(request: Request):
     provider_id = int(body["provider_id"])
     model_name = body["model"]
     benchmark_api = (body.get("benchmark_api") or "auto").strip().lower()
-    if benchmark_api not in {"auto", "ollama", "llamacpp"}:
+    if benchmark_api not in {"auto", "ollama", "openai", "llamacpp"}:
         raise HTTPException(status_code=400, detail="Invalid benchmark_api value")
 
     pm = deps.get_pm()
@@ -1582,13 +1801,11 @@ async def delete_model(provider_id: int, model_name: str):
 async def add_address(
     provider_id: int,
     url: str = Form(...),
-    llamacpp_url: Optional[str] = Form(None),
     is_preferred: Optional[str] = Form(None),
 ):
     pm = deps.get_pm()
-    lcpp = llamacpp_url if llamacpp_url else None
     try:
-        await pm.add_address(provider_id, url, lcpp, is_preferred=bool(is_preferred))
+        await pm.add_address(provider_id, url, is_preferred=bool(is_preferred))
     except Exception:
         logger.exception("add_address failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not add address")
@@ -1599,25 +1816,23 @@ async def add_address(
 async def save_provider_address(
     provider_id: int,
     url: str = Form(...),
-    llamacpp_url: Optional[str] = Form(None),
     is_preferred: Optional[str] = Form(None),
     address_id: Optional[str] = Form(None),
 ):
     """Add or update an address; used by dashboard forms with a stable action URL."""
     db = deps.get_db()
     pm = deps.get_pm()
-    lcpp = llamacpp_url if llamacpp_url else None
     pref = bool(is_preferred)
     raw_id = (address_id or "").strip()
     try:
         if not raw_id:
-            await pm.add_address(provider_id, url, lcpp, is_preferred=pref)
+            await pm.add_address(provider_id, url, is_preferred=pref)
         else:
             aid = int(raw_id)
             addr = await db.get_address(aid)
             if addr is None or addr.provider_id != provider_id:
                 raise HTTPException(status_code=400, detail="Invalid address")
-            await pm.update_address(aid, url, lcpp, is_preferred=pref)
+            await pm.update_address(aid, url, is_preferred=pref)
     except HTTPException:
         raise
     except ValueError:
@@ -1637,13 +1852,11 @@ async def edit_address(
     provider_id: int,
     address_id: int,
     url: str = Form(...),
-    llamacpp_url: Optional[str] = Form(None),
     is_preferred: Optional[str] = Form(None),
 ):
     pm = deps.get_pm()
-    lcpp = llamacpp_url if llamacpp_url else None
     try:
-        await pm.update_address(address_id, url, lcpp, is_preferred=bool(is_preferred))
+        await pm.update_address(address_id, url, is_preferred=bool(is_preferred))
     except Exception:
         logger.exception(
             "update_address failed (provider_id=%s address_id=%s)",
@@ -1677,12 +1890,12 @@ async def api_pull_model(request: Request):
     pull_api = (body.get("pull_api") or "auto").strip().lower()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
-    if pull_api not in {"auto", "ollama", "llamacpp"}:
+    if pull_api not in {"auto", "ollama", "openai", "llamacpp"}:
         raise HTTPException(status_code=400, detail="Invalid pull_api value")
-    if pull_api == "llamacpp":
+    if pull_api in {"openai", "llamacpp"}:
         raise HTTPException(
             status_code=400,
-            detail="llama.cpp pull is not supported yet; use ollama",
+            detail="pulling over the OpenAI API is not supported; use ollama",
         )
 
     pm = deps.get_pm()
@@ -1695,7 +1908,9 @@ async def api_pull_model(request: Request):
         provider_ids = [
             i.provider.id
             for i in infos
-            if i.provider.supports_ollama and i.provider.id is not None
+            if i.provider.is_ollama
+            and not i.provider.lacks("/api/pull")
+            and i.provider.id is not None
         ]
 
     _active_pulls[pull_id] = {
@@ -2039,13 +2254,9 @@ async def api_fill_missing_pulls():
     provider_names: dict[int, str] = {}
     for info in infos:
         provider = info.provider
-        if not provider.supports_ollama or provider.id is None:
+        if not provider.is_ollama or provider.lacks("/api/pull") or provider.id is None:
             continue
-        existing_ollama = {
-            m.name
-            for m in info.models
-            if _model_in_api(m, "ollama", provider.provider_type)
-        }
+        existing_ollama = {m.name for m in info.models}
         missing = [name for name in all_model_names if name not in existing_ollama]
         if missing:
             provider_missing[provider.id] = missing
@@ -2163,7 +2374,11 @@ async def api_auto_benchmark_check():
 
 @router.post("/api/benchmarks/fill-missing")
 async def api_fill_missing_benchmarks():
-    """Run missing protocol-specific benchmarks for all providers/models."""
+    """Run missing benchmarks for every provider and model.
+
+    Providers that opt out of automatic benchmarks (cloud ones by default,
+    where each run costs money) are left out; benchmark those one by one.
+    """
     pm = deps.get_pm()
     db = deps.get_db()
     infos = await pm.list_provider_infos()
@@ -2177,22 +2392,14 @@ async def api_fill_missing_benchmarks():
     provider_names: dict[int, str] = {}
     for info in infos:
         provider = info.provider
-        if provider.id is None:
+        if provider.id is None or not provider.auto_benchmarks:
             continue
-        runs: list[tuple[str, str]] = []
-        for m in info.models:
-            if provider.supports_ollama and _model_in_api(
-                m, "ollama", provider.provider_type
-            ):
-                key = (provider.id, m.name, "ollama")
-                if key not in existing:
-                    runs.append((m.name, "ollama"))
-            if provider.supports_llamacpp and _model_in_api(
-                m, "llamacpp", provider.provider_type
-            ):
-                key = (provider.id, m.name, "llamacpp")
-                if key not in existing:
-                    runs.append((m.name, "llamacpp"))
+        api = provider.protocol.value
+        runs: list[tuple[str, str]] = [
+            (m.name, api)
+            for m in info.models
+            if (provider.id, m.name, api) not in existing
+        ]
         if runs:
             provider_runs[provider.id] = runs
             provider_names[provider.id] = provider.name
@@ -2313,7 +2520,9 @@ async def pull_model_all_legacy(model: str = Form(...)):
     provider_ids = [
         i.provider.id
         for i in infos
-        if i.provider.supports_ollama and i.provider.id is not None
+        if i.provider.is_ollama
+        and not i.provider.lacks("/api/pull")
+        and i.provider.id is not None
     ]
     pull_id = str(uuid.uuid4())
     _active_pulls[pull_id] = {
@@ -2461,6 +2670,84 @@ async def remove_fallback(model_name: str):
     return JSONResponse({"status": "ok"})
 
 
+def suggest_aliases(
+    names_by_provider: dict[int, set[str]], aliases: dict[str, str]
+) -> list[dict[str, str]]:
+    """Likely aliases between providers' model names.
+
+    ``vendor/model`` (OpenRouter, Together, ...) and ``model:latest``
+    (Ollama) are suggested as aliases of ``model`` when another provider
+    serves that bare name. Existing aliases are not suggested again.
+    """
+    everywhere: dict[str, set[int]] = {}
+    for pid, names in names_by_provider.items():
+        for n in names:
+            everywhere.setdefault(n, set()).add(pid)
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for name, pids in sorted(everywhere.items()):
+        candidates = []
+        if "/" in name:
+            candidates.append(name.rsplit("/", 1)[1])
+        if name.endswith(":latest"):
+            candidates.append(name[: -len(":latest")])
+        for bare in candidates:
+            if not bare or bare == name or name in aliases or name in seen:
+                continue
+            if everywhere.get(bare, set()) - pids:
+                out.append({"alias": name, "canonical": bare})
+                seen.add(name)
+    return out
+
+
+@router.get("/api/model-aliases")
+async def list_model_aliases():
+    """All aliases (alias -> canonical) and suggested new ones."""
+    db = deps.get_db()
+    aliases = await db.get_model_aliases()
+    names: dict[int, set[str]] = {}
+    for m in await db.get_all_provider_models():
+        names.setdefault(m.provider_id, set()).add(m.name)
+    return JSONResponse(
+        {"aliases": aliases, "suggestions": suggest_aliases(names, aliases)}
+    )
+
+
+@router.post("/api/model-aliases")
+async def set_model_alias(request: Request):
+    """Body: {alias, canonical}. The alias then reaches every provider of the
+    canonical name and of its other aliases."""
+    body = await request.json()
+    alias = str(body.get("alias") or "").strip()
+    canonical = str(body.get("canonical") or "").strip()
+    if not alias or not canonical:
+        raise HTTPException(status_code=400, detail="alias and canonical are required")
+    if alias == canonical:
+        raise HTTPException(status_code=400, detail="a model cannot alias itself")
+    if len(alias) > 255 or len(canonical) > 255:
+        raise HTTPException(status_code=400, detail="model name too long")
+    db = deps.get_db()
+    aliases = await db.get_model_aliases()
+    # Refuse a loop: following canonical's chain must never reach alias.
+    cur, seen = canonical, set()
+    while cur not in seen:
+        if cur == alias:
+            raise HTTPException(status_code=400, detail="that alias would form a loop")
+        seen.add(cur)
+        if cur not in aliases:
+            break
+        cur = aliases[cur]
+    await db.set_model_alias(alias, canonical)
+    return JSONResponse({"alias": alias, "canonical": canonical})
+
+
+@router.delete("/api/model-aliases/{alias:path}")
+async def delete_model_alias(alias: str):
+    if not await deps.get_db().remove_model_alias(alias):
+        raise HTTPException(status_code=404, detail="alias not found")
+    return JSONResponse({"status": "ok"})
+
+
 @router.get("/api/fallbacks")
 async def list_fallbacks():
     """Return all configured model fallbacks."""
@@ -2476,7 +2763,7 @@ async def delete_model_all_providers(model: str = Form(...)):
     targets = [
         i
         for i in infos
-        if i.provider.supports_ollama and any(m.name == model for m in i.models)
+        if i.provider.is_ollama and any(m.name == model for m in i.models)
     ]
 
     async def _delete_one(info):

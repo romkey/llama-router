@@ -275,7 +275,7 @@ async def test_refused_push_still_refreshes_shared_volume_providers(
     await client.post("/providers/add", data={"name": "oll", "url": "http://oll:11434"})
     await client.post(
         "/providers/add",
-        data={"name": "lcpp", "url": "http://lcpp:8080", "provider_type": "llamacpp"},
+        data={"name": "lcpp", "url": "http://lcpp:8080", "protocol": "openai"},
     )
     by_name = {p.name: p.id for p in await db.list_providers()}
     r = await client.post(
@@ -317,9 +317,9 @@ async def test_download_falls_back_when_plan_is_unreadable(
 
 async def test_hf_pull_refuses_worker_push(dash_client, fake_hf) -> None:  # noqa: F811
     client, db = dash_client
-    from llama_router.models import ProviderType
+    from llama_router.models import ProviderProtocol
 
-    w = await db.add_provider("edge", ProviderType.OLLAMA, worker_name="edge")
+    w = await db.add_provider("edge", ProviderProtocol.OLLAMA, worker_name="edge")
     r = await client.post(
         "/api/hf/pull", json={"repo": "owner/x", "push_provider_ids": [w.id]}
     )

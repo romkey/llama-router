@@ -165,7 +165,7 @@
                                 </h5>
                                 <div>
                                     {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
-                                    <span class="badge bg-info text-dark me-1">{{ info.provider.provider_type.value }}</span>
+                                    {% if info.provider.is_cloud %}<span class="badge bg-warning text-dark me-1" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud me-1"></i>cloud</span>{% endif %}<span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
                                     <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status title="{{ info.status_detail or '' }}">
                                         {{ info.provider.status.value }}
                                     </span>
@@ -267,7 +267,7 @@
                                     {{ info.provider.name }}
                                 </a>
                             </td>
-                            <td><span class="badge bg-info text-dark">{{ info.provider.provider_type.value }}</span></td>
+                            <td>{% if info.provider.is_cloud %}<span class="badge bg-warning text-dark" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud"></i></span> {% endif %}<span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %} <span class="badge bg-body-secondary text-body" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}</td>
                             <td class="text-muted small" data-list-addresses>
                                 {% for addr in info.addresses %}
                                 <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
@@ -475,7 +475,7 @@
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Push to Ollama providers</div>
-                            {% for info in providers if info.provider.supports_ollama and not info.provider.is_worker %}
+                            {% for info in providers if info.provider.is_ollama and not info.provider.is_worker and not info.provider.lacks('/api/create') %}
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" id="hf-push-{{ info.provider.id }}" data-hf-push="{{ info.provider.id }}">
                                 <label class="form-check-label" for="hf-push-{{ info.provider.id }}">{{ info.provider.name }}</label>
@@ -489,13 +489,13 @@
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Refresh llama.cpp providers (shared volume)</div>
-                            {% for info in providers if info.provider.supports_llamacpp %}
+                            {% for info in providers if info.provider.is_openai %}
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" id="hf-refresh-{{ info.provider.id }}" data-hf-refresh="{{ info.provider.id }}">
                                 <label class="form-check-label" for="hf-refresh-{{ info.provider.id }}">{{ info.provider.name }}</label>
                             </div>
                             {% else %}
-                            <div class="text-muted">No llama.cpp providers.</div>
+                            <div class="text-muted">No OpenAI-API providers.</div>
                             {% endfor %}
                         </div>
                     </div>
@@ -673,6 +673,43 @@
                 </table>
             </div>
         </div>
+        <div class="card mt-4" id="aliases-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Model Aliases</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">One model under different names, such as <code>claude-sonnet-4-5</code> at Anthropic and <code>anthropic/claude-sonnet-4-5</code> at OpenRouter. A request for any name in a group can go to any provider that serves one of them, under that provider's own name.</p>
+                <form class="row g-2 align-items-end mb-3" onsubmit="addModelAlias(event)">
+                    <div class="col-sm-5">
+                        <label for="alias-name" class="form-label small text-muted mb-1">Alias</label>
+                        <input id="alias-name" class="form-control form-control-sm font-monospace" placeholder="anthropic/claude-sonnet-4-5" required>
+                    </div>
+                    <div class="col-sm-5">
+                        <label for="alias-canonical" class="form-label small text-muted mb-1">Same model as</label>
+                        <input id="alias-canonical" class="form-control form-control-sm font-monospace" placeholder="claude-sonnet-4-5" required>
+                    </div>
+                    <div class="col-sm-2">
+                        <button class="btn btn-sm btn-outline-primary w-100" type="submit"><i class="bi bi-plus-lg me-1"></i>Add</button>
+                    </div>
+                </form>
+                <table class="table table-sm mb-2">
+                    <thead><tr><th>Alias</th><th>Same model as</th><th></th></tr></thead>
+                    <tbody>
+                        {% for alias, canonical in model_aliases.items() %}
+                        <tr>
+                            <td><code>{{ alias }}</code></td>
+                            <td><code>{{ canonical }}</code></td>
+                            <td class="text-end"><button class="btn btn-sm btn-outline-danger" data-remove-alias="{{ alias }}" title="Remove alias"><i class="bi bi-trash"></i></button></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3" class="text-muted text-center py-2">No aliases yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                <button class="btn btn-sm btn-link p-0" type="button" onclick="loadAliasSuggestions()">Suggest aliases from the providers' model lists</button>
+                <div id="alias-suggestions" class="mt-2"></div>
+            </div>
+        </div>
         {% endif %}
     </div>
 
@@ -692,12 +729,26 @@
                                 <option value="balanced" selected>Balanced (fastest overall response)</option>
                                 <option value="latency">Minimal latency</option>
                                 <option value="throughput">Maximum tokens/sec</option>
+                                <option value="cheapest">Cheapest (lowest price per request)</option>
                                 <option value="chaos">Chaos mode (random provider/model)</option>
                             </select>
                         </div>
                         <div class="form-check mb-2">
                             <input class="form-check-input" type="checkbox" id="new-key-fallback" checked>
                             <label class="form-check-label" for="new-key-fallback">Allow fallback models</label>
+                        </div>
+                        <div class="mb-2">
+                            <label for="new-key-locality" class="form-label small text-muted mb-1">Providers</label>
+                            <select id="new-key-locality" class="form-select form-select-sm">
+                                <option value="any" selected>Local or cloud</option>
+                                <option value="local">Local only: prompts never leave your network</option>
+                                <option value="cloud">Cloud only</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label for="new-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
+                            <input id="new-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
+                            <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
                         </div>
                         <div class="mb-3">
                             <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
@@ -889,6 +940,7 @@
                                         <option value="mode:balanced" selected>Balanced</option>
                                         <option value="mode:latency">Minimal latency</option>
                                         <option value="mode:throughput">Maximum tokens/sec</option>
+                                        <option value="mode:cheapest">Cheapest</option>
                                         <option value="mode:chaos">Chaos</option>
                                     </optgroup>
                                     {% if api_keys %}
@@ -898,7 +950,15 @@
                                     {% endif %}
                                 </select>
                             </div>
-                            <div class="col-12">
+                            <div class="col-sm-6">
+                                <label for="rx-locality" class="form-label small text-muted mb-1">Providers (routing modes only)</label>
+                                <select id="rx-locality" class="form-select form-select-sm">
+                                    <option value="any" selected>Local or cloud</option>
+                                    <option value="local">Local only</option>
+                                    <option value="cloud">Cloud only</option>
+                                </select>
+                            </div>
+                            <div class="col-sm-6">
                                 <label for="rx-session" class="form-label small text-muted mb-1">Session ID (optional)</label>
                                 <input id="rx-session" class="form-control form-control-sm" placeholder="X-Session-ID a client would send">
                             </div>
@@ -941,6 +1001,8 @@
                                 '<div class="text-muted">' + esc(facts.join(" · ")) + "</div></td></tr>";
                         }).join("");
                         return '<div class="fw-semibold mt-2"><code>' + esc(s.model) + "</code> — " + esc(s.outcome) + "</div>" +
+                            (s.locality ? '<div class="text-muted">' + esc(s.locality) + "</div>" : "") +
+                            (s.pin_ignored ? '<div class="text-warning">Pin ignored: ' + esc(s.pin_ignored) + "</div>" : "") +
                             (rows ? '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Provider</th><th class="text-end">Score</th><th>Result</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "");
                     }
                     window.explainRoute = async function (ev) {
@@ -952,6 +1014,7 @@
                             endpoint: document.getElementById("rx-endpoint").value
                         });
                         params.set(level[0] === "key" ? "key_id" : "mode", level[1]);
+                        if (level[0] !== "key") params.set("locality", document.getElementById("rx-locality").value);
                         var sid = document.getElementById("rx-session").value.trim();
                         if (sid) params.set("session_id", sid);
                         out.innerHTML = '<div class="text-muted">Working…</div>';
@@ -1000,6 +1063,8 @@
                                         <th>Priority</th>
                                         <th>Fallback</th>
                                         <th>Sessions</th>
+                                        <th>Providers</th>
+                                        <th title="Spent today (UTC) / daily cap">Spend</th>
                                         <th>Pins</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
@@ -1011,12 +1076,28 @@
                                     <tr>
                                         <td><code>{{ k.key_prefix }}</code></td>
                                         <td>
-                                            <span class="badge {{ 'bg-primary' if k.routing_mode == 'latency' else ('bg-info text-dark' if k.routing_mode == 'throughput' else ('bg-success' if k.routing_mode == 'balanced' else 'bg-warning text-dark')) }}">
-                                                {{ 'minimal latency' if k.routing_mode == 'latency' else ('max tokens/sec' if k.routing_mode == 'throughput' else ('balanced' if k.routing_mode == 'balanced' else 'chaos')) }}
-                                            </span>
+                                            {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
+                                            {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
+                                            <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
                                         </td>
                                         <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
                                         <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
+                                        <td>
+                                            {% if read_only %}
+                                            {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
+                                            {% else %}
+                                            <select class="form-select form-select-sm" style="min-width: 7rem" onchange="setKeyLocality({{ k.id }}, this.value)" aria-label="Providers for key {{ k.key_prefix }}">
+                                                <option value="any" {% if not k.locality %}selected{% endif %}>any</option>
+                                                <option value="local" {% if k.locality == 'local' %}selected{% endif %}>local only</option>
+                                                <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
+                                            </select>
+                                            {% endif %}
+                                        </td>
+                                        <td class="small text-nowrap">
+                                            ${{ "%.2f" | format(k.spent_today_usd or 0) }}
+                                            {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
+                                            {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
+                                        </td>
                                         <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
                                         <td class="small text-muted">{{ k.created_at | localtime }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | localtime }}</td>
@@ -1163,9 +1244,16 @@
                         <select class="form-select form-select-sm" id="log-filter-protocol">
                             <option value="">All protocols</option>
                             <option value="ollama">Ollama</option>
-                            <option value="llamacpp">llama.cpp</option>
+                            <option value="openai">OpenAI</option>
                             <option value="v1">v1</option>
                             <option value="system">System</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <select class="form-select form-select-sm" id="log-filter-locality">
+                            <option value="">Local and cloud</option>
+                            <option value="local">Local</option>
+                            <option value="cloud">Cloud (left the network)</option>
                         </select>
                     </div>
                     <div class="col-md-2">
@@ -1210,6 +1298,7 @@
                         <th>Req Size</th>
                         <th>Resp Size</th>
                         <th>Duration</th>
+                        <th title="Tokens in / out, and cost when the provider's price is known">Tokens</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -1219,6 +1308,7 @@
                         class="log-entry-row {% if entry.status == 'error' %}table-danger{% endif %}"
                         data-entry-id="{{ entry.id }}"
                         data-protocol="{{ entry.protocol }}"
+                        data-locality="{{ entry.locality or '' }}"
                         data-status="{{ entry.status }}"
                         data-endpoint="{{ entry.endpoint | lower }}"
                         data-model="{{ (entry.model or '') | lower }}"
@@ -1232,7 +1322,7 @@
                         <td class="small text-muted">{{ entry.request_meta or "—" }}</td>
                         <td class="small">
                             {% if entry.provider_id %}
-                            <a href="/providers/{{ entry.provider_id }}" class="text-decoration-none">{{ entry.provider_name }}</a>
+                            <a href="/providers/{{ entry.provider_id }}" class="text-decoration-none">{{ entry.provider_name }}</a>{% if entry.locality == 'cloud' %} <i class="bi bi-cloud text-warning" title="Served by a cloud provider"></i>{% endif %}
                             {% else %}
                             —
                             {% endif %}
@@ -1253,6 +1343,12 @@
                                 {% if entry.router_ms is not none %}router {{ "%.1f ms" | format(entry.router_ms) }}{% endif %}
                             </div>
                             {% endif %}
+                        </td>
+                        <td class="text-end small text-nowrap">
+                            {% if entry.prompt_tokens is not none or entry.completion_tokens is not none %}
+                            {{ entry.prompt_tokens if entry.prompt_tokens is not none else '?' }} / {{ entry.completion_tokens if entry.completion_tokens is not none else '?' }}
+                            {% else %}—{% endif %}
+                            {% if entry.cost_usd %}<div class="text-muted" style="font-size: 0.75em">${{ "%.4f" | format(entry.cost_usd) }}</div>{% endif %}
                         </td>
                         <td>
                             {% if entry.status == 'ok' %}
@@ -1306,7 +1402,7 @@
 
         {% else %}
         <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Requests through the Ollama or llama.cpp APIs and provider events such as refreshes appear here.
+            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Requests through the Ollama or OpenAI APIs and provider events such as refreshes appear here.
         </div>
         {% endif %}
     </div>
@@ -1511,7 +1607,7 @@
 
 <!-- Add Provider Modal -->
 <div class="modal fade" id="addProviderModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <form method="post" action="/providers/add" class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Add Provider</h5>
@@ -1519,26 +1615,47 @@
             </div>
             <div class="modal-body">
                 <div class="mb-3">
+                    <div class="form-label">Start from</div>
+                    <div class="d-flex flex-wrap gap-1" id="preset-grid">
+                        <button type="button" class="btn btn-sm btn-outline-secondary active" data-preset="">Self-hosted server</button>
+                        {% for p in cloud_presets %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-preset="{{ p.id }}">{{ p.name }}</button>
+                        {% endfor %}
+                    </div>
+                    <div id="preset-info" class="form-text" style="display:none"></div>
+                    <input type="hidden" name="preset" id="preset" value="">
+                </div>
+                <div class="mb-3">
                     <label for="name" class="form-label">Name</label>
                     <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. gpu-server-1">
                 </div>
+                <div class="mb-3" id="preset-resource-group" style="display:none">
+                    <label for="preset_resource" class="form-label">Resource name</label>
+                    <input type="text" class="form-control" id="preset_resource" name="preset_resource" pattern="[A-Za-z0-9-]+" placeholder="my-openai-resource">
+                    <div class="form-text">The part before <code>.openai.azure.com</code>.</div>
+                </div>
                 <div class="mb-3">
-                    <label for="provider_type" class="form-label">Type</label>
-                    <select class="form-select" id="provider_type" name="provider_type" onchange="toggleUrlFields()">
+                    <label for="protocol" class="form-label">Protocol</label>
+                    <select class="form-select" id="protocol" name="protocol" onchange="toggleUrlFields()">
                         <option value="ollama">Ollama</option>
-                        <option value="llamacpp">llama.cpp</option>
-                        <option value="both">Both</option>
+                        <option value="openai">OpenAI-compatible (llama.cpp, vLLM, LiteLLM, ...)</option>
                     </select>
+                    <div class="form-text">One protocol per provider. To use both APIs of one server, add it twice.</div>
+                </div>
+                <div class="mb-3">
+                    <label for="locality" class="form-label">Where it runs</label>
+                    <select class="form-select" id="locality" name="locality">
+                        <option value="auto" selected>Work it out from the URL</option>
+                        <option value="local">Local: this machine, the LAN or a tailnet</option>
+                        <option value="cloud">Cloud: prompts leave your network</option>
+                    </select>
+                    <div class="form-text">API keys can be limited to local or cloud providers.</div>
                 </div>
                 <p class="text-muted small mb-2">First address (add more later on the provider page)</p>
                 <div class="mb-3" id="url-group">
                     <label for="url" class="form-label">URL</label>
                     <input type="url" class="form-control" id="url" name="url" required placeholder="http://192.168.1.100:11434">
                     <div class="form-text" id="url-help">Ollama API URL</div>
-                </div>
-                <div class="mb-3" id="llamacpp-url-group" style="display: none;">
-                    <label for="llamacpp_url" class="form-label">llama.cpp URL</label>
-                    <input type="url" class="form-control" id="llamacpp_url" name="llamacpp_url" placeholder="http://192.168.1.100:8080">
                 </div>
                 <hr>
                 <p class="text-muted small mb-2">Upstream authentication (optional)</p>
@@ -1552,14 +1669,31 @@
                         <input type="text" class="form-control" id="api_key_header" name="api_key_header" placeholder="Authorization">
                     </div>
                 </div>
-                <div class="form-text mb-3">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>.</div>
+                <div class="form-text mb-3">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>. Separate several headers with commas.</div>
+                <details class="mb-3" id="add-advanced">
+                    <summary class="small text-muted">Advanced: extra headers and models added by hand</summary>
+                    <div class="mt-2">
+                        <label for="extra_headers" class="form-label">Extra headers</label>
+                        <textarea class="form-control font-monospace" id="extra_headers" name="extra_headers" rows="2" placeholder="anthropic-version: 2023-06-01"></textarea>
+                        <div class="form-text">One <code>Name: value</code> per line, sent with every request. Keys go in the API key field.</div>
+                    </div>
+                    <div class="mt-2">
+                        <label for="model_filter" class="form-label">Model filter</label>
+                        <input type="text" class="form-control font-monospace" id="model_filter" name="model_filter" placeholder="anthropic/claude-*, openai/gpt-*">
+                        <div class="form-text">Keep only listed models matching these patterns. For services that list hundreds.</div>
+                    </div>
+                    <div class="mt-2">
+                        <label for="manual_models" class="form-label">Models added by hand</label>
+                        <textarea class="form-control font-monospace" id="manual_models" name="manual_models" rows="2" placeholder="sonar-pro"></textarea>
+                        <div class="form-text">One per line. For services that cannot list (all of) their models.</div>
+                    </div>
+                </details>
                 <div class="d-flex align-items-center gap-2 mb-2">
                     <button type="button" class="btn btn-sm btn-outline-primary" id="probe-new-provider">
                         <i class="bi bi-search me-1"></i>Probe URL
                     </button>
-                    <span class="small text-muted">Optional: detect the server type and the endpoints it supports.</span>
+                    <span class="small text-muted">Runs when you enter a URL or key: finds the server, its protocol and its endpoints. Saving probes again.</span>
                 </div>
-                <input type="hidden" name="probe_after_add" id="probe_after_add" value="">
                 <div id="probe-new-result" class="small mb-3" style="display:none"></div>
                 <hr>
                 <p class="text-muted small mb-2">Hardware (optional)</p>
@@ -1648,18 +1782,15 @@ function dashRequireWrite() {
     return !DASH_READ_ONLY;
 }
 function toggleUrlFields() {
-    const ptype = document.getElementById('provider_type').value;
+    const protocol = document.getElementById('protocol').value;
     const urlHelp = document.getElementById('url-help');
-    const lcppGroup = document.getElementById('llamacpp-url-group');
-    if (ptype === 'ollama') {
-        urlHelp.textContent = 'Ollama API URL';
-        lcppGroup.style.display = 'none';
-    } else if (ptype === 'llamacpp') {
-        urlHelp.textContent = 'llama.cpp server URL';
-        lcppGroup.style.display = 'none';
+    const url = document.getElementById('url');
+    if (protocol === 'openai') {
+        urlHelp.textContent = 'Base URL of the OpenAI-style API';
+        url.placeholder = 'http://192.168.1.100:8080';
     } else {
         urlHelp.textContent = 'Ollama API URL';
-        lcppGroup.style.display = '';
+        url.placeholder = 'http://192.168.1.100:11434';
     }
 }
 
@@ -1677,10 +1808,13 @@ function renderProbeResult(box, data) {
         return;
     }
     const head = probeEl('div', 'mb-1');
-    head.appendChild(probeEl('strong', '', (data.servers.length ? data.servers.join(', ') : 'Unrecognised server')));
+    head.appendChild(probeEl('strong', '', data.flavor || (data.servers.length ? data.servers.join(', ') : 'Unrecognised server')));
+    if (data.flavor && data.servers.length) head.appendChild(probeEl('span', 'text-muted ms-2', '(' + data.servers.join(', ') + ')'));
     if (data.version) head.appendChild(probeEl('span', 'text-muted ms-2', 'version ' + data.version));
     box.appendChild(head);
-    if (data.auth_required) {
+    if (data.key_rejected) {
+        box.appendChild(probeEl('div', 'text-danger', 'The key was rejected: every endpoint that answered refused it. Check the key and its header.'));
+    } else if (data.auth_required) {
         box.appendChild(probeEl('div', 'text-warning', 'Some endpoints need an API key' + (document.getElementById('api_key').value ? ' (the key given was not accepted everywhere).' : '; enter one above and probe again.')));
     }
     box.appendChild(probeEl('div', 'text-muted', data.models.length + ' model' + (data.models.length === 1 ? '' : 's') + ' listed; ' + data.supported.length + ' endpoints answered.'));
@@ -1710,14 +1844,12 @@ function renderProbeResult(box, data) {
     details.appendChild(table);
     box.appendChild(details);
     if (data.suggested_type) {
-        const sel = document.getElementById('provider_type');
-        const apply = probeEl('button', 'btn btn-sm btn-link p-0 mt-1', 'Use type: ' + data.suggested_type);
-        apply.type = 'button';
-        apply.addEventListener('click', function() {
+        const sel = document.getElementById('protocol');
+        if (sel.value !== data.suggested_type) {
             sel.value = data.suggested_type;
             toggleUrlFields();
-        });
-        box.appendChild(apply);
+        }
+        box.appendChild(probeEl('div', 'text-muted mt-1', 'Protocol set to ' + sel.options[sel.selectedIndex].text + ' from the probe; change it above if this server speaks both.'));
     }
 }
 
@@ -1741,6 +1873,8 @@ function probeNewProvider() {
             url: url,
             api_key: document.getElementById('api_key').value,
             api_key_header: document.getElementById('api_key_header').value,
+            extra_headers: document.getElementById('extra_headers').value,
+            preset: document.getElementById('preset').value,
         }),
     })
         .then(r => r.json().then(d => ({ok: r.ok, d: d})))
@@ -1750,7 +1884,6 @@ function probeNewProvider() {
                 box.appendChild(probeEl('div', 'text-danger', res.d.detail || 'Probe failed.'));
                 return;
             }
-            document.getElementById('probe_after_add').value = '1';
             renderProbeResult(box, res.d);
         })
         .catch(function() {
@@ -1762,6 +1895,81 @@ function probeNewProvider() {
 
 document.addEventListener('click', function(ev) {
     if (ev.target.closest('#probe-new-provider')) probeNewProvider();
+});
+// ---- Cloud presets --------------------------------------------------------
+const CLOUD_PRESETS = {{ cloud_presets | tojson }};
+let presetFilledName = '';
+
+function presetUrl(p) {
+    const res = document.getElementById('preset_resource').value.trim();
+    return p.base_url.replace('{resource}', res || '{resource}');
+}
+
+function applyPreset(id) {
+    const p = CLOUD_PRESETS.find(x => x.id === id) || null;
+    document.getElementById('preset').value = p ? p.id : '';
+    document.querySelectorAll('#preset-grid [data-preset]').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.preset === (p ? p.id : ''));
+    });
+    const name = document.getElementById('name');
+    const url = document.getElementById('url');
+    const info = document.getElementById('preset-info');
+    const resGroup = document.getElementById('preset-resource-group');
+    const res = document.getElementById('preset_resource');
+    if (!name.value.trim() || name.value === presetFilledName) {
+        name.value = p ? p.name : '';
+        presetFilledName = name.value;
+    }
+    resGroup.style.display = p && p.url_params.resource !== undefined ? '' : 'none';
+    res.required = !!(p && p.url_params.resource !== undefined);
+    url.readOnly = !!(p && p.url_params.resource !== undefined);
+    url.value = p ? presetUrl(p) : '';
+    document.getElementById('protocol').value = p ? p.protocol : 'ollama';
+    document.getElementById('locality').value = p ? 'cloud' : 'auto';
+    toggleUrlFields();
+    document.getElementById('api_key_header').value = p ? (p.api_key_header || '') : '';
+    document.getElementById('extra_headers').value = p
+        ? Object.entries(p.extra_headers).map(([k, v]) => k + ': ' + v).join('\n') : '';
+    document.getElementById('manual_models').value = p ? p.models.join('\n') : '';
+    document.getElementById('model_filter').value = p ? (p.model_filter || '') : '';
+    if (p && (p.model_filter || p.models.length)) document.getElementById('add-advanced').open = true;
+    info.innerHTML = '';
+    info.style.display = p ? '' : 'none';
+    if (p) {
+        info.appendChild(document.createTextNode('Paste a key from '));
+        const a = probeEl('a', '', p.name);
+        a.href = p.key_url; a.target = '_blank'; a.rel = 'noopener';
+        info.appendChild(a);
+        info.appendChild(document.createTextNode('. '));
+        const d = probeEl('a', '', 'API docs');
+        d.href = p.docs_url; d.target = '_blank'; d.rel = 'noopener';
+        info.appendChild(d);
+        info.appendChild(document.createTextNode('. Or set '));
+        info.appendChild(probeEl('code', '', p.env_var));
+        info.appendChild(document.createTextNode(' and restart.'));
+    }
+    document.getElementById('probe-new-result').style.display = 'none';
+}
+
+document.addEventListener('click', function(ev) {
+    const b = ev.target.closest('#preset-grid [data-preset]');
+    if (b) applyPreset(b.dataset.preset);
+});
+document.addEventListener('input', function(ev) {
+    if (ev.target.id !== 'preset_resource') return;
+    const p = CLOUD_PRESETS.find(x => x.id === document.getElementById('preset').value);
+    if (p) document.getElementById('url').value = presetUrl(p);
+});
+
+// Probe-first: probe as soon as there is a URL to probe, and again when the
+// key changes.
+document.addEventListener('change', function(ev) {
+    if (!ev.target.closest('#addProviderModal')) return;
+    const id = ev.target.id;
+    if (id !== 'url' && id !== 'api_key' && id !== 'api_key_header') return;
+    if (!document.getElementById('url').value.trim()) return;
+    if (id === 'url' && !ev.target.checkValidity()) return;
+    probeNewProvider();
 });
 
 // ---- Hugging Face downloads ---------------------------------------------
@@ -1914,10 +2122,9 @@ var PF_GROUPS = [
         {value: 'some-down', label: 'Some down', test: p => addrHealth(p) === 'some-down'},
         {value: 'none-live', label: 'None live', test: p => addrHealth(p) === 'none-live'},
     ]},
-    {key: 'type', label: 'Type', pills: [
-        {value: 'ollama', label: 'Ollama', test: p => p.provider_type === 'ollama'},
-        {value: 'llamacpp', label: 'llama.cpp', test: p => p.provider_type === 'llamacpp'},
-        {value: 'both', label: 'Both', test: p => p.provider_type === 'both'},
+    {key: 'type', label: 'Protocol', pills: [
+        {value: 'ollama', label: 'Ollama', test: p => p.protocol === 'ollama'},
+        {value: 'openai', label: 'OpenAI', test: p => p.protocol === 'openai'},
     ]},
     {key: 'link', label: 'Link', pills: [
         {value: 'direct', label: 'Direct', test: p => !p.is_worker},
@@ -2152,6 +2359,7 @@ function initLogFilters() {
 
     const controls = {
         protocol: document.getElementById('log-filter-protocol'),
+        locality: document.getElementById('log-filter-locality'),
         status: document.getElementById('log-filter-status'),
         meta: document.getElementById('log-filter-meta'),
         endpoint: document.getElementById('log-filter-endpoint'),
@@ -2160,7 +2368,7 @@ function initLogFilters() {
     };
 
     const apply = function() { applyLogFilters(); };
-    ['protocol', 'status', 'meta'].forEach(function(k) {
+    ['protocol', 'locality', 'status', 'meta'].forEach(function(k) {
         if (controls[k]) controls[k].addEventListener('change', apply);
     });
     ['endpoint', 'model'].forEach(function(k) {
@@ -2169,6 +2377,7 @@ function initLogFilters() {
     if (controls.clear) {
         controls.clear.addEventListener('click', function() {
             if (controls.protocol) controls.protocol.value = '';
+            if (controls.locality) controls.locality.value = '';
             if (controls.status) controls.status.value = '';
             if (controls.meta) controls.meta.value = '';
             if (controls.endpoint) controls.endpoint.value = '';
@@ -2182,6 +2391,7 @@ function initLogFilters() {
 function applyLogFilters() {
     const protocol = (document.getElementById('log-filter-protocol')?.value || '').toLowerCase();
     const status = (document.getElementById('log-filter-status')?.value || '').toLowerCase();
+    const locality = (document.getElementById('log-filter-locality')?.value || '').toLowerCase();
     const metaMode = (document.getElementById('log-filter-meta')?.value || '').toLowerCase();
     const endpoint = (document.getElementById('log-filter-endpoint')?.value || '').trim().toLowerCase();
     const model = (document.getElementById('log-filter-model')?.value || '').trim().toLowerCase();
@@ -2198,6 +2408,7 @@ function applyLogFilters() {
         let ok = true;
         if (protocol && p !== protocol) ok = false;
         if (status && s !== status) ok = false;
+        if (locality && (row.dataset.locality || '') !== locality) ok = false;
         if (endpoint && !e.includes(endpoint)) ok = false;
         if (model && !m.includes(model)) ok = false;
         if (metaMode === 'with' && !meta) ok = false;
@@ -2432,10 +2643,14 @@ function generateApiKey() {
     var allowFallback = document.getElementById('new-key-fallback').checked;
     var affinityEl = document.getElementById('new-key-affinity');
     var affinity = affinityEl ? affinityEl.value : 'default';
+    var localityEl = document.getElementById('new-key-locality');
+    var locality = localityEl ? localityEl.value : 'any';
+    var capEl = document.getElementById('new-key-cap');
+    var cap = capEl && capEl.value !== '' ? capEl.value : null;
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -2452,6 +2667,31 @@ function generateApiKey() {
         setTimeout(function() { location.reload(); }, 1000);
     })
     .catch(function(err) { alert(err.message || 'Failed to generate key'); });
+}
+
+function setKeySpendCap(keyId, current) {
+    if (!dashRequireWrite()) return;
+    var v = prompt('Daily spend cap in USD (blank for none):', current == null ? '' : current);
+    if (v === null) return;
+    fetch('/api/keys/' + keyId + '/spend-cap', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({daily_spend_cap_usd: v.trim() === '' ? null : v.trim()})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        location.reload();
+    }).catch(function(err) { alert(err.message); });
+}
+
+function setKeyLocality(keyId, locality) {
+    if (!dashRequireWrite()) return;
+    fetch('/api/keys/' + keyId + '/locality', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({locality: locality})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+    }).catch(function(err) { alert(err.message || 'Failed to update key'); location.reload(); });
 }
 
 function copyGeneratedKey() {
@@ -3085,6 +3325,63 @@ function submitFallback() {
         location.reload();
     })
     .catch(function(err) { alert(err.message); });
+}
+
+function postModelAlias(alias, canonical) {
+    return fetch('/api/model-aliases', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({alias: alias, canonical: canonical})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+    });
+}
+
+function addModelAlias(ev) {
+    ev.preventDefault();
+    if (!dashRequireWrite()) return;
+    postModelAlias(document.getElementById('alias-name').value.trim(),
+                   document.getElementById('alias-canonical').value.trim())
+        .then(function() { location.reload(); })
+        .catch(function(err) { alert(err.message); });
+}
+
+document.addEventListener('click', function(ev) {
+    const btn = ev.target.closest('[data-remove-alias]');
+    if (!btn || !dashRequireWrite()) return;
+    const alias = btn.dataset.removeAlias;
+    if (!confirm('Remove alias ' + alias + '?')) return;
+    fetch('/api/model-aliases/' + encodeURIComponent(alias), {method: 'DELETE'})
+        .then(function() { location.reload(); });
+});
+
+function loadAliasSuggestions() {
+    const box = document.getElementById('alias-suggestions');
+    box.textContent = 'Looking…';
+    fetch('/api/model-aliases').then(function(r) { return r.json(); }).then(function(d) {
+        box.innerHTML = '';
+        if (!d.suggestions.length) {
+            box.textContent = 'No likely aliases found.';
+            return;
+        }
+        d.suggestions.forEach(function(s) {
+            const row = document.createElement('div');
+            row.className = 'small d-flex align-items-center gap-2 mb-1';
+            const a = document.createElement('code'); a.textContent = s.alias;
+            const b = document.createElement('code'); b.textContent = s.canonical;
+            const btn = document.createElement('button');
+            btn.type = 'button'; btn.className = 'btn btn-sm btn-outline-secondary py-0';
+            btn.textContent = 'Add';
+            btn.addEventListener('click', function() {
+                if (!dashRequireWrite()) return;
+                postModelAlias(s.alias, s.canonical).then(function() {
+                    btn.disabled = true; btn.textContent = 'Added';
+                }).catch(function(err) { alert(err.message); });
+            });
+            row.append(a, document.createTextNode('is the same model as'), b, btn);
+            box.appendChild(row);
+        });
+    });
 }
 
 function removeFallback(model) {
