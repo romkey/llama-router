@@ -7,6 +7,7 @@ An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (ll
 - **Unified Ollama API** — Ollama-compatible API on port 11434 that routes to the best available backend
 - **Unified OpenAI API** — OpenAI-compatible API on port 8080 that routes to any backend
 - **Web Dashboard** — Bootstrap-based management UI on port 80 with provider status, model inventory, benchmarks, request log, and cache management
+- **Single-Port Option** — Set `API_ON_DASHBOARD_PORT=true` to serve both APIs and worker links on port 80 as well, for one port behind a reverse proxy or firewall
 - **Auto-Discovery** — Probes each backend to recognise the server (Ollama, llama.cpp, vLLM, LiteLLM, Lemonade, LM Studio, SGLang, TGI, KoboldCpp, LocalAI or a cloud service), its protocol, its endpoints and its cheapest health check, and lists its models
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
 - **Benchmarking** — Measure startup time and tokens/sec per model per provider, by hand or automatically while providers are idle
@@ -120,7 +121,7 @@ LLAMA_ROUTER_WORKER_HUB_URL=https://llm.example.org
 LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 ```
 
-The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
+The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way. With `API_ON_DASHBOARD_PORT=true` the socket is on the dashboard port too, so one proxy in front of port 80 serves the dashboard, the APIs and workers, and the hub URL is just `https://host`.
 
 **What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
@@ -148,6 +149,7 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `API_PORT` | `11434` | Ollama API port |
 | `LLAMACPP_HOST` | `0.0.0.0` | OpenAI API bind address (the name predates other backends) |
 | `LLAMACPP_PORT` | `8080` | OpenAI API port |
+| `API_ON_DASHBOARD_PORT` | `false` | Also serve the Ollama API, the OpenAI API, decisions and worker links on the dashboard port. The Ollama and OpenAI ports keep listening either way (see [One port for everything](#one-port-for-everything)) |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
@@ -165,6 +167,20 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
 | `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
+
+### One port for everything
+
+With `LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true`, the dashboard port answers every Ollama and OpenAI API route, the decision routes, and the worker socket alongside the UI. Ports 11434 and 8080 still listen, so existing clients keep working.
+
+```bash
+curl http://localhost/api/tags
+curl http://localhost/v1/chat/completions -H 'API-KEY: lr_...' \
+  -d '{"model": "llama3.2", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+A request goes to the API when its path and method match an API route; the rest goes to the dashboard. `GET /decisions` is the dashboard page and `POST /decisions` is the API. `/health` stays the dashboard's.
+
+API requests on the dashboard port are checked by API key, not by dashboard login. Anyone who can reach port 80 can reach the API, so require API keys (turn off unauthenticated access) before exposing it.
 
 ### Migrating data from SQLite to PostgreSQL
 

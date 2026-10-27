@@ -3527,7 +3527,7 @@ function workerRotate(id, name) {
     if (!confirm('Issue a new token for ' + name + '? The current token stops working and the worker disconnects.')) return;
     workerFetchJson('/api/workers/' + id + '/rotate', {method: 'POST'})
         .then(function(res) {
-            var hub = window.location.protocol + '//' + window.location.hostname + ':{{ api_port }}';
+            var hub = {% if api_on_dashboard_port %}window.location.protocol + '//' + window.location.host{% else %}window.location.protocol + '//' + window.location.hostname + ':{{ api_port }}'{% endif %};
             workerShowToken(name, 'LLAMA_ROUTER_WORKER_HUB_URL=' + hub + '\nLLAMA_ROUTER_WORKER_TOKEN=' + res.token);
         })
         .catch(function(e) { workerBanner('worker-banner', 'danger', e.message); });

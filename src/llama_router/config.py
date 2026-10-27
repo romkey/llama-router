@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     api_port: int = 11434
     llamacpp_host: str = "0.0.0.0"
     llamacpp_port: int = 8080
+    # Also serve the Ollama and OpenAI APIs and the worker socket on the
+    # dashboard port. Their own ports keep listening either way.
+    api_on_dashboard_port: bool = False
     health_check_interval_seconds: int = 30
     # Re-probe a provider's endpoints when the last probe is older than this
     # (0 turns periodic re-probing off; probes on add, edit and recovery stay).

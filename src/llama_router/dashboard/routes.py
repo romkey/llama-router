@@ -875,6 +875,7 @@ async def dashboard(request: Request):
                 "worker_link": worker_link_status,
                 "worker_hub_enabled": settings.worker_hub_enabled,
                 "api_port": settings.api_port,
+                "api_on_dashboard_port": settings.api_on_dashboard_port,
             },
         ),
     )
@@ -2822,8 +2823,12 @@ async def _worker_rows(db: Any, pm: Any) -> list[dict[str, Any]]:
 
 
 def _hub_url_hint(request: Request) -> str:
-    host = request.url.hostname or "this-hub"
+    if settings.api_on_dashboard_port:
+        # Workers can use the address this page was opened on, proxy and all.
+        scheme, netloc = _external_origin(request)
+        return f"{scheme}://{netloc or 'this-hub'}"
     scheme = "https" if request.url.scheme == "https" else "http"
+    host = request.url.hostname or "this-hub"
     return f"{scheme}://{host}:{settings.api_port}"
 
 

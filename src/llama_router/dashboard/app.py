@@ -1,4 +1,4 @@
-"""Dashboard web application served on port 80."""
+"""Dashboard web application served on port 80 (see ``shared_port`` for the APIs there)."""
 
 from __future__ import annotations
 
