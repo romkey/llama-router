@@ -163,7 +163,8 @@ script and numbers in this document.
 then background classification. Each its own PR with its own migration.
 
 **Phase 4, optional.** Calibration UI; TypeSafe hosted provider; worker
-link support so hub workers can serve decision jobs.
+link support so hub workers can serve decision jobs. Worker link support done
+2026-10-27, see [workers.md](workers.md#decision-requests).
 
 ## Phase 0 results (2026-10-27)
 

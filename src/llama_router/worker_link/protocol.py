@@ -42,6 +42,17 @@ MAX_MESSAGE_SIZE = 4 * 1024 * 1024
 
 TARGETS = ("ollama", "llamacpp")
 
+# A worker answers a path outside its allowlist with 403 and an error that
+# starts with this. Every worker version uses the same words, so the hub can
+# tell a refusal from an upstream that wants a key.
+REFUSED_PREFIX = "worker does not allow"
+
+
+def refused(status: int, body: str) -> bool:
+    """A worker's reply saying it does not relay that path."""
+    return status == 403 and REFUSED_PREFIX in body[:300]
+
+
 # WebSocket close codes (4000-4999 are application-defined).
 CLOSE_UNAUTHORIZED = 4401
 CLOSE_REPLACED = 4409

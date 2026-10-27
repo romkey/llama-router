@@ -67,9 +67,43 @@ Anything else is a transient failure, retried with exponential backoff from one
 second up to one minute, with jitter. Both sides send WebSocket pings every 20
 seconds.
 
+## Decision requests
+
+Decision requests (`/v1/systemone`, `/v1/decisions` and their aliases without
+`/v1`) reach a worker provider in one of two shapes, like any other provider:
+
+- **Emulated.** One-token `POST /v1/chat/completions` calls with `logprobs` and
+  `top_logprobs`. The worker relays bodies and responses byte for byte, so the
+  logprobs come back as the upstream sent them. Every worker version serves
+  this.
+- **Passed through.** The request as it came, to the same route on the worker's
+  upstream. Workers relay the four decision routes from this version on. A
+  worker that relays its own router reaches them on that router's Ollama port,
+  which serves them as well, so the worker's router answers the request with
+  its own providers and calibrations.
+
+Which shape the hub uses comes from the hub's probe of the worker, which runs
+through the socket: a route is passed through only when it answers there. The
+hub probes a worker each time it connects with a software version the hub has
+not seen from it since the hub started, so an upgraded worker is picked up
+without waiting for the probe to go stale.
+
+A worker refuses a path outside its allowlist with 403 and an error starting
+`worker does not allow`. Every worker version words it the same way, and the
+hub's probe reads it as a missing route rather than one that needs a key. An
+older worker therefore gets decisions emulated. If a probe stored before the
+hub knew this still claims a decision route, the refused pass-through is
+answered by emulation instead and the worker is probed again.
+
+Errors map as for any provider: an upstream HTTP error comes back as its
+status (`httpx.HTTPStatusError`), and a lost socket, refused upstream
+connection or timeout as an `httpx.HTTPError`, which the decision endpoint
+answers with 502.
+
 ## Limits
 
-- The worker serves a fixed allowlist of inference and listing endpoints.
+- The worker serves a fixed allowlist of inference, decision and listing
+  endpoints.
   `POST /api/pull` and `DELETE /api/delete` need `LLAMA_ROUTER_WORKER_ALLOW_ADMIN=true`.
 - Request bodies are capped at 64 MB on the worker. Frames are at most 4 MB.
 - The hub respects the worker's announced `max_concurrency`. Extra requests wait

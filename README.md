@@ -63,7 +63,7 @@ LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 
 The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
 
-**What a worker serves.** Jobs run against the worker's own Ollama and llama.cpp APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+**What a worker serves.** Jobs run against the worker's own Ollama and llama.cpp APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
 **Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 
@@ -429,13 +429,14 @@ curl http://localhost:8080/v1/systemone -H 'Content-Type: application/json' -d '
 }'
 ```
 
-`/v1/decisions` is the same API under a vendor-neutral name. Both routes are also served without `/v1`. Routing, API key policies, pins and fallbacks apply as for chat.
+`/v1/decisions` is the same API under a vendor-neutral name. Both routes are also served without `/v1`, and on the Ollama API port (11434) as well as 8080. Routing, API key policies, pins and fallbacks apply as for chat.
 
 How a request is answered:
 
 - **Passed through.** If the provider's last probe found the same route upstream, for example LiteLLM in front of Jev, the request goes there unchanged apart from the model name.
 - **Emulated.** Otherwise each question becomes a one-token chat completion with logprobs, all sent to one provider at once. The answer is read from the probabilities of the option labels. llama.cpp, vLLM and most OpenAI-compatible servers support this.
 - **No logprobs.** A provider that answers without logprobs isn't offered for decisions for an hour, and the request is routed once more.
+- **Workers.** A hub sends decisions to its workers the same way. A worker that relays its own router answers them there; an older worker that doesn't relay decision routes gets them emulated. See [docs/workers.md](docs/workers.md#decision-requests).
 
 Local chat models are not trained for calibrated answers. In testing, choice questions came out accurate and well calibrated. Yes/no questions leaned toward yes, and score questions drifted toward the middle level. Calibrations correct this per model and question wording, with a temperature and an offset per answer:
 
