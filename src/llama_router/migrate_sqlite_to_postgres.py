@@ -180,7 +180,19 @@ _TABLES: list[tuple[str, list[str]]] = [
     ),
     (
         "dashboard_users",
-        ["id", "username", "password_hash", "is_admin", "created_at"],
+        [
+            "id",
+            "username",
+            "password_hash",
+            "is_admin",
+            "created_at",
+            "auth_source",
+            "oidc_issuer",
+            "oidc_subject",
+            "email",
+            "display_name",
+            "last_login_at",
+        ],
     ),
 ]
 

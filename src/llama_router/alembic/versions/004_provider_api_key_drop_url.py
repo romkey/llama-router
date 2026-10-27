@@ -19,6 +19,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
+from llama_router.db_types import ShortText
+
 revision = "004_provider_api_key"
 down_revision = "003_workers"
 branch_labels = None
@@ -33,7 +35,8 @@ def upgrade() -> None:
     cols = {c["name"] for c in insp.get_columns("providers")}
 
     if "worker_name" not in cols:
-        op.add_column("providers", sa.Column("worker_name", sa.Text(), nullable=True))
+        # Unique-indexed: VARCHAR on MySQL, which cannot index TEXT.
+        op.add_column("providers", sa.Column("worker_name", ShortText, nullable=True))
     if "api_key_enc" not in cols:
         op.add_column("providers", sa.Column("api_key_enc", sa.Text(), nullable=True))
     if "api_key_header" not in cols:
@@ -86,7 +89,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("uq_providers_worker_name", table_name="providers")
     with op.batch_alter_table("providers") as batch:
-        batch.add_column(sa.Column("url", sa.Text(), nullable=False, server_default=""))
+        batch.add_column(sa.Column("url", ShortText, nullable=False, server_default=""))
         batch.add_column(sa.Column("llamacpp_url", sa.Text(), nullable=True))
     bind = op.get_bind()
     bind.execute(

@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
+import llama_router
 
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 
-HEAD = "015_cost"
+HEAD = ScriptDirectory(
+    str(Path(llama_router.__file__).resolve().parent / "alembic")
+).get_current_head()
 
 
 def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -422,5 +430,52 @@ def test_upgrade_012_classes_existing_providers(
         for table in ("api_keys", "request_log"):
             cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
             assert "locality" in cols
+    finally:
+        con.close()
+
+
+def test_oidc_migration_keeps_local_users_and_allows_passwordless(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    dbfile = tmp_path / "oidc_upgrade.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    sync_url = config.settings.sync_database_url_for_alembic()
+    pkg = Path(llama_router.__file__).resolve().parent
+    cfg = Config()
+    cfg.set_main_option("script_location", str(pkg / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", sync_url)
+    command.upgrade(cfg, "008_api_key_session_affinity")
+
+    con = sqlite3.connect(dbfile)
+    try:
+        con.execute(
+            "INSERT INTO dashboard_users (username, password_hash, is_admin) "
+            "VALUES ('alice', 'aa:bb', 1)"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    run_upgrade_sync(sync_url)
+
+    con = sqlite3.connect(dbfile)
+    try:
+        row = con.execute(
+            "SELECT username, password_hash, is_admin, auth_source, oidc_subject "
+            "FROM dashboard_users"
+        ).fetchone()
+        assert row == ("alice", "aa:bb", 1, "local", None)
+        con.execute(
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "
+            "auth_source, oidc_issuer, oidc_subject) "
+            "VALUES ('bob', NULL, 0, 'oidc', 'https://idp', 'sub-1')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            con.execute(
+                "INSERT INTO dashboard_users (username, password_hash, is_admin, "
+                "auth_source, oidc_issuer, oidc_subject) "
+                "VALUES ('bob2', NULL, 0, 'oidc', 'https://idp', 'sub-1')"
+            )
     finally:
         con.close()
