@@ -499,9 +499,18 @@ How a request is answered:
 - **No logprobs.** A provider that answers without logprobs isn't offered for decisions for an hour, and the request is routed once more.
 - **Workers.** A hub sends decisions to its workers the same way. A worker that relays its own router answers them there; an older worker that doesn't relay decision routes gets them emulated. See [docs/workers.md](docs/workers.md#decision-requests).
 
-Local chat models are not trained for calibrated answers. In testing, choice questions came out accurate and well calibrated. Yes/no questions leaned toward yes, and score questions drifted toward the middle level. Calibrations correct this per model and question wording, with a temperature and an offset per answer:
+Local chat models are not trained for calibrated answers. In testing, choice questions came out accurate and well calibrated. Yes/no questions leaned toward yes, and score questions drifted toward the middle level. Calibrations correct this per model and question wording, with a temperature and an offset per answer.
+
+The dashboard's **Decisions** page (`/decisions`) does this by hand. Pick a model, write the question, and paste labelled states, one per line as `answer<TAB>state` or as a JSON list. The router asks the model about each state, fits a calibration from its uncalibrated answers, and saves it. It reports accuracy and log loss before and after, with each state scored by a fit that did not see it: leave-one-out up to 50 states, 10-fold above that, at most 500. On 36 hand-labelled support tickets, Llama 3.2 3B's frustration score went from 33% to 72% accurate. The same page lists and deletes calibrations and answers test questions, with calibrations applied. A provider that serves the decision route natively can't be calibrated.
+
+The same thing over the dashboard API:
 
 ```bash
+# Fit from labelled states: asks the model, fits, stores, reports before/after
+curl -X POST http://localhost/api/decisions/calibrations/fit -H 'Content-Type: application/json' \
+  -d '{"model": "llama3.2", "question": {"type": "score", "instructions": "How frustrated does the customer appear?",
+       "criteria": ["Calm", "Frustrated but civil", "Very angry"]},
+       "examples": [{"state": "You charged my card after I cancelled. Fix it. Today.", "answer": 2}, ...]}'
 # Given directly
 curl -X POST http://localhost/api/decisions/calibrations -H 'Content-Type: application/json' \
   -d '{"model": "llama3.1:8b", "question": {"type": "noul", "instructions": "The message conveys urgency"},

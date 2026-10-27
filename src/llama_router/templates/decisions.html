@@ -1,0 +1,438 @@
+{% extends "base.html" %}
+{% block title %}Decisions - llama-router{% endblock %}
+
+{% block nav_tabs %}
+<li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
+<li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
+<li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
+{% if show_users_tab %}
+<li class="nav-item"><a class="nav-link" href="/users"><i class="bi bi-people me-1"></i>Users</a></li>
+{% endif %}
+{% if show_api_keys %}
+<li class="nav-item"><a class="nav-link" href="/#keys-pane"><i class="bi bi-key me-1"></i>API Keys</a></li>
+{% endif %}
+{% if show_log %}
+<li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
+{% endif %}
+<li class="nav-item"><span class="nav-link active"><i class="bi bi-signpost-split me-1"></i>Decisions</span></li>
+{% endblock %}
+
+{% block content %}
+<h2 class="mb-2"><i class="bi bi-signpost-split me-2"></i>Decisions</h2>
+<p class="text-muted">
+    Decision questions (<code>/v1/systemone</code>, <code>/v1/decisions</code>) are answered from a model's
+    first-token probabilities. Local models lean toward some answers; a calibration fit from labelled
+    examples corrects that for one model and one question wording.
+</p>
+
+<div class="card mb-4">
+    <div class="card-header d-flex align-items-center">
+        <h5 class="mb-0">Calibrations</h5>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" id="cal-refresh"><i class="bi bi-arrow-clockwise"></i></button>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm mb-0 align-middle">
+                <thead>
+                    <tr><th>Model</th><th>Question</th><th>Temperature</th><th>Offsets</th><th>Examples</th><th>Updated</th><th></th></tr>
+                </thead>
+                <tbody id="cal-rows">
+                    <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% if not read_only %}
+<div class="row g-4">
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Question</h5></div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label" for="q-model">Model</label>
+                    <input class="form-control" id="q-model" list="known-models" autocomplete="off" placeholder="llama3.2:latest">
+                    <datalist id="known-models">
+                        {% for m in models %}<option value="{{ m }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="q-type">Type</label>
+                    <select class="form-select" id="q-type">
+                        <option value="noul">noul: is a statement true?</option>
+                        <option value="choice">choice: one of several options</option>
+                        <option value="score">score: a level on a rubric</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="q-instructions">Instructions</label>
+                    <textarea class="form-control" id="q-instructions" rows="2" placeholder="The message conveys urgency"></textarea>
+                </div>
+                <div class="mb-3" id="q-negative-wrap">
+                    <label class="form-label" for="q-negative">When it is false <span class="text-muted">(optional)</span></label>
+                    <input class="form-control" id="q-negative" placeholder="A question or request that can wait">
+                </div>
+                <div class="mb-3 d-none" id="q-criteria-wrap">
+                    <label class="form-label" for="q-criteria" id="q-criteria-label">Options</label>
+                    <textarea class="form-control font-monospace" id="q-criteria" rows="4"></textarea>
+                    <div class="form-text" id="q-criteria-help"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card mb-4">
+            <div class="card-header"><h5 class="mb-0">Fit a calibration</h5></div>
+            <div class="card-body">
+                <label class="form-label" for="fit-examples">Labelled states</label>
+                <textarea class="form-control font-monospace" id="fit-examples" rows="8" spellcheck="false"></textarea>
+                <div class="form-text mb-3">
+                    One per line as <code>answer&lt;TAB&gt;state</code>, or a JSON list of
+                    <code>{"state": …, "answer": …}</code>. Answers are <code>true</code>/<code>false</code> for noul,
+                    an option key for choice and a level number for score. {{ min_fit_states }} to {{ max_fit_states }} examples;
+                    each one is a request to the model.
+                </div>
+                <button type="button" class="btn btn-primary" id="fit-btn">Fit and save</button>
+                <span class="text-muted small ms-2" id="fit-status"></span>
+                <div id="fit-result" class="mt-3"></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">Try</h5></div>
+            <div class="card-body">
+                <label class="form-label" for="try-state">State</label>
+                <textarea class="form-control" id="try-state" rows="4" placeholder="Every API request returns 500 since this morning."></textarea>
+                <div class="form-check my-2">
+                    <input class="form-check-input" type="checkbox" id="try-json">
+                    <label class="form-check-label" for="try-json">State is JSON (an object or a list of strings)</label>
+                </div>
+                <button type="button" class="btn btn-primary" id="try-btn">Ask</button>
+                <span class="text-muted small ms-2" id="try-status"></span>
+                <div id="try-result" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    "use strict";
+    const READ_ONLY = {{ 'true' if read_only else 'false' }};
+
+    // Every string from the user, the database or a model goes in through
+    // textContent, never innerHTML.
+    function el(tag, attrs, ...children) {
+        const node = document.createElement(tag);
+        for (const [k, v] of Object.entries(attrs || {})) {
+            if (k === "class") node.className = v;
+            else node.setAttribute(k, v);
+        }
+        for (const c of children) {
+            if (c === null || c === undefined) continue;
+            node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+        }
+        return node;
+    }
+
+    function fmt(x, digits) {
+        return typeof x === "number" ? x.toFixed(digits === undefined ? 3 : digits) : "—";
+    }
+
+    // The database stores UTC without a zone; read it as UTC, as the
+    // localtime template filter does.
+    function localTime(value) {
+        if (!value) return "—";
+        let iso = String(value).replace(" ", "T");
+        if (!/(Z|[+-]\d\d:?\d\d)$/.test(iso)) iso += "Z";
+        const t = new Date(iso);
+        return isNaN(t) ? String(value) : t.toLocaleString();
+    }
+
+    function errorText(body, status) {
+        const detail = body && body.detail;
+        if (typeof detail === "string") return detail;
+        if (Array.isArray(detail)) {
+            return detail.map((e) => ((e.loc || []).join(".") + ": " + (e.msg || "")).trim()).join("; ");
+        }
+        return "HTTP " + status;
+    }
+
+    async function api(method, url, body) {
+        const opts = { method, headers: {} };
+        if (body !== undefined) {
+            opts.headers["Content-Type"] = "application/json";
+            opts.body = JSON.stringify(body);
+        }
+        const resp = await fetch(url, opts);
+        let data = null;
+        try { data = await resp.json(); } catch (e) { /* not JSON */ }
+        if (!resp.ok) throw new Error(errorText(data, resp.status));
+        return data;
+    }
+
+    // --- Calibrations ---
+
+    function questionCell(c) {
+        const q = c.question || {};
+        const cell = el("td", {}, el("span", { class: "badge bg-secondary me-1" }, c.question_type), q.instructions || "");
+        let detail = null;
+        if (q.type === "choice" && q.criteria) detail = Object.keys(q.criteria).join(", ");
+        else if (q.type === "score" && Array.isArray(q.criteria)) detail = q.criteria.map((t, i) => i + ": " + t).join(" · ");
+        else if (q.type === "noul" && q.negative) detail = "false: " + q.negative;
+        if (detail) cell.append(el("div", { class: "small text-muted" }, detail));
+        return cell;
+    }
+
+    function offsetsCell(offsets) {
+        const cell = el("td", { class: "small font-monospace text-nowrap" });
+        for (const [k, v] of Object.entries(offsets || {})) {
+            cell.append(el("div", {}, k + ": " + (v >= 0 ? "+" : "") + fmt(v, 2)));
+        }
+        return cell;
+    }
+
+    async function loadCalibrations() {
+        const tbody = document.getElementById("cal-rows");
+        let rows;
+        try {
+            rows = (await api("GET", "/api/decisions/calibrations")).calibrations;
+        } catch (e) {
+            tbody.replaceChildren(el("tr", {}, el("td", { colspan: "7", class: "text-danger" }, e.message)));
+            return;
+        }
+        if (!rows.length) {
+            tbody.replaceChildren(el("tr", {}, el("td", { colspan: "7", class: "text-muted" }, "No calibrations yet.")));
+            return;
+        }
+        tbody.replaceChildren(...rows.map((c) => {
+            const actions = el("td", { class: "text-end text-nowrap" });
+            if (!READ_ONLY) {
+                const use = el("button", { type: "button", class: "btn btn-sm btn-outline-secondary me-1", title: "Load into the question form" }, el("i", { class: "bi bi-box-arrow-in-down" }));
+                use.addEventListener("click", () => loadQuestion(c.model_name, c.question || {}));
+                const del = el("button", { type: "button", class: "btn btn-sm btn-outline-danger", title: "Delete" }, el("i", { class: "bi bi-trash" }));
+                del.addEventListener("click", async () => {
+                    if (!confirm("Delete this calibration for " + c.model_name + "?")) return;
+                    try {
+                        await api("DELETE", "/api/decisions/calibrations/" + encodeURIComponent(c.id));
+                    } catch (e) {
+                        alert(e.message);
+                    }
+                    loadCalibrations();
+                });
+                actions.append(use, del);
+            }
+            return el("tr", {},
+                el("td", { class: "font-monospace small" }, c.model_name),
+                questionCell(c),
+                el("td", {}, fmt(c.temperature, 2)),
+                offsetsCell(c.offsets),
+                el("td", {}, c.examples === null || c.examples === undefined ? "—" : c.examples),
+                el("td", { class: "small text-nowrap" }, localTime(c.updated_at)),
+                actions);
+        }));
+    }
+
+    document.getElementById("cal-refresh").addEventListener("click", loadCalibrations);
+    loadCalibrations();
+    if (READ_ONLY) return;
+
+    // --- Question editor ---
+
+    const $ = (id) => document.getElementById(id);
+    const HELP = {
+        choice: ["Options", "One per line as key: description.", "billing: Payment or subscription issues\ntechnical: Bugs or integration problems\nsales: Pricing or account questions"],
+        score: ["Levels", "One per line, lowest first; they are numbered from 0.", "Calm\nFrustrated but civil\nVery angry"],
+    };
+
+    function showType() {
+        const t = $("q-type").value;
+        $("q-negative-wrap").classList.toggle("d-none", t !== "noul");
+        $("q-criteria-wrap").classList.toggle("d-none", t === "noul");
+        if (HELP[t]) {
+            $("q-criteria-label").textContent = HELP[t][0];
+            $("q-criteria-help").textContent = HELP[t][1];
+            $("q-criteria").placeholder = HELP[t][2];
+        }
+    }
+    $("q-type").addEventListener("change", showType);
+    showType();
+
+    function loadQuestion(model, q) {
+        $("q-model").value = model;
+        $("q-type").value = q.type || "noul";
+        $("q-instructions").value = q.instructions || "";
+        $("q-negative").value = q.negative || "";
+        if (q.type === "choice") {
+            $("q-criteria").value = Object.entries(q.criteria || {}).map(([k, v]) => k + ": " + v).join("\n");
+        } else if (q.type === "score") {
+            $("q-criteria").value = (q.criteria || []).join("\n");
+        } else {
+            $("q-criteria").value = "";
+        }
+        showType();
+        $("q-model").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    function readQuestion() {
+        const type = $("q-type").value;
+        const q = { type, instructions: $("q-instructions").value.trim() };
+        const lines = $("q-criteria").value.split("\n").map((l) => l.trim()).filter(Boolean);
+        if (type === "noul") {
+            const neg = $("q-negative").value.trim();
+            if (neg) q.negative = neg;
+        } else if (type === "choice") {
+            q.criteria = {};
+            for (const line of lines) {
+                const i = line.indexOf(":");
+                if (i <= 0) throw new Error("Each option needs the form key: description");
+                q.criteria[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+            }
+        } else {
+            q.criteria = lines;
+        }
+        return q;
+    }
+
+    function readModel() {
+        const m = $("q-model").value.trim();
+        if (!m) throw new Error("Choose a model");
+        return m;
+    }
+
+    function parseExamples(text) {
+        const t = text.trim();
+        if (!t) throw new Error("Add some labelled states");
+        if (t.startsWith("[")) {
+            let list;
+            try { list = JSON.parse(t); } catch (e) { throw new Error("Not valid JSON: " + e.message); }
+            if (!Array.isArray(list)) throw new Error("JSON must be a list");
+            return list;
+        }
+        const out = [];
+        text.split("\n").forEach((line, n) => {
+            if (!line.trim()) return;
+            const i = line.indexOf("\t");
+            if (i < 0) throw new Error("Line " + (n + 1) + ": expected answer<TAB>state");
+            out.push({ answer: line.slice(0, i).trim(), state: line.slice(i + 1).trim() });
+        });
+        return out;
+    }
+
+    // --- Fit ---
+
+    function metricRow(name, key, before, after, lowerIsBetter) {
+        if (before[key] === undefined) return null;
+        const better = lowerIsBetter ? after[key] < before[key] : after[key] > before[key];
+        return el("tr", {}, el("th", { class: "fw-normal" }, name),
+            el("td", {}, fmt(before[key])),
+            el("td", { class: better ? "text-success" : "" }, fmt(after[key])));
+    }
+
+    function renderFit(r) {
+        const table = el("table", { class: "table table-sm w-auto mb-2" },
+            el("thead", {}, el("tr", {}, el("th", {}), el("th", {}, "Uncalibrated"), el("th", {}, "Calibrated (" + r.method + ")"))),
+            el("tbody", {},
+                metricRow("Accuracy", "accuracy", r.before, r.after, false),
+                metricRow("Log loss", "log_loss", r.before, r.after, true),
+                metricRow("Mean abs. error", "mae", r.before, r.after, true)));
+        const offsets = Object.entries(r.offsets || {}).map(([k, v]) => k + " " + (v >= 0 ? "+" : "") + fmt(v, 2)).join(", ");
+        return el("div", {},
+            el("div", { class: "alert alert-success py-2" },
+                "Saved for " + r.model + " (" + r.examples + " examples on " + r.provider + ")."),
+            table,
+            el("div", { class: "small text-muted" },
+                "Temperature " + fmt(r.temperature, 2) + "; offsets " + offsets +
+                "; mean probability on the answer labels " + fmt(r.label_mass, 3) + "."));
+    }
+
+    $("fit-btn").addEventListener("click", async () => {
+        const out = $("fit-result");
+        let body;
+        try {
+            body = { model: readModel(), question: readQuestion(), examples: parseExamples($("fit-examples").value) };
+        } catch (e) {
+            out.replaceChildren(el("div", { class: "alert alert-warning py-2" }, e.message));
+            return;
+        }
+        $("fit-btn").disabled = true;
+        $("fit-status").textContent = "Asking the model about " + body.examples.length + " states…";
+        out.replaceChildren();
+        try {
+            out.replaceChildren(renderFit(await api("POST", "/api/decisions/calibrations/fit", body)));
+            loadCalibrations();
+        } catch (e) {
+            out.replaceChildren(el("div", { class: "alert alert-danger py-2" }, e.message));
+        } finally {
+            $("fit-btn").disabled = false;
+            $("fit-status").textContent = "";
+        }
+    });
+
+    // --- Try ---
+
+    function bars(probs, legend) {
+        const wrap = el("div", { class: "mt-2" });
+        for (const [k, p] of Object.entries(probs || {})) {
+            const label = legend && legend[k] !== undefined ? k + ": " + legend[k] : k;
+            const bar = el("div", { class: "progress-bar", role: "progressbar" });
+            bar.style.width = Math.round(p * 100) + "%";
+            wrap.append(el("div", { class: "d-flex align-items-center gap-2 mb-1" },
+                el("div", { class: "small text-truncate", style: "width: 40%" }, label),
+                el("div", { class: "progress flex-grow-1", style: "height: 0.9rem" }, bar),
+                el("div", { class: "small font-monospace text-end", style: "width: 4rem" }, fmt(p, 3))));
+        }
+        return wrap;
+    }
+
+    function renderAnswer(qid, a) {
+        const card = el("div", { class: "border rounded p-2 mb-2" });
+        let head;
+        if (a.type === "noul") {
+            head = "P(true) = " + fmt(a.noul);
+            card.append(el("div", {}, el("strong", {}, qid), " — " + head), bars({ true: a.noul, false: 1 - a.noul }));
+            return card;
+        }
+        if (a.type === "choice") head = "choice " + a.choice;
+        else if (a.type === "score") head = "score " + fmt(a.score, 2);
+        else head = JSON.stringify(a);
+        card.append(el("div", {}, el("strong", {}, qid), " — " + head,
+            a.confidence !== undefined ? el("span", { class: "text-muted small ms-2" }, "confidence " + fmt(a.confidence, 2)) : null),
+            bars(a.probabilities, a.legend));
+        return card;
+    }
+
+    $("try-btn").addEventListener("click", async () => {
+        const out = $("try-result");
+        let body;
+        try {
+            let state = $("try-state").value;
+            if (!state.trim()) throw new Error("Enter a state");
+            if ($("try-json").checked) {
+                try { state = JSON.parse(state); } catch (e) { throw new Error("State is not valid JSON: " + e.message); }
+            }
+            body = { model: readModel(), state, questions: { q: readQuestion() } };
+        } catch (e) {
+            out.replaceChildren(el("div", { class: "alert alert-warning py-2" }, e.message));
+            return;
+        }
+        $("try-btn").disabled = true;
+        $("try-status").textContent = "Asking…";
+        try {
+            const r = await api("POST", "/api/decisions/try", body);
+            const answers = Object.entries(r.answers || {}).map(([qid, a]) => renderAnswer(qid, a));
+            const usage = r.usage ? r.usage.input_tokens + " input tokens" : "";
+            out.replaceChildren(...answers, el("div", { class: "small text-muted" }, (r.model || "") + (usage ? " · " + usage : "")));
+        } catch (e) {
+            out.replaceChildren(el("div", { class: "alert alert-danger py-2" }, e.message));
+        } finally {
+            $("try-btn").disabled = false;
+            $("try-status").textContent = "";
+        }
+    });
+})();
+</script>
+{% endblock %}
