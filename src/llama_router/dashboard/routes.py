@@ -17,7 +17,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..auth import generate_api_key, key_hash, key_prefix
-from ..router import ROUTING_MODES
+from ..router import (
+    ENDPOINT_PROTOCOLS,
+    ROUTING_MODES,
+    RoutingPreferences,
+    protocol_for_endpoint,
+)
 from ..routing_table import DEFAULT_MODE, MODES
 from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
@@ -872,6 +877,8 @@ def _routing_summary(pm) -> dict[str, Any] | None:
         "reasons": list(table.reasons),
         "modes": list(MODES),
         "rows": sorted(rows.items()),
+        "endpoints": list(ENDPOINT_PROTOCOLS),
+        "default_endpoint": _DEFAULT_EXPLAIN_ENDPOINT,
     }
 
 
@@ -884,6 +891,89 @@ async def api_routing_table():
         raise HTTPException(status_code=503, detail="router not running")
     table = rt.table or await rt.rebuild()
     return JSONResponse(table.to_dict())
+
+
+_DEFAULT_EXPLAIN_ENDPOINT = "/v1/chat/completions"
+
+
+def _is_admin(request: Request) -> bool:
+    if getattr(request.state, "auth_bootstrap", False):
+        return True
+    user = getattr(request.state, "dashboard_user", None)
+    return bool(user and user.is_admin)
+
+
+@router.get("/api/routing/explain")
+async def api_explain_routing(request: Request):
+    """How a request would be routed right now, and why.
+
+    Query: ``model`` (required), ``endpoint`` (default /v1/chat/completions),
+    and either ``mode`` (balanced, latency, throughput, chaos) with optional
+    ``allow_fallback`` or ``key_id`` to use an API key's mode, fallback
+    setting and pins (admins only).
+    """
+    q = request.query_params
+    model = (q.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    endpoint = (q.get("endpoint") or _DEFAULT_EXPLAIN_ENDPOINT).strip()
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    normalized = (
+        endpoint if endpoint.startswith(("/v1/", "/api/")) else "/v1" + endpoint
+    )
+    if normalized not in ENDPOINT_PROTOCOLS:
+        raise HTTPException(
+            status_code=400,
+            detail="endpoint must be one of: " + ", ".join(ENDPOINT_PROTOCOLS),
+        )
+
+    db = deps.get_db()
+    key_info = None
+    raw_key_id = (q.get("key_id") or "").strip()
+    if raw_key_id:
+        if not _is_admin(request):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            key_id = int(raw_key_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="key_id must be a number")
+        key = next((k for k in await db.list_api_keys() if k["id"] == key_id), None)
+        if key is None:
+            raise HTTPException(status_code=404, detail="API key not found")
+        pins = await db.list_api_key_model_pins(key_id)
+        mode = str(key["routing_mode"]).lower()
+        prefs = RoutingPreferences(
+            mode=mode if mode in ROUTING_MODES else DEFAULT_MODE,
+            allow_fallback=bool(key["allow_fallback"]),
+            pinned_providers={
+                str(p["model_name"]): int(p["provider_id"]) for p in pins
+            },
+        )
+        key_info = {"id": key_id, "key_prefix": key["key_prefix"]}
+    else:
+        mode = (q.get("mode") or DEFAULT_MODE).strip().lower()
+        if mode not in ROUTING_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail="mode must be one of: " + ", ".join(sorted(ROUTING_MODES)),
+            )
+        allow = (q.get("allow_fallback") or "true").strip().lower()
+        prefs = RoutingPreferences(
+            mode=mode, allow_fallback=allow not in ("0", "false", "no", "off")
+        )
+
+    rt = deps.get_pm().router
+    if rt is None:
+        raise HTTPException(status_code=503, detail="router not running")
+    result = await rt.explain(
+        model,
+        protocol=protocol_for_endpoint(normalized),
+        preferences=prefs,
+        endpoint=normalized,
+    )
+    result["api_key"] = key_info
+    return JSONResponse(result)
 
 
 @router.post("/api/routing-table/rebuild")
