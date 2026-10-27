@@ -134,6 +134,8 @@ async def test_never_offered_for_anything_but_decisions(db, pm, router) -> None:
         "/v1/responses",
         "/v1/embeddings",
         "/api/chat",
+        "/api/generate",
+        "/api/embed",
     ):
         assert await router.route("jev-latest", path) is None, path
     chaos = RoutingPreferences(mode="chaos")

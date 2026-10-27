@@ -604,6 +604,7 @@ async def dashboard(request: Request):
 
     model_request_counts = await db.get_model_request_counts()
     model_fallbacks = await db.get_all_model_fallbacks()
+    model_aliases = await db.get_model_aliases()
 
     if read_only:
         api_keys: list[Any] = []
@@ -625,6 +626,9 @@ async def dashboard(request: Request):
         worker_link_status: dict[str, Any] | None = None
     else:
         api_keys = await db.list_api_keys()
+        spent = await db.spend_by_key_since(_utc_day_start())
+        for k in api_keys:
+            k["spent_today_usd"] = spent.get(int(k["id"]), 0.0)
         allow_unauthenticated = await db.get_allow_unauthenticated()
         bench_by_provider: dict[int, list[dict]] = {}
         for b in all_benchmarks:
@@ -747,6 +751,7 @@ async def dashboard(request: Request):
                 "all_provider_counts": all_provider_counts,
                 "model_request_counts": model_request_counts,
                 "model_fallbacks": model_fallbacks,
+                "model_aliases": model_aliases,
                 "api_keys": api_keys,
                 "session_affinity_default": (
                     deps.get_pm().router.session_affinity_default
@@ -1070,6 +1075,7 @@ async def api_generate_key(request: Request):
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
     locality = _key_locality(body.get("locality"))
+    cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     # PBKDF2 is slow; keep it off the event loop.
@@ -1083,16 +1089,82 @@ async def api_generate_key(request: Request):
         allow_fallback=allow_fallback,
         session_affinity=session_affinity,
         locality=locality,
+        daily_spend_cap_usd=cap,
     )
     return JSONResponse(
         {
             "api_key": plaintext,
+            "daily_spend_cap_usd": cap,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,
             "locality": locality,
         }
     )
+
+
+@router.post("/api/keys/{key_id}/spend-cap")
+async def api_set_key_spend_cap(key_id: int, request: Request):
+    """Body: {daily_spend_cap_usd: number or null}. Past the cap, the key is
+    limited to local providers until the next UTC day."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
+    if not await deps.get_db().set_api_key_spend_cap(key_id, cap):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse({"id": key_id, "daily_spend_cap_usd": cap})
+
+
+@router.get("/api/providers/{provider_id}/prices")
+async def api_list_prices(provider_id: int):
+    """Prices set by hand, and how many models the provider's list prices."""
+    db = deps.get_db()
+    if await db.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    from ..pricing import listed_price
+
+    listed = [
+        {
+            "model": m.name,
+            "input_per_mtok": p.input_per_mtok,
+            "output_per_mtok": p.output_per_mtok,
+        }
+        for m in await db.get_provider_models(provider_id)
+        if (p := listed_price(m)) is not None
+    ]
+    return JSONResponse(
+        {"prices": await db.list_model_prices(provider_id), "listed": listed}
+    )
+
+
+@router.post("/api/providers/{provider_id}/prices")
+async def api_set_price(provider_id: int, request: Request):
+    """Body: {model_pattern, input_per_mtok, output_per_mtok} in USD per
+    million tokens. "*" prices every model of the provider."""
+    db = deps.get_db()
+    if await db.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    body = await request.json()
+    pattern = str(body.get("model_pattern") or "").strip()
+    if not pattern or len(pattern) > 255:
+        raise HTTPException(status_code=400, detail="model_pattern is required")
+    inp = _usd(body.get("input_per_mtok"), "input price")
+    out = _usd(body.get("output_per_mtok"), "output price")
+    if inp is None or out is None:
+        raise HTTPException(status_code=400, detail="both prices are required")
+    await db.set_model_price(provider_id, pattern, inp, out)
+    return JSONResponse(
+        {"model_pattern": pattern, "input_per_mtok": inp, "output_per_mtok": out}
+    )
+
+
+@router.delete("/api/providers/{provider_id}/prices/{price_id}")
+async def api_delete_price(provider_id: int, price_id: int):
+    if not await deps.get_db().remove_model_price(provider_id, price_id):
+        raise HTTPException(status_code=404, detail="price not found")
+    return JSONResponse({"status": "ok"})
 
 
 @router.post("/api/keys/{key_id}/locality")
@@ -1206,6 +1278,25 @@ async def provider_detail(request: Request, provider_id: int):
             },
         ),
     )
+
+
+def _utc_day_start() -> datetime:
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+
+def _usd(value: Any, what: str) -> float | None:
+    """A non-negative USD amount from a form or JSON value; blank is None."""
+    raw = str(value if value is not None else "").strip().lstrip("$")
+    if not raw:
+        return None
+    try:
+        amount = float(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{what} must be a number")
+    if amount < 0 or amount > 1_000_000:
+        raise HTTPException(status_code=400, detail=f"{what} is out of range")
+    return amount
 
 
 def _parse_locality(value: str | None) -> str:
@@ -2475,6 +2566,84 @@ async def remove_fallback(model_name: str):
     """Remove a model fallback."""
     db = deps.get_db()
     await db.remove_model_fallback(model_name)
+    return JSONResponse({"status": "ok"})
+
+
+def suggest_aliases(
+    names_by_provider: dict[int, set[str]], aliases: dict[str, str]
+) -> list[dict[str, str]]:
+    """Likely aliases between providers' model names.
+
+    ``vendor/model`` (OpenRouter, Together, ...) and ``model:latest``
+    (Ollama) are suggested as aliases of ``model`` when another provider
+    serves that bare name. Existing aliases are not suggested again.
+    """
+    everywhere: dict[str, set[int]] = {}
+    for pid, names in names_by_provider.items():
+        for n in names:
+            everywhere.setdefault(n, set()).add(pid)
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for name, pids in sorted(everywhere.items()):
+        candidates = []
+        if "/" in name:
+            candidates.append(name.rsplit("/", 1)[1])
+        if name.endswith(":latest"):
+            candidates.append(name[: -len(":latest")])
+        for bare in candidates:
+            if not bare or bare == name or name in aliases or name in seen:
+                continue
+            if everywhere.get(bare, set()) - pids:
+                out.append({"alias": name, "canonical": bare})
+                seen.add(name)
+    return out
+
+
+@router.get("/api/model-aliases")
+async def list_model_aliases():
+    """All aliases (alias -> canonical) and suggested new ones."""
+    db = deps.get_db()
+    aliases = await db.get_model_aliases()
+    names: dict[int, set[str]] = {}
+    for m in await db.get_all_provider_models():
+        names.setdefault(m.provider_id, set()).add(m.name)
+    return JSONResponse(
+        {"aliases": aliases, "suggestions": suggest_aliases(names, aliases)}
+    )
+
+
+@router.post("/api/model-aliases")
+async def set_model_alias(request: Request):
+    """Body: {alias, canonical}. The alias then reaches every provider of the
+    canonical name and of its other aliases."""
+    body = await request.json()
+    alias = str(body.get("alias") or "").strip()
+    canonical = str(body.get("canonical") or "").strip()
+    if not alias or not canonical:
+        raise HTTPException(status_code=400, detail="alias and canonical are required")
+    if alias == canonical:
+        raise HTTPException(status_code=400, detail="a model cannot alias itself")
+    if len(alias) > 255 or len(canonical) > 255:
+        raise HTTPException(status_code=400, detail="model name too long")
+    db = deps.get_db()
+    aliases = await db.get_model_aliases()
+    # Refuse a loop: following canonical's chain must never reach alias.
+    cur, seen = canonical, set()
+    while cur not in seen:
+        if cur == alias:
+            raise HTTPException(status_code=400, detail="that alias would form a loop")
+        seen.add(cur)
+        if cur not in aliases:
+            break
+        cur = aliases[cur]
+    await db.set_model_alias(alias, canonical)
+    return JSONResponse({"alias": alias, "canonical": canonical})
+
+
+@router.delete("/api/model-aliases/{alias:path}")
+async def delete_model_alias(alias: str):
+    if not await deps.get_db().remove_model_alias(alias):
+        raise HTTPException(status_code=404, detail="alias not found")
     return JSONResponse({"status": "ok"})
 
 

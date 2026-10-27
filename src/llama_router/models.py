@@ -286,6 +286,12 @@ class RequestLog(BaseModel):
     error_detail: str | None = None
     # Locality of the provider that served it: "local" or "cloud".
     locality: str | None = None
+    # The API key that made the request, if any.
+    api_key_id: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    # USD, from the provider's price for the model; None when unknown.
+    cost_usd: float | None = None
     created_at: datetime | None = None
 
 

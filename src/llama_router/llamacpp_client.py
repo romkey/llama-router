@@ -1,4 +1,4 @@
-"""Async HTTP client for communicating with llama.cpp server backends."""
+"""Async HTTP client for OpenAI-style backends: llama.cpp, vLLM, LiteLLM, cloud APIs."""
 
 from __future__ import annotations
 

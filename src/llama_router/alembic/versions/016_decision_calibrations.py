@@ -4,8 +4,8 @@ One row per model and question wording: a temperature and per-answer log
 offsets that correct the shifted priors local models show on yes/no and
 rubric questions.
 
-Revision ID: 014_decision_calibrations
-Revises: 013_cloud_operation
+Revision ID: 016_decision_calibrations
+Revises: 015_cost
 Create Date: 2026-10-27
 """
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "014_decision_calibrations"
-down_revision = "013_cloud_operation"
+revision = "016_decision_calibrations"
+down_revision = "015_cost"
 branch_labels = None
 depends_on = None
 

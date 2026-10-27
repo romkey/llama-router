@@ -685,6 +685,16 @@ class ProviderManager:
     def get_llamacpp_client(self, provider_id: int) -> LlamaCppClient:
         return self._llamacpp_clients[provider_id]
 
+    def ollama_api_client(self, provider_id: int):
+        """What the Ollama API handlers call: the provider's Ollama client, or
+        for an OpenAI-style provider, one that translates (see translate)."""
+        client = self._ollama_clients.get(provider_id)
+        if client is not None:
+            return client
+        from .translate import OllamaOverOpenAI
+
+        return OllamaOverOpenAI(self._llamacpp_clients[provider_id])
+
     def get_client(self, provider_id: int) -> OllamaClient:
         """Backward compat: return Ollama client."""
         return self._ollama_clients[provider_id]
