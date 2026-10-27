@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -77,7 +77,7 @@ class Provider(BaseModel):
     # Header carrying the key; None means "Authorization: Bearer <key>".
     api_key_header: str | None = None
     # Result of the last endpoint probe (see probe.py), if any.
-    capabilities: dict | None = None
+    capabilities: dict[str, Any] | None = None
     probed_at: datetime | None = None
     # Server the last probe recognised ("vllm", "ollama", a cloud preset id,
     # ...). Shown in the dashboard; routing never reads it.
@@ -221,7 +221,7 @@ class ProviderModel(BaseModel):
     size: int | None = None
     digest: str | None = None
     modified_at: str | None = None
-    details: dict | None = None
+    details: dict[str, Any] | None = None
 
     @property
     def backend_name(self) -> str:
@@ -302,6 +302,6 @@ class ProviderInfo(BaseModel):
     addresses: list[ProviderAddress] = []
     active_requests: int = 0
     hot_models: list[HotModel] = []
-    worker: dict | None = None
+    worker: dict[str, Any] | None = None
     # Why the provider is offline although an address answers, if known.
     status_detail: str | None = None

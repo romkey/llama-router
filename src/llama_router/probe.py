@@ -509,7 +509,7 @@ def _detect(
     # Servers answer with all sorts of shapes; never let one crash the probe.
     names: list[str] = []
 
-    def entries(obj: Any, key: str) -> list[dict]:
+    def entries(obj: Any, key: str) -> list[dict[str, Any]]:
         val = obj.get(key) if isinstance(obj, dict) else None
         return [m for m in val if isinstance(m, dict)] if isinstance(val, list) else []
 

@@ -10,6 +10,7 @@ import shutil
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -214,12 +215,12 @@ class BlobCache:
                     result.add(f"{display_name}:{tag}")
         return result
 
-    def cached_model_details(self) -> list[dict]:
+    def cached_model_details(self) -> list[dict[str, Any]]:
         """Return detailed info for each model with a cached manifest.
 
         Each entry: {name, fully_cached, blobs: [{digest, size, cached}, ...]}
         """
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
         if not self._manifests_dir.exists():
             return results
         for d in sorted(self._manifests_dir.iterdir(), key=lambda p: p.name):
@@ -242,7 +243,7 @@ class BlobCache:
                     manifest = json.loads(manifest_data)
                 except Exception:
                     continue
-                blobs: list[dict] = []
+                blobs: list[dict[str, Any]] = []
                 all_cached = True
                 config = manifest.get("config", {})
                 entries = []
@@ -276,7 +277,7 @@ class BlobCache:
 
     # --- Stats ---
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         blob_count = 0
         blob_bytes = 0
         for f in self._blobs_dir.iterdir():

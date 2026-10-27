@@ -15,7 +15,7 @@ import itertools
 import logging
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -219,7 +219,7 @@ class WorkerConnection:
 
         return httpx.Response(
             status,
-            headers=headers,
+            headers=[(k, v) for k, v in headers],
             stream=_WorkerStream(self, pend, read_t, request),
             request=request,
         )
@@ -323,7 +323,7 @@ class _WorkerStream(httpx.AsyncByteStream):
         self._request = request
         self._eof = False
 
-    async def __aiter__(self):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         while not self._eof:
             try:
                 item = await asyncio.wait_for(
@@ -380,7 +380,7 @@ class WorkerHub:
         self._conns: dict[int, WorkerConnection] = {}
         self._on_connect: ConnectCallback | None = None
         self._on_disconnect: DisconnectCallback | None = None
-        self._bg: set[asyncio.Task] = set()
+        self._bg: set[asyncio.Task[None]] = set()
 
     def set_callbacks(
         self,
