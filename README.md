@@ -258,6 +258,7 @@ Each API key picks a mode. Requests without a key use **balanced**.
 | `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed. For embeddings, images and audio, the measured time those calls take |
 | `latency` | starts answering soonest: a model already loaded wins, then the lowest startup time and round trip |
 | `throughput` | generates the most tokens per second. For embeddings, images and audio, completes calls fastest |
+| `cheapest` | charges least for a typical request (see [Cost](#cost)); local providers with no price set cost nothing |
 | `chaos` | is chosen at random, with a random model |
 
 Pins on the key override the mode for the pinned models.
@@ -427,6 +428,16 @@ curl http://localhost/api/fallbacks
 # Remove a fallback
 curl -X DELETE http://localhost/api/fallbacks/llama3:70b
 ```
+
+## Cost
+
+The request log records each request's tokens in and out, the API key that made it, and its cost when the provider's price for the model is known. Tokens come from the response's `usage` (or Ollama's counts); a streamed OpenAI-style response carries usage only when the client sends `stream_options: {"include_usage": true}`.
+
+**Prices** are USD per million tokens, set per provider on its page: a model name, a pattern such as `gpt-4o*`, or `*` for every model. A price set by hand wins over one from the provider's own model list (OpenRouter lists one for every model). Local providers cost nothing unless priced; a cloud model with no price has an unknown cost.
+
+**Cheapest** routing ranks candidates by the price of a typical request (1,000 tokens in, 256 out), then by the balanced score. A cloud model with an unknown price comes last.
+
+**Daily spend caps.** An API key can have a cap in USD per UTC day. Once its logged spend reaches the cap, the key is limited to local providers until the next day; a cloud-only key is refused with HTTP 429. The key list shows each key's spend today.
 
 ## Model Aliases
 

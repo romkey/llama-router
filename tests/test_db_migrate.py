@@ -9,7 +9,7 @@ import pytest
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 
-HEAD = "014_model_aliases"
+HEAD = "015_cost"
 
 
 def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

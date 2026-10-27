@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -41,6 +42,7 @@ CHANGE_MODELS = "models"
 CHANGE_BENCHMARKS = "benchmarks"
 CHANGE_FALLBACKS = "fallbacks"
 CHANGE_ALIASES = "aliases"
+CHANGE_PRICES = "prices"
 CHANGE_CAPABILITIES = "capabilities"
 CHANGE_API_KEYS = "api_keys"
 CHANGE_AUTH_SETTINGS = "auth_settings"
@@ -53,6 +55,7 @@ ROUTING_CHANGES = frozenset(
         CHANGE_BENCHMARKS,
         CHANGE_FALLBACKS,
         CHANGE_ALIASES,
+        CHANGE_PRICES,
         CHANGE_CAPABILITIES,
     }
 )
@@ -632,8 +635,9 @@ class Database:
             "INSERT INTO request_log "
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
-            "router_ms, status, streamed, error_detail, locality) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "router_ms, status, streamed, error_detail, locality, api_key_id, "
+            "prompt_tokens, completion_tokens, cost_usd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -651,7 +655,90 @@ class Database:
                 int(entry.streamed),
                 entry.error_detail,
                 entry.locality,
+                entry.api_key_id,
+                entry.prompt_tokens,
+                entry.completion_tokens,
+                entry.cost_usd,
             ),
+        )
+
+    async def spend_since(self, key_id: int, since: datetime) -> float:
+        """USD a key has spent on requests logged since *since* (UTC)."""
+        when: Any = since
+        if self._dialect_name == "sqlite":
+            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        row = await self._select_one(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
+            "WHERE api_key_id = ? AND created_at >= ?",
+            (key_id, when),
+        )
+        return float(row["total"] or 0) if row else 0.0
+
+    async def spend_by_key_since(self, since: datetime) -> dict[int, float]:
+        when: Any = since
+        if self._dialect_name == "sqlite":
+            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        rows = await self._select_all(
+            "SELECT api_key_id, COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
+            "WHERE api_key_id IS NOT NULL AND created_at >= ? GROUP BY api_key_id",
+            (when,),
+        )
+        return {int(r["api_key_id"]): float(r["total"] or 0) for r in rows}
+
+    # ── Model prices ──────────────────────────────────────────────────
+
+    async def list_model_prices(self, provider_id: int | None = None) -> list[dict]:
+        if provider_id is None:
+            rows = await self._select_all(
+                "SELECT * FROM model_prices ORDER BY provider_id, model_pattern"
+            )
+        else:
+            rows = await self._select_all(
+                "SELECT * FROM model_prices WHERE provider_id = ? "
+                "ORDER BY model_pattern",
+                (provider_id,),
+            )
+        return [dict(r) for r in rows]
+
+    @_notifies(CHANGE_PRICES)
+    async def set_model_price(
+        self,
+        provider_id: int,
+        model_pattern: str,
+        input_per_mtok: float,
+        output_per_mtok: float,
+    ) -> None:
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO model_prices (provider_id, model_pattern, input_per_mtok, "
+                "output_per_mtok) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE "
+                "input_per_mtok = VALUES(input_per_mtok), "
+                "output_per_mtok = VALUES(output_per_mtok)",
+                (provider_id, model_pattern, input_per_mtok, output_per_mtok),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO model_prices (provider_id, model_pattern, input_per_mtok, "
+                "output_per_mtok) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (provider_id, model_pattern) DO UPDATE SET "
+                "input_per_mtok = ?, output_per_mtok = ?",
+                (
+                    provider_id,
+                    model_pattern,
+                    input_per_mtok,
+                    output_per_mtok,
+                    input_per_mtok,
+                    output_per_mtok,
+                ),
+            )
+
+    @_notifies(CHANGE_PRICES)
+    async def remove_model_price(self, provider_id: int, price_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM model_prices WHERE id = ? AND provider_id = ?",
+                (price_id, provider_id),
+            )
         )
 
     async def get_request_logs(
@@ -835,11 +922,12 @@ class Database:
         allow_fallback: bool,
         session_affinity: bool | None = None,
         locality: str | None = None,
+        daily_spend_cap_usd: float | None = None,
     ) -> int:
         return await self._insert_get_id(
             "INSERT INTO api_keys "
             "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
-            "locality) VALUES (?, ?, ?, ?, ?, ?)",
+            "locality, daily_spend_cap_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
@@ -847,7 +935,18 @@ class Database:
                 int(allow_fallback),
                 None if session_affinity is None else int(session_affinity),
                 locality,
+                daily_spend_cap_usd,
             ),
+        )
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_spend_cap(self, key_id: int, cap_usd: float | None) -> bool:
+        """USD a key may spend per UTC day before it is limited to local."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET daily_spend_cap_usd = ? WHERE id = ?",
+                (cap_usd, key_id),
+            )
         )
 
     @_notifies(CHANGE_API_KEYS)
@@ -863,12 +962,13 @@ class Database:
         rows = await self._select_all(
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
-            "k.locality, k.created_at, k.last_used_at, "
+            "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
             "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
-            "k.session_affinity, k.locality, k.created_at, k.last_used_at "
+            "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
+            "k.last_used_at "
             "ORDER BY k.created_at DESC"
         )
         return [
@@ -879,6 +979,7 @@ class Database:
                 "allow_fallback": bool(r["allow_fallback"]),
                 "session_affinity": _tristate(r["session_affinity"]),
                 "locality": r["locality"],
+                "daily_spend_cap_usd": r["daily_spend_cap_usd"],
                 "created_at": r["created_at"],
                 "last_used_at": r["last_used_at"],
                 "pin_count": int(r["pin_count"] or 0),
@@ -893,7 +994,7 @@ class Database:
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
             "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
-            "locality FROM api_keys "
+            "locality, daily_spend_cap_usd FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -910,6 +1011,7 @@ class Database:
             "allow_fallback": bool(row["allow_fallback"]),
             "session_affinity": _tristate(row["session_affinity"]),
             "locality": row["locality"],
+            "daily_spend_cap_usd": row["daily_spend_cap_usd"],
         }
 
     async def touch_api_key(self, key_id: int) -> None:
@@ -1233,5 +1335,9 @@ def _row_to_request_log(row: Mapping[str, Any]) -> RequestLog:
         streamed=bool(row["streamed"]),
         error_detail=row["error_detail"],
         locality=row.get("locality"),
+        api_key_id=row.get("api_key_id"),
+        prompt_tokens=row.get("prompt_tokens"),
+        completion_tokens=row.get("completion_tokens"),
+        cost_usd=row.get("cost_usd"),
         created_at=row["created_at"],
     )

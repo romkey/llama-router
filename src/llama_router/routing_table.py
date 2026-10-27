@@ -34,9 +34,10 @@ from .models import (
     measured_cold_start,
 )
 from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
+from .pricing import Price, PriceBook
 from .upstream_url import LOCALITIES
 
-MODES = ("latency", "throughput", "balanced")
+MODES = ("latency", "throughput", "balanced", "cheapest")
 DEFAULT_MODE = "balanced"
 # Request protocols: None takes any provider, otherwise only providers that
 # speak that protocol.
@@ -56,7 +57,18 @@ BALANCED_UNKNOWN_SERVICE_MS = 2_000.0
 # Cost of each request already in flight on a provider.
 QUEUE_WEIGHT = {"latency": 1000.0, "throughput": 100.0}
 # Added per unit of recent failure rate (0..1).
-FAILURE_PENALTY = {"latency": 10_000.0, "throughput": 100.0, "balanced": 10_000.0}
+FAILURE_PENALTY = {
+    "latency": 10_000.0,
+    "throughput": 100.0,
+    "balanced": 10_000.0,
+    # In micro-dollars: a provider failing half the time costs $0.05 more.
+    "cheapest": 100_000.0,
+}
+# "cheapest" scores are micro-dollars for a nominal request. A cloud model
+# with no known price ranks behind every priced one.
+UNKNOWN_PRICE_MICRO_USD = 1_000_000.0
+# Within one price, the balanced score breaks ties.
+CHEAPEST_TIEBREAK = 0.001
 # Recent failure rate for one model at which a candidate is skipped while
 # others exist. Provider-wide failures have their own breaker in the stats.
 CIRCUIT_OPEN_RATE = 0.5
@@ -94,6 +106,8 @@ class Candidate:
     failure_rate: float = 0.0
     circuit_open: bool = False
     oversize: bool = False
+    # Price of the model here, if known (see pricing).
+    price: Price | None = None
     endpoint_support: str = SUPPORT_UNKNOWN
     tier: int = TIER_OK
     problems: tuple[str, ...] = ()
@@ -125,6 +139,15 @@ class Candidate:
             "circuit_open": self.circuit_open,
             "oversize": self.oversize,
             "endpoint_support": self.endpoint_support,
+            "price": (
+                None
+                if self.price is None
+                else {
+                    "input_per_mtok": self.price.input_per_mtok,
+                    "output_per_mtok": self.price.output_per_mtok,
+                    "source": self.price.source,
+                }
+            ),
             "tier": self.tier,
             "problems": list(self.problems),
             "scores": {m: round(s, 2) for m, s in self.scores.items()},
@@ -142,6 +165,8 @@ class RoutingInputs:
     fallbacks: dict[str, str]
     # alias -> canonical model name
     aliases: dict[str, str] = field(default_factory=dict)
+    # Rows of model_prices.
+    prices: list[dict[str, Any]] = field(default_factory=list)
 
 
 def alias_groups(aliases: dict[str, str]) -> dict[str, frozenset[str]]:
@@ -182,7 +207,10 @@ async def load_inputs(db: Database) -> RoutingInputs:
     benchmarks = latest_benchmarks(await db.get_all_benchmark_results())
     fallbacks = await db.get_all_model_fallbacks()
     aliases = await db.get_model_aliases()
-    return RoutingInputs(providers, models, addresses, benchmarks, fallbacks, aliases)
+    prices = await db.list_model_prices()
+    return RoutingInputs(
+        providers, models, addresses, benchmarks, fallbacks, aliases, prices
+    )
 
 
 def latest_benchmarks(
@@ -298,8 +326,28 @@ def _cold_ms(c: Candidate) -> tuple[float, float]:
     return UNKNOWN_STARTUP_MS, BALANCED_UNKNOWN_STARTUP_MS
 
 
+def _add_cheapest(c: Candidate) -> None:
+    """Score "cheapest": price of a nominal request, then the balanced score."""
+    cost = (
+        c.price.nominal() * 1_000_000
+        if c.price is not None
+        else UNKNOWN_PRICE_MICRO_USD
+    )
+    c.scores["cheapest"] = (
+        cost
+        + c.failure_rate * FAILURE_PENALTY["cheapest"]
+        + c.scores["balanced"] * CHEAPEST_TIEBREAK
+    )
+    c.queue_weight["cheapest"] = c.queue_weight["balanced"] * CHEAPEST_TIEBREAK
+
+
 def score(c: Candidate) -> None:
     """Fill *c.scores* and *c.queue_weight* for every mode. Lower is better."""
+    _score_speed(c)
+    _add_cheapest(c)
+
+
+def _score_speed(c: Candidate) -> None:
     cold, cold_bal = _cold_ms(c)
     rtt = c.rtt_ms or 0.0
     oversize = OVERSIZE_PENALTY_MS if c.oversize else 0.0
@@ -399,6 +447,7 @@ class RoutingTable:
     )
     backend_names: dict[tuple[int, str], str] = field(default_factory=dict)
     health: dict[int, ProviderHealth] = field(default_factory=dict)
+    prices: PriceBook | None = None
 
     def chain(self, model: str) -> tuple[str, ...]:
         return self.chains.get(model) or (model,)
@@ -467,6 +516,8 @@ def build_table(
     grouped: dict[tuple[str, str], list[Candidate]] = {}
     backend_names: dict[tuple[int, str], str] = {}
     groups = alias_groups(inputs.aliases)
+    book = PriceBook(inputs.providers, inputs.models, inputs.prices)
+    table.prices = book
 
     for p in online:
         pid = p.id
@@ -542,6 +593,7 @@ def build_table(
                     failure_rate=combined_failure_rate(model_rate, health),
                     circuit_open=model_circuit or health.circuit_open,
                     oversize=oversize,
+                    price=book.price(pid, m.name),
                     endpoint_support=sup,
                 )
                 score(c)

@@ -626,6 +626,9 @@ async def dashboard(request: Request):
         worker_link_status: dict[str, Any] | None = None
     else:
         api_keys = await db.list_api_keys()
+        spent = await db.spend_by_key_since(_utc_day_start())
+        for k in api_keys:
+            k["spent_today_usd"] = spent.get(int(k["id"]), 0.0)
         allow_unauthenticated = await db.get_allow_unauthenticated()
         bench_by_provider: dict[int, list[dict]] = {}
         for b in all_benchmarks:
@@ -1072,6 +1075,7 @@ async def api_generate_key(request: Request):
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
     locality = _key_locality(body.get("locality"))
+    cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     # PBKDF2 is slow; keep it off the event loop.
@@ -1085,16 +1089,82 @@ async def api_generate_key(request: Request):
         allow_fallback=allow_fallback,
         session_affinity=session_affinity,
         locality=locality,
+        daily_spend_cap_usd=cap,
     )
     return JSONResponse(
         {
             "api_key": plaintext,
+            "daily_spend_cap_usd": cap,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,
             "locality": locality,
         }
     )
+
+
+@router.post("/api/keys/{key_id}/spend-cap")
+async def api_set_key_spend_cap(key_id: int, request: Request):
+    """Body: {daily_spend_cap_usd: number or null}. Past the cap, the key is
+    limited to local providers until the next UTC day."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
+    if not await deps.get_db().set_api_key_spend_cap(key_id, cap):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse({"id": key_id, "daily_spend_cap_usd": cap})
+
+
+@router.get("/api/providers/{provider_id}/prices")
+async def api_list_prices(provider_id: int):
+    """Prices set by hand, and how many models the provider's list prices."""
+    db = deps.get_db()
+    if await db.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    from ..pricing import listed_price
+
+    listed = [
+        {
+            "model": m.name,
+            "input_per_mtok": p.input_per_mtok,
+            "output_per_mtok": p.output_per_mtok,
+        }
+        for m in await db.get_provider_models(provider_id)
+        if (p := listed_price(m)) is not None
+    ]
+    return JSONResponse(
+        {"prices": await db.list_model_prices(provider_id), "listed": listed}
+    )
+
+
+@router.post("/api/providers/{provider_id}/prices")
+async def api_set_price(provider_id: int, request: Request):
+    """Body: {model_pattern, input_per_mtok, output_per_mtok} in USD per
+    million tokens. "*" prices every model of the provider."""
+    db = deps.get_db()
+    if await db.get_provider(provider_id) is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    body = await request.json()
+    pattern = str(body.get("model_pattern") or "").strip()
+    if not pattern or len(pattern) > 255:
+        raise HTTPException(status_code=400, detail="model_pattern is required")
+    inp = _usd(body.get("input_per_mtok"), "input price")
+    out = _usd(body.get("output_per_mtok"), "output price")
+    if inp is None or out is None:
+        raise HTTPException(status_code=400, detail="both prices are required")
+    await db.set_model_price(provider_id, pattern, inp, out)
+    return JSONResponse(
+        {"model_pattern": pattern, "input_per_mtok": inp, "output_per_mtok": out}
+    )
+
+
+@router.delete("/api/providers/{provider_id}/prices/{price_id}")
+async def api_delete_price(provider_id: int, price_id: int):
+    if not await deps.get_db().remove_model_price(provider_id, price_id):
+        raise HTTPException(status_code=404, detail="price not found")
+    return JSONResponse({"status": "ok"})
 
 
 @router.post("/api/keys/{key_id}/locality")
@@ -1208,6 +1278,25 @@ async def provider_detail(request: Request, provider_id: int):
             },
         ),
     )
+
+
+def _utc_day_start() -> datetime:
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+
+def _usd(value: Any, what: str) -> float | None:
+    """A non-negative USD amount from a form or JSON value; blank is None."""
+    raw = str(value if value is not None else "").strip().lstrip("$")
+    if not raw:
+        return None
+    try:
+        amount = float(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{what} must be a number")
+    if amount < 0 or amount > 1_000_000:
+        raise HTTPException(status_code=400, detail=f"{what} is out of range")
+    return amount
 
 
 def _parse_locality(value: str | None) -> str:
