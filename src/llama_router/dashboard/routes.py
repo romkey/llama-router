@@ -2823,11 +2823,11 @@ async def _worker_rows(db: Any, pm: Any) -> list[dict[str, Any]]:
 
 
 def _hub_url_hint(request: Request) -> str:
-    scheme = "https" if request.url.scheme == "https" else "http"
     if settings.api_on_dashboard_port:
         # Workers can use the address this page was opened on, proxy and all.
-        netloc = request.url.netloc or "this-hub"
-        return f"{scheme}://{netloc}"
+        scheme, netloc = _external_origin(request)
+        return f"{scheme}://{netloc or 'this-hub'}"
+    scheme = "https" if request.url.scheme == "https" else "http"
     host = request.url.hostname or "this-hub"
     return f"{scheme}://{host}:{settings.api_port}"
 

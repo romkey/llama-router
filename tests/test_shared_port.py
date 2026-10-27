@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from starlette.datastructures import URL
+from starlette.requests import Request
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
@@ -142,24 +144,43 @@ async def test_api_key_auth_still_applies(shared_client) -> None:
     assert "API-KEY" in r.json()["detail"]
 
 
-class _FakeRequest:
-    def __init__(self, url: str) -> None:
-        from starlette.datastructures import URL
-
-        self.url = URL(url)
+def _request(url: str, headers: dict[str, str] | None = None) -> Request:
+    u = URL(url)
+    raw = [(b"host", u.netloc.encode())]
+    raw += [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": u.scheme,
+            "server": (u.hostname, u.port or (443 if u.scheme == "https" else 80)),
+            "path": u.path or "/",
+            "root_path": "",
+            "query_string": b"",
+            "headers": raw,
+        }
+    )
 
 
 def test_hub_hint_uses_api_port_by_default(monkeypatch) -> None:
     monkeypatch.setattr(settings, "api_on_dashboard_port", False)
-    hint = _hub_url_hint(_FakeRequest("https://llm.example.org/"))
+    hint = _hub_url_hint(_request("https://llm.example.org/"))
     assert hint == f"https://llm.example.org:{settings.api_port}"
 
 
 def test_hub_hint_uses_page_address_when_shared(monkeypatch) -> None:
     monkeypatch.setattr(settings, "api_on_dashboard_port", True)
-    assert _hub_url_hint(_FakeRequest("https://llm.example.org/")) == (
+    assert _hub_url_hint(_request("https://llm.example.org/")) == (
         "https://llm.example.org"
     )
-    assert _hub_url_hint(_FakeRequest("http://10.0.0.5:8099/")) == (
-        "http://10.0.0.5:8099"
+    assert _hub_url_hint(_request("http://10.0.0.5:8099/")) == ("http://10.0.0.5:8099")
+
+
+def test_hub_hint_follows_proxy_headers_when_shared(monkeypatch) -> None:
+    """A TLS-terminating proxy talks plain http to the router."""
+    monkeypatch.setattr(settings, "api_on_dashboard_port", True)
+    req = _request(
+        "http://10.0.0.5/",
+        {"X-Forwarded-Proto": "https", "X-Forwarded-Host": "llm.example.org"},
     )
+    assert _hub_url_hint(req) == "https://llm.example.org"
