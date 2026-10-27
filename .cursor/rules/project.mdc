@@ -16,7 +16,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
   - Ollama-compatible API on port 11434
   - llama.cpp / OpenAI-compatible API on port 8080
 - When a new backend is configured, the router queries it for available models and capabilities, and caches that information
-- Authentication is handled by an external reverse proxy; the app itself does not implement auth
+- The dashboard has its own sign-in (local accounts, optional OpenID Connect); the APIs authenticate with API keys
 
 ## Ollama API
 
@@ -69,7 +69,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 
 ## General Conventions
 
-- Use Python 3.11+
+- Use Python 3.14+; follow AGENTS.md and python-ai-rules
 - Prefer type hints on all function signatures
 - Use `pyproject.toml` for project metadata and dependencies
 - Use virtual environments for dependency isolation
@@ -79,7 +79,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 
 ## Lint
 
-- Use black to lint the code
+- ruff, mypy and the other checks run through pre-commit (`docker compose -f docker-compose.lint.yaml run --rm lint`)
 - Keep code passing lint
 
 ## Docker
