@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 DECISION_PATH = "/v1/decisions"
 TIER_ID = "tier"
 GATE_PREFIX = "gate:"
-# The state sent for a request: the tail of its last user message.
+# Most user text sent as a request's state; the newest is kept.
 MAX_STATE_CHARS = 16_000
 # request.state attribute the request log reads the outcome from.
 STATE_ATTR = "decision_policy"
@@ -145,37 +145,56 @@ def _text(content: Any) -> str | None:
     return None
 
 
-def request_text(body: Any) -> str | None:
-    """The last user message of a generation request, or its prompt or input.
-
-    Covers chat messages (OpenAI and Ollama), completion and generate
-    prompts, and Responses API input.
-    """
-    if not isinstance(body, dict):
-        return None
-    text: str | None = None
+def _user_turns(body: dict[str, Any]) -> list[str]:
     messages = body.get("messages")
     inp = body.get("input")
     prompt = body.get("prompt")
     if isinstance(messages, list):
-        for m in reversed(messages):
-            if isinstance(m, dict) and m.get("role") == "user":
-                text = _text(m.get("content"))
-                break
-    elif isinstance(inp, str):
-        text = inp
+        items: list[Any] = messages
     elif isinstance(inp, list):
-        for item in reversed(inp):
-            if isinstance(item, dict) and item.get("role") == "user":
-                text = _text(item.get("content"))
-                break
+        items = inp
+    elif isinstance(inp, str):
+        return [inp]
     elif isinstance(prompt, str):
-        text = prompt
-    elif isinstance(prompt, list) and prompt and isinstance(prompt[-1], str):
-        text = prompt[-1]
-    if text is None or not text.strip():
+        return [prompt]
+    elif isinstance(prompt, list):
+        return [p for p in prompt if isinstance(p, str)]
+    else:
+        return []
+    turns = []
+    for m in items:
+        if isinstance(m, dict) and m.get("role") == "user":
+            text = _text(m.get("content"))
+            if text is not None:
+                turns.append(text)
+    return turns
+
+
+def request_text(body: Any) -> str | list[str] | None:
+    """The user text of a generation request: every user message, or its
+    prompt or input, oldest first.
+
+    Every user turn goes in, not just the last, so a gate also sees text
+    placed in an earlier turn. Past MAX_STATE_CHARS the oldest text is
+    dropped. One turn is returned as a string, several as a list. Covers
+    chat messages (OpenAI and Ollama), completion and generate prompts, and
+    Responses API input.
+    """
+    if not isinstance(body, dict):
         return None
-    return text[-MAX_STATE_CHARS:]
+    kept: list[str] = []
+    budget = MAX_STATE_CHARS
+    for turn in reversed(_user_turns(body)):
+        if not turn.strip():
+            continue
+        if budget <= 0:
+            break
+        kept.append(turn[-budget:])
+        budget -= len(kept[-1])
+    if not kept:
+        return None
+    kept.reverse()
+    return kept[0] if len(kept) == 1 else kept
 
 
 # --- The request path ---

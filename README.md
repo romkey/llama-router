@@ -515,7 +515,7 @@ curl -X DELETE http://localhost/api/decisions/calibrations/1
 
 ### Decision policies per API key
 
-An API key can ask decision questions about each generation request before it is routed (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/api/chat`, `/api/generate`). The state is the request's last user message, or its prompt or input. Keys without a policy are routed exactly as before, with no extra round trip.
+An API key can ask decision questions about each generation request before it is routed (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/api/chat`, `/api/generate`). The state is the request's user text: every user message, oldest first, or its prompt or input, up to the newest 16,000 characters. A request with no user text at all, such as images only, is passed without asking. Keys without a policy are routed exactly as before, with no extra round trip.
 
 - **Tiered routing.** A `score` question, typically a difficulty rubric, and a model for each level. The most probable level picks the model the request is routed to. A level without a target, or `models` that leaves out the requested model, keeps the requested model.
 - **Gating.** `noul` questions with a threshold each. A request whose probability reaches a gate's threshold is rejected with 403, and the detail names the gate and the probability.
