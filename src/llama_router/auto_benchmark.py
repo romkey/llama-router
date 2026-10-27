@@ -34,7 +34,7 @@ from . import decisions as d
 from .config import settings
 from .database import Database
 from .endpoints import DECIDE, DECISION_PATHS
-from .models import ProviderStatus
+from .models import ProviderModel, ProviderStatus
 from .provider_manager import ProviderManager
 from .routing_table import DECISION_UPSTREAM, decides_natively
 
@@ -55,11 +55,11 @@ DECISION_CHECK = d.DecisionRequest(
     model="check",
     state="The sky in the photo is a clear, bright blue.",
     questions={
-        "colour": {
-            "type": "choice",
-            "instructions": "What colour is the sky?",
-            "criteria": {"blue": "Blue", "green": "Green", "red": "Red"},
-        }
+        "colour": d.ChoiceQuestion(
+            type="choice",
+            instructions="What colour is the sky?",
+            criteria={"blue": "Blue", "green": "Green", "red": "Red"},
+        )
     },
 )
 
@@ -125,11 +125,11 @@ class AutoBenchmarker:
             max(1, concurrency or settings.auto_benchmark_concurrency)
         )
         self._config: AutoBenchmarkConfig | None = None
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         # Provider runs in progress, and the benchmark each is running now.
-        self._runs: dict[int, asyncio.Task] = {}
-        self._current: dict[int, tuple[Job, asyncio.Task]] = {}
+        self._runs: dict[int, asyncio.Task[None]] = {}
+        self._current: dict[int, tuple[Job, asyncio.Task[tuple[Any, str]]]] = {}
         self._backoff: dict[tuple[int, str, str], float] = {}
         self._recent: deque[dict[str, Any]] = deque(maxlen=_RECENT)
         self._last_check: float | None = None
@@ -234,7 +234,7 @@ class AutoBenchmarker:
         for b in await self._db.get_all_benchmark_results():
             key = (b.provider_id, b.model_name, (b.protocol or "").lower())
             latest.setdefault(key, b.created_at)  # rows are newest first
-        models_by_provider: dict[int, list] = {}
+        models_by_provider: dict[int, list[ProviderModel]] = {}
         for m in await self._db.get_all_provider_models():
             models_by_provider.setdefault(m.provider_id, []).append(m)
 

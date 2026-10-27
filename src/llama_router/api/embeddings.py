@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _handle_embedding(request: Request, endpoint: str, method: str):
+async def _handle_embedding(
+    request: Request, endpoint: str, method: str
+) -> JSONResponse:
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -115,10 +117,10 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
 
 
 @router.post("/api/embeddings")
-async def embeddings(request: Request):
+async def embeddings(request: Request) -> JSONResponse:
     return await _handle_embedding(request, "/api/embeddings", "embeddings")
 
 
 @router.post("/api/embed")
-async def embed(request: Request):
+async def embed(request: Request) -> JSONResponse:
     return await _handle_embedding(request, "/api/embed", "embed")

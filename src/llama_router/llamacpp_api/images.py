@@ -18,7 +18,7 @@ router = APIRouter()
 
 
 @router.post("/v1/images/generations")
-async def images_generations(request: Request):
+async def images_generations(request: Request) -> JSONResponse:
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -113,7 +113,7 @@ async def images_generations(request: Request):
 
 
 @router.post("/v1/images/edits")
-async def images_edits(request: Request):
+async def images_edits(request: Request) -> Response:
     """Proxy multipart image edit requests."""
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()

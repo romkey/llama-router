@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Iterator
 from typing import Any
 
 PROTOCOL_VERSION = 1
@@ -121,6 +122,6 @@ def filter_headers(pairs: Any) -> list[list[str]]:
     return out
 
 
-def chunks(data: bytes, size: int = MAX_CHUNK):
+def chunks(data: bytes, size: int = MAX_CHUNK) -> Iterator[bytes]:
     for i in range(0, len(data), size):
         yield data[i : i + size]

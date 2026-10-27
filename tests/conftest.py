@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -27,14 +29,14 @@ def _empty_database(async_url: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_background_probes(monkeypatch):
+def _no_background_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Background endpoint probes would hit every fake upstream; tests that
     exercise them turn them back on."""
     monkeypatch.setattr(settings, "auto_probe_enabled", False)
 
 
 @pytest_asyncio.fixture
-async def db(tmp_path):
+async def db(tmp_path: Path) -> AsyncIterator[Database]:
     if _TEST_DATABASE_URL:
         _empty_database(_TEST_DATABASE_URL)
         database = Database(_TEST_DATABASE_URL)
