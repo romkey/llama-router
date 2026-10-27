@@ -147,14 +147,14 @@ def env_summary() -> list[dict[str, str | bool]]:
 
 
 def models_root() -> Path:
-    root = Path(settings.hf_models_dir).absolute()
+    root = Path(os.path.normpath(Path(settings.hf_models_dir).absolute()))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _path_under(base: Path, *parts: str) -> Path:
-    root = str(base.absolute())
-    candidate = os.path.normpath(base.absolute().joinpath(*parts))
+    root = os.path.normpath(base.absolute())
+    candidate = os.path.normpath(Path(root).joinpath(*parts))
     if candidate != root and not candidate.startswith(root + os.sep):
         raise ValueError("path escapes the models directory")
     return Path(candidate)

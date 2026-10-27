@@ -339,3 +339,9 @@ async def test_plan_keeps_nested_files_hf_selected(fake_hf, monkeypatch) -> None
     monkeypatch.setattr(hf_download, "_run", run)
     files = await hf_download.plan("owner/model-GGUF", "*.gguf", None)
     assert [f["file"] for f in files] == ["Model-Q4.gguf", "sub/Model-Q8.gguf"]
+
+
+def test_path_under_accepts_base_with_parent_segments(tmp_path):
+    (tmp_path / "a").mkdir()
+    base = tmp_path / "a" / ".." / "models"
+    assert hf_download._path_under(base, "x", "y") == tmp_path / "models" / "x" / "y"

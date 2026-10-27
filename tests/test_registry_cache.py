@@ -100,3 +100,12 @@ def test_listings_survive_stray_files_and_odd_digests(tmp_path):
     assert any(d["name"] == "odd:latest" and not d["fully_cached"] for d in details)
     stats = cache.stats()
     assert stats["manifest_count"] == 3
+
+
+def test_path_under_accepts_base_with_parent_segments(tmp_path):
+    (tmp_path / "a").mkdir()
+    base = tmp_path / "a" / ".." / "cache"
+    got = BlobCache._path_under(base, "x")
+    assert got == tmp_path / "cache" / "x"
+    cache = BlobCache(str(base))
+    assert cache.blob_path("sha256:" + "a" * 64).is_relative_to(tmp_path / "cache")

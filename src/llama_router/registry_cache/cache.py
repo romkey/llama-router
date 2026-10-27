@@ -49,7 +49,7 @@ def validate_digest(digest: str) -> str:
 
 class BlobCache:
     def __init__(self, cache_dir: str, manifest_ttl_hours: int = 240):
-        self._root = Path(cache_dir).absolute()
+        self._root = Path(os.path.normpath(Path(cache_dir).absolute()))
         self._blobs_dir = self._root / "blobs" / "sha256"
         self._manifests_dir = self._root / "manifests"
         self._manifest_ttl_seconds = manifest_ttl_hours * 3600
@@ -67,8 +67,8 @@ class BlobCache:
         Callers validate their inputs first; this is the last line of defence
         against path traversal and the check CodeQL recognises as a barrier.
         """
-        root = str(base.absolute())
-        candidate = os.path.normpath(base.absolute().joinpath(*parts))
+        root = os.path.normpath(base.absolute())
+        candidate = os.path.normpath(Path(root).joinpath(*parts))
         if candidate != root and not candidate.startswith(root + os.sep):
             raise InvalidCacheKeyError("path escapes cache directory")
         return Path(candidate)
