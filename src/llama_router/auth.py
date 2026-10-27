@@ -128,6 +128,8 @@ async def _resolve_key(
         mode=mode,
         allow_fallback=bool(record["allow_fallback"]),
         pinned_providers={str(p["model_name"]): int(p["provider_id"]) for p in pins},
+        session_affinity=record.get("session_affinity"),
+        key_id=int(record["id"]),
     )
     return prefs, int(record["id"])
 

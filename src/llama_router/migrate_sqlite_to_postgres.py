@@ -143,6 +143,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "key_hash",
             "routing_mode",
             "allow_fallback",
+            "session_affinity",
             "created_at",
             "last_used_at",
         ],

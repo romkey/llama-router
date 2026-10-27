@@ -57,6 +57,11 @@ ROUTING_CHANGES = frozenset(
 AUTH_CHANGES = frozenset({CHANGE_API_KEYS, CHANGE_AUTH_SETTINGS})
 
 
+def _tristate(value) -> bool | None:
+    """A nullable integer flag: None, False or True."""
+    return None if value is None else bool(value)
+
+
 def _notifies(reason: str):
     """Tell change listeners about *reason* after the wrapped write succeeds."""
 
@@ -770,22 +775,36 @@ class Database:
 
     @_notifies(CHANGE_API_KEYS)
     async def create_api_key(
-        self, key_prefix: str, key_hash: str, routing_mode: str, allow_fallback: bool
+        self,
+        key_prefix: str,
+        key_hash: str,
+        routing_mode: str,
+        allow_fallback: bool,
+        session_affinity: bool | None = None,
     ) -> int:
         return await self._insert_get_id(
-            "INSERT INTO api_keys (key_prefix, key_hash, routing_mode, allow_fallback) "
-            "VALUES (?, ?, ?, ?)",
-            (key_prefix, key_hash, routing_mode, int(allow_fallback)),
+            "INSERT INTO api_keys "
+            "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                key_prefix,
+                key_hash,
+                routing_mode,
+                int(allow_fallback),
+                None if session_affinity is None else int(session_affinity),
+            ),
         )
 
     async def list_api_keys(self) -> list[dict]:
         rows = await self._select_all(
             "SELECT "
-            "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.created_at, k.last_used_at, "
+            "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
+            "k.created_at, k.last_used_at, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
-            "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.created_at, k.last_used_at "
+            "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
+            "k.session_affinity, k.created_at, k.last_used_at "
             "ORDER BY k.created_at DESC"
         )
         return [
@@ -794,6 +813,7 @@ class Database:
                 "key_prefix": r["key_prefix"],
                 "routing_mode": r["routing_mode"],
                 "allow_fallback": bool(r["allow_fallback"]),
+                "session_affinity": _tristate(r["session_affinity"]),
                 "created_at": r["created_at"],
                 "last_used_at": r["last_used_at"],
                 "pin_count": int(r["pin_count"] or 0),
@@ -807,7 +827,8 @@ class Database:
 
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
-            "SELECT id, key_prefix, routing_mode, allow_fallback FROM api_keys "
+            "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity "
+            "FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -822,6 +843,7 @@ class Database:
             "key_prefix": row["key_prefix"],
             "routing_mode": row["routing_mode"],
             "allow_fallback": bool(row["allow_fallback"]),
+            "session_affinity": _tristate(row["session_affinity"]),
         }
 
     async def touch_api_key(self, key_id: int) -> None:
