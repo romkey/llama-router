@@ -90,14 +90,14 @@ class Settings(BaseSettings):
         u = make_url(async_url or self.effective_database_url())
         dn = u.drivername
         if dn == "sqlite+aiosqlite":
-            return str(u.set(drivername="sqlite"))
-        if dn == "postgresql+asyncpg":
-            return str(u.set(drivername="postgresql+psycopg"))
-        if dn in ("mysql+asyncmy", "mysql+aiomysql"):
-            return str(u.set(drivername="mysql+pymysql"))
-        if dn.startswith("mariadb+"):
-            return str(u.set(drivername="mysql+pymysql"))
-        return str(u)
+            u = u.set(drivername="sqlite")
+        elif dn == "postgresql+asyncpg":
+            u = u.set(drivername="postgresql+psycopg")
+        elif dn in ("mysql+asyncmy", "mysql+aiomysql") or dn.startswith("mariadb+"):
+            u = u.set(drivername="mysql+pymysql")
+        # str(URL) masks the password as "***", which Alembic would then use
+        # to log in.
+        return u.render_as_string(hide_password=False)
 
 
 settings = Settings()

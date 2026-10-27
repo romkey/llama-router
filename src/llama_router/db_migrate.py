@@ -108,7 +108,10 @@ def run_upgrade_sync(sync_database_url: str) -> None:
     ini = pkg / "alembic.ini"
     cfg = Config(str(ini) if ini.exists() else None)
     cfg.set_main_option("script_location", str(pkg / "alembic"))
-    cfg.set_main_option("sqlalchemy.url", sync_database_url)
+    # Alembic's Config is a ConfigParser: "%" starts an interpolation, so
+    # percent-encoded characters in the URL (an "@" in a password is "%40")
+    # must be escaped. get_main_option() and get_section() undo it.
+    cfg.set_main_option("sqlalchemy.url", sync_database_url.replace("%", "%%"))
     _clear_revision_if_marked_head_but_schema_incomplete(sync_database_url)
     _stamp_if_full_schema_exists_without_alembic_revision(cfg, sync_database_url)
     command.upgrade(cfg, "head")
