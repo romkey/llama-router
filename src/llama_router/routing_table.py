@@ -272,6 +272,17 @@ def _chaos_eligible(
     return out
 
 
+def combined_failure_rate(model_rate: float, health: ProviderHealth) -> float:
+    """Chance a request to this candidate fails, for the penalty.
+
+    Every request outcome feeds both the model's rate and the provider's
+    request rate, so they overlap: take the larger instead of adding them.
+    Whole-check failures are a separate signal and combine independently.
+    """
+    requests = max(model_rate, health.request_failure_rate)
+    return 1.0 - (1.0 - requests) * (1.0 - health.probe_failure_rate)
+
+
 def _cold_ms(c: Candidate) -> tuple[float, float]:
     """Startup cost for (latency, balanced) scoring."""
     if c.is_hot:
@@ -312,9 +323,11 @@ def score(c: Candidate) -> None:
     # is how long the call takes, measured end to end on real requests.
     service = c.service_ms
     c.scores = {
+        # Unmeasured is not instant: a provider with a real measurement must
+        # not lose to one nobody has timed yet.
         "latency": cold
         + rtt
-        + (service or 0.0)
+        + (service if service is not None else UNKNOWN_SERVICE_MS)
         + oversize
         + f * FAILURE_PENALTY["latency"],
         "throughput": (service if service is not None else UNKNOWN_SERVICE_MS)
@@ -501,7 +514,7 @@ def build_table(
                     service_ms=ms.duration_ms.value if ms else None,
                     model_failure_rate=model_rate,
                     health=health,
-                    failure_rate=1.0 - (1.0 - model_rate) * (1.0 - health.failure_rate),
+                    failure_rate=combined_failure_rate(model_rate, health),
                     circuit_open=model_circuit or health.circuit_open,
                     oversize=oversize,
                     endpoint_support=sup,

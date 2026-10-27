@@ -317,3 +317,34 @@ async def test_dashboard_shows_provider_health(db: Database, pm: ProviderManager
     assert "Provider health" in page and "p50 12 ms" in page
     assert "Balanced (default)" in page
     assert table["provider_health"][str(p.id)]["score"] == 100
+
+
+async def test_unmeasured_service_time_is_not_instant(
+    db: Database, pm: ProviderManager
+):
+    measured = await _provider(db, "measured", ["m"])
+    await _provider(db, "unmeasured", ["m"])
+    for _ in range(3):
+        pm.stats.record_request(
+            measured.id, "m", ok=True, endpoint_class="embed", duration_ms=300
+        )
+    rt = Router(db, pm)
+    for mode in ("latency", "throughput", "balanced"):
+        r = await rt.route("m", "/v1/embeddings", _mode(mode))
+        assert r.provider.id == measured.id, mode
+
+
+def test_model_and_provider_failures_are_not_double_counted(clock: FakeClock):
+    from llama_router.routing_table import combined_failure_rate
+
+    stats = ProviderStats(clock=clock)
+    # A single-model provider: every outcome lands in both rates.
+    for ok in (False, True, True, False, True):
+        stats.record_request(1, "m", ok=ok)
+    model_rate = stats.model(1, "m").failures.current(clock())
+    health = stats.provider_health(1)
+    assert model_rate == pytest.approx(health.request_failure_rate)
+    assert combined_failure_rate(model_rate, health) == pytest.approx(model_rate)
+    # Whole-check failures still add on top.
+    stats.record_check(1, ok=False)
+    assert combined_failure_rate(model_rate, stats.provider_health(1)) > model_rate
