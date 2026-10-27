@@ -259,6 +259,19 @@ curl -X POST http://localhost/api/routing-table/rebuild
 
 The **API Keys** tab shows each model's first choice per mode.
 
+### Explaining a route
+
+The **Route Explorer** on the **API Keys** tab shows where a request would go right now, and why, without sending it. Pick a model, an endpoint, and a service level: a routing mode, or an API key to apply that key's mode, fallback setting and pins. It walks the fallback chain and lists every provider that has the model, with its score, the live queue, the measurements behind the score, and why any provider was left out. A provider can be left out because it is offline, doesn't serve that API, is failing, is missing the endpoint, or because another provider is pinned. The explanation uses the same table and code path as real requests.
+
+The same is available as JSON:
+
+```bash
+curl 'http://localhost/api/routing/explain?model=llama3.2:latest&endpoint=/api/chat&mode=latency'
+curl 'http://localhost/api/routing/explain?model=llama3.2:latest&key_id=1'
+```
+
+`endpoint` defaults to `/v1/chat/completions`. `mode` is `balanced`, `latency`, `throughput` or `chaos`, and defaults to `balanced`. Add `allow_fallback=false` to skip fallbacks. `key_id` is admin-only.
+
 ## Model Fallbacks
 
 You can configure fallback models so that when a requested model is unavailable (no provider has it or all providers with it are offline), the router transparently tries an alternative model.

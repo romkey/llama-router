@@ -774,6 +774,110 @@
                         {% endif %}
                     </div>
                 </div>
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5 class="mb-0">Route Explorer</h5>
+                    </div>
+                    <div class="card-body small">
+                        <p class="text-muted mb-2">See where a request would go right now, and why, without sending it.</p>
+                        <form id="route-explorer" class="row g-2 align-items-end" onsubmit="explainRoute(event)">
+                            <div class="col-12">
+                                <label for="rx-model" class="form-label small text-muted mb-1">Model</label>
+                                <input id="rx-model" class="form-control form-control-sm" list="rx-models" required placeholder="llama3.2:latest">
+                                <datalist id="rx-models">
+                                    {% for model, _picks in routing_summary.rows %}<option value="{{ model }}"></option>{% endfor %}
+                                </datalist>
+                            </div>
+                            <div class="col-sm-6">
+                                <label for="rx-endpoint" class="form-label small text-muted mb-1">Endpoint</label>
+                                <select id="rx-endpoint" class="form-select form-select-sm">
+                                    {% for ep in routing_summary.endpoints %}<option value="{{ ep }}" {% if ep == routing_summary.default_endpoint %}selected{% endif %}>{{ ep }}</option>{% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-sm-6">
+                                <label for="rx-level" class="form-label small text-muted mb-1">Service level</label>
+                                <select id="rx-level" class="form-select form-select-sm">
+                                    <optgroup label="Routing mode">
+                                        <option value="mode:balanced" selected>Balanced</option>
+                                        <option value="mode:latency">Minimal latency</option>
+                                        <option value="mode:throughput">Maximum tokens/sec</option>
+                                        <option value="mode:chaos">Chaos</option>
+                                    </optgroup>
+                                    {% if api_keys %}
+                                    <optgroup label="API key (mode, fallback and pins)">
+                                        {% for k in api_keys %}<option value="key:{{ k.id }}">{{ k.key_prefix }} ({{ k.routing_mode }}{% if k.pin_count %}, {{ k.pin_count }} pins{% endif %})</option>{% endfor %}
+                                    </optgroup>
+                                    {% endif %}
+                                </select>
+                            </div>
+                            <div class="col-12">
+                                <button class="btn btn-sm btn-outline-primary" type="submit"><i class="bi bi-signpost-split me-1"></i>Explain route</button>
+                            </div>
+                        </form>
+                        <div id="rx-result" class="mt-3" aria-live="polite"></div>
+                    </div>
+                </div>
+                <script>
+                (function () {
+                    function esc(v) {
+                        return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
+                            return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+                        });
+                    }
+                    function ms(v) { return v == null ? "—" : (v >= 1000 ? (v / 1000).toFixed(1) + " s" : Math.round(v) + " ms"); }
+                    function num(v, d) { return v == null ? "—" : Number(v).toFixed(d); }
+                    function step(s) {
+                        var rows = (s.candidates || []).map(function (c) {
+                            var why = c.excluded ? '<span class="text-danger">' + esc(c.excluded) + "</span>" :
+                                (c.rank === 1 ? '<span class="text-success fw-semibold">chosen</span>' : "#" + c.rank);
+                            var facts = [];
+                            if (c.hot) facts.push("loaded");
+                            if (c.startup_ms != null) facts.push("startup " + ms(c.startup_ms));
+                            if (c.ttft_ms != null) facts.push("first token " + ms(c.ttft_ms));
+                            if (c.tokens_per_second != null) facts.push(num(c.tokens_per_second, 1) + " tok/s");
+                            if (c.rtt_ms != null) facts.push("rtt " + num(c.rtt_ms, 1) + " ms");
+                            if (c.active_requests) facts.push(c.active_requests + " in flight");
+                            if (c.failure_rate) facts.push(Math.round(c.failure_rate * 100) + "% failing");
+                            return "<tr><td>" + esc(c.provider) + '</td><td class="text-end">' +
+                                (c.total_score == null ? "—" : num(c.total_score, 0)) + "</td><td>" + why +
+                                '<div class="text-muted">' + esc(facts.join(" · ")) + "</div></td></tr>";
+                        }).join("");
+                        return '<div class="fw-semibold mt-2"><code>' + esc(s.model) + "</code> — " + esc(s.outcome) + "</div>" +
+                            (rows ? '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Provider</th><th class="text-end">Score</th><th>Result</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "");
+                    }
+                    window.explainRoute = async function (ev) {
+                        ev.preventDefault();
+                        var out = document.getElementById("rx-result");
+                        var level = document.getElementById("rx-level").value.split(":");
+                        var params = new URLSearchParams({
+                            model: document.getElementById("rx-model").value.trim(),
+                            endpoint: document.getElementById("rx-endpoint").value
+                        });
+                        params.set(level[0] === "key" ? "key_id" : "mode", level[1]);
+                        out.innerHTML = '<div class="text-muted">Working…</div>';
+                        try {
+                            var resp = await fetch("/api/routing/explain?" + params.toString());
+                            var data = await resp.json();
+                            if (!resp.ok) { out.innerHTML = '<div class="text-danger">' + esc(data.detail || resp.statusText) + "</div>"; return; }
+                            var html = '<div class="alert ' + (data.chosen ? "alert-success" : "alert-warning") + ' py-2 mb-2">' + esc(data.summary) + "</div>";
+                            if (data.chosen && data.chosen.backend_model !== data.chosen.model) {
+                                html += '<div class="text-muted">Sent to the backend as <code>' + esc(data.chosen.backend_model) + "</code>.</div>";
+                            }
+                            if (data.fallback_chain && data.fallback_chain.length > 1) {
+                                html += '<div class="text-muted">Fallback chain: ' + data.fallback_chain.map(function (m) { return "<code>" + esc(m) + "</code>"; }).join(" → ") + "</div>";
+                            }
+                            if (data.chaos_pool) {
+                                html += '<ul class="mb-0 ps-3">' + data.chaos_pool.map(function (p) { return "<li>" + esc(p.provider) + ' <span class="text-muted">(' + p.models.length + " models)</span></li>"; }).join("") + "</ul>";
+                            }
+                            (data.steps || []).forEach(function (s) { html += step(s); });
+                            html += '<div class="text-muted mt-2">Routing table v' + esc(data.table_version) + ". Lower scores win.</div>";
+                            out.innerHTML = html;
+                        } catch (e) {
+                            out.innerHTML = '<div class="text-danger">' + esc(e) + "</div>";
+                        }
+                    };
+                })();
+                </script>
                 {% endif %}
             </div>
             <div class="col-lg-7">
