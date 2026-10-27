@@ -2,8 +2,8 @@
 
 ``POST /v1/systemone`` (Jev's route) and ``POST /v1/decisions`` take a state
 and typed questions and answer each with a probability distribution; see
-:mod:`llama_router.decisions`. An upstream that serves the same route gets
-the request as it came. Any other provider that serves chat completions
+:mod:`llama_router.decisions`. An upstream that serves either route gets the
+request as it came, on the route it serves (the bodies are the same). Any other provider that serves chat completions
 answers it from first-token logprobs, with the stored calibration for the
 model and question applied.
 
@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from .. import decision_service as svc
@@ -29,7 +29,9 @@ from ..auth import routing_preferences_from_request
 from ..endpoints import normalize_endpoint
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import log_request_background
-from ..routing_table import decides_natively
+from ..router import RoutingPreferences
+from ..routing_table import native_decision_path
+from ..worker_link.protocol import refused as worker_refused
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -43,18 +45,51 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
     ]
 
 
+async def _pass_through(pm, provider, path: str, body: dict) -> dict | None:
+    """Send the request on as it came; None when a worker will not relay it.
+
+    A worker older than decision support refuses the route with 403. Its
+    stored probe result can still say otherwise, so the request is emulated
+    instead and the worker is probed again.
+    """
+    try:
+        return await svc.native(pm, provider.id, path, body)
+    except httpx.HTTPStatusError as exc:
+        resp = exc.response
+        if not (provider.is_worker and worker_refused(resp.status_code, resp.text)):
+            raise
+    logger.info(
+        "Worker %s does not relay %s; answering from logprobs instead",
+        provider.name,
+        path,
+    )
+    pm.schedule_probe(provider.id, "worker refused decisions")
+    return None
+
+
 @router.post("/v1/systemone")
 @router.post("/systemone")
 @router.post("/v1/decisions")
 @router.post("/decisions")
 async def decide(request: Request):
-    endpoint_path = request.url.path
-    path = normalize_endpoint(endpoint_path)
-    assert path is not None
     try:
         body = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSON body required")
+    prefs = await routing_preferences_from_request(deps.get_db(), request)
+    return await serve(request, body, request.url.path, prefs)
+
+
+async def serve(
+    request: Request,
+    body: Any,
+    endpoint_path: str,
+    prefs: RoutingPreferences | None,
+) -> Response:
+    """Answer a decision request as *endpoint_path* would. The dashboard's
+    try form calls this too, with no key preferences."""
+    path = normalize_endpoint(endpoint_path)
+    assert path is not None
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
     try:
@@ -67,7 +102,6 @@ async def decide(request: Request):
     rt = deps.get_router()
     pm = deps.get_pm()
     db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
     for attempt in range(2):
         result = await rt.route(req.model, path, prefs)
@@ -89,12 +123,14 @@ async def decide(request: Request):
             request_body=body,
         )
         calibrated = 0
+        native_path = native_decision_path(provider, path)
         try:
-            if decides_natively(provider, path):
-                out = await svc.native(
-                    pm, provider.id, path, {**body, "model": result.backend_model}
+            out = None
+            if native_path is not None:
+                out = await _pass_through(
+                    pm, provider, native_path, {**body, "model": result.backend_model}
                 )
-            else:
+            if out is None:
                 inputs = rt.inputs
                 names = svc.model_names(
                     (

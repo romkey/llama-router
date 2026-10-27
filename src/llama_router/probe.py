@@ -18,7 +18,8 @@ other / transport       error
 ======================  ===========================================
 
 Some servers (LM Studio, for example) answer unknown routes with 200 and an
-"unexpected endpoint" message; those count as missing.
+"unexpected endpoint" message; those count as missing. So does a path a
+worker refuses to relay (403 "worker does not allow ...").
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import httpx
 
 from .cloud_presets import preset_for_url
 from .provider_secrets import auth_headers
+from .worker_link.protocol import refused as worker_refused
 
 _TIMEOUT = httpx.Timeout(4.0)
 _CONCURRENCY = 12
@@ -332,6 +334,10 @@ def _classify(resp: httpx.Response) -> str:
             return MISSING
         return AVAILABLE
     if code in (401, 403):
+        # A worker relaying the probe refuses paths it does not serve; that
+        # route is missing through the worker, not behind a key.
+        if worker_refused(code, resp.text):
+            return MISSING
         return NEEDS_KEY
     if code in (400, 405, 409, 415, 422):
         return EXISTS
@@ -551,6 +557,12 @@ async def probe_url(
             for ep in CATALOG
             if ep.family in families or (ep.method, ep.path) in _OPENAI_ROUTES
         ]
+        if preset.endpoints:
+            # A service that declares its routes is probed on those alone.
+            served = set(preset.endpoints)
+            catalog = [
+                ep for ep in CATALOG if ep.path in served or "/v1" + ep.path in served
+            ]
     started = time.monotonic()
     sem = asyncio.Semaphore(_CONCURRENCY)
     async with httpx.AsyncClient(

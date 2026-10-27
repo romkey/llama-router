@@ -149,7 +149,15 @@ class OpenAIClient:
         resp.raise_for_status()
         data = resp.json()
         # Most servers wrap the list in {"data": [...]}; some return it bare.
-        items = data if isinstance(data, list) else data.get("data", [])
+        # TypeSafe's is {"models": [{"name": ...}]}.
+        if isinstance(data, list):
+            items = data
+        else:
+            items = data.get("data") or [
+                {"id": m.get("name"), **m}
+                for m in data.get("models") or []
+                if isinstance(m, dict)
+            ]
         out = []
         for m in items:
             if not isinstance(m, dict) or not m.get("id"):

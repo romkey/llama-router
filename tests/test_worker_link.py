@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 
 import httpx
@@ -16,7 +17,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
 from llama_router.database import Database
+from llama_router.llamacpp_api import deps as v1_deps
 from llama_router.models import ProviderStatus, ProviderProtocol
+from llama_router.probe import MISSING, NEEDS_KEY, _classify
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.worker_link import protocol as p
@@ -25,6 +28,7 @@ from llama_router.worker_link.hub import (
     worker_token_hash,
     worker_token_prefix,
 )
+from llama_router.worker_link import worker as worker_mod
 from llama_router.worker_link.worker import (
     WorkerClient,
     normalize_hub_url,
@@ -72,10 +76,24 @@ def test_filter_headers_drops_hop_by_hop_and_credentials() -> None:
         ("POST", "/api/../admin", False, False),
         ("POST", "//api/chat", False, False),
         ("GET", "/users", True, False),
+        ("POST", "/v1/systemone", False, True),
+        ("POST", "/v1/decisions", False, True),
+        ("POST", "/systemone", False, True),
+        ("GET", "/v1/decisions", False, False),
     ],
 )
 def test_path_allowed(method: str, path: str, admin: bool, ok: bool) -> None:
     assert path_allowed(method, path, admin) is ok
+
+
+def test_probe_reads_worker_refusal_as_missing() -> None:
+    req = httpx.Request("POST", "http://worker/v1/systemone")
+    refusal = httpx.Response(
+        403, json={"error": "worker does not allow POST /v1/systemone"}, request=req
+    )
+    assert _classify(refusal) == MISSING
+    keyed = httpx.Response(403, json={"error": "invalid api key"}, request=req)
+    assert _classify(keyed) == NEEDS_KEY
 
 
 @pytest.mark.parametrize(
@@ -96,7 +114,14 @@ def test_normalize_hub_url(raw: str, expected: str) -> None:
 
 def _fake_ollama() -> tuple[FastAPI, dict]:
     app = FastAPI()
-    seen: dict = {"chat_bodies": [], "stream_cancelled": False, "api_keys": []}
+    seen: dict = {
+        "chat_bodies": [],
+        "stream_cancelled": False,
+        "api_keys": [],
+        "v1_chat_bodies": [],
+        "systemone_bodies": [],
+        "serve_systemone": True,
+    }
 
     @app.get("/api/version")
     async def version(request: Request):
@@ -139,6 +164,37 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
     async def embed(request: Request):
         body = await request.json()
         return JSONResponse({"embeddings": [[0.1] * 4], "echo": body})
+
+    @app.post("/v1/chat/completions")
+    async def v1_chat(request: Request):
+        body = await request.json()
+        if not body.get("messages"):
+            return JSONResponse({"error": "messages required"}, status_code=422)
+        seen["v1_chat_bodies"].append(body)
+        choice: dict = {"message": {"role": "assistant", "content": "A"}}
+        if body.get("logprobs"):
+            top = [
+                {"token": "A", "logprob": math.log(0.9)},
+                {"token": "B", "logprob": math.log(0.1)},
+            ][: body.get("top_logprobs") or 1]
+            choice["logprobs"] = {"content": [{**top[0], "top_logprobs": top}]}
+        return {
+            "choices": [choice],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 1},
+        }
+
+    @app.post("/v1/systemone")
+    async def systemone(request: Request):
+        if not seen["serve_systemone"]:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        body = await request.json()
+        if not body.get("questions"):
+            return JSONResponse({"error": "questions required"}, status_code=422)
+        seen["systemone_bodies"].append(body)
+        return {
+            "model": body["model"],
+            "answers": {"is_urgent": {"type": "noul", "noul": 0.25}},
+        }
 
     @app.post("/api/pull")
     async def pull():
@@ -189,6 +245,8 @@ async def link(tmp_path):
     rt = Router(db, pm)
     pm.attach_router(rt)
     api_deps.init(db, pm, rt)
+    v1_deps.init(db, pm, rt)
+    await db.set_allow_unauthenticated(True)
 
     upstream_app, seen = _fake_ollama()
     up_server, up_task, up_port = await _serve(upstream_app)
@@ -218,6 +276,8 @@ async def link(tmp_path):
         "seen": seen,
         "make_worker": make_worker,
         "workers": [],
+        "rt": rt,
+        "hub_url": f"http://127.0.0.1:{hub_port}",
     }
     yield ctx
 
@@ -655,3 +715,133 @@ async def test_timeout_does_not_mark_reconnected_worker_offline(
     await pm.check_provider(await db.get_provider(pid), source="refresh")
     rows = [e for e in await db.get_request_logs(50, 0) if e.endpoint == "refresh"]
     assert rows and "reconnected" in (rows[0].request_meta or "")
+
+
+# --- decision requests through a worker ---
+
+DECISION = {
+    "model": "tiny:1b",
+    "state": "The server is down and customers are calling.",
+    "questions": {
+        "is_urgent": {
+            "type": "noul",
+            "instructions": "The message conveys urgency",
+        }
+    },
+}
+
+
+async def _decide(ctx, path: str = "/v1/systemone") -> httpx.Response:
+    async with httpx.AsyncClient(base_url=ctx["hub_url"], timeout=10) as c:
+        return await c.post(path, json=DECISION)
+
+
+async def _probed_worker(ctx) -> None:
+    """Connect the worker, probe its upstream through the socket, re-route."""
+    await _connected_worker(ctx)
+    await ctx["pm"].probe_provider(ctx["provider_id"])
+    await ctx["rt"].rebuild()
+
+
+async def test_emulated_decision_through_worker(link) -> None:
+    # The upstream behind the worker serves chat completions but no
+    # decision route of its own, so the hub asks for logprobs.
+    link["seen"]["serve_systemone"] = False
+    await _probed_worker(link)
+    prov = await link["db"].get_provider(link["provider_id"])
+    assert prov.endpoint_state("/v1/decisions") == "missing"
+
+    resp = await _decide(link, "/v1/decisions")
+    assert resp.status_code == 200, resp.text
+    answer = resp.json()["answers"]["is_urgent"]
+    assert answer["type"] == "noul"
+    assert answer["noul"] == pytest.approx(0.9)
+    sent = link["seen"]["v1_chat_bodies"][-1]
+    assert sent["logprobs"] is True and sent["top_logprobs"] > 1
+    assert sent["max_tokens"] == 1
+    assert link["seen"]["systemone_bodies"] == []
+
+
+async def test_native_decision_passes_through_worker(link) -> None:
+    await _probed_worker(link)
+    prov = await link["db"].get_provider(link["provider_id"])
+    assert prov.endpoint_state("/v1/systemone") == "supported"
+
+    resp = await _decide(link, "/v1/systemone")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answers"]["is_urgent"] == {"type": "noul", "noul": 0.25}
+    (sent,) = link["seen"]["systemone_bodies"]
+    assert sent["questions"] == DECISION["questions"]
+    assert link["seen"]["v1_chat_bodies"] == []
+
+
+async def test_older_worker_gets_decisions_as_logprobs(link, monkeypatch) -> None:
+    # A worker from before decision support refuses the routes with 403.
+    decision_paths = {"/v1/decisions", "/decisions", "/v1/systemone", "/systemone"}
+    old_paths = {k for k in worker_mod._INFERENCE_PATHS if k[1] not in decision_paths}
+    monkeypatch.setattr(worker_mod, "_INFERENCE_PATHS", old_paths)
+    await _probed_worker(link)
+    pm, db, pid = link["pm"], link["db"], link["provider_id"]
+    prov = await db.get_provider(pid)
+    # The refusal reads as missing, not as a route behind a key.
+    assert prov.endpoint_state("/v1/systemone") == "missing"
+
+    resp = await _decide(link, "/v1/systemone")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answers"]["is_urgent"]["noul"] == pytest.approx(0.9)
+    assert link["seen"]["systemone_bodies"] == []
+
+    # A probe stored before the hub knew about refusals still says the route
+    # is there; the refusal sends the request to logprobs and re-probes.
+    caps = dict(prov.capabilities or {})
+    caps["endpoints"] = [
+        {**e, "state": "needs_key"} if e["path"] == "/v1/systemone" else e
+        for e in caps["endpoints"]
+    ]
+    await db.set_provider_capabilities(pid, caps)
+    await link["rt"].rebuild()
+    probes: list[str] = []
+    monkeypatch.setattr(pm, "schedule_probe", lambda i, r="": probes.append(r))
+    before = len(link["seen"]["v1_chat_bodies"])
+
+    resp = await _decide(link, "/v1/systemone")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answers"]["is_urgent"]["noul"] == pytest.approx(0.9)
+    assert len(link["seen"]["v1_chat_bodies"]) == before + 1
+    assert link["seen"]["systemone_bodies"] == []
+    assert probes == ["worker refused decisions"]
+
+
+async def test_worker_is_probed_when_it_connects_with_a_new_version(
+    link, monkeypatch
+) -> None:
+    pm, pid = link["pm"], link["provider_id"]
+    real_probe = pm.probe_provider
+    probes: list[str] = []
+    monkeypatch.setattr(pm, "schedule_probe", lambda i, r="": probes.append(r))
+    handled: list[object] = []
+    on_connect = pm.worker_hub._on_connect
+
+    async def counted(conn) -> None:
+        await on_connect(conn)
+        handled.append(conn)
+
+    monkeypatch.setattr(pm.worker_hub, "_on_connect", counted)
+    await _connected_worker(link)
+    await _wait_for(lambda: len(handled) == 1)
+    assert probes == ["worker connected"]
+    await real_probe(pid)
+
+    async def reconnect() -> None:
+        seen = len(handled)
+        await pm.worker_hub.disconnect(pid, 1001, "restart")
+        await _wait_for(lambda: len(handled) > seen, timeout=10)
+
+    # Back as the same version: nothing new to relay.
+    await reconnect()
+    assert probes == ["worker connected"]
+
+    # Back upgraded: what it relays may have changed.
+    monkeypatch.setattr(worker_mod, "__version__", "99.0.0")
+    await reconnect()
+    assert probes == ["worker connected", "worker connected"]

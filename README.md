@@ -122,7 +122,7 @@ LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 
 The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
 
-**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
 **Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 
@@ -235,7 +235,7 @@ curl -X POST http://localhost/api/cache/clear
 
 ## Cloud Services
 
-The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud and Azure OpenAI. A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.
+The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud, Azure OpenAI and TypeSafe (Jev, for [decision requests](#decision-models) only). A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.
 
 To attach a service without the dashboard, set its key in the environment. At startup the router creates a provider for each preset whose key is set, or updates the key of the one it created before:
 
@@ -490,17 +490,27 @@ curl http://localhost:8080/v1/systemone -H 'Content-Type: application/json' -d '
 }'
 ```
 
-`/v1/decisions` is the same API under a vendor-neutral name. Both routes are also served without `/v1`. Routing, API key policies, pins and fallbacks apply as for chat.
+`/v1/decisions` is the same API under a vendor-neutral name. Both routes are also served without `/v1`, and on the Ollama API port (11434) as well as 8080. Routing, API key policies, pins and fallbacks apply as for chat.
 
 How a request is answered:
 
-- **Passed through.** If the provider's last probe found the same route upstream, for example LiteLLM in front of Jev, the request goes there unchanged apart from the model name.
+- **Passed through.** If the provider serves either decision route upstream (its last probe found one, or it is TypeSafe's own API), the request goes there unchanged apart from the model name. The two routes take the same body, so a `/v1/decisions` request reaches an upstream that has only `/v1/systemone`.
 - **Emulated.** Otherwise each question becomes a one-token chat completion with logprobs, all sent to one provider at once. The answer is read from the probabilities of the option labels. llama.cpp, vLLM and most OpenAI-compatible servers support this.
 - **No logprobs.** A provider that answers without logprobs isn't offered for decisions for an hour, and the request is routed once more.
+- **Workers.** A hub sends decisions to its workers the same way. A worker that relays its own router answers them there; an older worker that doesn't relay decision routes gets them emulated. See [docs/workers.md](docs/workers.md#decision-requests).
 
-Local chat models are not trained for calibrated answers. In testing, choice questions came out accurate and well calibrated. Yes/no questions leaned toward yes, and score questions drifted toward the middle level. Calibrations correct this per model and question wording, with a temperature and an offset per answer:
+Local chat models are not trained for calibrated answers. In testing, choice questions came out accurate and well calibrated. Yes/no questions leaned toward yes, and score questions drifted toward the middle level. Calibrations correct this per model and question wording, with a temperature and an offset per answer.
+
+The dashboard's **Decisions** page (`/decisions`) does this by hand. Pick a model, write the question, and paste labelled states, one per line as `answer<TAB>state` or as a JSON list. The router asks the model about each state, fits a calibration from its uncalibrated answers, and saves it. It reports accuracy and log loss before and after, with each state scored by a fit that did not see it: leave-one-out up to 50 states, 10-fold above that, at most 500. On 36 hand-labelled support tickets, Llama 3.2 3B's frustration score went from 33% to 72% accurate. The same page lists and deletes calibrations and answers test questions, with calibrations applied. A provider that serves the decision route natively can't be calibrated.
+
+The same thing over the dashboard API:
 
 ```bash
+# Fit from labelled states: asks the model, fits, stores, reports before/after
+curl -X POST http://localhost/api/decisions/calibrations/fit -H 'Content-Type: application/json' \
+  -d '{"model": "llama3.2", "question": {"type": "score", "instructions": "How frustrated does the customer appear?",
+       "criteria": ["Calm", "Frustrated but civil", "Very angry"]},
+       "examples": [{"state": "You charged my card after I cancelled. Fix it. Today.", "answer": 2}, ...]}'
 # Given directly
 curl -X POST http://localhost/api/decisions/calibrations -H 'Content-Type: application/json' \
   -d '{"model": "llama3.1:8b", "question": {"type": "noul", "instructions": "The message conveys urgency"},
@@ -511,6 +521,18 @@ curl -X POST http://localhost/api/decisions/calibrations -H 'Content-Type: appli
 curl http://localhost/api/decisions/calibrations
 curl -X DELETE http://localhost/api/decisions/calibrations/1
 ```
+
+### TypeSafe's hosted Jev
+
+With a TypeSafe API key ([console.typesafe.ai/keys](https://console.typesafe.ai/keys)), the router can send decision requests to the real Jev. Add a provider from the **TypeSafe (Jev)** preset, or set the key in the environment:
+
+```bash
+LLAMA_ROUTER_PROVIDER_TYPESAFE_API_KEY=...
+```
+
+The provider lists the models TypeSafe's model list returns (the aliases `jev-latest` and `jev-preview` today), and always `jev-latest`; versioned names such as `jev-1.14.0` can be added by hand on its page. Both `/v1/systemone` and `/v1/decisions` requests for those models are passed through to `https://api.typesafe.ai/v1/systemone` with your key. The preset declares that Jev serves decisions and nothing else, so the router never offers it for chat, completions, embeddings or any other route, leaves it out of chaos mode, and never auto-benchmarks it. Calibrations are not applied to answers that come from Jev. Name a Jev model in the request, or make it a fallback or pin, to choose it over local emulation.
+
+TypeSafe bills each request to your key. Before you proxy traffic through the router, and above all before you let other people's keys reach it, check that [TypeSafe's terms](https://docs.typesafe.ai/legal) allow it for your use; this project has not checked them for you.
 
 The design, measurements and plan are in [docs/decision-models-plan.md](docs/decision-models-plan.md).
 
