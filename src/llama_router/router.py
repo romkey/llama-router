@@ -42,6 +42,7 @@ from .routing_table import (
     RoutingTable,
     alias_groups,
     build_table,
+    reaches,
     load_inputs,
 )
 
@@ -733,7 +734,7 @@ class Router:
                 continue
             if p.status == ProviderStatus.OFFLINE:
                 reason = "provider is offline"
-            elif protocol is not None and p.protocol.value != protocol:
+            elif not reaches(p, protocol):
                 api = _API_NAMES.get(protocol, protocol)
                 reason = f"provider does not serve the {api} API"
             else:

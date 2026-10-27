@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..auth import routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import StreamLogger, log_request_background
+from ..translate import TranslationError
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,12 @@ async def generate(request: Request):
 
     assert provider.id is not None
     body["model"] = route_result.backend_model
-    client = pm.get_client(provider.id)
+    client = pm.ollama_api_client(provider.id)
+    if hasattr(client, "validate"):
+        try:
+            client.validate("generate", body)
+        except TranslationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     stream = body.get("stream", True)
     start = time.monotonic()
 

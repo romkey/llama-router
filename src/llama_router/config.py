@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     probe_max_age_hours: float = 24.0
     # Probe providers automatically (on add, edit, recovery and when stale).
     auto_probe_enabled: bool = True
+    # Serve Ollama API requests (/api/chat, /api/generate, /api/embed) from
+    # OpenAI-style providers too, translating both ways.
+    ollama_api_translation: bool = True
     benchmark_prompt: str = "Write a short sentence about the weather."
     # Idle auto-benchmarking. Defaults for the dashboard settings of the same
     # name; the dashboard values win once saved.

@@ -34,6 +34,7 @@ from .models import (
     measured_cold_start,
 )
 from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
+from .config import settings
 from .pricing import Price, PriceBook
 from .upstream_url import LOCALITIES
 
@@ -290,15 +291,36 @@ def endpoint_support(provider: Provider, path: str) -> str:
     return provider.endpoint_state(path)
 
 
+# Ollama routes an OpenAI-style provider serves through translation, and the
+# route the translated request uses there.
+TRANSLATED_ROUTES = {
+    "/api/chat": "/v1/chat/completions",
+    "/api/generate": "/v1/chat/completions",
+    "/api/embed": "/v1/embeddings",
+    "/api/embeddings": "/v1/embeddings",
+}
+
+
 def serves(provider: Provider, protocol: str | None) -> bool:
-    """Whether *provider* can take a request that needs *protocol*."""
+    """Whether *provider* speaks *protocol* natively (None: any)."""
     return protocol is None or provider.protocol.value == protocol
+
+
+def translates(provider: Provider, protocol: str | None) -> bool:
+    """Whether *provider* takes *protocol* requests through translation."""
+    return (
+        protocol == "ollama" and provider.is_openai and settings.ollama_api_translation
+    )
+
+
+def reaches(provider: Provider, protocol: str | None) -> bool:
+    return serves(provider, protocol) or translates(provider, protocol)
 
 
 def _chaos_eligible(
     provider: Provider, models: list[ProviderModel], protocol: str | None
 ) -> list[str]:
-    if not serves(provider, protocol):
+    if not reaches(provider, protocol):
         return []
     return [m.name for m in models]
 
@@ -534,11 +556,13 @@ def build_table(
         table.health[pid] = health
         gpu_bytes = p.gpu_ram_bytes
         # Endpoint support depends only on the provider, not the model.
-        support: dict[str, str] = {
-            path: endpoint_support(p, path)
-            for path, (protocol, _cls) in ENDPOINTS.items()
-            if serves(p, protocol)
-        }
+        support: dict[str, str] = {}
+        for path, (protocol, _cls) in ENDPOINTS.items():
+            if serves(p, protocol):
+                support[path] = endpoint_support(p, path)
+            elif translates(p, protocol) and path in TRANSLATED_ROUTES:
+                # The probe knows the route the translated request lands on.
+                support[path] = endpoint_support(p, TRANSLATED_ROUTES[path])
 
         for m in models:
             backend = m.backend_name
