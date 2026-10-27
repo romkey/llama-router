@@ -184,6 +184,10 @@ _TABLES: list[tuple[str, list[str]]] = [
             "updated_at",
         ],
     ),
+    (
+        "api_key_decision_policies",
+        ["api_key_id", "policy", "created_at", "updated_at"],
+    ),
 ]
 
 # Tables with a PostgreSQL sequence on ``id`` (reset after copy).

@@ -1,4 +1,4 @@
-"""Dashboard API for decision-question calibrations.
+"""Dashboard API for decision-question calibrations and key policies.
 
 A calibration belongs to one model and one question wording (see
 :func:`llama_router.decisions.question_key`). It is either given directly
@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
 from .. import decisions as d
+from ..decision_policy import parse_policy
 from . import deps
 
 router = APIRouter()
@@ -132,4 +133,57 @@ async def api_set_calibration(request: Request):
 async def api_delete_calibration(calibration_id: int):
     if not await deps.get_db().delete_decision_calibration(calibration_id):
         raise HTTPException(status_code=404, detail="calibration not found")
+    return JSONResponse({"ok": True})
+
+
+# --- Decision policies per API key (see llama_router.decision_policy) ---
+
+
+async def _require_key(db: Any, key_id: int) -> None:
+    if not any(int(k["id"]) == key_id for k in await db.list_api_keys()):
+        raise HTTPException(status_code=404, detail="API key not found")
+
+
+@router.get("/api/keys/{key_id}/decision-policy")
+async def api_get_key_policy(key_id: int):
+    db = deps.get_db()
+    await _require_key(db, key_id)
+    return JSONResponse(
+        {"id": key_id, "policy": await db.get_api_key_decision_policy(key_id)}
+    )
+
+
+@router.put("/api/keys/{key_id}/decision-policy")
+async def api_set_key_policy(key_id: int, request: Request):
+    """Set the key's policy: ``{"model", "tier"?, "gates"?}``.
+
+    ``tier`` is ``{"question": <score question>, "targets": {level: model},
+    "models"?: [requested model, ...]}``; ``gates`` maps a name to
+    ``{"question": <noul question>, "threshold": p}``.
+    """
+    db = deps.get_db()
+    await _require_key(db, key_id)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    try:
+        policy = parse_policy(body)
+    except ValidationError as exc:
+        msg = "; ".join(
+            ".".join(str(p) for p in e.get("loc", ())) + ": " + e.get("msg", "")
+            for e in exc.errors(include_url=False)
+        )
+        raise HTTPException(status_code=400, detail=f"invalid policy: {msg}")
+    stored = policy.model_dump(exclude_none=True, exclude_defaults=True)
+    await db.set_api_key_decision_policy(key_id, stored)
+    return JSONResponse({"id": key_id, "policy": stored})
+
+
+@router.delete("/api/keys/{key_id}/decision-policy")
+async def api_delete_key_policy(key_id: int):
+    db = deps.get_db()
+    await _require_key(db, key_id)
+    if not await db.delete_api_key_decision_policy(key_id):
+        raise HTTPException(status_code=404, detail="API key has no decision policy")
     return JSONResponse({"ok": True})
