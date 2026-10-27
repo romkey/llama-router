@@ -322,6 +322,36 @@
 
     <!-- ==================== BENCHMARKS TAB ==================== -->
     <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel" aria-labelledby="benchmarks-tab" tabindex="0">
+        <div class="card mb-3" id="auto-bench-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-moon-stars me-2"></i>Auto-benchmark</h5>
+                <span id="ab-state" class="badge bg-secondary">loading…</span>
+            </div>
+            <div class="card-body small">
+                <p class="text-muted mb-2">Benchmarks models while their provider is idle: missing benchmarks first, then any older than the maximum age. A real request to the provider stops its benchmark at once, and it is retried the next time the provider is idle.</p>
+                {% if not read_only %}
+                <form id="ab-form" class="row g-2 align-items-end mb-2" onsubmit="saveAutoBenchmark(event)">
+                    <div class="col-auto form-check form-switch ms-2">
+                        <input class="form-check-input" type="checkbox" id="ab-enabled">
+                        <label class="form-check-label" for="ab-enabled">Enabled</label>
+                    </div>
+                    <div class="col-auto">
+                        <label for="ab-idle" class="form-label small text-muted mb-1">Idle for (minutes)</label>
+                        <input id="ab-idle" type="number" min="0.5" step="0.5" class="form-control form-control-sm" style="width: 7rem">
+                    </div>
+                    <div class="col-auto">
+                        <label for="ab-age" class="form-label small text-muted mb-1">Re-run after (days)</label>
+                        <input id="ab-age" type="number" min="0.1" step="0.5" class="form-control form-control-sm" style="width: 7rem">
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-sm btn-outline-primary" type="submit">Save</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="checkAutoBenchmark()">Check now</button>
+                    </div>
+                </form>
+                {% endif %}
+                <div id="ab-status" aria-live="polite"></div>
+            </div>
+        </div>
         <div id="bulk-benchmark-status-area"></div>
         {% if not read_only %}
         <div class="d-flex justify-content-start mb-3">
@@ -381,8 +411,8 @@
                                         {% endif %}
                                     </td>
                                     <td>{{ "%.1f" | format(b.tokens_per_second) if b.tokens_per_second else "—" }}</td>
-                                    <td>{{ "%.0f ms" | format(b.startup_time_ms) if b.startup_time_ms else "—" }}</td>
-                                    <td class="text-muted small">{{ b.created_at | localtime }}</td>
+                                    <td>{% if b.startup_time_ms is not none %}{{ "%.0f ms" | format(b.startup_time_ms) }}{% else %}<span class="text-muted" title="The model was already loaded, so this run could not measure a cold start">—</span>{% endif %}</td>
+                                    <td class="text-muted small">{{ b.created_at | localtime }}{% if b.source == 'auto' %} <span class="badge bg-light text-dark border" title="Run automatically while the provider was idle">auto</span>{% endif %}</td>
                                     <td class="text-end">
                                         {% if not read_only %}
                                         <form method="post" action="/benchmarks/{{ b.id }}/delete" class="d-inline">
@@ -2588,6 +2618,78 @@ function showBulkPullStatus(data) {
         setTimeout(function() { el.remove(); }, 12000);
     }
 }
+
+var _abTimer = null;
+function _abEsc(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, function (c) {
+        return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+    });
+}
+function renderAutoBenchmark(data) {
+    var cfg = data.config || {};
+    var state = document.getElementById('ab-state');
+    if (state) {
+        state.className = 'badge ' + (!cfg.enabled ? 'bg-secondary' : (data.running.length ? 'bg-primary' : 'bg-success'));
+        state.textContent = !cfg.enabled ? 'off' : (data.running.length ? 'running' : 'waiting for idle');
+    }
+    var en = document.getElementById('ab-enabled');
+    if (en && document.activeElement !== en) en.checked = !!cfg.enabled;
+    var idle = document.getElementById('ab-idle');
+    if (idle && document.activeElement !== idle) idle.value = Math.round(cfg.idle_seconds / 30) / 2;
+    var age = document.getElementById('ab-age');
+    if (age && document.activeElement !== age) age.value = cfg.max_age_days;
+    var html = '';
+    (data.running || []).forEach(function (j) {
+        html += '<div><span class="spinner-border spinner-border-sm me-1"></span>Benchmarking <code>' + _abEsc(j.model) + '</code> on ' + _abEsc(j.provider_name) + ' (' + _abEsc(j.api) + ')</div>';
+    });
+    html += '<div class="text-muted">' + data.pending + ' due' + (data.backed_off ? ', ' + data.backed_off + ' paused after failing' : '') +
+        '. Done ' + data.completed + ', failed ' + data.failed + ', interrupted by traffic ' + data.interrupted + ' since start.</div>';
+    if (data.next && data.next.length) {
+        html += '<div class="mt-1">Next: ' + data.next.slice(0, 5).map(function (j) {
+            return '<code>' + _abEsc(j.model) + '</code> on ' + _abEsc(j.provider_name) + ' (' + _abEsc(j.api) + ', ' + (j.reason === 'missing' ? 'never run' : Math.round(j.age_days) + ' days old') + ')';
+        }).join(', ') + (data.next.length > 5 ? ', …' : '') + '</div>';
+    }
+    if (data.recent && data.recent.length) {
+        html += '<ul class="mb-0 mt-1 ps-3">' + data.recent.slice(0, 5).map(function (r) {
+            var res = r.outcome === 'ok' ? (r.tokens_per_second ? r.tokens_per_second.toFixed(1) + ' tok/s' : 'ok') :
+                (r.outcome === 'failed' ? '<span class="text-danger">failed: ' + _abEsc(r.error) + '</span>' : '<span class="text-warning">interrupted by a request</span>');
+            return '<li><code>' + _abEsc(r.model) + '</code> on ' + _abEsc(r.provider_name) + ' (' + _abEsc(r.api) + '): ' + res + '</li>';
+        }).join('') + '</ul>';
+    }
+    var box = document.getElementById('ab-status');
+    if (box) box.innerHTML = html;
+}
+function loadAutoBenchmark() {
+    fetch('/api/auto-benchmark').then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
+        if (data) renderAutoBenchmark(data);
+    }).catch(function () {}).finally(function () {
+        clearTimeout(_abTimer);
+        _abTimer = setTimeout(loadAutoBenchmark, 10000);
+    });
+}
+function saveAutoBenchmark(ev) {
+    ev.preventDefault();
+    if (!dashRequireWrite()) return;
+    fetch('/api/auto-benchmark', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            enabled: document.getElementById('ab-enabled').checked,
+            idle_minutes: document.getElementById('ab-idle').value,
+            max_age_days: document.getElementById('ab-age').value
+        })
+    }).then(function (r) { return r.json().then(function (d) { return [r.ok, d]; }); }).then(function (res) {
+        if (!res[0]) { alert(res[1].detail || 'Could not save'); return; }
+        loadAutoBenchmark();
+    });
+}
+function checkAutoBenchmark() {
+    if (!dashRequireWrite()) return;
+    fetch('/api/auto-benchmark/check', {method: 'POST'}).then(function (r) { return r.json(); }).then(renderAutoBenchmark);
+}
+document.addEventListener('DOMContentLoaded', function () {
+    if (document.getElementById('auto-bench-card')) loadAutoBenchmark();
+});
 
 function fillMissingBenchmarks() {
     if (!dashRequireWrite()) return;

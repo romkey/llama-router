@@ -17,6 +17,33 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = httpx.Timeout(10.0, read=120.0)
 
 
+def _chat_metrics(data: dict, elapsed_s: float) -> dict[str, float | None]:
+    """Generation speed and startup from a llama.cpp chat response.
+
+    llama-server reports its own ``timings`` (prompt and generation time and
+    speed). Generation speed comes from there; startup is the rest of the
+    wall time, which is the model load when llama-server had to load it
+    (router mode) and close to zero when it was already loaded. Without
+    timings, fall back to completion tokens over wall time.
+    """
+    timings = data.get("timings") or {}
+    pps = timings.get("predicted_per_second")
+    prompt_ms = timings.get("prompt_ms")
+    predicted_ms = timings.get("predicted_ms")
+    elapsed_ms = elapsed_s * 1000
+    if isinstance(pps, (int, float)) and pps > 0:
+        startup = None
+        if isinstance(prompt_ms, (int, float)) and isinstance(
+            predicted_ms, (int, float)
+        ):
+            startup = max(0.0, elapsed_ms - prompt_ms - predicted_ms)
+        return {"startup_time_ms": startup, "tokens_per_second": float(pps)}
+    usage = data.get("usage") or {}
+    completion_tokens = usage.get("completion_tokens", 0)
+    tps = completion_tokens / elapsed_s if completion_tokens and elapsed_s > 0 else 0
+    return {"startup_time_ms": None, "tokens_per_second": tps}
+
+
 class LlamaCppClient:
     def __init__(
         self,
@@ -273,13 +300,7 @@ class LlamaCppClient:
         resp.raise_for_status()
         data = resp.json()
 
-        usage = data.get("usage", {})
-        completion_tokens = usage.get("completion_tokens", 0)
-        tps = (
-            completion_tokens / elapsed_s if completion_tokens and elapsed_s > 0 else 0
-        )
-
-        return {"startup_time_ms": 0, "tokens_per_second": tps}
+        return _chat_metrics(data, elapsed_s)
 
     async def benchmark_embed(self, model: str, prompt: str) -> dict[str, float]:
         """Run an embedding benchmark returning startup_time_ms and tokens_per_second."""
@@ -299,4 +320,5 @@ class LlamaCppClient:
         prompt_tokens = usage.get("prompt_tokens", 0)
         tps = prompt_tokens / elapsed_s if prompt_tokens and elapsed_s > 0 else 0
 
-        return {"startup_time_ms": 0, "tokens_per_second": tps}
+        # llama-server does not report a load time for embeddings.
+        return {"startup_time_ms": None, "tokens_per_second": tps}

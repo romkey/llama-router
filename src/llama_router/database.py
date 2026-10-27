@@ -519,14 +519,15 @@ class Database:
     async def save_benchmark(self, result: BenchmarkResult) -> None:
         await self._execute(
             "INSERT INTO benchmarks "
-            "(provider_id, model_name, protocol, startup_time_ms, tokens_per_second) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "(provider_id, model_name, protocol, startup_time_ms, tokens_per_second, "
+            "source) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 result.provider_id,
                 result.model_name,
                 result.protocol,
                 result.startup_time_ms,
                 result.tokens_per_second,
+                result.source,
             ),
         )
 
@@ -580,6 +581,7 @@ class Database:
                 "protocol": r["protocol"],
                 "startup_time_ms": r["startup_time_ms"],
                 "tokens_per_second": r["tokens_per_second"],
+                "source": r.get("source"),
                 "created_at": r["created_at"],
             }
             for r in rows
@@ -1090,6 +1092,7 @@ def _row_to_benchmark(row: Mapping[str, Any]) -> BenchmarkResult:
         protocol=row["protocol"],
         startup_time_ms=row["startup_time_ms"],
         tokens_per_second=row["tokens_per_second"],
+        source=row.get("source"),
         created_at=row["created_at"],
     )
 

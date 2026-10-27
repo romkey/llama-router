@@ -20,6 +20,7 @@ from .llamacpp_client import LlamaCppClient
 from .models import (
     BenchmarkResult,
     HotModel,
+    measured_cold_start,
     Provider,
     ProviderAddress,
     ProviderInfo,
@@ -112,6 +113,11 @@ class ProviderManager:
         self._router: Router | None = None
         # Live round-trip and request samples that feed the routing table.
         self.stats = ProviderStats()
+        # When each provider last started or finished a proxied request, for
+        # idle detection; providers with none count from process start.
+        self._started_at = time.monotonic()
+        self._last_activity: dict[int, float] = {}
+        self._activity_listeners: list[Callable[[int], None]] = []
         self._health_task: asyncio.Task | None = None
         # Why a provider with a reachable address is still not usable, shown in
         # the dashboard. Cleared once discovery succeeds.
@@ -508,8 +514,25 @@ class ProviderManager:
         """Backward compat: return Ollama client."""
         return self._ollama_clients[provider_id]
 
+    def add_activity_listener(self, fn: Callable[[int], None]) -> None:
+        """Call *fn(provider_id)* whenever a proxied request starts."""
+        self._activity_listeners.append(fn)
+
+    def idle_seconds(self, provider_id: int, now: float | None = None) -> float:
+        """Seconds since the provider last served a request (0 while busy)."""
+        if self._active_requests.get(provider_id, 0) > 0:
+            return 0.0
+        t = time.monotonic() if now is None else now
+        return max(0.0, t - self._last_activity.get(provider_id, self._started_at))
+
     def acquire(self, provider_id: int) -> None:
         self._active_requests[provider_id] += 1
+        self._last_activity[provider_id] = time.monotonic()
+        for fn in self._activity_listeners:
+            try:
+                fn(provider_id)
+            except Exception:
+                logger.exception("Activity listener failed")
 
     def release(self, provider_id: int) -> None:
         current = self._active_requests[provider_id]
@@ -521,6 +544,7 @@ class ProviderManager:
             )
             return
         self._active_requests[provider_id] = current - 1
+        self._last_activity[provider_id] = time.monotonic()
 
     @asynccontextmanager
     async def acquire_provider(self, provider_id: int):
@@ -899,9 +923,16 @@ class ProviderManager:
         provider_id: int,
         model_name: str,
         benchmark_api: str | None = None,
+        *,
+        source: str = "manual",
     ) -> BenchmarkResult:
         """Run a benchmark. Raises ``RuntimeError`` with a human-readable
-        message on failure so the caller can surface it to the user."""
+        message on failure so the caller can surface it to the user.
+
+        *source* is ``manual`` or ``auto`` (the idle auto-benchmarker). When
+        the model was already loaded, the run cannot measure a cold start, so
+        its startup time is stored as unknown rather than as near zero.
+        """
         from .request_logger import log_request
 
         provider = await self._db.get_provider(provider_id)
@@ -909,6 +940,7 @@ class ProviderManager:
             raise RuntimeError(f"Provider {provider_id} not found")
 
         backend_name = await self._db.get_backend_model_name(provider_id, model_name)
+        log_endpoint = "auto-benchmark" if source == "auto" else "benchmark"
 
         start = time.monotonic()
         protocol: str | None = None
@@ -961,8 +993,11 @@ class ProviderManager:
                 provider_id=provider_id,
                 model_name=model_name,
                 protocol=protocol,
-                startup_time_ms=metrics["startup_time_ms"],
+                # The backend's own load time says whether this was a cold
+                # start; the router's view of what is loaded can be stale.
+                startup_time_ms=measured_cold_start(metrics["startup_time_ms"]),
                 tokens_per_second=metrics["tokens_per_second"],
+                source=source,
             )
             await self._db.save_benchmark(result)
 
@@ -971,7 +1006,7 @@ class ProviderManager:
                 self._db,
                 provider=provider,
                 protocol=protocol or "unknown",
-                endpoint="benchmark",
+                endpoint=log_endpoint,
                 model=model_name,
                 duration_ms=duration,
                 source_ip="internal",
@@ -984,7 +1019,7 @@ class ProviderManager:
                 self._db,
                 provider=provider,
                 protocol=protocol or "unknown",
-                endpoint="benchmark",
+                endpoint=log_endpoint,
                 model=model_name,
                 duration_ms=duration,
                 source_ip="internal",
@@ -1000,7 +1035,7 @@ class ProviderManager:
                 self._db,
                 provider=provider,
                 protocol=protocol or "unknown",
-                endpoint="benchmark",
+                endpoint=log_endpoint,
                 model=model_name,
                 duration_ms=duration,
                 source_ip="internal",

@@ -14,6 +14,7 @@ import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.templating import Jinja2Templates
 
 from ..auth import generate_api_key, key_hash, key_prefix
@@ -27,7 +28,7 @@ from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
-from ..models import ProviderType, RequestLog
+from ..models import ProviderType, RequestLog, model_in_api
 from . import deps
 
 from .. import __version__
@@ -205,17 +206,7 @@ async def _api_key_exists(db, key_id: int) -> bool:
     return any(int(k["id"]) == int(key_id) for k in keys)
 
 
-def _model_in_api(model: object, api: str, provider_type: ProviderType) -> bool:
-    details = getattr(model, "details", None) or {}
-    if api == "ollama":
-        if "_in_ollama" in details:
-            return bool(details.get("_in_ollama"))
-        return provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
-    if api == "llamacpp":
-        if "_in_llamacpp" in details:
-            return bool(details.get("_in_llamacpp"))
-        return provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
-    return False
+_model_in_api = model_in_api
 
 
 def _cache_registry_url() -> str | None:
@@ -1992,6 +1983,38 @@ async def api_fill_missing_pulls_status(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Pull fill job not found")
     return JSONResponse({"job_id": job_id, **job})
+
+
+@router.get("/api/auto-benchmark")
+async def api_auto_benchmark_status():
+    """Idle auto-benchmark settings, what is running, what is due, recent results."""
+    return JSONResponse(jsonable_encoder(await deps.get_auto_benchmark().status()))
+
+
+@router.post("/api/auto-benchmark")
+async def api_auto_benchmark_configure(request: Request):
+    """Body: any of ``enabled`` (bool), ``idle_minutes``, ``max_age_days``."""
+    body = await request.json()
+    kwargs: dict[str, Any] = {}
+    try:
+        if "enabled" in body:
+            kwargs["enabled"] = bool(body["enabled"])
+        if body.get("idle_minutes") not in (None, ""):
+            kwargs["idle_seconds"] = round(float(body["idle_minutes"]) * 60)
+        if body.get("max_age_days") not in (None, ""):
+            kwargs["max_age_days"] = float(body["max_age_days"])
+        cfg = await deps.get_auto_benchmark().set_config(**kwargs)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(cfg.to_dict())
+
+
+@router.post("/api/auto-benchmark/check")
+async def api_auto_benchmark_check():
+    """Look for idle providers with due benchmarks now instead of at the next tick."""
+    ab = deps.get_auto_benchmark()
+    await ab.run_once()
+    return JSONResponse(jsonable_encoder(await ab.status()))
 
 
 @router.post("/api/benchmarks/fill-missing")

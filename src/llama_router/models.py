@@ -111,9 +111,40 @@ class BenchmarkResult(BaseModel):
     provider_id: int
     model_name: str
     protocol: str | None = None
+    # None when the model was already loaded, so the run could not measure a
+    # cold start.
     startup_time_ms: float | None = None
     tokens_per_second: float | None = None
+    # "manual" (dashboard or API) or "auto" (the idle auto-benchmarker).
+    source: str | None = None
     created_at: datetime | None = None
+
+
+# A load faster than this means the model was already loaded: the run did not
+# measure a cold start. Even a small model read from the page cache takes
+# longer to load.
+COLD_START_MIN_MS = 50.0
+
+
+def measured_cold_start(startup_ms: float | None) -> float | None:
+    """*startup_ms* if it is a real cold-start measurement, else None."""
+    if startup_ms is None or startup_ms < COLD_START_MIN_MS:
+        return None
+    return startup_ms
+
+
+def model_in_api(model: "ProviderModel", api: str, provider_type: ProviderType) -> bool:
+    """Whether *model* is served on the provider's *api* ("ollama"/"llamacpp")."""
+    details = model.details or {}
+    if api == "ollama":
+        if "_in_ollama" in details:
+            return bool(details.get("_in_ollama"))
+        return provider_type in (ProviderType.OLLAMA, ProviderType.BOTH)
+    if api == "llamacpp":
+        if "_in_llamacpp" in details:
+            return bool(details.get("_in_llamacpp"))
+        return provider_type in (ProviderType.LLAMACPP, ProviderType.BOTH)
+    return False
 
 
 class ProviderAddress(BaseModel):

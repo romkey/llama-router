@@ -221,7 +221,7 @@ async def test_failing_provider_is_skipped_then_retried(
 ):
     good = await _provider(db, "good", ["m"])
     bad = await _provider(db, "bad", ["m"])
-    await _bench(db, bad.id, "m", startup=10, tps=500)
+    await _bench(db, bad.id, "m", startup=60, tps=500)
     await _bench(db, good.id, "m", startup=900, tps=20)
     rt = Router(db, pm)
     assert (
@@ -290,7 +290,7 @@ async def test_recent_success_counts_as_warm(
 async def test_endpoint_missing_on_probe_is_avoided(db: Database, pm: ProviderManager):
     chat_only = await _provider(db, "chat-only", ["m"], ptype=ProviderType.LLAMACPP)
     full = await _provider(db, "full", ["m"], ptype=ProviderType.LLAMACPP)
-    await _bench(db, chat_only.id, "m", startup=10, tps=500)
+    await _bench(db, chat_only.id, "m", startup=60, tps=500)
     await _bench(db, full.id, "m", startup=900, tps=10)
     await db.set_provider_capabilities(
         chat_only.id,

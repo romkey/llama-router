@@ -9,7 +9,7 @@ An LLM router that aggregates multiple Ollama and llama.cpp backends behind unif
 - **Web Dashboard** — Bootstrap-based management UI on port 80 with provider status, model inventory, benchmarks, request log, and cache management
 - **Auto-Discovery** — Queries backends for models and capabilities on registration
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
-- **Benchmarking** — Measure startup time and tokens/sec per model per provider
+- **Benchmarking** — Measure startup time and tokens/sec per model per provider, by hand or automatically while providers are idle
 - **Precomputed Routing** — Routing tables are rebuilt in the background from models, liveness, benchmarks, measured round trips and live request outcomes, so picking a backend costs microseconds and no database work
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
 - **API Key Routing Policies** — Per-key balanced/latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
@@ -294,6 +294,45 @@ curl 'http://localhost/api/routing/explain?model=llama3.2:latest&key_id=1'
 ```
 
 `endpoint` defaults to `/v1/chat/completions`. `mode` is `balanced`, `latency`, `throughput` or `chaos`, and defaults to `balanced`. Add `allow_fallback=false` to skip fallbacks. `key_id` is admin-only.
+
+## Benchmarks
+
+Benchmarks measure each model's cold-start time and generation speed on each provider and API. Routing uses them until live requests provide better numbers. The figures come from the backends' own counters, not from timing on the router. For Ollama, that's load and generation durations. For llama.cpp, it's the server's per-request timings. A run on a model that was already loaded can't measure a cold start, so it records the speed only. Routing then keeps the last real startup measurement.
+
+### Auto-benchmark
+
+The router benchmarks models on its own while their provider is idle. It's on by default, and you can control it from the **Auto-benchmark** card on the **Benchmarks** tab or with these settings:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTO_BENCHMARK_ENABLED` | `true` | Run benchmarks automatically |
+| `AUTO_BENCHMARK_IDLE_SECONDS` | `300` | How long a provider must go without a request before it is benchmarked |
+| `AUTO_BENCHMARK_MAX_AGE_DAYS` | `7` | Benchmarks older than this are run again |
+| `AUTO_BENCHMARK_CHECK_SECONDS` | `60` | How often to look for idle providers with work |
+| `AUTO_BENCHMARK_CONCURRENCY` | `1` | Providers benchmarked at once. Each provider runs one benchmark at a time |
+
+Values saved from the dashboard override the environment.
+
+How it stays out of the way:
+
+- **Idle only.** A provider is benchmarked only after five minutes, by default, without a request. That matches Ollama's default `keep_alive`, so models have usually unloaded by then. The benchmark measures a real cold start and doesn't push out a model someone is using.
+- **Traffic wins.** A request to a provider stops its running benchmark immediately. The benchmark runs again the next time the provider is idle.
+- **Order.** Models that have never been benchmarked go first, then the oldest past the maximum age.
+- **Failures.** A benchmark that fails waits a day before it's retried.
+
+Automatic results show an **auto** badge on the Benchmarks tab, and their log entries use the `auto-benchmark` endpoint.
+
+```bash
+curl http://localhost/api/auto-benchmark          # settings, running, due, recent results
+curl -X POST http://localhost/api/auto-benchmark \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled": true, "idle_minutes": 10, "max_age_days": 3}'
+curl -X POST http://localhost/api/auto-benchmark/check   # look for idle providers now
+```
+
+### Load testing
+
+These benchmarks are quick probes, one short request each, not load tests. To see how a provider or the router holds up under concurrent traffic, point a load-testing tool such as [GuideLLM](https://github.com/vllm-project/guidellm) or `vllm bench serve` at the router's OpenAI-compatible API on port 8080. Run it at a quiet time, because it saturates the GPUs it reaches.
 
 ## Model Fallbacks
 

@@ -95,7 +95,7 @@ async def test_probe_of_the_serving_upstream_decides(db: Database, pm: ProviderM
         both.id, "http://box:11434", "http://box:8080", is_preferred=True
     )
     other = await _provider(db, "other", ["m"], ptype=ProviderType.LLAMACPP)
-    await _bench(db, both.id, "m", startup=10, tps=500, protocol="llamacpp")
+    await _bench(db, both.id, "m", startup=60, tps=500, protocol="llamacpp")
     await _bench(db, other.id, "m", startup=900, tps=10, protocol="llamacpp")
     # The Ollama URL has speech, the llama.cpp URL (which v1 calls use) does not.
     await db.set_provider_capabilities(
@@ -175,7 +175,7 @@ async def test_model_failures_on_one_endpoint_class_stay_there(
 ):
     a = await _provider(db, "a", ["m"])
     await _provider(db, "b", ["m"])
-    await _bench(db, a.id, "m", startup=10, tps=500)
+    await _bench(db, a.id, "m", startup=60, tps=500)
     for _ in range(3):
         pm.stats.record_request(a.id, "m", ok=False, endpoint_class="image")
     rt = Router(db, pm)
@@ -206,7 +206,7 @@ async def test_provider_wide_failures_open_its_circuit(
 ):
     flaky = await _provider(db, "flaky", ["m1", "m2", "m3"])
     steady = await _provider(db, "steady", ["m3"])
-    await _bench(db, flaky.id, "m3", startup=10, tps=500)
+    await _bench(db, flaky.id, "m3", startup=60, tps=500)
     await _bench(db, steady.id, "m3", startup=900, tps=10)
     # Two failures each on two other models: no single model trips its own
     # breaker, but the provider as a whole is failing.
