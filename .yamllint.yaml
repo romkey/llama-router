@@ -1,0 +1,15 @@
+# Found automatically by yamllint; lints both .yaml and .yml files.
+
+extends: default
+
+# Skip build output and caches. Reuses .gitignore so the two can't drift.
+ignore-from-file: .gitignore
+
+rules:
+  line-length:
+    max: 120
+  document-start: disable
+  # GitHub workflows use `on:`, which YAML 1.1 reads as a boolean.
+  truthy:
+    check-keys: false
+  comments-indentation: disable

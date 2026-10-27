@@ -1,0 +1,110 @@
+name: CI
+
+# Always runs, so the required "CI passed" check always reports (a
+# path-filtered workflow that doesn't run blocks the PR forever). Docs-only
+# changes skip the tests and image build instead.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Find changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.find.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # to diff against the base
+      - id: find
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # Skip tests and the image build when only docs or the license
+          # changed. Manual runs always build.
+          if [ -n "$BASE" ] && [ "$BASE" != 0000000000000000000000000000000000000000 ] \
+            && ! git diff --name-only "$BASE" HEAD | grep -qvE '(\.md$|^docs/|^LICENSE$)'; then
+            echo "::notice::Only docs changed; skipping tests and image build"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  tests:
+    name: Tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # uv installs the Python in .python-version and the locked
+      # dependencies; its cache makes that take seconds.
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked
+      - run: uv run --locked pytest
+      # The sdist and wheel build, and pip can install the wheel and run it:
+      # what `pip install` users and the PyPI release get.
+      - name: Build and pip-install the package
+        run: |
+          uv build
+          uv venv --seed "$RUNNER_TEMP/pip-test"
+          "$RUNNER_TEMP/pip-test/bin/pip" install dist/*.whl
+          "$RUNNER_TEMP/pip-test/bin/llama-router" --version
+
+  image:
+    name: Production image
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: ci/app:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      # Layers are cached in GitHub's cache, so an unchanged lockfile skips
+      # the dependency install.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          load: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: docker run --rm "$IMAGE" llama-router --version
+
+  # The one required status check: job names may change, so branch
+  # protection requires this instead.
+  passed:
+    name: CI passed
+    if: always()
+    needs: [changes, tests, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) echo "::error::A CI job finished with '$result'"; exit 1 ;;
+            esac
+          done

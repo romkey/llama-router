@@ -1,0 +1,284 @@
+name: Release
+
+# main is protected, so releases go through a PR (see docs/releasing.md in
+# python-ai-rules):
+# 1. Actions tab -> Release -> Run workflow, choosing patch, minor or major.
+#    The prepare job bumps the version on a release/vX.Y.Z branch, opens a
+#    "Release vX.Y.Z" PR, and approves the PR's CI and Lint runs (GitHub
+#    holds runs on PRs opened by a workflow until they're approved).
+# 2. Merge the PR once checks pass. The tag job tags the merge commit and
+#    the release job pushes the production image to ghcr.io and creates
+#    the GitHub Release.
+# Pushing a vX.Y.Z tag yourself also works.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version to bump (minor resets patch; major resets both)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+# One group per version: the run for a merged release/vX.Y.Z PR and any run
+# for the vX.Y.Z tag share it, so they can't publish the same release at
+# once. The button's runs and unrelated PR closes get groups of their own.
+concurrency:
+  group: >-
+    release-${{ github.event_name == 'push' && format('release/{0}', github.ref_name)
+    || github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: false
+
+env:
+  ESPHOME_VERSION: ${{ vars.ESPHOME_VERSION }}
+
+jobs:
+  prepare:
+    name: Open release PR
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40  # includes waiting up to 30 minutes for CI
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - name: Only release from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run the release from main, not $GITHUB_REF_NAME"
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # all tags, to find the latest version
+
+      # Merging a PR starts CI on main, so a release right after a merge
+      # waits for that CI rather than failing.
+      - name: Wait for CI to pass on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state() { gh run list --workflow ci.yaml --limit 1 --json status,conclusion \
+            --jq '.[] | "\(.status) \(.conclusion)"' "$@"; }
+          for i in $(seq 1 90); do  # up to 30 minutes
+            run=$(state --commit "$GITHUB_SHA")
+            case "$run" in "completed "*) break ;; esac
+            # No CI run for this commit after 2 minutes: it didn't run CI.
+            if [ -z "$run" ] && [ "$i" -ge 6 ]; then break; fi
+            if [ "$i" = 1 ]; then echo "Waiting for CI on $GITHUB_SHA to finish..."; fi
+            sleep 20
+          done
+          [ -n "$run" ] || run=$(state --branch main --status completed)
+          if [ "$run" != "completed success" ]; then
+            echo "::error::CI for this commit is '${run:-missing}', not success"
+            exit 1
+          fi
+
+      # bump-version.sh sets the version with `uv version`.
+      - uses: astral-sh/setup-uv@v10.3.2
+
+      - name: Bump version on a release branch and open a PR
+        id: pr
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(scripts/bump-version.sh "$BUMP")
+          branch="release/v$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Release v$version"
+          git push origin "$branch"
+          {
+            echo "Merge to tag and publish **v$version**. Release notes:"
+            echo
+            scripts/changelog-section.sh "$version"
+          } > "$RUNNER_TEMP/body.md"
+          url=$(gh pr create --base main --head "$branch" --title "Release v$version" \
+            --body-file "$RUNNER_TEMP/body.md")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # GitHub holds the CI and Lint runs of a PR opened by GITHUB_TOKEN until
+      # someone approves them; the required checks only count those runs.
+      - name: Approve the release PR's CI and Lint runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.pr.outputs.url }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          held() { gh run list --commit "$sha" --event pull_request --status action_required \
+            --json databaseId,workflowName --jq "$1"; }
+          for _ in $(seq 1 24); do
+            [ "$(held 'length')" -ge 2 ] && break
+            sleep 5
+          done
+          ids=$(held '.[].databaseId')
+          approved=true
+          for id in $ids; do
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/approve" >/dev/null || approved=false
+          done
+          if [ -z "$ids" ] || [ "$approved" != true ]; then
+            echo "::warning::Open $URL and click 'Approve and run workflows' to start CI and Lint"
+          else
+            echo "::notice::Opened $URL; merge it once CI and Lint pass"
+          fi
+
+  tag:
+    name: Tag release
+    if: >-
+      github.event_name == 'pull_request' && github.event.pull_request.merged
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - id: tag
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          tag="${HEAD_REF#release/}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Image and GitHub Release
+    needs: tag
+    # After the tag job, or on its own for a tag pushed by hand. Tags the tag
+    # job pushed are skipped here: that run already publishes them.
+    if: >-
+      !cancelled() && (needs.tag.result == 'success'
+      || (needs.tag.result == 'skipped' && github.event_name == 'push'
+      && github.actor != 'github-actions[bot]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+      id-token: write  # PyPI trusted publishing
+    env:
+      TAG: ${{ needs.tag.outputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+
+      # Idempotent: a second run for the same tag (e.g. if the tag job ever
+      # pushes with a token that triggers workflows) succeeds without
+      # republishing.
+      - name: Skip if already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG is already released; nothing to do"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check changelog and project version
+        id: check
+        if: steps.exists.outputs.exists != 'true'
+        run: |
+          version="${TAG#v}"
+          scripts/changelog-section.sh "$version" > "$RUNNER_TEMP/notes.md"
+          project() { python3 -c \
+            "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['$1'])"; }
+          if [ "$(project version)" != "$version" ]; then
+            echo "::error::pyproject.toml version is $(project version), tag is $TAG"
+            exit 1
+          fi
+          echo "name=$(project name)" >> "$GITHUB_OUTPUT"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '\n**Image:** %s\n' "\`$image:$version\`" >> "$RUNNER_TEMP/notes.md"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      # X.Y.Z, X.Y, X (from 1.0.0 on) and latest; a pre-release (vX.Y.Z-rc.1)
+      # gets only its own tag.
+      - name: Image tags
+        id: meta
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.check.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+            type=semver,pattern={{major}},value=${{ env.TAG }},enable=${{ !startsWith(env.TAG, 'v0.') }}
+            type=raw,value=latest,enable=${{ !contains(env.TAG, '-') }}
+
+      - if: steps.exists.outputs.exists != 'true'
+        uses: docker/setup-qemu-action@v4
+      - if: steps.exists.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v4
+      - if: steps.exists.outputs.exists != 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push the production image
+        if: steps.exists.outputs.exists != 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - if: steps.exists.outputs.exists != 'true'
+        uses: astral-sh/setup-uv@v10.3.2
+      - name: Build the package
+        if: steps.exists.outputs.exists != 'true'
+        run: uv build
+
+      # Optional: set the repository variable PYPI_PUBLISH to true. Uses
+      # PyPI trusted publishing (no secret) unless the PYPI_API_TOKEN
+      # secret is set. Files already on PyPI are skipped, so a re-run works.
+      - name: Publish to PyPI
+        if: steps.exists.outputs.exists != 'true' && vars.PYPI_PUBLISH == 'true'
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          NAME: ${{ steps.check.outputs.name }}
+        run: |
+          [ -n "$UV_PUBLISH_TOKEN" ] || unset UV_PUBLISH_TOKEN
+          uv publish --check-url https://pypi.org/simple/
+          printf '\n**PyPI:** https://pypi.org/project/%s/%s/\n' "$NAME" "${TAG#v}" \
+            >> "$RUNNER_TEMP/notes.md"
+
+      - name: Create GitHub Release
+        if: steps.exists.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          # The sdist and wheel go on every release, so pip can install
+          # from it whether or not the project is on PyPI.
+          gh release create "$TAG" --verify-tag --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md" $prerelease dist/*

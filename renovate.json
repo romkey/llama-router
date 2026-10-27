@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "pre-commit": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "matchManagers": ["pre-commit"],
+      "groupName": "pre-commit hooks"
+    },
+    {
+      "matchManagers": ["pep621"],
+      "matchDepTypes": ["dependency-groups"],
+      "groupName": "dev dependencies"
+    },
+    {
+      "description": "A new Python must also go in .python-version and requires-python",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "matchUpdateTypes": ["major", "minor"],
+      "prBodyNotes": ["Also update `.python-version` and `requires-python` in `pyproject.toml` on this branch."]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Python tools run with uvx tool@version",
+      "managerFilePatterns": ["/\\.ya?ml$/"],
+      "matchStrings": ["uvx (?<depName>[\\w-]+)@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "pypi"
+    },
+    {
+      "customType": "regex",
+      "description": "uv image in docker-compose.lint.yaml's inline Dockerfile",
+      "managerFilePatterns": ["/(^|/)docker-compose(\\.\\w+)?\\.ya?ml$/"],
+      "matchStrings": ["FROM (?<depName>ghcr\\.io/astral-sh/uv):(?<currentValue>[\\w.-]+)"],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "gitleaks image in workflows and compose files",
+      "managerFilePatterns": ["/\\.ya?ml$/"],
+      "matchStrings": ["(?<depName>ghcr\\.io/gitleaks/gitleaks):(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}
