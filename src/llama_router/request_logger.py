@@ -149,12 +149,14 @@ def _request_meta_summary(body: Any) -> str | None:
         "audio": False,
         "tools": False,
     }
-    counts = {"messages": 0, "items": 0}
+    counts = {"messages": 0, "items": 0, "questions": 0}
     stream = None
 
     if isinstance(body, dict):
         if isinstance(body.get("messages"), list):
             counts["messages"] = len(body["messages"])
+        if isinstance(body.get("questions"), dict):
+            counts["questions"] = len(body["questions"])
         if isinstance(body.get("input"), list):
             counts["items"] = len(body["input"])
         elif body.get("input") is not None:
@@ -183,6 +185,8 @@ def _request_meta_summary(body: Any) -> str | None:
     parts: list[str] = []
     if counts["messages"]:
         parts.append(f"messages={counts['messages']}")
+    if counts["questions"]:
+        parts.append(f"questions={counts['questions']}")
     if counts["items"]:
         parts.append(f"input_items={counts['items']}")
     if stream is not None:
@@ -222,12 +226,14 @@ async def log_request(
     sample: bool = False,
     ttfb_ms: float | None = None,
     router_ms: float | None = None,
+    request_meta: str | None = None,
 ) -> None:
     """Write one request to the log.
 
     *response_body* (non-streamed responses) is measured here instead of in
     the handler, so serialising it again never delays the response.
     *sample* also feeds the outcome to the routing stats under *routed_model*.
+    *request_meta* replaces the summary worked out from *request_body*.
     """
     if response_body is not None and not response_size:
         response_size = _payload_size(response_body)
@@ -253,7 +259,7 @@ async def log_request(
         model=model,
         request_size=_payload_size(request_body),
         response_size=response_size,
-        request_meta=_request_meta_summary(request_body),
+        request_meta=request_meta or _request_meta_summary(request_body),
         duration_ms=duration_ms,
         ttfb_ms=ttfb_ms,
         router_ms=router_ms,

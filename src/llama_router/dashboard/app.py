@@ -10,6 +10,7 @@ from ..request_logger import log_request
 from . import deps
 
 from .middleware import DashboardAuthMiddleware
+from .decisions import router as decisions_router
 from .routes import router
 
 app = FastAPI(title="llama-router Dashboard")
@@ -40,3 +41,4 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 
 app.include_router(router)
+app.include_router(decisions_router)

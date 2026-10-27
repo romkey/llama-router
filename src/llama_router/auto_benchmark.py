@@ -29,10 +29,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from . import decision_service
+from . import decisions as d
 from .config import settings
 from .database import Database
+from .endpoints import DECIDE, DECISION_PATHS
 from .models import ProviderStatus
 from .provider_manager import ProviderManager
+from .routing_table import DECISION_UPSTREAM, decides_natively
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,20 @@ SETTING_MAX_AGE_DAYS = "auto_benchmark_max_age_days"
 FAILURE_BACKOFF_S = 24 * 3600.0
 # Results kept for the dashboard.
 _RECENT = 20
+
+# Asked after each benchmark: learns whether the provider returns logprobs
+# (so routing knows if it can answer decisions) and seeds decision latency.
+DECISION_CHECK = d.DecisionRequest(
+    model="check",
+    state="The sky in the photo is a clear, bright blue.",
+    questions={
+        "colour": {
+            "type": "choice",
+            "instructions": "What colour is the sky?",
+            "criteria": {"blue": "Blue", "green": "Green", "red": "Red"},
+        }
+    },
+)
 
 
 @dataclass(slots=True)
@@ -277,11 +295,7 @@ class AutoBenchmarker:
 
     async def _run_job(self, job: Job) -> bool:
         """Run one benchmark. False if real traffic interrupted it."""
-        task = asyncio.create_task(
-            self._pm.benchmark_provider(
-                job.provider_id, job.model, benchmark_api=job.api, source="auto"
-            )
-        )
+        task = asyncio.create_task(self._benchmark(job))
         self._current[job.provider_id] = (job, task)
         started = self._clock()
         try:
@@ -317,7 +331,7 @@ class AutoBenchmarker:
                 exc,
             )
             return True
-        result = task.result()
+        result, decisions = task.result()
         self.completed += 1
         self._recent.appendleft(
             {
@@ -325,6 +339,7 @@ class AutoBenchmarker:
                 "outcome": "ok",
                 "startup_time_ms": result.startup_time_ms,
                 "tokens_per_second": result.tokens_per_second,
+                "decisions": decisions,
             }
         )
         logger.info(
@@ -335,6 +350,51 @@ class AutoBenchmarker:
             result.tokens_per_second or 0.0,
         )
         return True
+
+    async def _benchmark(self, job: Job) -> tuple[Any, str]:
+        result = await self._pm.benchmark_provider(
+            job.provider_id, job.model, benchmark_api=job.api, source="auto"
+        )
+        return result, await self.check_decisions(job.provider_id, job.model)
+
+    async def check_decisions(self, provider_id: int, model: str) -> str:
+        """Ask :data:`DECISION_CHECK` of *model*; returns the outcome.
+
+        ``ok``, ``no_logprobs``, ``error``, or ``skipped`` for a provider
+        that serves decisions natively or has no chat completions. Runs
+        without request accounting, so it never cancels itself.
+        """
+        provider = await self._db.get_provider(provider_id)
+        if provider is None or provider.lacks(DECISION_UPSTREAM):
+            return "skipped"
+        if any(decides_natively(provider, p) for p in DECISION_PATHS):
+            return "skipped"
+        backend = await self._db.get_backend_model_name(provider_id, model)
+        stats = self._pm.stats
+        started = self._clock()
+        try:
+            await decision_service.emulate(
+                self._pm, provider_id, backend or model, DECISION_CHECK, acquire=False
+            )
+        except d.NoLogprobs:
+            stats.record_logprobs(provider_id, ok=False)
+            return "no_logprobs"
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # a side check never fails its benchmark
+            logger.info(
+                "Decision check of %s on %s failed: %s", model, provider.name, exc
+            )
+            return "error"
+        stats.record_logprobs(provider_id, ok=True)
+        stats.record_request(
+            provider_id,
+            model,
+            ok=True,
+            endpoint_class=DECIDE,
+            duration_ms=(self._clock() - started) * 1000,
+        )
+        return "ok"
 
     def _on_activity(self, provider_id: int) -> None:
         """A real request started: real traffic always wins."""

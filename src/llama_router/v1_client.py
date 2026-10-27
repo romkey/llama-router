@@ -29,6 +29,16 @@ class V1Client:
         self._ollama = ollama
         self._llamacpp = llamacpp
 
+    # --- any JSON route ---
+
+    async def post_json(self, path: str, body: dict, *, op: str) -> dict:
+        """POST *body* to *path* upstream and return the JSON answer."""
+        client = self._llamacpp or self._ollama
+        assert client is not None
+        resp = await client._post(path, op=op, json=body)
+        resp.raise_for_status()
+        return resp.json()
+
     # --- chat/completions ---
 
     async def chat_completions_stream(self, body: dict) -> AsyncIterator[bytes]:

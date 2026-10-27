@@ -9,7 +9,7 @@ import pytest
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 
-HEAD = "013_cloud_operation"
+HEAD = "014_decision_calibrations"
 
 
 def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

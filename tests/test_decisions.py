@@ -388,3 +388,32 @@ def test_fit_rejects_inconsistent_examples():
         d.fit_calibration([({"a": 1.0, "b": 0.0}, "c")])
     with pytest.raises(ValueError):
         d.fit_calibration([({"a": 1.0, "b": 0.0}, "a"), ({"a": 1.0}, "a")])
+
+
+# --- Keys ---
+
+
+def test_question_key_follows_the_wording_only():
+    a = d.NoulQuestion(type="noul", instructions="It is urgent")
+    b = d.NoulQuestion(type="noul", instructions="It is urgent")
+    c = d.NoulQuestion(type="noul", instructions="It is urgent", negative="It can wait")
+    assert d.question_key(a) == d.question_key(b)
+    assert d.question_key(a) != d.question_key(c)
+    assert len(d.question_key(a)) == 32
+
+
+def test_answer_keys_per_type():
+    req = _req()
+    assert d.answer_keys(req.questions["department"]) == [
+        "billing",
+        "technical",
+        "sales",
+    ]
+    assert d.answer_keys(req.questions["frustration"]) == ["0", "1", "2"]
+    assert d.answer_keys(req.questions["is_urgent"]) == [d.NOUL_TRUE, d.NOUL_FALSE]
+
+
+def test_missing_logprobs_is_its_own_error():
+    with pytest.raises(d.NoLogprobs):
+        d.top_logprobs_from_response({"choices": [{"message": {}}]})
+    assert issubclass(d.NoLogprobs, d.DecisionError)

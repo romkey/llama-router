@@ -10,6 +10,7 @@ An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (ll
 - **Auto-Discovery** — Probes each backend to recognise the server (Ollama, llama.cpp, vLLM, LiteLLM, Lemonade, LM Studio, SGLang, TGI, KoboldCpp, LocalAI or a cloud service), its protocol, its endpoints and its cheapest health check, and lists its models
 - **Health Checking** — Periodic monitoring of backend availability, including per-address liveness for multi-address providers
 - **Benchmarking** — Measure startup time and tokens/sec per model per provider, by hand or automatically while providers are idle
+- **Decision Models** — A [Jev](https://en.wikipedia.org/wiki/Jev_(AI_model))-compatible `/v1/systemone` API that answers yes/no, choice and score questions with probabilities, from any local chat model or an upstream that serves it natively
 - **Precomputed Routing** — Routing tables are rebuilt in the background from models, liveness, benchmarks, measured round trips and live request outcomes, so picking a backend costs microseconds and no database work
 - **Session Affinity** — Each coding-agent conversation stays on the backend that served it, so the backend's prompt cache stays warm
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
@@ -305,7 +306,7 @@ The header never widens or flips a key's setting. The request log records whethe
 
 Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to Ollama providers. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.
 
-Measurements are kept per kind of endpoint: text generation, embeddings, images and audio. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
+Measurements are kept per kind of endpoint: text generation, embeddings, images, audio and decisions. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
 
 Candidates fall into three tiers, and a request goes to the best tier that has anyone in it:
 
@@ -390,6 +391,7 @@ How it stays out of the way:
 - **Traffic wins.** A request to a provider stops its running benchmark immediately. The benchmark runs again the next time the provider is idle.
 - **Order.** Models that have never been benchmarked go first, then the oldest past the maximum age.
 - **Failures.** A benchmark that fails waits a day before it's retried.
+- **Decision check.** After each benchmark, the model answers one fixed decision question. That tells routing whether the provider returns logprobs (see [Decision models](#decision-models)) and seeds its decision latency.
 
 Automatic results show an **auto** badge on the Benchmarks tab, and their log entries use the `auto-benchmark` endpoint.
 
@@ -404,6 +406,52 @@ curl -X POST http://localhost/api/auto-benchmark/check   # look for idle provide
 ### Load testing
 
 These benchmarks are quick probes, one short request each, not load tests. To see how a provider or the router holds up under concurrent traffic, point a load-testing tool such as [GuideLLM](https://github.com/vllm-project/guidellm) or `vllm bench serve` at the router's OpenAI-compatible API on port 8080. Run it at a quiet time, because it saturates the GPUs it reaches.
+
+## Decision models
+
+The router answers decision requests in the shape of TypeSafe's [Jev](https://en.wikipedia.org/wiki/Jev_(AI_model)) API on port 8080. A request carries a `state`, which is text, a JSON object or a list of strings, and named, typed questions. Each answer is a probability distribution, not generated text.
+
+| Type | The question carries | The answer carries |
+|------|----------------------|--------------------|
+| `noul` | `instructions`, a statement, and optionally `negative`, what the false case looks like | `noul`, the probability the statement is true |
+| `choice` | `instructions` and `criteria`, an object of option keys and descriptions | `choice`, `probabilities` and `confidence` |
+| `score` | `instructions` and `criteria`, a list of rubric levels | `score` (the expected level), `probabilities`, `legend` and `confidence` |
+
+```bash
+curl http://localhost:8080/v1/systemone -H 'Content-Type: application/json' -d '{
+  "model": "llama3.1:8b",
+  "state": "Our API has returned 500 on every request for 20 minutes.",
+  "questions": {
+    "department": {"type": "choice", "instructions": "Which team should handle this",
+      "criteria": {"billing": "Payments", "technical": "Bugs or outages", "sales": "Pricing"}},
+    "is_urgent": {"type": "noul", "instructions": "The message conveys urgency"}
+  }
+}'
+```
+
+`/v1/decisions` is the same API under a vendor-neutral name. Both routes are also served without `/v1`. Routing, API key policies, pins and fallbacks apply as for chat.
+
+How a request is answered:
+
+- **Passed through.** If the provider's last probe found the same route upstream, for example LiteLLM in front of Jev, the request goes there unchanged apart from the model name.
+- **Emulated.** Otherwise each question becomes a one-token chat completion with logprobs, all sent to one provider at once. The answer is read from the probabilities of the option labels. llama.cpp, vLLM and most OpenAI-compatible servers support this.
+- **No logprobs.** A provider that answers without logprobs isn't offered for decisions for an hour, and the request is routed once more.
+
+Local chat models are not trained for calibrated answers. In testing, choice questions came out accurate and well calibrated. Yes/no questions leaned toward yes, and score questions drifted toward the middle level. Calibrations correct this per model and question wording, with a temperature and an offset per answer:
+
+```bash
+# Given directly
+curl -X POST http://localhost/api/decisions/calibrations -H 'Content-Type: application/json' \
+  -d '{"model": "llama3.1:8b", "question": {"type": "noul", "instructions": "The message conveys urgency"},
+       "offsets": {"true": -1.2, "false": 1.2}}'
+# Fit from labelled examples: the uncalibrated probabilities and the right answer
+curl -X POST http://localhost/api/decisions/calibrations -H 'Content-Type: application/json' \
+  -d '{"model": "llama3.1:8b", "question": {...}, "examples": [{"probabilities": {"true": 0.9, "false": 0.1}, "answer": "false"}]}'
+curl http://localhost/api/decisions/calibrations
+curl -X DELETE http://localhost/api/decisions/calibrations/1
+```
+
+The design, measurements and plan are in [docs/decision-models-plan.md](docs/decision-models-plan.md).
 
 ## Model Fallbacks
 

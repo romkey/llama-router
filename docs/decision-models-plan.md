@@ -157,10 +157,7 @@ script and numbers in this document.
 
 **Phase 1, library.** Done 2026-10-27, see "Phase 1 results" below.
 
-**Phase 2, endpoint.** `DECIDE` class, probe for logprobs, `/v1/systemone`
-and `/v1/decisions`, request logging, dashboard request-log summary,
-decision benchmark. Integration tests following `test_endpoint_routing.py`.
-README section. Release.
+**Phase 2, endpoint.** Done 2026-10-27, see "Phase 2 results" below.
 
 **Phase 3, internal use.** Tiered routing policy per API key, then gating,
 then background classification. Each its own PR with its own migration.
@@ -286,6 +283,47 @@ What changed from the Phase 0 decisions:
 - **Score questions still need fitted calibration.** Phase 2 should store
   a `Calibration` per model and question, and the dashboard should let
   users fit one from labelled examples.
+
+## Phase 2 results (2026-10-27)
+
+The router serves `POST /v1/systemone` and `/v1/decisions`, plus their bare
+forms, on port 8080. It is built on `feature/single-protocol-providers`.
+
+- **Routing.** A new `decide` endpoint class keeps decision timings apart
+  from chat. A provider supports a decision route when its probe found that
+  route upstream, which means pass-through. Otherwise it supports one
+  wherever it serves chat completions, which means emulation. A provider
+  that returns no logprobs is marked in the in-memory stats and dropped to
+  the "missing" tier for an hour. The request is then routed once more.
+  This replaced the planned probe check: probes never run inference, and the
+  first answer, or the auto-benchmark check below, tells the router the same
+  thing.
+- **Emulation** (`decision_service.py`). All questions of a request go to
+  one provider in parallel, one slot each, state first.
+- **Calibrations.** A new `decision_calibrations` table, migration 014,
+  holds one calibration per model and question wording, keyed by
+  `decisions.question_key`. It is cached in memory and dropped on change.
+  The dashboard API at `/api/decisions/calibrations` sets one directly,
+  fits one from labelled distributions, lists them, and deletes them.
+- **Request log.** The summary line reads `questions=3[, calibrated=N];
+  id=answer, ...`.
+- **Auto-benchmark.** After each benchmark the model answers one fixed
+  question, outside request accounting so it never cancels itself. That
+  records logprobs support and seeds decision latency. A full stored
+  decision benchmark was not needed: routing scores decisions from live
+  and checked latency.
+
+Live check: the 36 Phase 0 tickets went through the router's own endpoint
+to llama-server with the 8B model.
+
+| | value |
+|-|------:|
+| choice / noul / score accuracy | 0.97 / 0.81 / 0.50, same as the library check |
+| 3 questions, cold state, p50 | 290 ms |
+| 3 questions, warm state | about 110 ms (1 question: 85 ms) |
+
+The Phase 0 "3 questions in parallel" figure was measured with the state
+prefix already cached, so it compares with the warm number.
 
 ## Risks and open questions
 

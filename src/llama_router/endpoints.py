@@ -12,7 +12,10 @@ GENERATE = "generate"
 EMBED = "embed"
 IMAGE = "image"
 AUDIO = "audio"
-CLASSES = (GENERATE, EMBED, IMAGE, AUDIO)
+# One-token decision questions (see decisions.py): a few hundred milliseconds,
+# nothing like a chat completion, so their timings are kept apart.
+DECIDE = "decide"
+CLASSES = (GENERATE, EMBED, IMAGE, AUDIO, DECIDE)
 
 # path -> (protocol, class). Ollama native routes need an Ollama-capable
 # provider (protocol "ollama"); OpenAI-style routes take any provider (None).
@@ -29,7 +32,13 @@ ENDPOINTS: dict[str, tuple[str | None, str]] = {
     "/v1/images/edits": (None, IMAGE),
     "/v1/audio/speech": (None, AUDIO),
     "/v1/audio/transcriptions": (None, AUDIO),
+    # Decision requests: passed through to an upstream that serves the same
+    # route, otherwise answered from chat completion logprobs.
+    "/v1/decisions": (None, DECIDE),
+    "/v1/systemone": (None, DECIDE),
 }
+
+DECISION_PATHS = tuple(p for p, (_proto, cls) in ENDPOINTS.items() if cls == DECIDE)
 
 # Kept for callers that only need the protocol.
 ENDPOINT_PROTOCOLS: dict[str, str | None] = {p: v[0] for p, v in ENDPOINTS.items()}
