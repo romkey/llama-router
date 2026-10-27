@@ -673,6 +673,43 @@
                 </table>
             </div>
         </div>
+        <div class="card mt-4" id="aliases-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Model Aliases</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">One model under different names, such as <code>claude-sonnet-4-5</code> at Anthropic and <code>anthropic/claude-sonnet-4-5</code> at OpenRouter. A request for any name in a group can go to any provider that serves one of them, under that provider's own name.</p>
+                <form class="row g-2 align-items-end mb-3" onsubmit="addModelAlias(event)">
+                    <div class="col-sm-5">
+                        <label for="alias-name" class="form-label small text-muted mb-1">Alias</label>
+                        <input id="alias-name" class="form-control form-control-sm font-monospace" placeholder="anthropic/claude-sonnet-4-5" required>
+                    </div>
+                    <div class="col-sm-5">
+                        <label for="alias-canonical" class="form-label small text-muted mb-1">Same model as</label>
+                        <input id="alias-canonical" class="form-control form-control-sm font-monospace" placeholder="claude-sonnet-4-5" required>
+                    </div>
+                    <div class="col-sm-2">
+                        <button class="btn btn-sm btn-outline-primary w-100" type="submit"><i class="bi bi-plus-lg me-1"></i>Add</button>
+                    </div>
+                </form>
+                <table class="table table-sm mb-2">
+                    <thead><tr><th>Alias</th><th>Same model as</th><th></th></tr></thead>
+                    <tbody>
+                        {% for alias, canonical in model_aliases.items() %}
+                        <tr>
+                            <td><code>{{ alias }}</code></td>
+                            <td><code>{{ canonical }}</code></td>
+                            <td class="text-end"><button class="btn btn-sm btn-outline-danger" data-remove-alias="{{ alias }}" title="Remove alias"><i class="bi bi-trash"></i></button></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3" class="text-muted text-center py-2">No aliases yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                <button class="btn btn-sm btn-link p-0" type="button" onclick="loadAliasSuggestions()">Suggest aliases from the providers' model lists</button>
+                <div id="alias-suggestions" class="mt-2"></div>
+            </div>
+        </div>
         {% endif %}
     </div>
 
@@ -692,6 +729,7 @@
                                 <option value="balanced" selected>Balanced (fastest overall response)</option>
                                 <option value="latency">Minimal latency</option>
                                 <option value="throughput">Maximum tokens/sec</option>
+                                <option value="cheapest">Cheapest (lowest price per request)</option>
                                 <option value="chaos">Chaos mode (random provider/model)</option>
                             </select>
                         </div>
@@ -706,6 +744,11 @@
                                 <option value="local">Local only: prompts never leave your network</option>
                                 <option value="cloud">Cloud only</option>
                             </select>
+                        </div>
+                        <div class="mb-2">
+                            <label for="new-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
+                            <input id="new-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
+                            <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
                         </div>
                         <div class="mb-3">
                             <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
@@ -897,6 +940,7 @@
                                         <option value="mode:balanced" selected>Balanced</option>
                                         <option value="mode:latency">Minimal latency</option>
                                         <option value="mode:throughput">Maximum tokens/sec</option>
+                                        <option value="mode:cheapest">Cheapest</option>
                                         <option value="mode:chaos">Chaos</option>
                                     </optgroup>
                                     {% if api_keys %}
@@ -1020,6 +1064,7 @@
                                         <th>Fallback</th>
                                         <th>Sessions</th>
                                         <th>Providers</th>
+                                        <th title="Spent today (UTC) / daily cap">Spend</th>
                                         <th>Pins</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
@@ -1031,9 +1076,9 @@
                                     <tr>
                                         <td><code>{{ k.key_prefix }}</code></td>
                                         <td>
-                                            <span class="badge {{ 'bg-primary' if k.routing_mode == 'latency' else ('bg-info text-dark' if k.routing_mode == 'throughput' else ('bg-success' if k.routing_mode == 'balanced' else 'bg-warning text-dark')) }}">
-                                                {{ 'minimal latency' if k.routing_mode == 'latency' else ('max tokens/sec' if k.routing_mode == 'throughput' else ('balanced' if k.routing_mode == 'balanced' else 'chaos')) }}
-                                            </span>
+                                            {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
+                                            {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
+                                            <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
                                         </td>
                                         <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
                                         <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
@@ -1047,6 +1092,11 @@
                                                 <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
                                             </select>
                                             {% endif %}
+                                        </td>
+                                        <td class="small text-nowrap">
+                                            ${{ "%.2f" | format(k.spent_today_usd or 0) }}
+                                            {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
+                                            {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
                                         </td>
                                         <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
                                         <td class="small text-muted">{{ k.created_at | localtime }}</td>
@@ -1248,6 +1298,7 @@
                         <th>Req Size</th>
                         <th>Resp Size</th>
                         <th>Duration</th>
+                        <th title="Tokens in / out, and cost when the provider's price is known">Tokens</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -1292,6 +1343,12 @@
                                 {% if entry.router_ms is not none %}router {{ "%.1f ms" | format(entry.router_ms) }}{% endif %}
                             </div>
                             {% endif %}
+                        </td>
+                        <td class="text-end small text-nowrap">
+                            {% if entry.prompt_tokens is not none or entry.completion_tokens is not none %}
+                            {{ entry.prompt_tokens if entry.prompt_tokens is not none else '?' }} / {{ entry.completion_tokens if entry.completion_tokens is not none else '?' }}
+                            {% else %}—{% endif %}
+                            {% if entry.cost_usd %}<div class="text-muted" style="font-size: 0.75em">${{ "%.4f" | format(entry.cost_usd) }}</div>{% endif %}
                         </td>
                         <td>
                             {% if entry.status == 'ok' %}
@@ -1345,7 +1402,7 @@
 
         {% else %}
         <div class="alert alert-info">
-            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Requests through the Ollama or llama.cpp APIs and provider events such as refreshes appear here.
+            <i class="bi bi-info-circle me-2"></i>No requests logged yet. Requests through the Ollama or OpenAI APIs and provider events such as refreshes appear here.
         </div>
         {% endif %}
     </div>
@@ -2588,10 +2645,12 @@ function generateApiKey() {
     var affinity = affinityEl ? affinityEl.value : 'default';
     var localityEl = document.getElementById('new-key-locality');
     var locality = localityEl ? localityEl.value : 'any';
+    var capEl = document.getElementById('new-key-cap');
+    var cap = capEl && capEl.value !== '' ? capEl.value : null;
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -2608,6 +2667,20 @@ function generateApiKey() {
         setTimeout(function() { location.reload(); }, 1000);
     })
     .catch(function(err) { alert(err.message || 'Failed to generate key'); });
+}
+
+function setKeySpendCap(keyId, current) {
+    if (!dashRequireWrite()) return;
+    var v = prompt('Daily spend cap in USD (blank for none):', current == null ? '' : current);
+    if (v === null) return;
+    fetch('/api/keys/' + keyId + '/spend-cap', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({daily_spend_cap_usd: v.trim() === '' ? null : v.trim()})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        location.reload();
+    }).catch(function(err) { alert(err.message); });
 }
 
 function setKeyLocality(keyId, locality) {
@@ -3252,6 +3325,63 @@ function submitFallback() {
         location.reload();
     })
     .catch(function(err) { alert(err.message); });
+}
+
+function postModelAlias(alias, canonical) {
+    return fetch('/api/model-aliases', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({alias: alias, canonical: canonical})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+    });
+}
+
+function addModelAlias(ev) {
+    ev.preventDefault();
+    if (!dashRequireWrite()) return;
+    postModelAlias(document.getElementById('alias-name').value.trim(),
+                   document.getElementById('alias-canonical').value.trim())
+        .then(function() { location.reload(); })
+        .catch(function(err) { alert(err.message); });
+}
+
+document.addEventListener('click', function(ev) {
+    const btn = ev.target.closest('[data-remove-alias]');
+    if (!btn || !dashRequireWrite()) return;
+    const alias = btn.dataset.removeAlias;
+    if (!confirm('Remove alias ' + alias + '?')) return;
+    fetch('/api/model-aliases/' + encodeURIComponent(alias), {method: 'DELETE'})
+        .then(function() { location.reload(); });
+});
+
+function loadAliasSuggestions() {
+    const box = document.getElementById('alias-suggestions');
+    box.textContent = 'Looking…';
+    fetch('/api/model-aliases').then(function(r) { return r.json(); }).then(function(d) {
+        box.innerHTML = '';
+        if (!d.suggestions.length) {
+            box.textContent = 'No likely aliases found.';
+            return;
+        }
+        d.suggestions.forEach(function(s) {
+            const row = document.createElement('div');
+            row.className = 'small d-flex align-items-center gap-2 mb-1';
+            const a = document.createElement('code'); a.textContent = s.alias;
+            const b = document.createElement('code'); b.textContent = s.canonical;
+            const btn = document.createElement('button');
+            btn.type = 'button'; btn.className = 'btn btn-sm btn-outline-secondary py-0';
+            btn.textContent = 'Add';
+            btn.addEventListener('click', function() {
+                if (!dashRequireWrite()) return;
+                postModelAlias(s.alias, s.canonical).then(function() {
+                    btn.disabled = true; btn.textContent = 'Added';
+                }).catch(function(err) { alert(err.message); });
+            });
+            row.append(a, document.createTextNode('is the same model as'), b, btn);
+            box.appendChild(row);
+        });
+    });
 }
 
 function removeFallback(model) {

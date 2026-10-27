@@ -33,7 +33,7 @@
                     {% endif %}
                     {% if dash_user %}
                     <li class="nav-item">
-                        <span class="navbar-text small">{{ dash_user.username }}{% if dash_user.is_admin %} <span class="badge bg-secondary">admin</span>{% endif %}</span>
+                        <span class="navbar-text small">{{ dash_user.username }}{% if dash_user.is_sso %} <span class="badge text-bg-info">SSO</span>{% endif %}{% if dash_user.is_admin %} <span class="badge bg-secondary">admin</span>{% endif %}</span>
                     </li>
                     <li class="nav-item">
                         <form method="post" action="/logout" class="d-inline">

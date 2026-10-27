@@ -11,19 +11,41 @@
                 <h2 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Sign in</h2>
                 {% if error == 'invalid' %}
                 <div class="alert alert-danger py-2">Invalid username or password.</div>
+                {% elif error == 'oidc_denied' %}
+                <div class="alert alert-warning py-2">Sign-in was cancelled or refused by the identity provider.</div>
+                {% elif error == 'oidc_not_member' %}
+                <div class="alert alert-danger py-2">Your account is not in a group allowed to use this dashboard.</div>
+                {% elif error == 'oidc_first_admin' %}
+                <div class="alert alert-warning py-2">The first account must belong to the administrators group. Ask an administrator to add you, then sign in again.</div>
+                {% elif error == 'oidc_state' %}
+                <div class="alert alert-warning py-2">The sign-in took too long or was started in another window. Please try again.</div>
+                {% elif error == 'oidc_token' %}
+                <div class="alert alert-danger py-2">The identity provider's response could not be verified.</div>
+                {% elif error == 'oidc_provider' %}
+                <div class="alert alert-danger py-2">The identity provider could not be reached.</div>
+                {% endif %}
+                {% if oidc_enabled %}
+                <a class="btn btn-primary w-100" href="/login/oidc{% if next_url and next_url != '/' %}?next={{ next_url | urlencode }}{% endif %}">
+                    <i class="bi bi-box-arrow-in-right me-1"></i>Sign in with {{ oidc_display_name }}
+                </a>
+                {% endif %}
+                {% if password_login %}
+                {% if oidc_enabled %}
+                <div class="text-center text-muted small my-3">or with a local account</div>
                 {% endif %}
                 <form method="post" action="/login">
                     <input type="hidden" name="next" value="{{ next_url }}">
                     <div class="mb-3">
                         <label for="username" class="form-label">Username</label>
-                        <input type="text" class="form-control" id="username" name="username" required autocomplete="username" autofocus>
+                        <input type="text" class="form-control" id="username" name="username" required autocomplete="username"{% if not oidc_enabled %} autofocus{% endif %}>
                     </div>
                     <div class="mb-3">
                         <label for="password" class="form-label">Password</label>
                         <input type="password" class="form-control" id="password" name="password" required autocomplete="current-password">
                     </div>
-                    <button type="submit" class="btn btn-primary w-100">Sign in</button>
+                    <button type="submit" class="btn {% if oidc_enabled %}btn-outline-secondary{% else %}btn-primary{% endif %} w-100">Sign in</button>
                 </form>
+                {% endif %}
             </div>
         </div>
     </div>

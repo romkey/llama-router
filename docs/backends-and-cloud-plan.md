@@ -286,6 +286,35 @@ needed while their OpenAI-compat layer exists. Serving a Messages API
 **downstream** (so Claude Code can point at the router) is a different
 feature, tracked separately.
 
+## Status (2026-10-27)
+
+All six phases are implemented on `feature/single-protocol-providers`, one
+commit each, with migrations 009 to 015:
+
+| phase | commit subject |
+|-------|----------------|
+| 1 | feat(providers): one protocol per provider |
+| 2 | feat(probe): probe every provider and let the probe drive setup |
+| 3 | feat(providers): cloud presets, extra headers and models added by hand |
+| 4 | feat(routing): local and cloud providers, and keys limited to one |
+| 5 | feat(providers): run cloud providers sensibly |
+| 6 | feat(routing): model aliases across providers; feat(cost): request costs, cheapest routing and daily spend caps; feat(api): serve the Ollama API from OpenAI-compatible providers |
+
+Changes from the plan as written:
+
+- Workers stay one provider each (see Workers above).
+- A provider's address may be an API base (`https://api.openai.com/v1`) as
+  well as a server root; `upstream_url.split_api_base` tells them apart.
+- A provider's key may go in several headers (`Authorization, x-api-key`),
+  which the Anthropic preset needs.
+- Azure OpenAI is a preset with a resource-name field rather than a form of
+  its own, using Azure's v1 API (`/openai/v1`, `api-key` header).
+- Prices are not shipped with presets, since they change often: they are
+  set per provider, or read from the provider's own model list (OpenRouter).
+- Cloud preset URLs other than Anthropic, Perplexity, Ollama Cloud and Azure
+  were not re-checked against each service; run
+  `tests/test_cloud_presets_live.py` with real keys to confirm them.
+
 ## Phases
 
 1. **Data model** (migration 009, models.py, database.py, provider_manager,

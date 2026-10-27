@@ -73,20 +73,27 @@ async def test_unknown_endpoint_is_rejected(db: Database, pm: ProviderManager):
         await rt.route("m", "/api/tags")
 
 
-async def test_table_is_built_for_every_endpoint(db: Database, pm: ProviderManager):
+@pytest.mark.parametrize("translation", [False, True])
+async def test_table_is_built_for_every_endpoint(
+    db: Database, pm: ProviderManager, monkeypatch, translation: bool
+):
+    from llama_router.config import settings
+
+    monkeypatch.setattr(settings, "ollama_api_translation", translation)
     await _provider(db, "ollama-box", ["m"])
     await _provider(db, "lcpp-box", ["m"], ptype=ProviderProtocol.OPENAI)
     rt = Router(db, pm)
     table = await rt.rebuild()
     for path, (protocol, _cls) in ENDPOINTS.items():
         names = {c.provider.name for c in table.all_candidates[("m", path)]}
-        if protocol == "ollama":
+        if protocol == "ollama" and not translation:
             assert names == {"ollama-box"}, path
         else:
             assert names == {"ollama-box", "lcpp-box"}, path
-    # Ollama-native routes never reach a llama.cpp-only provider.
-    r = await rt.route("m", "/api/embed")
-    assert r.provider.name == "ollama-box"
+    if not translation:
+        # Without translation, Ollama routes never reach an OpenAI provider.
+        r = await rt.route("m", "/api/embed")
+        assert r.provider.name == "ollama-box"
 
 
 async def test_probed_missing_endpoint_demotes_only_that_endpoint(

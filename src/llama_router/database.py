@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -40,6 +41,8 @@ CHANGE_ADDRESSES = "addresses"
 CHANGE_MODELS = "models"
 CHANGE_BENCHMARKS = "benchmarks"
 CHANGE_FALLBACKS = "fallbacks"
+CHANGE_ALIASES = "aliases"
+CHANGE_PRICES = "prices"
 CHANGE_CAPABILITIES = "capabilities"
 CHANGE_API_KEYS = "api_keys"
 CHANGE_AUTH_SETTINGS = "auth_settings"
@@ -52,6 +55,8 @@ ROUTING_CHANGES = frozenset(
         CHANGE_MODELS,
         CHANGE_BENCHMARKS,
         CHANGE_FALLBACKS,
+        CHANGE_ALIASES,
+        CHANGE_PRICES,
         CHANGE_CAPABILITIES,
     }
 )
@@ -560,13 +565,13 @@ class Database:
         if protocol:
             query = (
                 "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-                "AND protocol = ? ORDER BY created_at DESC LIMIT 1"
+                "AND protocol = ? ORDER BY created_at DESC, id DESC LIMIT 1"
             )
             params: tuple[Any, ...] = (provider_id, model_name, protocol)
         else:
             query = (
                 "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-                "ORDER BY created_at DESC LIMIT 1"
+                "ORDER BY created_at DESC, id DESC LIMIT 1"
             )
             params = (provider_id, model_name)
         row = await self._select_one(query, params)
@@ -583,7 +588,8 @@ class Database:
         self, provider_id: int
     ) -> list[BenchmarkResult]:
         rows = await self._select_all(
-            "SELECT * FROM benchmarks WHERE provider_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM benchmarks WHERE provider_id = ? "
+            "ORDER BY created_at DESC, id DESC",
             (provider_id,),
         )
         return [_row_to_benchmark(r) for r in rows]
@@ -631,8 +637,9 @@ class Database:
             "INSERT INTO request_log "
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
-            "router_ms, status, streamed, error_detail, locality) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "router_ms, status, streamed, error_detail, locality, api_key_id, "
+            "prompt_tokens, completion_tokens, cost_usd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -650,14 +657,99 @@ class Database:
                 int(entry.streamed),
                 entry.error_detail,
                 entry.locality,
+                entry.api_key_id,
+                entry.prompt_tokens,
+                entry.completion_tokens,
+                entry.cost_usd,
             ),
+        )
+
+    async def spend_since(self, key_id: int, since: datetime) -> float:
+        """USD a key has spent on requests logged since *since* (UTC)."""
+        when: Any = since
+        if self._dialect_name == "sqlite":
+            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        row = await self._select_one(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
+            "WHERE api_key_id = ? AND created_at >= ?",
+            (key_id, when),
+        )
+        return float(row["total"] or 0) if row else 0.0
+
+    async def spend_by_key_since(self, since: datetime) -> dict[int, float]:
+        when: Any = since
+        if self._dialect_name == "sqlite":
+            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        rows = await self._select_all(
+            "SELECT api_key_id, COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
+            "WHERE api_key_id IS NOT NULL AND created_at >= ? GROUP BY api_key_id",
+            (when,),
+        )
+        return {int(r["api_key_id"]): float(r["total"] or 0) for r in rows}
+
+    # ── Model prices ──────────────────────────────────────────────────
+
+    async def list_model_prices(self, provider_id: int | None = None) -> list[dict]:
+        if provider_id is None:
+            rows = await self._select_all(
+                "SELECT * FROM model_prices ORDER BY provider_id, model_pattern"
+            )
+        else:
+            rows = await self._select_all(
+                "SELECT * FROM model_prices WHERE provider_id = ? "
+                "ORDER BY model_pattern",
+                (provider_id,),
+            )
+        return [dict(r) for r in rows]
+
+    @_notifies(CHANGE_PRICES)
+    async def set_model_price(
+        self,
+        provider_id: int,
+        model_pattern: str,
+        input_per_mtok: float,
+        output_per_mtok: float,
+    ) -> None:
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO model_prices (provider_id, model_pattern, input_per_mtok, "
+                "output_per_mtok) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE "
+                "input_per_mtok = VALUES(input_per_mtok), "
+                "output_per_mtok = VALUES(output_per_mtok)",
+                (provider_id, model_pattern, input_per_mtok, output_per_mtok),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO model_prices (provider_id, model_pattern, input_per_mtok, "
+                "output_per_mtok) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (provider_id, model_pattern) DO UPDATE SET "
+                "input_per_mtok = ?, output_per_mtok = ?",
+                (
+                    provider_id,
+                    model_pattern,
+                    input_per_mtok,
+                    output_per_mtok,
+                    input_per_mtok,
+                    output_per_mtok,
+                ),
+            )
+
+    @_notifies(CHANGE_PRICES)
+    async def remove_model_price(self, provider_id: int, price_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM model_prices WHERE id = ? AND provider_id = ?",
+                (price_id, provider_id),
+            )
         )
 
     async def get_request_logs(
         self, limit: int = 200, offset: int = 0
     ) -> list[RequestLog]:
         rows = await self._select_all(
-            "SELECT * FROM request_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            # id breaks ties: MySQL TIMESTAMP has whole-second precision.
+            "SELECT * FROM request_log ORDER BY created_at DESC, id DESC "
+            "LIMIT ? OFFSET ?",
             (limit, offset),
         )
         return [_row_to_request_log(r) for r in rows]
@@ -772,6 +864,39 @@ class Database:
         )
         return n > 0
 
+    # ── Model aliases ─────────────────────────────────────────────────
+
+    @_notifies(CHANGE_ALIASES)
+    async def set_model_alias(self, alias: str, canonical: str) -> None:
+        """Make *alias* another name for *canonical*."""
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO model_aliases (alias, canonical) VALUES (?, ?) "
+                "ON DUPLICATE KEY UPDATE canonical = VALUES(canonical)",
+                (alias, canonical),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO model_aliases (alias, canonical) VALUES (?, ?) "
+                "ON CONFLICT (alias) DO UPDATE SET canonical = ?",
+                (alias, canonical, canonical),
+            )
+
+    @_notifies(CHANGE_ALIASES)
+    async def remove_model_alias(self, alias: str) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM model_aliases WHERE alias = ?", (alias,)
+            )
+        )
+
+    async def get_model_aliases(self) -> dict[str, str]:
+        """alias -> canonical name."""
+        rows = await self._select_all(
+            "SELECT alias, canonical FROM model_aliases ORDER BY canonical, alias"
+        )
+        return {r["alias"]: r["canonical"] for r in rows}
+
     # --- Workers (hub side) ---
 
     async def create_worker(
@@ -864,11 +989,12 @@ class Database:
         allow_fallback: bool,
         session_affinity: bool | None = None,
         locality: str | None = None,
+        daily_spend_cap_usd: float | None = None,
     ) -> int:
         return await self._insert_get_id(
             "INSERT INTO api_keys "
             "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
-            "locality) VALUES (?, ?, ?, ?, ?, ?)",
+            "locality, daily_spend_cap_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
@@ -876,7 +1002,18 @@ class Database:
                 int(allow_fallback),
                 None if session_affinity is None else int(session_affinity),
                 locality,
+                daily_spend_cap_usd,
             ),
+        )
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_spend_cap(self, key_id: int, cap_usd: float | None) -> bool:
+        """USD a key may spend per UTC day before it is limited to local."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET daily_spend_cap_usd = ? WHERE id = ?",
+                (cap_usd, key_id),
+            )
         )
 
     @_notifies(CHANGE_API_KEYS)
@@ -892,13 +1029,14 @@ class Database:
         rows = await self._select_all(
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
-            "k.locality, k.created_at, k.last_used_at, "
+            "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
             "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
-            "k.session_affinity, k.locality, k.created_at, k.last_used_at "
-            "ORDER BY k.created_at DESC"
+            "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
+            "k.last_used_at "
+            "ORDER BY k.created_at DESC, k.id DESC"
         )
         return [
             {
@@ -908,6 +1046,7 @@ class Database:
                 "allow_fallback": bool(r["allow_fallback"]),
                 "session_affinity": _tristate(r["session_affinity"]),
                 "locality": r["locality"],
+                "daily_spend_cap_usd": r["daily_spend_cap_usd"],
                 "created_at": r["created_at"],
                 "last_used_at": r["last_used_at"],
                 "pin_count": int(r["pin_count"] or 0),
@@ -922,7 +1061,7 @@ class Database:
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
             "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
-            "locality FROM api_keys "
+            "locality, daily_spend_cap_usd FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -939,6 +1078,7 @@ class Database:
             "allow_fallback": bool(row["allow_fallback"]),
             "session_affinity": _tristate(row["session_affinity"]),
             "locality": row["locality"],
+            "daily_spend_cap_usd": row["daily_spend_cap_usd"],
         }
 
     async def touch_api_key(self, key_id: int) -> None:
@@ -1002,7 +1142,9 @@ class Database:
 
     async def get_allow_unauthenticated(self) -> bool:
         row = await self._select_one(
-            "SELECT value FROM app_settings WHERE key = 'allow_unauthenticated'"
+            # Qualified so MySQL accepts the reserved word without quoting.
+            "SELECT value FROM app_settings "
+            "WHERE app_settings.key = 'allow_unauthenticated'"
         )
         if not row:
             return True
@@ -1032,7 +1174,7 @@ class Database:
 
     async def get_app_setting(self, key: str) -> str | None:
         row = await self._select_one(
-            "SELECT value FROM app_settings WHERE key = ?", (key,)
+            "SELECT value FROM app_settings WHERE app_settings.key = ?", (key,)
         )
         return str(row["value"]) if row else None
 
@@ -1066,57 +1208,45 @@ class Database:
         else:
             order_sql = "ORDER BY LOWER(username) ASC"
         rows = await self._select_all(
-            f"SELECT id, username, is_admin, created_at FROM dashboard_users {order_sql}"
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users {order_sql}"
         )
-        return [
-            {
-                "id": int(r["id"]),
-                "username": r["username"],
-                "is_admin": bool(r["is_admin"]),
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
+        users = [_row_to_dashboard_user(r) for r in rows]
+        for u in users:
+            u["has_password"] = bool(u.pop("password_hash"))
+        return users
 
     async def get_dashboard_user_by_username(self, username: str) -> dict | None:
         u = username.strip()
         if self._dialect_name == "sqlite":
             row = await self._select_one(
-                "SELECT id, username, password_hash, is_admin, created_at "
+                f"SELECT {_DASHBOARD_USER_COLUMNS} "
                 "FROM dashboard_users WHERE username = ? COLLATE NOCASE",
                 (u,),
             )
         else:
             row = await self._select_one(
-                "SELECT id, username, password_hash, is_admin, created_at "
+                f"SELECT {_DASHBOARD_USER_COLUMNS} "
                 "FROM dashboard_users WHERE LOWER(username) = LOWER(?)",
                 (u,),
             )
-        if not row:
-            return None
-        return {
-            "id": int(row["id"]),
-            "username": row["username"],
-            "password_hash": row["password_hash"],
-            "is_admin": bool(row["is_admin"]),
-            "created_at": row["created_at"],
-        }
+        return _row_to_dashboard_user(row) if row else None
 
     async def get_dashboard_user_by_id(self, user_id: int) -> dict | None:
         row = await self._select_one(
-            "SELECT id, username, password_hash, is_admin, created_at "
-            "FROM dashboard_users WHERE id = ?",
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users WHERE id = ?",
             (user_id,),
         )
-        if not row:
-            return None
-        return {
-            "id": int(row["id"]),
-            "username": row["username"],
-            "password_hash": row["password_hash"],
-            "is_admin": bool(row["is_admin"]),
-            "created_at": row["created_at"],
-        }
+        return _row_to_dashboard_user(row) if row else None
+
+    async def get_dashboard_user_by_oidc(
+        self, issuer: str, subject: str
+    ) -> dict | None:
+        row = await self._select_one(
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users "
+            "WHERE oidc_issuer = ? AND oidc_subject = ?",
+            (issuer, subject),
+        )
+        return _row_to_dashboard_user(row) if row else None
 
     async def create_dashboard_user(
         self, username: str, password_hash: str, is_admin: bool
@@ -1125,6 +1255,46 @@ class Database:
             "INSERT INTO dashboard_users (username, password_hash, is_admin) "
             "VALUES (?, ?, ?)",
             (username.strip(), password_hash, int(is_admin)),
+        )
+
+    async def create_oidc_dashboard_user(
+        self,
+        username: str,
+        issuer: str,
+        subject: str,
+        *,
+        email: str | None,
+        display_name: str | None,
+        is_admin: bool,
+    ) -> int:
+        """Create an account that signs in only through OpenID Connect."""
+        return await self._insert_get_id(
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "
+            "auth_source, oidc_issuer, oidc_subject, email, display_name, "
+            "last_login_at) VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (username.strip(), int(is_admin), issuer, subject, email, display_name),
+        )
+
+    async def update_oidc_dashboard_user(
+        self,
+        user_id: int,
+        *,
+        email: str | None,
+        display_name: str | None,
+        is_admin: bool,
+    ) -> None:
+        """Refresh an OIDC account from the identity provider at sign-in."""
+        await self._execute(
+            "UPDATE dashboard_users SET email = ?, display_name = ?, is_admin = ?, "
+            "last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (email, display_name, int(is_admin), user_id),
+        )
+
+    async def touch_dashboard_user_login(self, user_id: int) -> None:
+        await self._execute(
+            "UPDATE dashboard_users SET last_login_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (user_id,),
         )
 
     async def update_dashboard_user_password(
@@ -1143,6 +1313,28 @@ class Database:
             "SELECT COUNT(*) AS c FROM dashboard_users WHERE is_admin = 1"
         )
         return int(row["c"]) if row else 0
+
+
+_DASHBOARD_USER_COLUMNS = (
+    "id, username, password_hash, is_admin, created_at, auth_source, "
+    "oidc_issuer, oidc_subject, email, display_name, last_login_at"
+)
+
+
+def _row_to_dashboard_user(row: Mapping[str, Any]) -> dict:
+    return {
+        "id": int(row["id"]),
+        "username": row["username"],
+        "password_hash": row["password_hash"],
+        "is_admin": bool(row["is_admin"]),
+        "created_at": row["created_at"],
+        "auth_source": row["auth_source"] or "local",
+        "oidc_issuer": row["oidc_issuer"],
+        "oidc_subject": row["oidc_subject"],
+        "email": row["email"],
+        "display_name": row["display_name"],
+        "last_login_at": row["last_login_at"],
+    }
 
 
 def _row_to_worker(row: Mapping[str, Any]) -> dict:
@@ -1287,5 +1479,9 @@ def _row_to_request_log(row: Mapping[str, Any]) -> RequestLog:
         streamed=bool(row["streamed"]),
         error_detail=row["error_detail"],
         locality=row.get("locality"),
+        api_key_id=row.get("api_key_id"),
+        prompt_tokens=row.get("prompt_tokens"),
+        completion_tokens=row.get("completion_tokens"),
+        cost_usd=row.get("cost_usd"),
         created_at=row["created_at"],
     )
