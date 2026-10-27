@@ -1511,7 +1511,7 @@
 
 <!-- Add Provider Modal -->
 <div class="modal fade" id="addProviderModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg">
         <form method="post" action="/providers/add" class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Add Provider</h5>
@@ -1519,8 +1519,24 @@
             </div>
             <div class="modal-body">
                 <div class="mb-3">
+                    <div class="form-label">Start from</div>
+                    <div class="d-flex flex-wrap gap-1" id="preset-grid">
+                        <button type="button" class="btn btn-sm btn-outline-secondary active" data-preset="">Self-hosted server</button>
+                        {% for p in cloud_presets %}
+                        <button type="button" class="btn btn-sm btn-outline-secondary" data-preset="{{ p.id }}">{{ p.name }}</button>
+                        {% endfor %}
+                    </div>
+                    <div id="preset-info" class="form-text" style="display:none"></div>
+                    <input type="hidden" name="preset" id="preset" value="">
+                </div>
+                <div class="mb-3">
                     <label for="name" class="form-label">Name</label>
                     <input type="text" class="form-control" id="name" name="name" required placeholder="e.g. gpu-server-1">
+                </div>
+                <div class="mb-3" id="preset-resource-group" style="display:none">
+                    <label for="preset_resource" class="form-label">Resource name</label>
+                    <input type="text" class="form-control" id="preset_resource" name="preset_resource" pattern="[A-Za-z0-9-]+" placeholder="my-openai-resource">
+                    <div class="form-text">The part before <code>.openai.azure.com</code>.</div>
                 </div>
                 <div class="mb-3">
                     <label for="protocol" class="form-label">Protocol</label>
@@ -1548,7 +1564,20 @@
                         <input type="text" class="form-control" id="api_key_header" name="api_key_header" placeholder="Authorization">
                     </div>
                 </div>
-                <div class="form-text mb-3">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>.</div>
+                <div class="form-text mb-3">Blank header sends <code>Authorization: Bearer &lt;key&gt;</code>. Separate several headers with commas.</div>
+                <details class="mb-3" id="add-advanced">
+                    <summary class="small text-muted">Advanced: extra headers and models added by hand</summary>
+                    <div class="mt-2">
+                        <label for="extra_headers" class="form-label">Extra headers</label>
+                        <textarea class="form-control font-monospace" id="extra_headers" name="extra_headers" rows="2" placeholder="anthropic-version: 2023-06-01"></textarea>
+                        <div class="form-text">One <code>Name: value</code> per line, sent with every request. Keys go in the API key field.</div>
+                    </div>
+                    <div class="mt-2">
+                        <label for="manual_models" class="form-label">Models added by hand</label>
+                        <textarea class="form-control font-monospace" id="manual_models" name="manual_models" rows="2" placeholder="sonar-pro"></textarea>
+                        <div class="form-text">One per line. For services that cannot list (all of) their models.</div>
+                    </div>
+                </details>
                 <div class="d-flex align-items-center gap-2 mb-2">
                     <button type="button" class="btn btn-sm btn-outline-primary" id="probe-new-provider">
                         <i class="bi bi-search me-1"></i>Probe URL
@@ -1734,6 +1763,8 @@ function probeNewProvider() {
             url: url,
             api_key: document.getElementById('api_key').value,
             api_key_header: document.getElementById('api_key_header').value,
+            extra_headers: document.getElementById('extra_headers').value,
+            preset: document.getElementById('preset').value,
         }),
     })
         .then(r => r.json().then(d => ({ok: r.ok, d: d})))
@@ -1755,6 +1786,68 @@ function probeNewProvider() {
 document.addEventListener('click', function(ev) {
     if (ev.target.closest('#probe-new-provider')) probeNewProvider();
 });
+// ---- Cloud presets --------------------------------------------------------
+const CLOUD_PRESETS = {{ cloud_presets | tojson }};
+let presetFilledName = '';
+
+function presetUrl(p) {
+    const res = document.getElementById('preset_resource').value.trim();
+    return p.base_url.replace('{resource}', res || '{resource}');
+}
+
+function applyPreset(id) {
+    const p = CLOUD_PRESETS.find(x => x.id === id) || null;
+    document.getElementById('preset').value = p ? p.id : '';
+    document.querySelectorAll('#preset-grid [data-preset]').forEach(function(b) {
+        b.classList.toggle('active', b.dataset.preset === (p ? p.id : ''));
+    });
+    const name = document.getElementById('name');
+    const url = document.getElementById('url');
+    const info = document.getElementById('preset-info');
+    const resGroup = document.getElementById('preset-resource-group');
+    const res = document.getElementById('preset_resource');
+    if (!name.value.trim() || name.value === presetFilledName) {
+        name.value = p ? p.name : '';
+        presetFilledName = name.value;
+    }
+    resGroup.style.display = p && p.url_params.resource !== undefined ? '' : 'none';
+    res.required = !!(p && p.url_params.resource !== undefined);
+    url.readOnly = !!(p && p.url_params.resource !== undefined);
+    url.value = p ? presetUrl(p) : '';
+    document.getElementById('protocol').value = p ? p.protocol : 'ollama';
+    toggleUrlFields();
+    document.getElementById('api_key_header').value = p ? (p.api_key_header || '') : '';
+    document.getElementById('extra_headers').value = p
+        ? Object.entries(p.extra_headers).map(([k, v]) => k + ': ' + v).join('\n') : '';
+    document.getElementById('manual_models').value = p ? p.models.join('\n') : '';
+    info.innerHTML = '';
+    info.style.display = p ? '' : 'none';
+    if (p) {
+        info.appendChild(document.createTextNode('Paste a key from '));
+        const a = probeEl('a', '', p.name);
+        a.href = p.key_url; a.target = '_blank'; a.rel = 'noopener';
+        info.appendChild(a);
+        info.appendChild(document.createTextNode('. '));
+        const d = probeEl('a', '', 'API docs');
+        d.href = p.docs_url; d.target = '_blank'; d.rel = 'noopener';
+        info.appendChild(d);
+        info.appendChild(document.createTextNode('. Or set '));
+        info.appendChild(probeEl('code', '', p.env_var));
+        info.appendChild(document.createTextNode(' and restart.'));
+    }
+    document.getElementById('probe-new-result').style.display = 'none';
+}
+
+document.addEventListener('click', function(ev) {
+    const b = ev.target.closest('#preset-grid [data-preset]');
+    if (b) applyPreset(b.dataset.preset);
+});
+document.addEventListener('input', function(ev) {
+    if (ev.target.id !== 'preset_resource') return;
+    const p = CLOUD_PRESETS.find(x => x.id === document.getElementById('preset').value);
+    if (p) document.getElementById('url').value = presetUrl(p);
+});
+
 // Probe-first: probe as soon as there is a URL to probe, and again when the
 // key changes.
 document.addEventListener('change', function(ev) {

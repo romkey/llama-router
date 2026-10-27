@@ -82,6 +82,12 @@ class Provider(BaseModel):
     # Server the last probe recognised ("vllm", "ollama", a cloud preset id,
     # ...). Shown in the dashboard; routing never reads it.
     flavor: str | None = None
+    # Cloud preset the provider was created from (see cloud_presets).
+    preset: str | None = None
+    # Static headers sent with every request, e.g. {"anthropic-version": ...}.
+    extra_headers: dict[str, str] | None = None
+    # Models added by hand, for services that cannot list (all of) theirs.
+    manual_models: list[str] | None = None
 
     @property
     def is_worker(self) -> bool:

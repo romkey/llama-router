@@ -172,6 +172,25 @@ Use the **Cache** tab on the dashboard, or call the API directly:
 curl -X POST http://localhost/api/cache/clear
 ```
 
+## Cloud Services
+
+The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud and Azure OpenAI. A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.
+
+To attach a service without the dashboard, set its key in the environment. At startup the router creates a provider for each preset whose key is set, or updates the key of the one it created before:
+
+```bash
+LLAMA_ROUTER_PROVIDER_OPENAI_API_KEY=sk-...
+LLAMA_ROUTER_PROVIDER_OPENROUTER_API_KEY=sk-or-...
+LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_API_KEY=...
+LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_RESOURCE=my-resource
+```
+
+An OpenAI-compatible address can be the server root (`http://gpu:8080`, API under `/v1`) or the API base itself (`https://openrouter.ai/api/v1`); a URL ending in a version segment is taken as the API base.
+
+Each provider can also carry extra headers (one `Name: value` per line) and models added by hand, for services whose model list is missing or incomplete. Added models stay listed if the service's own list fails.
+
+`tests/test_cloud_presets_live.py` checks each preset against the real service when its key variable is set.
+
 ## Health Check
 
 All three API ports expose a `GET /health` endpoint that returns JSON:

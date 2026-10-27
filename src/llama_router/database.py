@@ -294,6 +294,35 @@ class Database:
             ),
         )
 
+    # Columns update_provider_settings may write, and whether each holds JSON.
+    _PROVIDER_SETTINGS = {
+        "preset": False,
+        "extra_headers": True,
+        "manual_models": True,
+    }
+
+    @_notifies(CHANGE_PROVIDERS)
+    async def update_provider_settings(self, provider_id: int, **fields: Any) -> None:
+        """Write optional provider settings; None clears one."""
+        if not fields:
+            return
+        unknown = set(fields) - set(self._PROVIDER_SETTINGS)
+        if unknown:
+            raise ValueError(f"unknown provider settings: {sorted(unknown)}")
+        sets = []
+        params: list[Any] = []
+        for name, value in fields.items():
+            sets.append(f"{name} = ?")
+            if self._PROVIDER_SETTINGS[name] and value is not None:
+                value = json.dumps(value) if value else None
+            params.append(value)
+        params.append(provider_id)
+        await self._execute(
+            f"UPDATE providers SET {', '.join(sets)}, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            tuple(params),
+        )
+
     async def set_provider_api_key(
         self, provider_id: int, api_key_enc: str | None, header: str | None
     ) -> None:
@@ -1063,6 +1092,9 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         capabilities=_json_or_none(row["capabilities"]),
         probed_at=row["probed_at"],
         flavor=row["flavor"],
+        preset=row["preset"],
+        extra_headers=_json_or_none(row["extra_headers"]),
+        manual_models=_json_list_or_none(row["manual_models"]),
     )
 
 
@@ -1074,6 +1106,16 @@ def _json_or_none(raw: Any) -> dict | None:
     except (TypeError, ValueError):
         return None
     return val if isinstance(val, dict) else None
+
+
+def _json_list_or_none(raw: Any) -> list | None:
+    if not raw:
+        return None
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return val if isinstance(val, list) else None
 
 
 def _row_to_model(row: Mapping[str, Any]) -> ProviderModel:

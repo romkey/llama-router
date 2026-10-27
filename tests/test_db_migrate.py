@@ -9,7 +9,7 @@ import pytest
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 
-HEAD = "010_provider_flavor"
+HEAD = "011_provider_presets"
 
 
 def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

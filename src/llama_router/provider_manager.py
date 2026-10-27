@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -107,6 +107,15 @@ def worker_protocol(targets: list[str]) -> ProviderProtocol:
     if "ollama" in targets or "llamacpp" not in targets:
         return ProviderProtocol.OLLAMA
     return ProviderProtocol.OPENAI
+
+
+def preset_settings(preset) -> dict[str, Any]:
+    """Provider settings a cloud preset starts with."""
+    return {
+        "preset": preset.id,
+        "extra_headers": dict(preset.extra_headers) or None,
+        "manual_models": list(preset.models) or None,
+    }
 
 
 class ProviderManager:
@@ -215,7 +224,74 @@ class ProviderManager:
     def _address_url_sig(addr: ProviderAddress) -> str:
         return addr.url.rstrip("/")
 
+    async def provision_from_env(self) -> list[Provider]:
+        """Create or update the providers named by LLAMA_ROUTER_PROVIDER_*_API_KEY.
+
+        A docker-compose file can attach cloud services without the
+        dashboard: each preset whose key is set gets a provider (the first one
+        created from that preset, else a new one named after it), and its key
+        is replaced when the variable holds a different one.
+        """
+        from .cloud_presets import env_provisioned
+
+        out: list[Provider] = []
+        existing = await self._db.list_providers()
+        for preset, key, params in env_provisioned():
+            try:
+                url = preset.url(**params)
+            except ValueError as exc:
+                logger.warning("%s set but %s; skipped", preset.env_var, exc)
+                continue
+            match = next((p for p in existing if p.preset == preset.id), None)
+            if match is None:
+                name = preset.name
+                taken = {p.name for p in existing}
+                n = 2
+                while name in taken:
+                    name = f"{preset.name} {n}"
+                    n += 1
+                provider = await self._db.add_provider(
+                    name, ProviderProtocol(preset.protocol)
+                )
+                assert provider.id is not None
+                await self._db.update_provider_settings(
+                    provider.id, **preset_settings(preset)
+                )
+                await self._db.add_address(provider.id, url, is_preferred=True)
+                provider = await self._db.get_provider(provider.id) or provider
+                await self._store_api_key(
+                    provider, key, normalize_header(preset.api_key_header)
+                )
+                existing.append(provider)
+                logger.info("Added provider %s from %s", name, preset.env_var)
+            else:
+                provider = match
+                try:
+                    current = (
+                        decrypt_api_key(provider.api_key_enc)
+                        if provider.api_key_enc
+                        else None
+                    )
+                except ApiKeyUnavailable:
+                    current = None
+                if current != key:
+                    await self._store_api_key(
+                        provider,
+                        key,
+                        normalize_header(
+                            provider.api_key_header or preset.api_key_header
+                        ),
+                    )
+                    logger.info(
+                        "Updated the key of provider %s from %s",
+                        provider.name,
+                        preset.env_var,
+                    )
+            out.append(provider)
+        return out
+
     async def start(self) -> None:
+        await self.provision_from_env()
         providers = await self._db.list_providers()
         http_providers: list[Provider] = []
         for p in providers:
@@ -276,14 +352,17 @@ class ProviderManager:
         Worker providers never get them: the link strips Authorization and
         API-KEY, and the worker adds its own upstream key.
         """
-        if provider.is_worker or not provider.api_key_enc:
+        if provider.is_worker:
             return None
-        try:
-            key = decrypt_api_key(provider.api_key_enc)
-        except ApiKeyUnavailable as exc:
-            logger.warning("Provider %s: %s", provider.name, exc)
-            return None
-        return auth_headers(key, provider.api_key_header)
+        headers = dict(provider.extra_headers or {})
+        if provider.api_key_enc:
+            try:
+                key = decrypt_api_key(provider.api_key_enc)
+            except ApiKeyUnavailable as exc:
+                logger.warning("Provider %s: %s", provider.name, exc)
+            else:
+                headers.update(auth_headers(key, provider.api_key_header))
+        return headers or None
 
     async def _rebuild_clients(self, provider: Provider) -> None:
         """Close existing clients and create new ones from the best live address."""
@@ -336,8 +415,13 @@ class ProviderManager:
         gpu_ram: str | None = None,
         api_key: str | None = None,
         api_key_header: str | None = None,
+        provider_settings: dict[str, Any] | None = None,
     ) -> Provider:
-        """Create a provider with *url* as its first address."""
+        """Create a provider with *url* as its first address.
+
+        *provider_settings* are optional columns (preset, extra_headers,
+        manual_models, ...) written before the first check.
+        """
         header = normalize_header(api_key_header) if api_key else None
         provider = await self._db.add_provider(
             name,
@@ -347,6 +431,9 @@ class ProviderManager:
             gpu_ram=gpu_ram,
         )
         assert provider.id is not None
+        if provider_settings:
+            await self._db.update_provider_settings(provider.id, **provider_settings)
+            provider = await self._db.get_provider(provider.id) or provider
         if api_key:
             await self._store_api_key(provider, api_key, header)
         await self._db.add_address(provider.id, url, is_preferred=True)
@@ -367,10 +454,12 @@ class ProviderManager:
         api_key: str | None = None,
         api_key_header: str | None = None,
         clear_api_key: bool = False,
+        provider_settings: dict[str, Any] | None = None,
     ) -> None:
         """Update provider details. Addresses are edited separately.
 
         *api_key* None keeps the stored key; *clear_api_key* removes it.
+        *provider_settings* writes optional columns; ones left out are kept.
         """
         existing = await self._db.get_provider(provider_id)
         if existing is None:
@@ -393,6 +482,8 @@ class ProviderManager:
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
         )
+        if provider_settings:
+            await self._db.update_provider_settings(provider_id, **provider_settings)
         if not existing.is_worker:
             if clear_api_key:
                 await self._db.set_provider_api_key(provider_id, None, None)
@@ -1268,8 +1359,30 @@ class ProviderManager:
                 existing.modified_at = modified_at
             existing.details = merged_details or None
 
+        manual = [m for m in (provider.manual_models or []) if m]
+
+        async def _listed(fetch):
+            """The provider's own list; with hand-added models, a failed list
+            only costs the listed ones."""
+            try:
+                return await fetch()
+            except (httpx.HTTPError, ValueError) as exc:
+                if not manual:
+                    raise
+                logger.warning(
+                    "Provider %s: model list failed (%s); using its %d added models",
+                    provider.name,
+                    (
+                        describe_httpx_error(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else exc
+                    ),
+                    len(manual),
+                )
+                return []
+
         if provider.is_ollama and provider.id in self._ollama_clients:
-            tags = await self._ollama_clients[provider.id].get_tags()
+            tags = await _listed(self._ollama_clients[provider.id].get_tags)
             for m in tags:
                 clean_name = self._strip_cache_prefix(m.name)
                 raw_name = m.name if clean_name != m.name else None
@@ -1285,7 +1398,7 @@ class ProviderManager:
                 )
 
         if provider.is_openai and provider.id in self._llamacpp_clients:
-            lcpp_models = await self._llamacpp_clients[provider.id].get_models()
+            lcpp_models = await _listed(self._llamacpp_clients[provider.id].get_models)
             for m in lcpp_models:
                 clean_name = self._strip_cache_prefix(m.name)
                 raw_name = m.name if clean_name != m.name else None
@@ -1346,6 +1459,9 @@ class ProviderManager:
                         },
                     )
 
+        for name in manual:
+            if name not in models_by_name:
+                _upsert_model(clean_name=name, raw_name=None, details={"_manual": True})
         all_models = list(models_by_name.values())
         await self._db.set_provider_models(provider.id, all_models)
         if cache_prefixed:
@@ -1482,7 +1598,11 @@ class ProviderManager:
             results.append(r)
         else:
             results.append(
-                await probe_url(best.url, headers=self._upstream_headers(provider))
+                await probe_url(
+                    best.url,
+                    headers=self._upstream_headers(provider),
+                    key_sent=provider.has_api_key,
+                )
             )
         caps = merge_results(results)
         await self._db.set_provider_capabilities(provider_id, caps)

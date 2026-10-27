@@ -457,6 +457,19 @@
                     </select>
                 </div>
                 <p class="form-text">Change where this provider is reached under <strong>Addresses</strong>.</p>
+                <input type="hidden" name="settings_form" value="1">
+                {% if not info.provider.is_worker %}
+                <div class="mb-3">
+                    <label for="edit-extra-headers" class="form-label">Extra headers</label>
+                    <textarea class="form-control font-monospace" id="edit-extra-headers" name="extra_headers" rows="2" placeholder="anthropic-version: 2023-06-01">{{ extra_headers_text }}</textarea>
+                    <div class="form-text">One <code>Name: value</code> per line, sent with every request.</div>
+                </div>
+                {% endif %}
+                <div class="mb-3">
+                    <label for="edit-manual-models" class="form-label">Models added by hand</label>
+                    <textarea class="form-control font-monospace" id="edit-manual-models" name="manual_models" rows="2">{{ manual_models_text }}</textarea>
+                    <div class="form-text">One per line; kept alongside the models the provider lists.</div>
+                </div>
                 <hr>
                 <p class="text-muted small mb-2">Upstream authentication (optional)</p>
                 {% if info.provider.is_worker %}

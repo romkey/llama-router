@@ -144,15 +144,23 @@ class OpenAIClient:
         resp = await self._get("/v1/models", op="List llama.cpp models (/v1/models)")
         resp.raise_for_status()
         data = resp.json()
-        return [
-            ProviderModel(
-                provider_id=0,
-                name=m["id"],
-                size=None,
-                details=m.get("meta"),
+        # Most servers wrap the list in {"data": [...]}; some return it bare.
+        items = data if isinstance(data, list) else data.get("data", [])
+        out = []
+        for m in items:
+            if not isinstance(m, dict) or not m.get("id"):
+                continue
+            details = dict(m.get("meta") or {})
+            # Kept for routing and cost: OpenRouter lists prices and context.
+            for key in ("pricing", "context_length", "owned_by"):
+                if m.get(key) is not None:
+                    details[key] = m[key]
+            out.append(
+                ProviderModel(
+                    provider_id=0, name=str(m["id"]), size=None, details=details or None
+                )
             )
-            for m in data.get("data", [])
-        ]
+        return out
 
     async def get_props(self) -> dict | None:
         try:

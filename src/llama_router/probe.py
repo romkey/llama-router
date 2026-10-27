@@ -523,11 +523,15 @@ async def probe_url(
     api_key_header: str | None = None,
     headers: dict[str, str] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    key_sent: bool | None = None,
 ) -> ProbeResult:
     """Probe every catalog endpoint under *base_url* concurrently.
 
-    Pass either *api_key* (with an optional header name) or ready *headers*.
+    Pass either *api_key* (with an optional header name) or ready *headers*;
+    *key_sent* says whether those headers carry a key (default: any headers).
     """
+    if key_sent is None:
+        key_sent = bool(api_key or headers)
     base = normalize_base_url(base_url)
     result = ProbeResult(base_url=base)
     if headers is None and api_key:
@@ -563,7 +567,7 @@ async def probe_url(
     result.auth_required = any(r.state == NEEDS_KEY for r in result.endpoints)
     answered = [r for r in result.endpoints if r.status_code is not None]
     result.key_rejected = bool(
-        headers and answered and all(r.state == NEEDS_KEY for r in answered)
+        key_sent and answered and all(r.state == NEEDS_KEY for r in answered)
     )
     states = {(r.method, r.path): r.state for r in result.endpoints}
     result.liveness = next(

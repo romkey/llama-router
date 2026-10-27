@@ -69,6 +69,49 @@ def normalize_header(name: str | None) -> str:
     return ", ".join(names)
 
 
+_RESERVED_HEADERS = {
+    "authorization",
+    "api-key",
+    "x-api-key",
+    "host",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+    "connection",
+}
+
+
+def parse_extra_headers(text: str | None) -> dict[str, str]:
+    """Parse ``Name: value`` lines into static headers for a provider.
+
+    Keys belong in the API key field, which is stored encrypted, so the key
+    headers are refused here.
+    """
+    out: dict[str, str] = {}
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        name, sep, value = line.partition(":")
+        name, value = name.strip(), value.strip()
+        if not sep or not name:
+            raise ValueError(f"extra header must be 'Name: value': {line!r}")
+        if not all(c.isalnum() or c in "-_" for c in name) or len(name) > 64:
+            raise ValueError(f"bad header name {name!r}")
+        if name.lower() in _RESERVED_HEADERS:
+            raise ValueError(f"{name} cannot be an extra header")
+        if len(value) > 1024 or any(ord(c) < 32 for c in value):
+            raise ValueError(f"bad value for header {name}")
+        out[name] = value
+    if len(out) > 16:
+        raise ValueError("at most 16 extra headers")
+    return out
+
+
+def format_extra_headers(headers: dict[str, str] | None) -> str:
+    return "\n".join(f"{k}: {v}" for k, v in (headers or {}).items())
+
+
 def auth_headers(api_key: str, header: str | None) -> dict[str, str]:
     """Headers to send upstream. ``Authorization`` gets a Bearer token."""
     out: dict[str, str] = {}

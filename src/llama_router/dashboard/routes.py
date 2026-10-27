@@ -29,7 +29,10 @@ from .. import hf_download
 from ..probe import FAMILY_LABELS, probe_url
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
+from ..cloud_presets import PRESETS, get_preset
 from ..models import ProviderProtocol, RequestLog
+from ..provider_manager import preset_settings
+from ..provider_secrets import format_extra_headers, parse_extra_headers
 from . import deps
 
 from .. import __version__
@@ -734,6 +737,7 @@ async def dashboard(request: Request):
             {
                 "providers": infos,
                 "providers_seed": [_provider_status_payload(i) for i in infos],
+                "cloud_presets": [p.to_dict() for p in PRESETS],
                 "hf_models_dir": settings.hf_models_dir,
                 "models": all_models,
                 "benchmarks_by_model": benchmarks_by_model,
@@ -1169,6 +1173,8 @@ async def provider_detail(request: Request, provider_id: int):
             request,
             {
                 "info": info,
+                "extra_headers_text": format_extra_headers(info.provider.extra_headers),
+                "manual_models_text": "\n".join(info.provider.manual_models or []),
                 "missing_models": missing_models,
                 "cached_models": cached_models,
                 "cached_only_models": cached_only_models,
@@ -1182,24 +1188,61 @@ async def provider_detail(request: Request, provider_id: int):
     )
 
 
+def _model_lines(text: str | None) -> list[str]:
+    """Model names, one per line or comma-separated."""
+    out: list[str] = []
+    for part in (text or "").replace(",", "\n").splitlines():
+        name = part.strip()
+        if name and name not in out:
+            if len(name) > 200:
+                raise ValueError("model name too long")
+            out.append(name)
+    return out
+
+
 @router.post("/providers/add")
 async def add_provider(
     name: str = Form(...),
-    url: str = Form(...),
+    url: str = Form(""),
     protocol: str = Form("ollama"),
     machine_type: Optional[str] = Form(None),
     gpu_type: Optional[str] = Form(None),
     gpu_ram: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
     api_key_header: Optional[str] = Form(None),
+    preset: Optional[str] = Form(None),
+    preset_resource: Optional[str] = Form(None),
+    extra_headers: Optional[str] = Form(None),
+    manual_models: Optional[str] = Form(None),
 ):
     """Create a provider; *url* becomes its first address. It is probed in the
-    background, so the stored endpoint list does not wait on the dialog."""
+    background, so the stored endpoint list does not wait on the dialog.
+
+    With *preset*, the cloud preset's URL, protocol, key header and extra
+    headers fill whatever the form left blank.
+    """
     pm = deps.get_pm()
+    settings_: dict[str, Any] = {}
     try:
         proto = ProviderProtocol.parse(protocol)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid protocol")
+        chosen = get_preset(preset) if preset else None
+        if preset and chosen is None:
+            raise ValueError("unknown preset")
+        if chosen is not None:
+            settings_ = preset_settings(chosen)
+            proto = ProviderProtocol(chosen.protocol)
+            if chosen.url_params or not url.strip():
+                url = chosen.url(resource=preset_resource or "")
+            if not (api_key_header or "").strip():
+                api_key_header = chosen.api_key_header
+        if extra_headers is not None and extra_headers.strip():
+            settings_["extra_headers"] = parse_extra_headers(extra_headers)
+        if manual_models is not None and manual_models.strip():
+            settings_["manual_models"] = _model_lines(manual_models)
+        if not url.strip():
+            raise ValueError("URL is required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     try:
         await pm.add_provider(
             name,
@@ -1210,6 +1253,7 @@ async def add_provider(
             gpu_ram=gpu_ram or None,
             api_key=(api_key or "").strip() or None,
             api_key_header=api_key_header or None,
+            provider_settings=settings_ or None,
         )
     except Exception:
         logger.exception("add_provider failed")
@@ -1228,7 +1272,16 @@ async def api_probe_url(request: Request):
     api_key = (str(body.get("api_key") or "")).strip() or None
     header = (str(body.get("api_key_header") or "")).strip() or None
     try:
-        result = await probe_url(url, api_key=api_key, api_key_header=header)
+        headers = parse_extra_headers(str(body.get("extra_headers") or ""))
+        chosen = get_preset(str(body.get("preset") or ""))
+        if chosen is not None:
+            headers = {**chosen.extra_headers, **headers}
+            header = header or chosen.api_key_header
+        if api_key:
+            from ..provider_secrets import auth_headers
+
+            headers.update(auth_headers(api_key, header))
+        result = await probe_url(url, headers=headers or None, key_sent=bool(api_key))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     data = result.to_dict()
@@ -1260,13 +1313,24 @@ async def edit_provider(
     api_key: Optional[str] = Form(None),
     api_key_header: Optional[str] = Form(None),
     clear_api_key: Optional[str] = Form(None),
+    extra_headers: Optional[str] = Form(None),
+    manual_models: Optional[str] = Form(None),
+    settings_form: Optional[str] = Form(None),
 ):
-    """Edit provider details. A blank API key keeps the stored one."""
+    """Edit provider details. A blank API key keeps the stored one.
+
+    The extra headers and added models are written only when the form says
+    it carries them (*settings_form*): an empty field then clears them.
+    """
     pm = deps.get_pm()
+    settings_: dict[str, Any] = {}
     try:
         proto = ProviderProtocol.parse(protocol)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid protocol")
+        if settings_form:
+            settings_["extra_headers"] = parse_extra_headers(extra_headers) or None
+            settings_["manual_models"] = _model_lines(manual_models) or None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid protocol")
     try:
         await pm.update_provider(
             provider_id,
@@ -1278,6 +1342,7 @@ async def edit_provider(
             api_key=(api_key or "").strip() or None,
             api_key_header=api_key_header,
             clear_api_key=bool(clear_api_key),
+            provider_settings=settings_ or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
