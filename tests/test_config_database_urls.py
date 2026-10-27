@@ -97,3 +97,47 @@ def test_sync_url_keeps_the_password(
     sync_url = config.settings.sync_database_url_for_alembic()
     assert "***" not in sync_url
     assert make_url(sync_url).password == "s3cr@t"
+
+
+def test_upgrade_handles_percent_in_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Percent-encoded characters must survive Alembic's ConfigParser interpolation."""
+    from llama_router.db_migrate import run_upgrade_sync
+
+    dbdir = tmp_path / "pct%40dir"
+    dbdir.mkdir()
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbdir / "x.db"))
+    run_upgrade_sync(config.settings.sync_database_url_for_alembic())
+    assert (dbdir / "x.db").exists()
+
+
+def test_alembic_config_round_trips_encoded_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The URL Alembic reads back is the one we passed, %-escapes and all."""
+    from alembic import command
+
+    from llama_router import db_migrate
+
+    seen = {}
+
+    def fake_upgrade(cfg, rev):
+        seen["main"] = cfg.get_main_option("sqlalchemy.url")
+        seen["section"] = cfg.get_section(cfg.config_ini_section)["sqlalchemy.url"]
+
+    monkeypatch.setattr(command, "upgrade", fake_upgrade)
+    monkeypatch.setattr(
+        db_migrate,
+        "_clear_revision_if_marked_head_but_schema_incomplete",
+        lambda u: None,
+    )
+    monkeypatch.setattr(
+        db_migrate,
+        "_stamp_if_full_schema_exists_without_alembic_revision",
+        lambda c, u: None,
+    )
+    url = "postgresql+psycopg://user:s3cr%40t@db:5432/app"
+    db_migrate.run_upgrade_sync(url)
+    assert seen == {"main": url, "section": url}
