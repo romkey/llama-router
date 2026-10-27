@@ -17,6 +17,8 @@ from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.decisions import router as dash_decisions_router
 from llama_router.database import Database
 from llama_router.decision_policy import parse_policy, request_text
+from llama_router.api import deps as ollama_deps
+from llama_router.api.app import app as ollama_app
 from llama_router.llamacpp_api import deps
 from llama_router.llamacpp_api.app import app as api_app
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
@@ -267,6 +269,21 @@ async def test_tier_applies_to_other_generation_routes(
     resp = await _post(path, body, key[1])
     assert resp.status_code == 200, resp.text
     assert [g["model"] for g in b.generations] == ["big"]
+
+
+async def test_tier_applies_to_ollama_chat_on_openai_providers(
+    db, router, pm, backend, key
+):
+    ollama_deps.init(db, pm, router)
+    await _set(db, key[0], {"model": JUDGE, "tier": TIER})
+    transport = httpx.ASGITransport(app=ollama_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://router") as c:
+        resp = await c.post(
+            "/api/chat", json={**CHAT, "stream": False}, headers={"API-KEY": key[1]}
+        )
+    assert resp.status_code == 200, resp.text
+    assert len(backend.decisions) == 1
+    assert [g["model"] for g in backend.generations] == ["big"]
 
 
 async def test_tier_skips_models_it_does_not_name(db, router, backend, key):
