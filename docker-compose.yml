@@ -1,6 +1,7 @@
 # Hub and worker links: other llama-routers dial in to this one over a WebSocket
 # at ws://<host>:11434/worker/ws (put TLS in front of it for use over the
-# internet). Workers need no inbound ports. To run this instance as a worker,
+# internet). Workers need no inbound ports. Set LLAMA_ROUTER_API_ON_DASHBOARD_PORT
+# below to serve the APIs and worker links on port 80 as well. To run this instance as a worker,
 # set LLAMA_ROUTER_WORKER_HUB_URL and LLAMA_ROUTER_WORKER_TOKEN below or use the
 # dashboard Workers tab.
 
@@ -17,6 +18,9 @@ services:
     environment:
       LLAMA_ROUTER_DATABASE_PATH: /app/data/llama_router.db
       LLAMA_ROUTER_CACHE_DIR: /app/data/model_cache
+      # Also serve the Ollama/OpenAI APIs and worker links on port 80 (11434
+      # and 8080 keep listening). Require API keys before exposing port 80.
+      # LLAMA_ROUTER_API_ON_DASHBOARD_PORT: "true"
       # Run as a worker of another hub (token comes from that hub's Workers tab):
       # LLAMA_ROUTER_WORKER_HUB_URL: https://llm.example.org
       # LLAMA_ROUTER_WORKER_TOKEN: lrw_...

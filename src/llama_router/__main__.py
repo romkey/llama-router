@@ -22,6 +22,7 @@ from .dashboard import deps as dash_deps
 from .dashboard.app import app as dash_app
 from .llamacpp_api import deps as lcpp_deps
 from .llamacpp_api.app import app as lcpp_app
+from .shared_port import SharedPortApp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,8 +87,11 @@ async def run() -> None:
     dash_deps.init_auto_benchmark(auto_bench)
     lcpp_deps.init(db, pm, rt)
 
+    dashboard_asgi = (
+        SharedPortApp(dash_app, api_app) if settings.api_on_dashboard_port else dash_app
+    )
     dashboard_config = uvicorn.Config(
-        dash_app,
+        dashboard_asgi,
         host=settings.dashboard_host,
         port=settings.dashboard_port,
         log_level="info",
@@ -144,6 +148,12 @@ async def run() -> None:
             settings.dashboard_port,
             settings.api_port,
             settings.llamacpp_port,
+        )
+
+    if settings.api_on_dashboard_port:
+        logger.info(
+            "Ollama API, OpenAI API and worker links also served on dashboard port :%d",
+            settings.dashboard_port,
         )
 
     try:

@@ -28,7 +28,8 @@ client ──HTTP──▶ hub router ──WebSocket (outbound from worker)─�
 ## Wire protocol (version 1)
 
 Endpoint: `GET /worker/ws` on the hub's Ollama API port, upgraded to a
-WebSocket. The worker authenticates with `Authorization: Bearer <token>`. A
+WebSocket. With `LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true` it is also on the
+dashboard port. The worker authenticates with `Authorization: Bearer <token>`. A
 bad token is refused before the upgrade.
 
 Control messages are JSON text frames with a `type` field. Body bytes travel
