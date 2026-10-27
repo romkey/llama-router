@@ -30,6 +30,7 @@ network calls and passes the upstream responses in.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import string
@@ -59,6 +60,10 @@ LabelScheme = Literal["letters", "names"]
 
 class DecisionError(ValueError):
     """A question could not be answered from the backend's response."""
+
+
+class NoLogprobs(DecisionError):
+    """The backend answered without logprobs, so it cannot serve decisions."""
 
 
 # --- Request models ---
@@ -143,6 +148,14 @@ class DecisionRequest(BaseModel):
         if len(render_state(self.state)) > MAX_STATE_CHARS:
             raise ValueError(f"state is longer than {MAX_STATE_CHARS} characters")
         return self
+
+
+def question_key(question: Any) -> str:
+    """A stable key for a question's wording, which calibrations are kept
+    under: the same question text and options always give the same key."""
+    data = question.model_dump(exclude_none=True)
+    canon = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canon.encode()).hexdigest()[:32]
 
 
 # --- Prompts ---
@@ -257,7 +270,7 @@ def top_logprobs_from_response(resp: Mapping[str, Any]) -> list[dict[str, Any]]:
         content = resp["choices"][0]["logprobs"]["content"]
         return list(content[0]["top_logprobs"])
     except (KeyError, IndexError, TypeError):
-        raise DecisionError("backend response has no first-token logprobs") from None
+        raise NoLogprobs("backend response has no first-token logprobs") from None
 
 
 def distribution(
@@ -415,6 +428,17 @@ def answer(
             "legend": dict(zip(levels, question.criteria)),
             "probabilities": {k: _r(probs[k]) for k in levels},
         }
+    raise TypeError(f"not a decision question: {question!r}")
+
+
+def answer_keys(question: Any) -> list[str]:
+    """The keys of a question's probability distribution, in order."""
+    if isinstance(question, NoulQuestion):
+        return [NOUL_TRUE, NOUL_FALSE]
+    if isinstance(question, ChoiceQuestion):
+        return list(question.criteria)
+    if isinstance(question, ScoreQuestion):
+        return [str(i) for i in range(len(question.criteria))]
     raise TypeError(f"not a decision question: {question!r}")
 
 

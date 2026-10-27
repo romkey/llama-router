@@ -36,6 +36,9 @@ TALLY_WINDOW = 120
 # them) is skipped while another provider can serve the request.
 PROVIDER_CIRCUIT_RATE = 0.5
 PROVIDER_CIRCUIT_MIN_SAMPLES = 5
+# A provider that answered a decision question without logprobs is not
+# asked again for this long; then it is retried in case it was upgraded.
+NO_LOGPROBS_TTL_S = 3600.0
 
 
 @dataclass(slots=True)
@@ -210,6 +213,8 @@ class ProviderStats:
         self._listeners: list[Callable[[str], None]] = []
         # Until when each provider asked for no more requests (HTTP 429).
         self._busy_until: dict[int, float] = {}
+        # When each provider last returned a chat completion with no logprobs.
+        self._no_logprobs: dict[int, float] = {}
 
     def now(self) -> float:
         return self._clock()
@@ -357,11 +362,33 @@ class ProviderStats:
             return 0.0
         return left
 
+    # --- Decision support ---
+
+    def record_logprobs(self, provider_id: int, *, ok: bool) -> None:
+        """Whether *provider_id* returned logprobs for a decision question."""
+        if ok:
+            if self._no_logprobs.pop(provider_id, None) is not None:
+                self._changed("logprobs")
+            return
+        first = provider_id not in self._no_logprobs
+        self._no_logprobs[provider_id] = self._clock()
+        if first:
+            self._changed("no logprobs")
+
+    def lacks_logprobs(self, provider_id: int, now: float | None = None) -> bool:
+        """Recently answered without logprobs, so it cannot emulate decisions."""
+        seen = self._no_logprobs.get(provider_id)
+        if seen is None:
+            return False
+        now = self._clock() if now is None else now
+        return now - seen < NO_LOGPROBS_TTL_S
+
     def forget_provider(self, provider_id: int) -> None:
         self._busy_until.pop(provider_id, None)
         self._tallies.pop(provider_id, None)
         self._requests.pop(provider_id, None)
         self._probes.pop(provider_id, None)
+        self._no_logprobs.pop(provider_id, None)
         for key in [k for k in self._models if k[0] == provider_id]:
             del self._models[key]
         for key in [k for k in self._last_ok if k[0] == provider_id]:

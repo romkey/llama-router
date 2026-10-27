@@ -14,6 +14,7 @@ from . import deps
 from .audio import router as audio_router
 from .chat import router as chat_router
 from .completions import router as completions_router
+from .decisions import router as decisions_router
 from .embeddings import router as embeddings_router
 from .images import router as images_router
 from .models import router as models_router
@@ -54,6 +55,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 app.include_router(audio_router)
 app.include_router(chat_router)
 app.include_router(completions_router)
+app.include_router(decisions_router)
 app.include_router(embeddings_router)
 app.include_router(images_router)
 app.include_router(models_router)

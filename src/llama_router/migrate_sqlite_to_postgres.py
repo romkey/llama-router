@@ -194,6 +194,21 @@ _TABLES: list[tuple[str, list[str]]] = [
             "last_login_at",
         ],
     ),
+    (
+        "decision_calibrations",
+        [
+            "id",
+            "model_name",
+            "question_key",
+            "question_type",
+            "question",
+            "temperature",
+            "offsets",
+            "examples",
+            "created_at",
+            "updated_at",
+        ],
+    ),
 ]
 
 # Tables with a PostgreSQL sequence on ``id`` (reset after copy).
@@ -210,6 +225,7 @@ _SEQUENCE_TABLES = [
     "dashboard_users",
     "model_aliases",
     "model_prices",
+    "decision_calibrations",
 ]
 
 

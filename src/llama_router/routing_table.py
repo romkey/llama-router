@@ -18,6 +18,7 @@ from typing import Any
 
 from .database import Database
 from .endpoints import (
+    DECISION_PATHS,
     ENDPOINTS,
     GENERATE,
     normalize_endpoint,  # noqa: F401  (re-exported for callers)
@@ -37,6 +38,9 @@ from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
 from .config import settings
 from .pricing import Price, PriceBook
 from .upstream_url import LOCALITIES
+
+# Decisions that are not passed through are asked as chat completions.
+DECISION_UPSTREAM = "/v1/chat/completions"
 
 MODES = ("latency", "throughput", "balanced", "cheapest")
 DEFAULT_MODE = "balanced"
@@ -286,9 +290,27 @@ def upstream_for(provider: Provider) -> str:
     return provider.protocol.value
 
 
-def endpoint_support(provider: Provider, path: str) -> str:
-    """What the last probe said about *path* on the provider's upstream."""
-    return provider.endpoint_state(path)
+def endpoint_support(
+    provider: Provider, path: str, stats: ProviderStats | None = None
+) -> str:
+    """What the last probe said about *path* on the provider's upstream.
+
+    A decision route is supported natively when the upstream serves it, and
+    otherwise wherever chat completions are, unless the provider has lately
+    answered a decision question without logprobs.
+    """
+    native = provider.endpoint_state(path)
+    if path not in DECISION_PATHS or native == ENDPOINT_SUPPORTED:
+        return native
+    if stats is not None and provider.id is not None:
+        if stats.lacks_logprobs(provider.id):
+            return ENDPOINT_MISSING
+    return provider.endpoint_state(DECISION_UPSTREAM)
+
+
+def decides_natively(provider: Provider, path: str) -> bool:
+    """The upstream serves decision route *path* itself."""
+    return provider.endpoint_state(path) == ENDPOINT_SUPPORTED
 
 
 # Ollama routes an OpenAI-style provider serves through translation, and the
@@ -559,7 +581,7 @@ def build_table(
         support: dict[str, str] = {}
         for path, (protocol, _cls) in ENDPOINTS.items():
             if serves(p, protocol):
-                support[path] = endpoint_support(p, path)
+                support[path] = endpoint_support(p, path, stats)
             elif translates(p, protocol) and path in TRANSLATED_ROUTES:
                 # The probe knows the route the translated request lands on.
                 support[path] = endpoint_support(p, TRANSLATED_ROUTES[path])
