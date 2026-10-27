@@ -108,6 +108,16 @@ CATALOG: list[Endpoint] = [
     *_openai("/vector_stores", "GET", "vector stores"),
     *_openai("/assistants", "GET", "assistants"),
     *_openai("/realtime", "GET", "realtime (WebSocket upgrade)"),
+    # --- vLLM-specific routes (its OpenAI routes are covered above) ---
+    _ep("vllm", "GET", "/version", "server version"),
+    _ep("vllm", "GET", "/ping", "liveness (SageMaker)"),
+    _ep("vllm", "GET", "/load", "server load"),
+    _ep("vllm", "POST", "/invocations", "SageMaker invocations"),
+    _ep("vllm", "POST", "/pooling", "pooling models"),
+    _ep("vllm", "POST", "/classify", "classification"),
+    _ep("vllm", "POST", "/score", "scoring"),
+    _ep("vllm", "POST", "/v1/score", "scoring"),
+    _ep("vllm", "POST", "/v2/rerank", "rerank (Cohere v2)"),
     # --- Anthropic-compatible API ---
     _ep("anthropic", "POST", "/v1/messages", "Anthropic Messages"),
     _ep("anthropic", "POST", "/v1/messages/count_tokens", "token counting"),
@@ -133,7 +143,23 @@ CATALOG: list[Endpoint] = [
     _ep("litellm", "POST", "/guardrails/apply_guardrail", "guardrails"),
 ]
 
+
+def _dedupe(endpoints: list[Endpoint]) -> list[Endpoint]:
+    """Probe each method and path once; the first family listed keeps it."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for ep in endpoints:
+        key = (ep.method, ep.path)
+        if key not in seen:
+            seen.add(key)
+            out.append(ep)
+    return out
+
+
+CATALOG = _dedupe(CATALOG)
+
 FAMILY_LABELS = {
+    "vllm": "vLLM",
     "ollama": "Ollama",
     "llamacpp": "llama.cpp",
     "openai": "OpenAI-compatible",
@@ -324,6 +350,21 @@ def _detect(
     models_json = get("/v1/models") or get("/models")
     if isinstance(models_json, dict) and isinstance(models_json.get("data"), list):
         servers.append("openai-compatible")
+
+    # vLLM lists its models as owned_by "vllm" and serves /version beside a
+    # SageMaker-style /ping. Either sign alone could match another server.
+    owned_by_vllm = isinstance(models_json, dict) and any(
+        isinstance(m, dict) and m.get("owned_by") == "vllm"
+        for m in (models_json.get("data") or [])
+        if isinstance(models_json.get("data"), list)
+    )
+    vllm_version = get("/version")
+    ping = responses.get(("GET", "/ping"))
+    has_version = isinstance(vllm_version, dict) and "version" in vllm_version
+    if owned_by_vllm or (has_version and ping is not None and ping.status_code == 200):
+        servers.append("vllm")
+        if has_version and not result.version:
+            result.version = str(vllm_version["version"])
 
     result.servers = servers
     if "ollama" in servers or "llama-router" in servers:

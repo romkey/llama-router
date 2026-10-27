@@ -224,3 +224,51 @@ def test_merge_keeps_targets_apart() -> None:
     merged = merge_results([a, b])
     assert merged["base_urls"] == ["worker://edge (ollama)", "worker://edge (llamacpp)"]
     assert len({e["base_url"] for e in merged["endpoints"]}) == 2
+
+
+def test_catalog_probes_each_route_once() -> None:
+    keys = [(e.method, e.path) for e in CATALOG]
+    assert len(keys) == len(set(keys))
+
+
+VLLM = {
+    ("GET", "/health"): httpx.Response(200, content=b""),
+    ("GET", "/ping"): httpx.Response(200, content=b""),
+    ("GET", "/version"): httpx.Response(200, json={"version": "0.11.2"}),
+    ("GET", "/v1/models"): httpx.Response(
+        200,
+        json={
+            "object": "list",
+            "data": [{"id": "Qwen/Qwen3-8B", "object": "model", "owned_by": "vllm"}],
+        },
+    ),
+    ("POST", "/v1/chat/completions"): httpx.Response(400, json={"error": "bad"}),
+    ("POST", "/pooling"): httpx.Response(400, json={"error": "bad"}),
+}
+
+
+async def test_detects_vllm() -> None:
+    transport, _ = _server(VLLM)
+    r = await probe_url("http://gpu:8000", transport=transport)
+    assert "vllm" in r.servers and "openai-compatible" in r.servers
+    assert "llama.cpp" not in r.servers
+    assert r.version == "0.11.2"
+    assert r.suggested_type == "llamacpp"
+    assert r.models == ["Qwen/Qwen3-8B"]
+    assert _state(r, "GET", "/version") == "available"
+    assert _state(r, "POST", "/pooling") == "exists"
+    assert r.to_dict()["families"]["vllm"] >= 3
+
+
+async def test_vllm_detected_from_models_alone() -> None:
+    routes = {("GET", "/v1/models"): VLLM[("GET", "/v1/models")]}
+    transport, _ = _server(routes)
+    r = await probe_url("http://gpu:8000", transport=transport)
+    assert "vllm" in r.servers and r.version is None
+
+
+async def test_version_without_ping_is_not_vllm() -> None:
+    routes = {("GET", "/version"): httpx.Response(200, json={"version": "1"})}
+    transport, _ = _server(routes)
+    r = await probe_url("http://other:9000", transport=transport)
+    assert "vllm" not in r.servers
