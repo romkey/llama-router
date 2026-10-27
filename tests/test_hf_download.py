@@ -235,7 +235,7 @@ async def test_hf_pull_refuses_ambiguous_push(
 
 
 async def test_hf_routes_validate_input(dash_client, fake_hf) -> None:
-    client, db = dash_client
+    client, _db = dash_client
     bad = await client.post("/api/hf/pull", json={"repo": "../etc"})
     assert bad.status_code == 400
     bad = await client.post(

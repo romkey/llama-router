@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import TypedDict
 
 from pydantic import BaseModel, Field
@@ -17,14 +17,14 @@ class HotModel(TypedDict, total=False):
 WORKER_URL_SCHEME = "worker://"
 
 
-class ProviderStatus(str, Enum):
+class ProviderStatus(StrEnum):
     IDLE = "idle"
     BUSY = "busy"
     OFFLINE = "offline"
     UNKNOWN = "unknown"
 
 
-class ProviderProtocol(str, Enum):
+class ProviderProtocol(StrEnum):
     """The wire protocol the router speaks to a provider.
 
     Each provider has exactly one. ``ollama`` is the Ollama native API

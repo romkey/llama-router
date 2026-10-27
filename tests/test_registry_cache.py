@@ -4,7 +4,7 @@ import pytest
 
 from llama_router.registry_cache.cache import (
     BlobCache,
-    InvalidCacheKey,
+    InvalidCacheKeyError,
     validate_digest,
     validate_name,
     validate_reference,
@@ -22,7 +22,7 @@ def test_validate_name_accepts_registry_names(name):
     "name", ["", "../etc", "library/../../x", "/abs", "a//b", "a/", "a b"]
 )
 def test_validate_name_rejects_traversal(name):
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         validate_name(name)
 
 
@@ -33,7 +33,7 @@ def test_validate_reference_accepts_tags_and_digests(ref):
 
 @pytest.mark.parametrize("ref", ["", "..", "../x", ".hidden", "a/b", "sha256:zz"])
 def test_validate_reference_rejects_bad_values(ref):
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         validate_reference(ref)
 
 
@@ -41,7 +41,7 @@ def test_validate_reference_rejects_bad_values(ref):
     "digest", ["", "abc", "sha256:../../x", "sha256:" + "A" * 64, "md5:" + "a" * 32]
 )
 def test_validate_digest_rejects_bad_values(digest):
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         validate_digest(digest)
 
 
@@ -56,18 +56,18 @@ def test_blob_and_manifest_paths_stay_under_root(tmp_path):
 
 def test_cache_rejects_traversal_inputs(tmp_path):
     cache = BlobCache(str(tmp_path / "cache"))
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         cache.blob_path("sha256:../../../etc/passwd")
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         cache.temp_blob_path("sha256:../../../etc/passwd")
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         cache.save_manifest("../outside", "latest", b"x")
     assert not (tmp_path / "outside").exists()
 
 
 def test_path_under_rejects_escape_even_without_validation(tmp_path):
     cache = BlobCache(str(tmp_path / "cache"))
-    with pytest.raises(InvalidCacheKey):
+    with pytest.raises(InvalidCacheKeyError):
         BlobCache._path_under(cache._manifests_dir, "..", "..", "x")
 
 

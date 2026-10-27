@@ -205,7 +205,8 @@ async def audio_transcriptions(request: Request):
         if isinstance(exc, httpx.HTTPError):
             err_detail = describe_httpx_error(exc)[:500]
             logger.error(
-                "Upstream failure on /v1/audio/transcriptions (model=%r, provider=%s): %s",
+                "Upstream failure on /v1/audio/transcriptions "
+                "(model=%r, provider=%s): %s",
                 model,
                 provider.name,
                 describe_httpx_error(exc),
@@ -242,6 +243,9 @@ async def audio_voices():
         try:
             client = get_v1_client(pm, info.provider.id)
         except Exception:
+            logger.debug(
+                "no v1 client for provider %s", info.provider.id, exc_info=True
+            )
             continue
         try:
             data = await client.audio_voices()
@@ -251,6 +255,9 @@ async def audio_voices():
                     seen.add(vid)
                     all_voices.append(v)
         except Exception:
+            logger.debug(
+                "audio_voices failed for provider %s", info.provider.id, exc_info=True
+            )
             continue
 
     return JSONResponse(content={"voices": all_voices})

@@ -90,7 +90,8 @@ async def images_generations(request: Request):
         if isinstance(exc, httpx.HTTPError):
             err_detail = describe_httpx_error(exc)[:500]
             logger.error(
-                "Upstream failure on /v1/images/generations (model=%r, provider=%s): %s",
+                "Upstream failure on /v1/images/generations "
+                "(model=%r, provider=%s): %s",
                 model,
                 provider.name,
                 describe_httpx_error(exc),

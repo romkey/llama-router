@@ -12,6 +12,7 @@ pulls and deletes are refused unless ``worker_allow_admin`` is set.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -93,7 +94,7 @@ class _Job:
         self.task: asyncio.Task | None = None
 
 
-class _Rejected(Exception):
+class _RejectedError(Exception):
     pass
 
 
@@ -160,10 +161,8 @@ class WorkerClient:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         await self._http.aclose()
         self.state = "stopped"
@@ -205,7 +204,7 @@ class WorkerClient:
                 else:
                     self.last_error = f"hub returned HTTP {code}"
                     delay = backoff
-            except _Rejected as exc:
+            except _RejectedError as exc:
                 self.state = "rejected"
                 self.last_error = str(exc)
                 delay = _REJECTED_RETRY
@@ -248,7 +247,7 @@ class WorkerClient:
                 backoff = 1.0
             else:
                 backoff = min(backoff * 2, _BACKOFF_MAX)
-            delay = delay * (0.8 + random.random() * 0.4)
+            delay = delay * (0.8 + random.random() * 0.4)  # noqa: S311  # reconnect jitter
             if self.state != "rejected":
                 self.state = "backoff"
             self.next_retry_at = time.time() + delay
@@ -275,10 +274,10 @@ class WorkerClient:
         )
         raw = await asyncio.wait_for(ws.recv(), timeout=15)
         if not isinstance(raw, str):
-            raise _Rejected("hub sent binary data before welcome")
+            raise _RejectedError("hub sent binary data before welcome")
         welcome = p.decode_json(raw)
         if welcome.get("type") != "welcome":
-            raise _Rejected(f"unexpected handshake reply {welcome.get('type')!r}")
+            raise _RejectedError(f"unexpected handshake reply {welcome.get('type')!r}")
         self.worker_name = str(welcome.get("worker_name") or "") or None
         self.state = "connected"
         self.last_error = None
@@ -375,7 +374,7 @@ class WorkerClient:
             pass
         except Exception as exc:
             logger.exception("Worker job %d failed", req_id)
-            try:
+            with contextlib.suppress(Exception):
                 await self._send_text(
                     {
                         "type": "error",
@@ -384,8 +383,6 @@ class WorkerClient:
                         "message": str(exc),
                     }
                 )
-            except Exception:
-                pass
         finally:
             self._jobs.pop(req_id, None)
 
@@ -472,7 +469,7 @@ class WorkerLinkManager:
     """
 
     DB_HUB_URL = "worker_hub_url"
-    DB_TOKEN = "worker_token"
+    DB_TOKEN = "worker_token"  # noqa: S105  # settings key name, not a secret
 
     def __init__(self, db: Any) -> None:
         self._db = db

@@ -225,7 +225,7 @@ async def _distributions(
             try:
                 dist, _resp = await asker.ask(state, question)
                 return dist
-            except d.NoLogprobs:
+            except d.NoLogprobsError:
                 raise
             except d.DecisionError as exc:
                 raise d.DecisionError(f"example {i}: {exc}") from None
@@ -235,7 +235,7 @@ async def _distributions(
     )
     errors = [r for r in results if isinstance(r, BaseException)]
     if errors:
-        raise next((e for e in errors if isinstance(e, d.NoLogprobs)), errors[0])
+        raise next((e for e in errors if isinstance(e, d.NoLogprobsError)), errors[0])
     return results  # type: ignore[return-value]
 
 
@@ -298,7 +298,7 @@ async def api_fit_calibration(request: Request):
         dists = await _distributions(
             provider.id, result.backend_model, question, [s for s, _y in labelled]
         )
-    except d.NoLogprobs as exc:
+    except d.NoLogprobsError as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Provider '{provider.name}' returned no logprobs",
@@ -312,7 +312,9 @@ async def api_fit_calibration(request: Request):
             status_code=502, detail=f"upstream request failed: {detail}"
         ) from exc
 
-    examples = [(dist.probabilities, y) for dist, (_s, y) in zip(dists, labelled)]
+    examples = [
+        (dist.probabilities, y) for dist, (_s, y) in zip(dists, labelled, strict=False)
+    ]
     cal, report = await asyncio.to_thread(
         _fit_and_score, examples, isinstance(question, d.ScoreQuestion)
     )

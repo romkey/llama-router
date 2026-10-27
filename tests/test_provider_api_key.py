@@ -9,7 +9,7 @@ from llama_router.config import settings
 from llama_router.models import ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 from llama_router.provider_secrets import (
-    ApiKeyUnavailable,
+    ApiKeyUnavailableError,
     auth_headers,
     decrypt_api_key,
     encrypt_api_key,
@@ -30,7 +30,7 @@ def test_changed_secret_reports_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(settings, "session_secret", "first-secret-0123456789")
     enc = encrypt_api_key(KEY)
     monkeypatch.setattr(settings, "session_secret", "second-secret-012345678")
-    with pytest.raises(ApiKeyUnavailable):
+    with pytest.raises(ApiKeyUnavailableError):
         decrypt_api_key(enc)
 
 

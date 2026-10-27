@@ -29,7 +29,8 @@ don't grow them.
 
 - `[tool.mypy.overrides]` in `pyproject.toml` lists modules that don't pass
   `mypy --strict` yet. Remove a module once it does.
-- `[tool.ruff.lint] ignore` lists rule codes with existing findings.
+- `[tool.ruff.lint] ignore` lists rule codes with existing findings (the
+  tests-only ones: `S101`, `PT006`, `PT011`, `PT018`, `F811`).
 - Coverage floor is 74%, below the rules' 80%.
 
 ## Project notes

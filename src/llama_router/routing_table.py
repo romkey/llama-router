@@ -304,9 +304,12 @@ def endpoint_support(
         return native
     if native_decision_path(provider, path) is not None:
         return ENDPOINT_SUPPORTED
-    if stats is not None and provider.id is not None:
-        if stats.lacks_logprobs(provider.id):
-            return ENDPOINT_MISSING
+    if (
+        stats is not None
+        and provider.id is not None
+        and stats.lacks_logprobs(provider.id)
+    ):
+        return ENDPOINT_MISSING
     return provider.endpoint_state(DECISION_UPSTREAM)
 
 

@@ -147,14 +147,14 @@ def env_summary() -> list[dict[str, str | bool]]:
 
 
 def models_root() -> Path:
-    root = Path(os.path.abspath(settings.hf_models_dir))
+    root = Path(settings.hf_models_dir).absolute()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _path_under(base: Path, *parts: str) -> Path:
-    root = os.path.abspath(str(base))
-    candidate = os.path.normpath(os.path.join(root, *parts))
+    root = str(base.absolute())
+    candidate = os.path.normpath(base.absolute().joinpath(*parts))
     if candidate != root and not candidate.startswith(root + os.sep):
         raise ValueError("path escapes the models directory")
     return Path(candidate)
@@ -341,7 +341,7 @@ async def download(
 async def sha256_file(path: Path) -> str:
     def _hash() -> str:
         h = hashlib.sha256()
-        with open(path, "rb") as fh:
+        with Path(path).open("rb") as fh:
             for chunk in iter(lambda: fh.read(8 * 1024 * 1024), b""):
                 h.update(chunk)
         return "sha256:" + h.hexdigest()

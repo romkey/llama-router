@@ -76,7 +76,7 @@ def unsign_session(token: str, secret: str) -> int | None:
 def normalize_username(username: str) -> str:
     s = username.strip().lower()
     if len(s) < 2 or len(s) > 64:
-        raise ValueError("Username must be 2–64 characters")
+        raise ValueError("Username must be 2–64 characters")  # noqa: RUF001
     allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
     if not all(c in allowed for c in s):
         raise ValueError(
@@ -102,6 +102,4 @@ def non_admin_forbidden_get_path(path: str) -> bool:
     for prefix in _NON_ADMIN_FORBIDDEN_PREFIXES:
         if path == prefix or path.startswith(prefix + "/"):
             return True
-    if path.startswith("/api/benchmarks/fill-missing"):
-        return True
-    return False
+    return path.startswith("/api/benchmarks/fill-missing")

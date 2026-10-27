@@ -26,7 +26,7 @@ from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
     ENDPOINT_PROTOCOLS,
     ENDPOINTS,
-    UnknownEndpoint,
+    UnknownEndpointError,
     normalize_endpoint,
     protocol_for_endpoint,
     resolve_endpoint,
@@ -36,6 +36,8 @@ from .provider_manager import ProviderManager
 
 if TYPE_CHECKING:
     from .decision_policy import DecisionPolicy
+import contextlib
+
 from .routing_table import (
     DEFAULT_MODE,
     MODES,
@@ -227,10 +229,8 @@ class Router:
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         self._db.remove_change_listener(self._on_db_change)
 
     async def _run(self) -> None:
@@ -322,7 +322,7 @@ class Router:
         normal choice is made and the session is bound to it. Pins and chaos
         mode take precedence.
 
-        Raises :class:`UnknownEndpoint` for a path the router does not proxy.
+        Raises :class:`UnknownEndpointError` for a path the router does not proxy.
         """
         table = await self._current_table()
         return self.route_with(
@@ -787,8 +787,8 @@ class Router:
         ]
         if not entries:
             return None
-        provider, eligible = random.choice(entries)
-        resolved_model = random.choice(eligible)
+        provider, eligible = random.choice(entries)  # noqa: S311  # chaos mode
+        resolved_model = random.choice(eligible)  # noqa: S311  # chaos mode
         assert provider.id is not None
         logger.info(
             "Chaos routing requested=%s protocol=%s -> provider=%s model=%s",

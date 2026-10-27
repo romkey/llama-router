@@ -37,12 +37,12 @@ QS = {
 
 
 def call(body):
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310  # --base is operator-supplied
         base + "/v1/chat/completions",
         json.dumps(body).encode(),
         {"content-type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310
         return json.load(r)
 
 

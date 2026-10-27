@@ -10,6 +10,7 @@ benchmarks all work without worker-specific code paths.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import itertools
 import logging
@@ -25,7 +26,7 @@ from . import protocol as p
 
 logger = logging.getLogger(__name__)
 
-TOKEN_PREFIX = "lrw_"
+TOKEN_PREFIX = "lrw_"  # noqa: S105  # public prefix, not a secret
 _HELLO_TIMEOUT = 15.0
 
 
@@ -149,10 +150,8 @@ class WorkerConnection:
         if req_id not in self._pending:
             return
         self._finish(req_id)
-        try:
+        with contextlib.suppress(Exception):
             await self._send_text({"type": "cancel", "id": req_id})
-        except Exception:
-            pass
 
     async def open(self, target: str, request: httpx.Request) -> httpx.Response:
         timeouts = request.extensions.get("timeout") or {}
@@ -303,10 +302,8 @@ class WorkerConnection:
     async def close(self, code: int, reason: str = "") -> None:
         self.fail_all(reason or "closed by hub")
         if self._ws.application_state == WebSocketState.CONNECTED:
-            try:
+            with contextlib.suppress(Exception):
                 await self._ws.close(code=code, reason=reason)
-            except Exception:
-                pass
 
 
 class _WorkerStream(httpx.AsyncByteStream):
