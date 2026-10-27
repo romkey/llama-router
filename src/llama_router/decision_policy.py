@@ -34,7 +34,7 @@ from .database import Database
 from .httpx_errors import describe_httpx_error
 from .provider_manager import ProviderManager
 from .request_logger import log_request_background
-from .routing_table import decides_natively
+from .routing_table import native_decision_path
 
 if TYPE_CHECKING:
     from .router import Router, RoutingPreferences
@@ -249,12 +249,23 @@ async def _decide(
             return _Failed(f"{detail} (provider {provider.name})")
 
         try:
-            if decides_natively(provider, DECISION_PATH):
+            native_path = native_decision_path(provider, DECISION_PATH)
+            if native_path is not None:
                 body = req.model_dump(exclude_none=True)
                 body["model"] = result.backend_model
-                out = await svc.native(pm, provider.id, DECISION_PATH, body)
+                out = await svc.native(pm, provider.id, native_path, body)
             else:
-                cal = await svc.calibrations(db).for_request(result.model_key, req)
+                inputs = rt.inputs
+                names = svc.model_names(
+                    (
+                        result.model_key,
+                        result.resolved_model,
+                        req.model,
+                        result.backend_model,
+                    ),
+                    inputs.aliases if inputs else None,
+                )
+                cal = await svc.calibrations(db).for_request(names, req)
                 out = await svc.emulate(pm, provider.id, result.backend_model, req, cal)
                 pm.stats.record_logprobs(provider.id, ok=True)
         except d.NoLogprobs:
