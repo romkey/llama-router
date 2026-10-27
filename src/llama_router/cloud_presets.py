@@ -40,6 +40,11 @@ class CloudPreset:
     model_filter: str = ""
     # Placeholders in base_url the user must fill in, e.g. {"resource": "..."}.
     url_params: dict[str, str] = field(default_factory=dict)
+    # Routes the service serves, for one that serves only a few of those the
+    # router proxies (``/v1/...`` form). Every other route reads as missing,
+    # so routing never offers the service for it and the probe skips it.
+    # Empty: a general LLM API, whose routes the probe finds out.
+    endpoints: tuple[str, ...] = ()
     checked: str | None = None
 
     @property
@@ -61,6 +66,7 @@ class CloudPreset:
         d = asdict(self)
         d["models"] = list(self.models)
         d["hosts"] = list(self.hosts)
+        d["endpoints"] = list(self.endpoints)
         d["env_var"] = self.env_var
         return d
 
@@ -203,6 +209,19 @@ PRESETS: tuple[CloudPreset, ...] = (
         ),
         key_url="https://portal.azure.com",
         url_params={"resource": "Azure OpenAI resource name"},
+        checked="2026-10-27",
+    ),
+    CloudPreset(
+        id="typesafe",
+        name="TypeSafe (Jev)",
+        base_url="https://api.typesafe.ai/v1",
+        hosts=("api.typesafe.ai",),
+        docs_url="https://docs.typesafe.ai/introduction/quickstart",
+        key_url="https://console.typesafe.ai/keys",
+        # Jev answers decision questions and generates no text. Its model
+        # list names the aliases; jev-latest is added in case it fails.
+        models=("jev-latest",),
+        endpoints=("/v1/models", "/v1/systemone"),
         checked="2026-10-27",
     ),
 )

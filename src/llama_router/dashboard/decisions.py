@@ -25,7 +25,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from .. import decision_service as svc
 from .. import decisions as d
-from ..endpoints import DECISION_PATHS
 from ..httpx_errors import describe_httpx_error
 from ..llamacpp_api import deps as api_deps
 from ..llamacpp_api.decisions import serve as serve_decision
@@ -285,9 +284,8 @@ async def api_fit_calibration(request: Request):
         )
     provider = result.provider
     assert provider.id is not None
-    # A provider that answers a decision route itself never applies a
-    # calibration there, so one fit from its emulated answers would mislead.
-    if any(decides_natively(provider, p) for p in DECISION_PATHS):
+    # A provider that answers decisions itself never applies a calibration.
+    if decides_natively(provider, "/v1/systemone"):
         raise HTTPException(
             status_code=400,
             detail=(

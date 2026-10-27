@@ -551,6 +551,12 @@ async def probe_url(
             for ep in CATALOG
             if ep.family in families or (ep.method, ep.path) in _OPENAI_ROUTES
         ]
+        if preset.endpoints:
+            # A service that declares its routes is probed on those alone.
+            served = set(preset.endpoints)
+            catalog = [
+                ep for ep in CATALOG if ep.path in served or "/v1" + ep.path in served
+            ]
     started = time.monotonic()
     sem = asyncio.Semaphore(_CONCURRENCY)
     async with httpx.AsyncClient(
