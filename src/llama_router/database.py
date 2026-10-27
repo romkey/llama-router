@@ -542,13 +542,13 @@ class Database:
         if protocol:
             query = (
                 "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-                "AND protocol = ? ORDER BY created_at DESC LIMIT 1"
+                "AND protocol = ? ORDER BY created_at DESC, id DESC LIMIT 1"
             )
             params: tuple[Any, ...] = (provider_id, model_name, protocol)
         else:
             query = (
                 "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-                "ORDER BY created_at DESC LIMIT 1"
+                "ORDER BY created_at DESC, id DESC LIMIT 1"
             )
             params = (provider_id, model_name)
         row = await self._select_one(query, params)
@@ -565,7 +565,8 @@ class Database:
         self, provider_id: int
     ) -> list[BenchmarkResult]:
         rows = await self._select_all(
-            "SELECT * FROM benchmarks WHERE provider_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM benchmarks WHERE provider_id = ? "
+            "ORDER BY created_at DESC, id DESC",
             (provider_id,),
         )
         return [_row_to_benchmark(r) for r in rows]
@@ -638,7 +639,9 @@ class Database:
         self, limit: int = 200, offset: int = 0
     ) -> list[RequestLog]:
         rows = await self._select_all(
-            "SELECT * FROM request_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            # id breaks ties: MySQL TIMESTAMP has whole-second precision.
+            "SELECT * FROM request_log ORDER BY created_at DESC, id DESC "
+            "LIMIT ? OFFSET ?",
             (limit, offset),
         )
         return [_row_to_request_log(r) for r in rows]
@@ -805,7 +808,7 @@ class Database:
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
             "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.created_at, k.last_used_at "
-            "ORDER BY k.created_at DESC"
+            "ORDER BY k.created_at DESC, k.id DESC"
         )
         return [
             {
@@ -907,7 +910,9 @@ class Database:
 
     async def get_allow_unauthenticated(self) -> bool:
         row = await self._select_one(
-            "SELECT value FROM app_settings WHERE key = 'allow_unauthenticated'"
+            # Qualified so MySQL accepts the reserved word without quoting.
+            "SELECT value FROM app_settings "
+            "WHERE app_settings.key = 'allow_unauthenticated'"
         )
         if not row:
             return True
@@ -937,7 +942,7 @@ class Database:
 
     async def get_app_setting(self, key: str) -> str | None:
         row = await self._select_one(
-            "SELECT value FROM app_settings WHERE key = ?", (key,)
+            "SELECT value FROM app_settings WHERE app_settings.key = ?", (key,)
         )
         return str(row["value"]) if row else None
 

@@ -476,3 +476,11 @@ Or with Docker:
 ```bash
 docker compose -f docker-compose.dev.yml run test
 ```
+
+Tests use a temporary SQLite file. To run the database-backed tests against PostgreSQL, MySQL or MariaDB instead, point them at a throwaway database. It is emptied before every test:
+
+```bash
+LLAMA_ROUTER_TEST_DATABASE_URL=mysql+asyncmy://root:pw@127.0.0.1:3306/lr pytest tests/test_database.py tests/test_routing_table.py
+```
+
+A few dashboard tests drive the app through a synchronous test client and fail against a server database with "attached to a different loop"; that is the test client, not the database.
