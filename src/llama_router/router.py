@@ -366,10 +366,18 @@ class Router:
                 {"provider_id": p.id, "provider": p.name, "models": list(models)}
                 for p, models in table.chaos.get(protocol, ())
             ]
-            out["summary"] = (
-                "Chaos mode picks a random provider from the pool and a random "
-                "model from it, so each request can land somewhere different."
-            )
+            if not out["chaos_pool"]:
+                out["summary"] = (
+                    "No provider can serve this request: chaos mode has no "
+                    "online provider with an eligible model."
+                )
+            else:
+                sample = out["chosen"] or {}
+                out["summary"] = (
+                    "Chaos mode picks a random provider from the pool and a random "
+                    "model from it, so each request can land somewhere different "
+                    f"(this time: {sample.get('provider')}, {sample.get('model')})."
+                )
             return out
         if mode not in MODES:
             mode = DEFAULT_MODE

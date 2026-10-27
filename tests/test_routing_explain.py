@@ -159,7 +159,15 @@ async def test_explains_chaos(db: Database, pm: ProviderManager):
     rt = Router(db, pm)
     out = await rt.explain("anything", preferences=RoutingPreferences(mode="chaos"))
     assert out["chaos_pool"][0]["models"] == ["m1", "m2"]
-    assert "random" in out["summary"]
+    assert "random" in out["summary"] and "this time: a" in out["summary"]
+
+
+async def test_explains_empty_chaos_pool(db: Database, pm: ProviderManager):
+    await _provider(db, "down", ["m"], status=ProviderStatus.OFFLINE)
+    rt = Router(db, pm)
+    out = await rt.explain("m", preferences=RoutingPreferences(mode="chaos"))
+    assert out["chosen"] is None and out["chaos_pool"] == []
+    assert out["summary"].startswith("No provider can serve this request")
 
 
 @pytest.fixture
