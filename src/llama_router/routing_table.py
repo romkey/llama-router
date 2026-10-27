@@ -302,15 +302,41 @@ def endpoint_support(
     native = provider.endpoint_state(path)
     if path not in DECISION_PATHS or native == ENDPOINT_SUPPORTED:
         return native
+    if native_decision_path(provider, path) is not None:
+        return ENDPOINT_SUPPORTED
     if stats is not None and provider.id is not None:
         if stats.lacks_logprobs(provider.id):
             return ENDPOINT_MISSING
     return provider.endpoint_state(DECISION_UPSTREAM)
 
 
+def native_decision_path(provider: Provider, path: str) -> str | None:
+    """The upstream route a decision request on *path* is passed through to.
+
+    *path* itself when the upstream serves it, else another decision route it
+    serves: ``/v1/decisions`` and ``/v1/systemone`` take the same body, so a
+    Jev upstream that has only the latter answers both. None when the
+    upstream serves neither and the request is emulated.
+    """
+    for p in (path, *DECISION_PATHS):
+        if provider.endpoint_state(p) == ENDPOINT_SUPPORTED:
+            return p
+    return None
+
+
 def decides_natively(provider: Provider, path: str) -> bool:
-    """The upstream serves decision route *path* itself."""
-    return provider.endpoint_state(path) == ENDPOINT_SUPPORTED
+    """The upstream serves decision route *path*, or one with the same body."""
+    return native_decision_path(provider, path) is not None
+
+
+def offers(provider: Provider, path: str, support: str) -> bool:
+    """Whether routing may offer *provider* for *path* at all.
+
+    A provider whose preset declares its routes is left out of every other
+    route rather than ranked last: a decision-only service asked for a chat
+    completion can only fail.
+    """
+    return support != SUPPORT_MISSING or provider.declared_endpoints is None
 
 
 # Ollama routes an OpenAI-style provider serves through translation, and the
@@ -342,7 +368,9 @@ def reaches(provider: Provider, protocol: str | None) -> bool:
 def _chaos_eligible(
     provider: Provider, models: list[ProviderModel], protocol: str | None
 ) -> list[str]:
-    if not reaches(provider, protocol):
+    if not reaches(provider, protocol) or provider.declared_endpoints is not None:
+        # Chaos picks a provider before looking at the route, so a provider
+        # that serves only a few routes would fail most requests.
         return []
     return [m.name for m in models]
 
@@ -581,10 +609,14 @@ def build_table(
         support: dict[str, str] = {}
         for path, (protocol, _cls) in ENDPOINTS.items():
             if serves(p, protocol):
-                support[path] = endpoint_support(p, path, stats)
+                sup = endpoint_support(p, path, stats)
             elif translates(p, protocol) and path in TRANSLATED_ROUTES:
                 # The probe knows the route the translated request lands on.
-                support[path] = endpoint_support(p, TRANSLATED_ROUTES[path])
+                sup = endpoint_support(p, TRANSLATED_ROUTES[path])
+            else:
+                continue
+            if offers(p, path, sup):
+                support[path] = sup
 
         for m in models:
             backend = m.backend_name
