@@ -21,7 +21,7 @@ second ``llamacpp_url``. This revision:
 Downgrade restores the columns but does not merge split providers.
 
 Revision ID: 009_single_protocol_providers
-Revises: 008_api_key_session_affinity
+Revises: 010_provider_model_size_bigint
 Create Date: 2026-10-27
 """
 
@@ -32,8 +32,10 @@ import json
 import sqlalchemy as sa
 from alembic import op
 
+from llama_router.db_types import ShortText
+
 revision = "009_single_protocol_providers"
-down_revision = "008_api_key_session_affinity"
+down_revision = "010_provider_model_size_bigint"
 branch_labels = None
 depends_on = None
 
@@ -178,7 +180,7 @@ def upgrade() -> None:
     if "protocol" not in cols:
         op.add_column(
             "providers",
-            sa.Column("protocol", sa.Text(), nullable=False, server_default="ollama"),
+            sa.Column("protocol", ShortText, nullable=False, server_default="ollama"),
         )
 
     if "provider_type" in cols:
@@ -241,7 +243,7 @@ def downgrade() -> None:
     with op.batch_alter_table("providers") as batch:
         batch.add_column(
             sa.Column(
-                "provider_type", sa.Text(), nullable=False, server_default="ollama"
+                "provider_type", ShortText, nullable=False, server_default="ollama"
             )
         )
     bind = op.get_bind()

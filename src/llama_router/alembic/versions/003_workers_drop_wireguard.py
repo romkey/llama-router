@@ -10,6 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
+from llama_router.db_types import ShortText
+
 revision = "003_workers"
 down_revision = "002_peering_key_expiry"
 branch_labels = None
@@ -72,16 +74,16 @@ def downgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("enabled", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("listen_port", sa.Integer(), nullable=False, server_default="51820"),
-        sa.Column("private_key", sa.Text(), nullable=False, server_default=""),
+        sa.Column("private_key", ShortText, nullable=False, server_default=""),
         sa.Column(
-            "address_cidr", sa.Text(), nullable=False, server_default="10.8.0.1/24"
+            "address_cidr", ShortText, nullable=False, server_default="10.8.0.1/24"
         ),
         sa.Column("mtu", sa.Integer(), nullable=True),
         sa.Column("endpoint_public", sa.Text(), nullable=True),
         sa.Column(
             "updated_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
-        sa.Column("peering_api_key", sa.Text(), nullable=False, server_default=""),
+        sa.Column("peering_api_key", ShortText, nullable=False, server_default=""),
         sa.Column("peering_enabled", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("peering_key_expires_at", sa.TIMESTAMP(), nullable=True),
         sa.Column(
@@ -92,7 +94,7 @@ def downgrade() -> None:
     op.create_table(
         "wireguard_peers",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("name", sa.Text(), nullable=False, server_default=""),
+        sa.Column("name", ShortText, nullable=False, server_default=""),
         sa.Column("public_key", sa.Text(), nullable=False),
         sa.Column("preshared_key", sa.Text(), nullable=True),
         sa.Column("allowed_ips", sa.Text(), nullable=False),

@@ -301,7 +301,7 @@ forms, on port 8080. It is built on `feature/single-protocol-providers`.
   thing.
 - **Emulation** (`decision_service.py`). All questions of a request go to
   one provider in parallel, one slot each, state first.
-- **Calibrations.** A new `decision_calibrations` table, migration 014,
+- **Calibrations.** A new `decision_calibrations` table, migration 016,
   holds one calibration per model and question wording, keyed by
   `decisions.question_key`. It is cached in memory and dropped on change.
   The dashboard API at `/api/decisions/calibrations` sets one directly,

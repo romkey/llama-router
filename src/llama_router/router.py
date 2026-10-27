@@ -40,7 +40,9 @@ from .routing_table import (
     Candidate,
     RoutingInputs,
     RoutingTable,
+    alias_groups,
     build_table,
+    reaches,
     load_inputs,
 )
 
@@ -90,6 +92,10 @@ class RoutingPreferences:
     key_id: int | None = None
     # "local" or "cloud" limits routing to those providers; None allows both.
     locality: str | None = None
+    # USD per UTC day; past it the key is limited to local providers.
+    daily_spend_cap_usd: float | None = None
+    # Set when the cap was reached and the locality narrowed because of it.
+    spend_capped: bool = False
 
 
 class Router:
@@ -274,6 +280,13 @@ class Router:
             return ranked
         ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
         return ready or ranked
+
+    def price_for(self, provider_id: int, model: str):
+        """The model's price on the provider from the current table, or None."""
+        table = self._table
+        if table is None or table.prices is None:
+            return None
+        return table.prices.price(provider_id, model)
 
     def forget_session(self, session: str | None) -> None:
         """Let the session's next request be placed afresh (after a failure)."""
@@ -466,6 +479,7 @@ class Router:
                 "model": model_name,
                 "mode": mode,
                 "locality": locality or "any",
+                "spend_capped": bool(preferences and preferences.spend_capped),
                 "endpoint": path,
                 "endpoint_class": endpoint_cls,
                 "protocol": protocol or "any",
@@ -713,11 +727,14 @@ class Router:
                 for n in (m.name, m.raw_name)
                 if n
             }
+            groups = alias_groups(inputs.aliases)
+            for n in list(names):
+                names |= groups.get(n, frozenset())
             if model not in names:
                 continue
             if p.status == ProviderStatus.OFFLINE:
                 reason = "provider is offline"
-            elif protocol is not None and p.protocol.value != protocol:
+            elif not reaches(p, protocol):
                 api = _API_NAMES.get(protocol, protocol)
                 reason = f"provider does not serve the {api} API"
             else:

@@ -35,12 +35,14 @@ from .models import (
     measured_cold_start,
 )
 from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
+from .config import settings
+from .pricing import Price, PriceBook
 from .upstream_url import LOCALITIES
 
 # Decisions that are not passed through are asked as chat completions.
 DECISION_UPSTREAM = "/v1/chat/completions"
 
-MODES = ("latency", "throughput", "balanced")
+MODES = ("latency", "throughput", "balanced", "cheapest")
 DEFAULT_MODE = "balanced"
 # Request protocols: None takes any provider, otherwise only providers that
 # speak that protocol.
@@ -60,7 +62,18 @@ BALANCED_UNKNOWN_SERVICE_MS = 2_000.0
 # Cost of each request already in flight on a provider.
 QUEUE_WEIGHT = {"latency": 1000.0, "throughput": 100.0}
 # Added per unit of recent failure rate (0..1).
-FAILURE_PENALTY = {"latency": 10_000.0, "throughput": 100.0, "balanced": 10_000.0}
+FAILURE_PENALTY = {
+    "latency": 10_000.0,
+    "throughput": 100.0,
+    "balanced": 10_000.0,
+    # In micro-dollars: a provider failing half the time costs $0.05 more.
+    "cheapest": 100_000.0,
+}
+# "cheapest" scores are micro-dollars for a nominal request. A cloud model
+# with no known price ranks behind every priced one.
+UNKNOWN_PRICE_MICRO_USD = 1_000_000.0
+# Within one price, the balanced score breaks ties.
+CHEAPEST_TIEBREAK = 0.001
 # Recent failure rate for one model at which a candidate is skipped while
 # others exist. Provider-wide failures have their own breaker in the stats.
 CIRCUIT_OPEN_RATE = 0.5
@@ -98,6 +111,8 @@ class Candidate:
     failure_rate: float = 0.0
     circuit_open: bool = False
     oversize: bool = False
+    # Price of the model here, if known (see pricing).
+    price: Price | None = None
     endpoint_support: str = SUPPORT_UNKNOWN
     tier: int = TIER_OK
     problems: tuple[str, ...] = ()
@@ -129,6 +144,15 @@ class Candidate:
             "circuit_open": self.circuit_open,
             "oversize": self.oversize,
             "endpoint_support": self.endpoint_support,
+            "price": (
+                None
+                if self.price is None
+                else {
+                    "input_per_mtok": self.price.input_per_mtok,
+                    "output_per_mtok": self.price.output_per_mtok,
+                    "source": self.price.source,
+                }
+            ),
             "tier": self.tier,
             "problems": list(self.problems),
             "scores": {m: round(s, 2) for m, s in self.scores.items()},
@@ -144,6 +168,37 @@ class RoutingInputs:
     addresses: dict[int, list[ProviderAddress]]
     benchmarks: dict[tuple[int, str, str | None], BenchmarkResult]
     fallbacks: dict[str, str]
+    # alias -> canonical model name
+    aliases: dict[str, str] = field(default_factory=dict)
+    # Rows of model_prices.
+    prices: list[dict[str, Any]] = field(default_factory=list)
+
+
+def alias_groups(aliases: dict[str, str]) -> dict[str, frozenset[str]]:
+    """Every name that belongs to an alias group -> all names in the group.
+
+    A group is a canonical name and the aliases pointing at it. Chains are
+    followed (a -> b -> c puts all three together); a loop stops at the repeat.
+    """
+
+    def canonical(name: str) -> str:
+        seen = {name}
+        while name in aliases and aliases[name] not in seen:
+            name = aliases[name]
+            seen.add(name)
+        return name
+
+    members: dict[str, set[str]] = {}
+    for alias in aliases:
+        root = canonical(alias)
+        group = members.setdefault(root, {root})
+        group.add(alias)
+    out: dict[str, frozenset[str]] = {}
+    for group in members.values():
+        frozen = frozenset(group)
+        for name in group:
+            out[name] = frozen
+    return out
 
 
 async def load_inputs(db: Database) -> RoutingInputs:
@@ -156,7 +211,11 @@ async def load_inputs(db: Database) -> RoutingInputs:
         addresses.setdefault(a.provider_id, []).append(a)
     benchmarks = latest_benchmarks(await db.get_all_benchmark_results())
     fallbacks = await db.get_all_model_fallbacks()
-    return RoutingInputs(providers, models, addresses, benchmarks, fallbacks)
+    aliases = await db.get_model_aliases()
+    prices = await db.list_model_prices()
+    return RoutingInputs(
+        providers, models, addresses, benchmarks, fallbacks, aliases, prices
+    )
 
 
 def latest_benchmarks(
@@ -254,15 +313,36 @@ def decides_natively(provider: Provider, path: str) -> bool:
     return provider.endpoint_state(path) == ENDPOINT_SUPPORTED
 
 
+# Ollama routes an OpenAI-style provider serves through translation, and the
+# route the translated request uses there.
+TRANSLATED_ROUTES = {
+    "/api/chat": "/v1/chat/completions",
+    "/api/generate": "/v1/chat/completions",
+    "/api/embed": "/v1/embeddings",
+    "/api/embeddings": "/v1/embeddings",
+}
+
+
 def serves(provider: Provider, protocol: str | None) -> bool:
-    """Whether *provider* can take a request that needs *protocol*."""
+    """Whether *provider* speaks *protocol* natively (None: any)."""
     return protocol is None or provider.protocol.value == protocol
+
+
+def translates(provider: Provider, protocol: str | None) -> bool:
+    """Whether *provider* takes *protocol* requests through translation."""
+    return (
+        protocol == "ollama" and provider.is_openai and settings.ollama_api_translation
+    )
+
+
+def reaches(provider: Provider, protocol: str | None) -> bool:
+    return serves(provider, protocol) or translates(provider, protocol)
 
 
 def _chaos_eligible(
     provider: Provider, models: list[ProviderModel], protocol: str | None
 ) -> list[str]:
-    if not serves(provider, protocol):
+    if not reaches(provider, protocol):
         return []
     return [m.name for m in models]
 
@@ -290,8 +370,28 @@ def _cold_ms(c: Candidate) -> tuple[float, float]:
     return UNKNOWN_STARTUP_MS, BALANCED_UNKNOWN_STARTUP_MS
 
 
+def _add_cheapest(c: Candidate) -> None:
+    """Score "cheapest": price of a nominal request, then the balanced score."""
+    cost = (
+        c.price.nominal() * 1_000_000
+        if c.price is not None
+        else UNKNOWN_PRICE_MICRO_USD
+    )
+    c.scores["cheapest"] = (
+        cost
+        + c.failure_rate * FAILURE_PENALTY["cheapest"]
+        + c.scores["balanced"] * CHEAPEST_TIEBREAK
+    )
+    c.queue_weight["cheapest"] = c.queue_weight["balanced"] * CHEAPEST_TIEBREAK
+
+
 def score(c: Candidate) -> None:
     """Fill *c.scores* and *c.queue_weight* for every mode. Lower is better."""
+    _score_speed(c)
+    _add_cheapest(c)
+
+
+def _score_speed(c: Candidate) -> None:
     cold, cold_bal = _cold_ms(c)
     rtt = c.rtt_ms or 0.0
     oversize = OVERSIZE_PENALTY_MS if c.oversize else 0.0
@@ -391,6 +491,7 @@ class RoutingTable:
     )
     backend_names: dict[tuple[int, str], str] = field(default_factory=dict)
     health: dict[int, ProviderHealth] = field(default_factory=dict)
+    prices: PriceBook | None = None
 
     def chain(self, model: str) -> tuple[str, ...]:
         return self.chains.get(model) or (model,)
@@ -458,6 +559,9 @@ def build_table(
     table = RoutingTable(version=version, reasons=reasons)
     grouped: dict[tuple[str, str], list[Candidate]] = {}
     backend_names: dict[tuple[int, str], str] = {}
+    groups = alias_groups(inputs.aliases)
+    book = PriceBook(inputs.providers, inputs.models, inputs.prices)
+    table.prices = book
 
     for p in online:
         pid = p.id
@@ -474,11 +578,13 @@ def build_table(
         table.health[pid] = health
         gpu_bytes = p.gpu_ram_bytes
         # Endpoint support depends only on the provider, not the model.
-        support: dict[str, str] = {
-            path: endpoint_support(p, path, stats)
-            for path, (protocol, _cls) in ENDPOINTS.items()
-            if serves(p, protocol)
-        }
+        support: dict[str, str] = {}
+        for path, (protocol, _cls) in ENDPOINTS.items():
+            if serves(p, protocol):
+                support[path] = endpoint_support(p, path, stats)
+            elif translates(p, protocol) and path in TRANSLATED_ROUTES:
+                # The probe knows the route the translated request lands on.
+                support[path] = endpoint_support(p, TRANSLATED_ROUTES[path])
 
         for m in models:
             backend = m.backend_name
@@ -490,6 +596,11 @@ def build_table(
             keys = {m.name}
             if m.raw_name:
                 keys.add(m.raw_name)
+            # Any alias of the model reaches it too, under its own name here.
+            for name in list(keys):
+                keys |= groups.get(name, frozenset())
+            for key in keys:
+                backend_names.setdefault((pid, key), backend)
             for path, sup in support.items():
                 protocol, cls = ENDPOINTS[path]
                 ms = stats.model(pid, m.name, cls) if stats else None
@@ -528,6 +639,7 @@ def build_table(
                     failure_rate=combined_failure_rate(model_rate, health),
                     circuit_open=model_circuit or health.circuit_open,
                     oversize=oversize,
+                    price=book.price(pid, m.name),
                     endpoint_support=sup,
                 )
                 score(c)
