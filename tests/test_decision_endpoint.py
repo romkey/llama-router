@@ -511,3 +511,124 @@ async def test_benchmark_check_learns_logprobs_support(
     assert pm.stats.model(good.id, MODEL, DECIDE) is not None
     # The check is not traffic: it never touches the request counters.
     assert pm.idle_seconds(good.id, 10**9) > 0
+
+
+async def test_calibration_written_during_a_cache_load_is_not_lost(db: Database):
+    from llama_router import decision_service as svc
+
+    store = svc.CalibrationStore(db)
+    q = d.NoulQuestion.model_validate(QUESTIONS["is_urgent"])
+    req = d.DecisionRequest.model_validate(
+        {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
+    )
+    real_list = db.list_decision_calibrations
+
+    async def list_then_write():
+        rows = await real_list()  # the snapshot, taken before the write
+        await db.set_decision_calibration(
+            MODEL, d.question_key(q), "noul", q.model_dump(), 1.0, {"true": -1.0}
+        )
+        return rows
+
+    db.list_decision_calibrations = list_then_write
+    try:
+        assert await store.for_request(MODEL, req) == {}  # read before the write
+    finally:
+        db.list_decision_calibrations = real_list
+    # The stale snapshot was not cached: the next request sees the write.
+    assert set(await store.for_request(MODEL, req)) == {"is_urgent"}
+
+
+def _rejects_logprobs(status: int = 400):
+    """A server that refuses the logprobs fields but answers without them."""
+    seen: list[dict] = []
+
+    def callback(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        if "logprobs" in body or "top_logprobs" in body:
+            return httpx.Response(status, json={"error": "logprobs not supported"})
+        return httpx.Response(200, json=_completion(None))
+
+    return callback, seen
+
+
+async def test_backend_rejecting_logprobs_is_demoted_and_rerouted(
+    db: Database, pm: ProviderManager, router: Router, httpx_mock
+):
+    bad = await _provider(
+        db, pm, "bad", "http://bad.test:8080", _caps("/v1/chat/completions")
+    )
+    good = await _provider(
+        db, pm, "good", "http://good.test:8080", _caps("/v1/chat/completions")
+    )
+    pm.acquire(good.id)  # "bad" is the first choice
+    pm.acquire(good.id)
+    bad_cb, bad_seen = _rejects_logprobs(422)
+    good_cb, good_seen = _backend()
+    httpx_mock.add_callback(
+        bad_cb, url="http://bad.test:8080/v1/chat/completions", is_reusable=True
+    )
+    httpx_mock.add_callback(
+        good_cb, url="http://good.test:8080/v1/chat/completions", is_reusable=True
+    )
+    resp = await _post("/v1/systemone", BODY)
+    pm.release(good.id)
+    pm.release(good.id)
+    assert resp.status_code == 200, resp.text
+    assert len(good_seen) == 3
+    assert pm.stats.lacks_logprobs(bad.id)
+    # Three questions failed on "bad", but they shared one probe.
+    assert sum("logprobs" not in b for b in bad_seen) == 1
+
+
+async def test_genuine_bad_request_is_forwarded_and_not_demoted(
+    db: Database, pm: ProviderManager, router: Router, httpx_mock
+):
+    p = await _provider(
+        db, pm, "a", "http://a.test:8080", _caps("/v1/chat/completions")
+    )
+    httpx_mock.add_response(
+        url="http://a.test:8080/v1/chat/completions",
+        status_code=400,
+        json={"error": "the prompt is longer than the context"},
+        is_reusable=True,
+    )
+    body = {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
+    resp = await _post("/v1/systemone", body)
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "the prompt is longer than the context"}
+    assert not pm.stats.lacks_logprobs(p.id)
+
+
+async def test_calibration_saved_under_an_alias_applies(
+    db: Database, pm: ProviderManager, router: Router, httpx_mock
+):
+    await _provider(db, pm, "a", "http://a.test:8080", _caps("/v1/chat/completions"))
+    await db.set_model_alias("urgent-model", MODEL)
+    callback, _ = _backend()
+    httpx_mock.add_callback(
+        callback, url="http://a.test:8080/v1/chat/completions", is_reusable=True
+    )
+    q = d.NoulQuestion.model_validate(QUESTIONS["is_urgent"])
+    await db.set_decision_calibration(
+        "urgent-model",
+        d.question_key(q),
+        "noul",
+        q.model_dump(),
+        1.0,
+        {d.NOUL_TRUE: -math.log(3), d.NOUL_FALSE: math.log(3)},
+    )
+    await router.rebuild()
+    body = {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
+    resp = await _post("/v1/systemone", body)
+    assert resp.json()["answers"]["is_urgent"]["noul"] == pytest.approx(0.5)
+
+
+def test_model_names_put_given_names_first_then_aliases():
+    from llama_router.decision_service import model_names
+
+    aliases = {"fast": "m", "quick": "fast"}
+    assert model_names(["m", None, "m"], aliases) == ["m", "fast", "quick"]
+    assert model_names(["x"], aliases) == ["x"]
+    assert model_names(["m"], None) == ["m"]

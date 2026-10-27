@@ -119,7 +119,17 @@ async def decide(request: Request):
                     pm, provider, path, {**body, "model": result.backend_model}
                 )
             if out is None:
-                cal = await svc.calibrations(db).for_request(result.model_key, req)
+                inputs = rt.inputs
+                names = svc.model_names(
+                    (
+                        result.model_key,
+                        result.resolved_model,
+                        req.model,
+                        result.backend_model,
+                    ),
+                    inputs.aliases if inputs else None,
+                )
+                cal = await svc.calibrations(db).for_request(names, req)
                 calibrated = len(cal)
                 answered = await svc.emulate(
                     pm, provider.id, result.backend_model, req, cal
