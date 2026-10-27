@@ -169,7 +169,15 @@ and the request log shows what the policy did and how long it took.
 Background classification remains, as its own PR and migration.
 
 **Phase 4, optional.** Calibration UI; TypeSafe hosted provider; worker
-link support so hub workers can serve decision jobs.
+link support so hub workers can serve decision jobs. Worker link support done
+2026-10-27, see [workers.md](workers.md#decision-requests).
+
+The calibration UI is the dashboard's Decisions page, backed by
+`POST /api/decisions/calibrations/fit` (labelled states in, cross-validated
+before/after scores out) and `POST /api/decisions/try`. Live check
+(2026-10-27, Llama 3.2 3B on llama-server, the 36 tickets, frustration
+`score`): leave-one-out accuracy 0.33 to 0.72, log loss 2.15 to 0.58, MAE
+0.67 to 0.33; the fit took 4 s.
 
 ## Phase 0 results (2026-10-27)
 

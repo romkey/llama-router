@@ -125,6 +125,73 @@ def calibrations(db: Database) -> CalibrationStore:
     return store
 
 
+class Asker:
+    """Asks one provider decision questions, one chat completion each.
+
+    A server that refuses the logprobs fields answers 400 or 422, as does one
+    whose context the prompt overflows. On such an answer the asker asks once
+    more without them to tell the two apart; every question it asks shares
+    that probe. *acquire* false skips the provider's request accounting.
+    """
+
+    def __init__(
+        self,
+        pm: ProviderManager,
+        provider_id: int,
+        backend_model: str,
+        *,
+        acquire: bool = True,
+    ) -> None:
+        self._pm = pm
+        self._provider_id = provider_id
+        self._client = get_v1_client(pm, provider_id)
+        self._backend_model = backend_model
+        self._acquire = acquire
+        self._probe: asyncio.Task[bool] | None = None
+
+    async def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        if self._acquire:
+            async with self._pm.acquire_provider(self._provider_id):
+                return await self._client.chat_completions(body)
+        return await self._client.chat_completions(body)
+
+    async def _accepts_without_logprobs(self, body: dict[str, Any]) -> bool:
+        plain = {k: v for k, v in body.items() if k not in _LOGPROB_FIELDS}
+        try:
+            await self._send(plain)
+        except httpx.HTTPStatusError:
+            return False
+        return True
+
+    async def ask(
+        self, state: d.State, question: Any
+    ) -> tuple[d.Distribution, dict[str, Any]]:
+        """The question's uncalibrated distribution and the raw response.
+
+        Raises :class:`decisions.NoLogprobs` when the backend refuses or
+        omits logprobs, and :class:`decisions.DecisionError` for an answer
+        that names no label.
+        """
+        prompt = d.build_prompt(state, question)
+        body = d.upstream_body(self._backend_model, prompt)
+        try:
+            resp = await self._send(body)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in _REJECTED:
+                raise
+            if self._probe is None:
+                self._probe = asyncio.ensure_future(
+                    self._accepts_without_logprobs(body)
+                )
+            if await self._probe:
+                raise d.NoLogprobs(
+                    f"backend rejected logprobs (HTTP {exc.response.status_code})"
+                ) from exc
+            raise
+        top = d.top_logprobs_from_response(resp)
+        return d.distribution(top, prompt.labels), resp
+
+
 async def emulate(
     pm: ProviderManager,
     provider_id: int,
@@ -142,46 +209,14 @@ async def emulate(
     *acquire* false skips the provider's request accounting, for checks
     that must not count as traffic (the auto-benchmarker).
     """
-    client = get_v1_client(pm, provider_id)
+    asker = Asker(pm, provider_id, backend_model, acquire=acquire)
     calibration = calibration or {}
-    probe: asyncio.Task[bool] | None = None
-
-    async def send(body: dict[str, Any]) -> dict[str, Any]:
-        if acquire:
-            async with pm.acquire_provider(provider_id):
-                return await client.chat_completions(body)
-        return await client.chat_completions(body)
-
-    async def accepts_without_logprobs(body: dict[str, Any]) -> bool:
-        plain = {k: v for k, v in body.items() if k not in _LOGPROB_FIELDS}
-        try:
-            await send(plain)
-        except httpx.HTTPStatusError:
-            return False
-        return True
 
     async def one(qid: str, q: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        nonlocal probe
-        prompt = d.build_prompt(request.state, q)
-        body = d.upstream_body(backend_model, prompt)
         try:
-            resp = await send(body)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in _REJECTED:
-                raise
-            # A server that rejects the logprobs fields answers 400 or 422, as
-            # does one whose context the prompt overflows. Asking once more
-            # without them tells the two apart; questions share the probe.
-            if probe is None:
-                probe = asyncio.ensure_future(accepts_without_logprobs(body))
-            if await probe:
-                raise d.NoLogprobs(
-                    f"backend rejected logprobs (HTTP {exc.response.status_code})"
-                ) from exc
+            dist, resp = await asker.ask(request.state, q)
+        except d.NoLogprobs:
             raise
-        top = d.top_logprobs_from_response(resp)
-        try:
-            dist = d.distribution(top, prompt.labels)
         except d.DecisionError as exc:
             raise d.DecisionError(f"question {qid!r}: {exc}") from None
         return d.answer(q, dist, calibration.get(qid)), resp
