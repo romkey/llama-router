@@ -217,15 +217,14 @@ def _labelled_states(question: Any, raw: Any) -> list[tuple[Any, str]]:
 async def _distributions(
     provider_id: int, backend_model: str, question: Any, states: list[Any]
 ) -> list[d.Distribution]:
-    pm = api_deps.get_pm()
+    asker = svc.Asker(api_deps.get_pm(), provider_id, backend_model)
     gate = asyncio.Semaphore(FIT_CONCURRENCY)
 
     async def one(i: int, state: Any) -> d.Distribution:
         async with gate:
             try:
-                return await svc.raw_distribution(
-                    pm, provider_id, backend_model, state, question
-                )
+                dist, _resp = await asker.ask(state, question)
+                return dist
             except d.NoLogprobs:
                 raise
             except d.DecisionError as exc:

@@ -19,17 +19,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
+
+import httpx
 
 from . import decisions as d
 from .database import CHANGE_DECISIONS, Database
 from .provider_manager import ProviderManager
+from .routing_table import alias_groups
 from .v1_client import get_v1_client
 
 logger = logging.getLogger(__name__)
 
 _SUMMARY_MAX = 240
+# Request fields a server may refuse, and the statuses it refuses them with.
+_LOGPROB_FIELDS = ("logprobs", "top_logprobs")
+_REJECTED = (400, 422)
 
 
 class CalibrationStore:
@@ -38,11 +44,15 @@ class CalibrationStore:
     def __init__(self, db: Database) -> None:
         self._db = db
         self._cache: dict[tuple[str, str], d.Calibration] | None = None
+        # Bumped on every change, so a read that a change overtook is not
+        # kept as the cache.
+        self._generation = 0
         self._lock = asyncio.Lock()
         db.add_change_listener(self._on_change)
 
     def _on_change(self, reason: str) -> None:
         if reason == CHANGE_DECISIONS:
+            self._generation += 1
             self._cache = None
 
     async def _load(self) -> dict[tuple[str, str], d.Calibration]:
@@ -50,29 +60,57 @@ class CalibrationStore:
         if cache is not None:
             return cache
         async with self._lock:
-            if self._cache is None:
-                built: dict[tuple[str, str], d.Calibration] = {}
-                for r in await self._db.list_decision_calibrations():
-                    try:
-                        cal = d.Calibration.from_dict(r)
-                    except ValueError:
-                        logger.warning("Skipping invalid calibration %s", r["id"])
-                        continue
-                    built[(r["model_name"], r["question_key"])] = cal
+            cache = self._cache
+            if cache is not None:
+                return cache
+            generation = self._generation
+            built: dict[tuple[str, str], d.Calibration] = {}
+            for r in await self._db.list_decision_calibrations():
+                try:
+                    cal = d.Calibration.from_dict(r)
+                except ValueError:
+                    logger.warning("Skipping invalid calibration %s", r["id"])
+                    continue
+                built[(r["model_name"], r["question_key"])] = cal
+            # A change while reading may not be in *built*: answer this
+            # request with it, but let the next one read again.
+            if generation == self._generation:
                 self._cache = built
-            return self._cache
+            return built
 
     async def for_request(
-        self, model: str, request: d.DecisionRequest
+        self, models: str | Sequence[str], request: d.DecisionRequest
     ) -> dict[str, d.Calibration]:
-        """The calibration of each question in *request* that has one."""
+        """The calibration of each question in *request* that has one.
+
+        *models* are names the model goes by, best first (see
+        :func:`model_names`): a calibration saved under any of them applies,
+        the first name that has one winning.
+        """
+        names = [models] if isinstance(models, str) else list(models)
         cache = await self._load()
         out: dict[str, d.Calibration] = {}
         for qid, q in request.questions.items():
-            cal = cache.get((model, d.question_key(q)))
-            if cal is not None:
-                out[qid] = cal
+            key = d.question_key(q)
+            for name in names:
+                cal = cache.get((name, key))
+                if cal is not None:
+                    out[qid] = cal
+                    break
         return out
+
+
+def model_names(
+    first: Iterable[str | None], aliases: Mapping[str, str] | None = None
+) -> list[str]:
+    """*first* in order, then every alias-group member of those names, for
+    finding a calibration saved under any name the model goes by."""
+    names = list(dict.fromkeys(n for n in first if n))
+    if aliases:
+        groups = alias_groups(dict(aliases))
+        for n in list(names):
+            names += sorted(groups.get(n, frozenset()) - set(names))
+    return names
 
 
 _stores: weakref.WeakKeyDictionary[Database, CalibrationStore] = (
@@ -87,36 +125,71 @@ def calibrations(db: Database) -> CalibrationStore:
     return store
 
 
-async def _ask(
-    pm: ProviderManager,
-    provider_id: int,
-    backend_model: str,
-    state: d.State,
-    question: Any,
-    acquire: bool = True,
-) -> tuple[d.Distribution, dict[str, Any]]:
-    client = get_v1_client(pm, provider_id)
-    prompt = d.build_prompt(state, question)
-    body = d.upstream_body(backend_model, prompt)
-    if acquire:
-        async with pm.acquire_provider(provider_id):
-            resp = await client.chat_completions(body)
-    else:
-        resp = await client.chat_completions(body)
-    top = d.top_logprobs_from_response(resp)
-    return d.distribution(top, prompt.labels), resp
+class Asker:
+    """Asks one provider decision questions, one chat completion each.
 
+    A server that refuses the logprobs fields answers 400 or 422, as does one
+    whose context the prompt overflows. On such an answer the asker asks once
+    more without them to tell the two apart; every question it asks shares
+    that probe. *acquire* false skips the provider's request accounting.
+    """
 
-async def raw_distribution(
-    pm: ProviderManager,
-    provider_id: int,
-    backend_model: str,
-    state: d.State,
-    question: Any,
-) -> d.Distribution:
-    """One question's uncalibrated distribution, for fitting a calibration."""
-    dist, _resp = await _ask(pm, provider_id, backend_model, state, question)
-    return dist
+    def __init__(
+        self,
+        pm: ProviderManager,
+        provider_id: int,
+        backend_model: str,
+        *,
+        acquire: bool = True,
+    ) -> None:
+        self._pm = pm
+        self._provider_id = provider_id
+        self._client = get_v1_client(pm, provider_id)
+        self._backend_model = backend_model
+        self._acquire = acquire
+        self._probe: asyncio.Task[bool] | None = None
+
+    async def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        if self._acquire:
+            async with self._pm.acquire_provider(self._provider_id):
+                return await self._client.chat_completions(body)
+        return await self._client.chat_completions(body)
+
+    async def _accepts_without_logprobs(self, body: dict[str, Any]) -> bool:
+        plain = {k: v for k, v in body.items() if k not in _LOGPROB_FIELDS}
+        try:
+            await self._send(plain)
+        except httpx.HTTPStatusError:
+            return False
+        return True
+
+    async def ask(
+        self, state: d.State, question: Any
+    ) -> tuple[d.Distribution, dict[str, Any]]:
+        """The question's uncalibrated distribution and the raw response.
+
+        Raises :class:`decisions.NoLogprobs` when the backend refuses or
+        omits logprobs, and :class:`decisions.DecisionError` for an answer
+        that names no label.
+        """
+        prompt = d.build_prompt(state, question)
+        body = d.upstream_body(self._backend_model, prompt)
+        try:
+            resp = await self._send(body)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code not in _REJECTED:
+                raise
+            if self._probe is None:
+                self._probe = asyncio.ensure_future(
+                    self._accepts_without_logprobs(body)
+                )
+            if await self._probe:
+                raise d.NoLogprobs(
+                    f"backend rejected logprobs (HTTP {exc.response.status_code})"
+                ) from exc
+            raise
+        top = d.top_logprobs_from_response(resp)
+        return d.distribution(top, prompt.labels), resp
 
 
 async def emulate(
@@ -136,13 +209,12 @@ async def emulate(
     *acquire* false skips the provider's request accounting, for checks
     that must not count as traffic (the auto-benchmarker).
     """
+    asker = Asker(pm, provider_id, backend_model, acquire=acquire)
     calibration = calibration or {}
 
     async def one(qid: str, q: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
-            dist, resp = await _ask(
-                pm, provider_id, backend_model, request.state, q, acquire
-            )
+            dist, resp = await asker.ask(request.state, q)
         except d.NoLogprobs:
             raise
         except d.DecisionError as exc:
