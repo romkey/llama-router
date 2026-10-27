@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .. import __version__
 from ..config import settings
 from ..request_logger import log_request
+from ..timing import RequestTimingMiddleware
 from ..worker_link.protocol import WS_PATH
 
 from .chat import router as chat_router
@@ -26,6 +27,7 @@ from ..llamacpp_api.models import router as v1_models_router
 from ..llamacpp_api.responses import router as v1_responses_router
 
 app = FastAPI(title="llama-router Ollama API")
+app.add_middleware(RequestTimingMiddleware)
 
 
 @app.get("/health")

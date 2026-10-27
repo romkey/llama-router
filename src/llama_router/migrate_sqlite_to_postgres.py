@@ -110,6 +110,8 @@ _TABLES: list[tuple[str, list[str]]] = [
             "response_size",
             "request_meta",
             "duration_ms",
+            "ttfb_ms",
+            "router_ms",
             "status",
             "streamed",
             "error_detail",

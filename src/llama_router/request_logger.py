@@ -18,6 +18,7 @@ from .database import Database
 from .httpx_errors import describe_httpx_error
 from .models import Provider, RequestLog
 from .routing_stats import ProviderStats
+from .timing import received_at
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,8 @@ async def log_request(
     response_body: Any = None,
     routed_model: str | None = None,
     sample: bool = False,
+    ttfb_ms: float | None = None,
+    router_ms: float | None = None,
 ) -> None:
     """Write one request to the log.
 
@@ -243,6 +246,8 @@ async def log_request(
         response_size=response_size,
         request_meta=_request_meta_summary(request_body),
         duration_ms=duration_ms,
+        ttfb_ms=ttfb_ms,
+        router_ms=router_ms,
         status=status,
         streamed=streamed,
         error_detail=error_detail,
@@ -250,14 +255,38 @@ async def log_request(
     await db.save_request_log(entry)
 
 
-def log_request_background(db: Database, **kwargs: Any) -> None:
-    """Log after the response is sent; the handler does not wait for it."""
+def log_request_background(
+    db: Database, *, dispatched_at: float | None = None, **kwargs: Any
+) -> None:
+    """Log after the response is sent; the handler does not wait for it.
+
+    *dispatched_at* is when the request went to the backend. Handlers that
+    log as soon as the backend answers can omit it: it is then worked out
+    from *duration_ms*.
+    """
     kwargs.setdefault("sample", True)
-    if "request" in kwargs and kwargs["request"] is not None:
-        # Resolve the client address now; the request object is done after.
-        kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(kwargs["request"])
+    request = kwargs.get("request")
+    if request is not None:
+        # Resolve what is needed now; the request object is done after.
+        kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
+        if kwargs.get("router_ms") is None:
+            kwargs["router_ms"] = _router_ms(
+                request, dispatched_at, kwargs.get("duration_ms", 0.0)
+            )
         kwargs["request"] = None
     spawn(log_request(db, **kwargs), name="log-request")
+
+
+def _router_ms(
+    request: Request, dispatched_at: float | None, duration_ms: float
+) -> float | None:
+    """Time from arrival at the router to dispatch, or None if unstamped."""
+    arrived = received_at(request.scope)
+    if arrived is None:
+        return None
+    if dispatched_at is None:
+        dispatched_at = time.monotonic() - duration_ms / 1000
+    return max(0.0, (dispatched_at - arrived) * 1000)
 
 
 class StreamLogger:
@@ -349,6 +378,8 @@ class StreamLogger:
                     status=status,
                     error_detail=error_detail,
                     sample=False,
+                    ttfb_ms=ttft_ms,
+                    dispatched_at=self._start,
                 )
             except Exception:
                 logger.exception("Could not schedule request log write")
