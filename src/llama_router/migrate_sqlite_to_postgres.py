@@ -158,6 +158,10 @@ _TABLES: list[tuple[str, list[str]]] = [
         ],
     ),
     (
+        "model_aliases",
+        ["id", "alias", "canonical", "created_at"],
+    ),
+    (
         "api_key_model_pins",
         ["id", "api_key_id", "model_name", "provider_id", "created_at"],
     ),

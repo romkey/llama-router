@@ -40,6 +40,7 @@ CHANGE_ADDRESSES = "addresses"
 CHANGE_MODELS = "models"
 CHANGE_BENCHMARKS = "benchmarks"
 CHANGE_FALLBACKS = "fallbacks"
+CHANGE_ALIASES = "aliases"
 CHANGE_CAPABILITIES = "capabilities"
 CHANGE_API_KEYS = "api_keys"
 CHANGE_AUTH_SETTINGS = "auth_settings"
@@ -51,6 +52,7 @@ ROUTING_CHANGES = frozenset(
         CHANGE_MODELS,
         CHANGE_BENCHMARKS,
         CHANGE_FALLBACKS,
+        CHANGE_ALIASES,
         CHANGE_CAPABILITIES,
     }
 )
@@ -707,6 +709,39 @@ class Database:
             "SELECT model_name, fallback_model FROM model_fallbacks ORDER BY model_name"
         )
         return {r["model_name"]: r["fallback_model"] for r in rows}
+
+    # ── Model aliases ─────────────────────────────────────────────────
+
+    @_notifies(CHANGE_ALIASES)
+    async def set_model_alias(self, alias: str, canonical: str) -> None:
+        """Make *alias* another name for *canonical*."""
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO model_aliases (alias, canonical) VALUES (?, ?) "
+                "ON DUPLICATE KEY UPDATE canonical = VALUES(canonical)",
+                (alias, canonical),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO model_aliases (alias, canonical) VALUES (?, ?) "
+                "ON CONFLICT (alias) DO UPDATE SET canonical = ?",
+                (alias, canonical, canonical),
+            )
+
+    @_notifies(CHANGE_ALIASES)
+    async def remove_model_alias(self, alias: str) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM model_aliases WHERE alias = ?", (alias,)
+            )
+        )
+
+    async def get_model_aliases(self) -> dict[str, str]:
+        """alias -> canonical name."""
+        rows = await self._select_all(
+            "SELECT alias, canonical FROM model_aliases ORDER BY canonical, alias"
+        )
+        return {r["alias"]: r["canonical"] for r in rows}
 
     # --- Workers (hub side) ---
 

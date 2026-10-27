@@ -428,6 +428,20 @@ curl http://localhost/api/fallbacks
 curl -X DELETE http://localhost/api/fallbacks/llama3:70b
 ```
 
+## Model Aliases
+
+The same model often has different names at different providers: `claude-sonnet-4-5` at Anthropic, `anthropic/claude-sonnet-4-5` at OpenRouter, `llama3.2:latest` and `llama3.2` across Ollama and llama.cpp. An alias joins them. A request for any name in the group can go to any provider that serves one of them, and each provider is sent its own name for the model. Aliases chain, so `a → b → c` is one group.
+
+Add them in **Model Aliases** on the Models tab; **Suggest aliases** proposes `vendor/model` and `model:latest` names whose bare form another provider serves. Or use the API:
+
+```bash
+curl -X POST http://localhost/api/model-aliases \
+  -H 'Content-Type: application/json' \
+  -d '{"alias": "anthropic/claude-sonnet-4-5", "canonical": "claude-sonnet-4-5"}'
+```
+
+Aliases combine with API key locality: a local-only key asking for `vendor/model` reaches a local provider that serves `model`.
+
 ## API Key Model Pinning
 
 API keys can optionally pin specific models to specific providers. When a pinned model is requested with that key, llama-router always chooses the configured provider for that model (if available), bypassing latency/throughput scoring.

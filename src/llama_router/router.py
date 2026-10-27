@@ -40,6 +40,7 @@ from .routing_table import (
     Candidate,
     RoutingInputs,
     RoutingTable,
+    alias_groups,
     build_table,
     load_inputs,
 )
@@ -713,6 +714,9 @@ class Router:
                 for n in (m.name, m.raw_name)
                 if n
             }
+            groups = alias_groups(inputs.aliases)
+            for n in list(names):
+                names |= groups.get(n, frozenset())
             if model not in names:
                 continue
             if p.status == ProviderStatus.OFFLINE:

@@ -604,6 +604,7 @@ async def dashboard(request: Request):
 
     model_request_counts = await db.get_model_request_counts()
     model_fallbacks = await db.get_all_model_fallbacks()
+    model_aliases = await db.get_model_aliases()
 
     if read_only:
         api_keys: list[Any] = []
@@ -747,6 +748,7 @@ async def dashboard(request: Request):
                 "all_provider_counts": all_provider_counts,
                 "model_request_counts": model_request_counts,
                 "model_fallbacks": model_fallbacks,
+                "model_aliases": model_aliases,
                 "api_keys": api_keys,
                 "session_affinity_default": (
                     deps.get_pm().router.session_affinity_default
@@ -2475,6 +2477,84 @@ async def remove_fallback(model_name: str):
     """Remove a model fallback."""
     db = deps.get_db()
     await db.remove_model_fallback(model_name)
+    return JSONResponse({"status": "ok"})
+
+
+def suggest_aliases(
+    names_by_provider: dict[int, set[str]], aliases: dict[str, str]
+) -> list[dict[str, str]]:
+    """Likely aliases between providers' model names.
+
+    ``vendor/model`` (OpenRouter, Together, ...) and ``model:latest``
+    (Ollama) are suggested as aliases of ``model`` when another provider
+    serves that bare name. Existing aliases are not suggested again.
+    """
+    everywhere: dict[str, set[int]] = {}
+    for pid, names in names_by_provider.items():
+        for n in names:
+            everywhere.setdefault(n, set()).add(pid)
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for name, pids in sorted(everywhere.items()):
+        candidates = []
+        if "/" in name:
+            candidates.append(name.rsplit("/", 1)[1])
+        if name.endswith(":latest"):
+            candidates.append(name[: -len(":latest")])
+        for bare in candidates:
+            if not bare or bare == name or name in aliases or name in seen:
+                continue
+            if everywhere.get(bare, set()) - pids:
+                out.append({"alias": name, "canonical": bare})
+                seen.add(name)
+    return out
+
+
+@router.get("/api/model-aliases")
+async def list_model_aliases():
+    """All aliases (alias -> canonical) and suggested new ones."""
+    db = deps.get_db()
+    aliases = await db.get_model_aliases()
+    names: dict[int, set[str]] = {}
+    for m in await db.get_all_provider_models():
+        names.setdefault(m.provider_id, set()).add(m.name)
+    return JSONResponse(
+        {"aliases": aliases, "suggestions": suggest_aliases(names, aliases)}
+    )
+
+
+@router.post("/api/model-aliases")
+async def set_model_alias(request: Request):
+    """Body: {alias, canonical}. The alias then reaches every provider of the
+    canonical name and of its other aliases."""
+    body = await request.json()
+    alias = str(body.get("alias") or "").strip()
+    canonical = str(body.get("canonical") or "").strip()
+    if not alias or not canonical:
+        raise HTTPException(status_code=400, detail="alias and canonical are required")
+    if alias == canonical:
+        raise HTTPException(status_code=400, detail="a model cannot alias itself")
+    if len(alias) > 255 or len(canonical) > 255:
+        raise HTTPException(status_code=400, detail="model name too long")
+    db = deps.get_db()
+    aliases = await db.get_model_aliases()
+    # Refuse a loop: following canonical's chain must never reach alias.
+    cur, seen = canonical, set()
+    while cur not in seen:
+        if cur == alias:
+            raise HTTPException(status_code=400, detail="that alias would form a loop")
+        seen.add(cur)
+        if cur not in aliases:
+            break
+        cur = aliases[cur]
+    await db.set_model_alias(alias, canonical)
+    return JSONResponse({"alias": alias, "canonical": canonical})
+
+
+@router.delete("/api/model-aliases/{alias:path}")
+async def delete_model_alias(alias: str):
+    if not await deps.get_db().remove_model_alias(alias):
+        raise HTTPException(status_code=404, detail="alias not found")
     return JSONResponse({"status": "ok"})
 
 

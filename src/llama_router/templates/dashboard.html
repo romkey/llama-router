@@ -673,6 +673,43 @@
                 </table>
             </div>
         </div>
+        <div class="card mt-4" id="aliases-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Model Aliases</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">One model under different names, such as <code>claude-sonnet-4-5</code> at Anthropic and <code>anthropic/claude-sonnet-4-5</code> at OpenRouter. A request for any name in a group can go to any provider that serves one of them, under that provider's own name.</p>
+                <form class="row g-2 align-items-end mb-3" onsubmit="addModelAlias(event)">
+                    <div class="col-sm-5">
+                        <label for="alias-name" class="form-label small text-muted mb-1">Alias</label>
+                        <input id="alias-name" class="form-control form-control-sm font-monospace" placeholder="anthropic/claude-sonnet-4-5" required>
+                    </div>
+                    <div class="col-sm-5">
+                        <label for="alias-canonical" class="form-label small text-muted mb-1">Same model as</label>
+                        <input id="alias-canonical" class="form-control form-control-sm font-monospace" placeholder="claude-sonnet-4-5" required>
+                    </div>
+                    <div class="col-sm-2">
+                        <button class="btn btn-sm btn-outline-primary w-100" type="submit"><i class="bi bi-plus-lg me-1"></i>Add</button>
+                    </div>
+                </form>
+                <table class="table table-sm mb-2">
+                    <thead><tr><th>Alias</th><th>Same model as</th><th></th></tr></thead>
+                    <tbody>
+                        {% for alias, canonical in model_aliases.items() %}
+                        <tr>
+                            <td><code>{{ alias }}</code></td>
+                            <td><code>{{ canonical }}</code></td>
+                            <td class="text-end"><button class="btn btn-sm btn-outline-danger" data-remove-alias="{{ alias }}" title="Remove alias"><i class="bi bi-trash"></i></button></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="3" class="text-muted text-center py-2">No aliases yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                <button class="btn btn-sm btn-link p-0" type="button" onclick="loadAliasSuggestions()">Suggest aliases from the providers' model lists</button>
+                <div id="alias-suggestions" class="mt-2"></div>
+            </div>
+        </div>
         {% endif %}
     </div>
 
@@ -3252,6 +3289,63 @@ function submitFallback() {
         location.reload();
     })
     .catch(function(err) { alert(err.message); });
+}
+
+function postModelAlias(alias, canonical) {
+    return fetch('/api/model-aliases', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({alias: alias, canonical: canonical})
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+    });
+}
+
+function addModelAlias(ev) {
+    ev.preventDefault();
+    if (!dashRequireWrite()) return;
+    postModelAlias(document.getElementById('alias-name').value.trim(),
+                   document.getElementById('alias-canonical').value.trim())
+        .then(function() { location.reload(); })
+        .catch(function(err) { alert(err.message); });
+}
+
+document.addEventListener('click', function(ev) {
+    const btn = ev.target.closest('[data-remove-alias]');
+    if (!btn || !dashRequireWrite()) return;
+    const alias = btn.dataset.removeAlias;
+    if (!confirm('Remove alias ' + alias + '?')) return;
+    fetch('/api/model-aliases/' + encodeURIComponent(alias), {method: 'DELETE'})
+        .then(function() { location.reload(); });
+});
+
+function loadAliasSuggestions() {
+    const box = document.getElementById('alias-suggestions');
+    box.textContent = 'Looking…';
+    fetch('/api/model-aliases').then(function(r) { return r.json(); }).then(function(d) {
+        box.innerHTML = '';
+        if (!d.suggestions.length) {
+            box.textContent = 'No likely aliases found.';
+            return;
+        }
+        d.suggestions.forEach(function(s) {
+            const row = document.createElement('div');
+            row.className = 'small d-flex align-items-center gap-2 mb-1';
+            const a = document.createElement('code'); a.textContent = s.alias;
+            const b = document.createElement('code'); b.textContent = s.canonical;
+            const btn = document.createElement('button');
+            btn.type = 'button'; btn.className = 'btn btn-sm btn-outline-secondary py-0';
+            btn.textContent = 'Add';
+            btn.addEventListener('click', function() {
+                if (!dashRequireWrite()) return;
+                postModelAlias(s.alias, s.canonical).then(function() {
+                    btn.disabled = true; btn.textContent = 'Added';
+                }).catch(function(err) { alert(err.message); });
+            });
+            row.append(a, document.createTextNode('is the same model as'), b, btn);
+            box.appendChild(row);
+        });
+    });
 }
 
 function removeFallback(model) {

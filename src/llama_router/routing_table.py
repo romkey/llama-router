@@ -140,6 +140,35 @@ class RoutingInputs:
     addresses: dict[int, list[ProviderAddress]]
     benchmarks: dict[tuple[int, str, str | None], BenchmarkResult]
     fallbacks: dict[str, str]
+    # alias -> canonical model name
+    aliases: dict[str, str] = field(default_factory=dict)
+
+
+def alias_groups(aliases: dict[str, str]) -> dict[str, frozenset[str]]:
+    """Every name that belongs to an alias group -> all names in the group.
+
+    A group is a canonical name and the aliases pointing at it. Chains are
+    followed (a -> b -> c puts all three together); a loop stops at the repeat.
+    """
+
+    def canonical(name: str) -> str:
+        seen = {name}
+        while name in aliases and aliases[name] not in seen:
+            name = aliases[name]
+            seen.add(name)
+        return name
+
+    members: dict[str, set[str]] = {}
+    for alias in aliases:
+        root = canonical(alias)
+        group = members.setdefault(root, {root})
+        group.add(alias)
+    out: dict[str, frozenset[str]] = {}
+    for group in members.values():
+        frozen = frozenset(group)
+        for name in group:
+            out[name] = frozen
+    return out
 
 
 async def load_inputs(db: Database) -> RoutingInputs:
@@ -152,7 +181,8 @@ async def load_inputs(db: Database) -> RoutingInputs:
         addresses.setdefault(a.provider_id, []).append(a)
     benchmarks = latest_benchmarks(await db.get_all_benchmark_results())
     fallbacks = await db.get_all_model_fallbacks()
-    return RoutingInputs(providers, models, addresses, benchmarks, fallbacks)
+    aliases = await db.get_model_aliases()
+    return RoutingInputs(providers, models, addresses, benchmarks, fallbacks, aliases)
 
 
 def latest_benchmarks(
@@ -436,6 +466,7 @@ def build_table(
     table = RoutingTable(version=version, reasons=reasons)
     grouped: dict[tuple[str, str], list[Candidate]] = {}
     backend_names: dict[tuple[int, str], str] = {}
+    groups = alias_groups(inputs.aliases)
 
     for p in online:
         pid = p.id
@@ -468,6 +499,11 @@ def build_table(
             keys = {m.name}
             if m.raw_name:
                 keys.add(m.raw_name)
+            # Any alias of the model reaches it too, under its own name here.
+            for name in list(keys):
+                keys |= groups.get(name, frozenset())
+            for key in keys:
+                backend_names.setdefault((pid, key), backend)
             for path, sup in support.items():
                 protocol, cls = ENDPOINTS[path]
                 ms = stats.model(pid, m.name, cls) if stats else None
