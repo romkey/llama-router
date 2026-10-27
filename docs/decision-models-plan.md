@@ -165,6 +165,13 @@ then background classification. Each its own PR with its own migration.
 **Phase 4, optional.** Calibration UI; TypeSafe hosted provider; worker
 link support so hub workers can serve decision jobs.
 
+The calibration UI is the dashboard's Decisions page, backed by
+`POST /api/decisions/calibrations/fit` (labelled states in, cross-validated
+before/after scores out) and `POST /api/decisions/try`. Live check
+(2026-10-27, Llama 3.2 3B on llama-server, the 36 tickets, frustration
+`score`): leave-one-out accuracy 0.33 to 0.72, log loss 2.15 to 0.58, MAE
+0.67 to 0.33; the fit took 4 s.
+
 ## Phase 0 results (2026-10-27)
 
 Setup: llama-server 0.7.0 (build 11669) on Apple Silicon, `-np 4`, serving

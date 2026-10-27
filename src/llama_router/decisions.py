@@ -382,6 +382,46 @@ def fit_calibration(
     return Calibration(1.0 / scale, {k: wk - mean for k, wk in zip(keys, w)})
 
 
+def held_out(
+    examples: Sequence[tuple[Mapping[str, float], str]], *, folds: int
+) -> list[dict[str, float]]:
+    """Each example's distribution calibrated by a fit that did not see it.
+
+    Example ``i`` is held out in fold ``i % folds``; *folds* equal to the
+    number of examples is leave-one-out.
+    """
+    n = len(examples)
+    folds = max(2, min(folds, n))
+    out: list[dict[str, float]] = [{} for _ in examples]
+    for f in range(folds):
+        cal = fit_calibration([ex for i, ex in enumerate(examples) if i % folds != f])
+        for i in range(f, n, folds):
+            out[i] = cal.apply(examples[i][0])
+    return out
+
+
+def scores(
+    predictions: Sequence[Mapping[str, float]],
+    truth: Sequence[str],
+    *,
+    ordinal: bool = False,
+) -> dict[str, float]:
+    """Accuracy of the top answer and mean log loss of the true one; with
+    *ordinal* (score questions, keys ``"0"``, ``"1"``...) also the mean
+    absolute error of the expected level."""
+    n = len(truth)
+    acc = sum(max(p, key=p.__getitem__) == y for p, y in zip(predictions, truth))
+    loss = -sum(math.log(max(p[y], 1e-6)) for p, y in zip(predictions, truth))
+    out = {"accuracy": _r(acc / n), "log_loss": _r(loss / n)}
+    if ordinal:
+        err = sum(
+            abs(sum(int(k) * pk for k, pk in p.items()) - int(y))
+            for p, y in zip(predictions, truth)
+        )
+        out["mae"] = _r(err / n)
+    return out
+
+
 # --- Answers ---
 
 

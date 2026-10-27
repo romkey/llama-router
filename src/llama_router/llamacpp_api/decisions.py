@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 from .. import decision_service as svc
@@ -29,6 +29,7 @@ from ..auth import routing_preferences_from_request
 from ..endpoints import normalize_endpoint
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import log_request_background
+from ..router import RoutingPreferences
 from ..routing_table import decides_natively
 from . import deps
 
@@ -48,13 +49,24 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
 @router.post("/v1/decisions")
 @router.post("/decisions")
 async def decide(request: Request):
-    endpoint_path = request.url.path
-    path = normalize_endpoint(endpoint_path)
-    assert path is not None
     try:
         body = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="JSON body required")
+    prefs = await routing_preferences_from_request(deps.get_db(), request)
+    return await serve(request, body, request.url.path, prefs)
+
+
+async def serve(
+    request: Request,
+    body: Any,
+    endpoint_path: str,
+    prefs: RoutingPreferences | None,
+) -> Response:
+    """Answer a decision request as *endpoint_path* would. The dashboard's
+    try form calls this too, with no key preferences."""
+    path = normalize_endpoint(endpoint_path)
+    assert path is not None
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
     try:
@@ -67,7 +79,6 @@ async def decide(request: Request):
     rt = deps.get_router()
     pm = deps.get_pm()
     db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
     for attempt in range(2):
         result = await rt.route(req.model, path, prefs)

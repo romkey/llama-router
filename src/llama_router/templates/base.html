@@ -26,6 +26,11 @@
             </button>
             <div class="collapse navbar-collapse" id="topNav">
                 <ul class="navbar-nav ms-auto align-items-md-center gap-md-2">
+                    {% if dash_user or auth_bootstrap %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="/decisions"><i class="bi bi-signpost-split me-1"></i>Decisions</a>
+                    </li>
+                    {% endif %}
                     {% if dash_user %}
                     <li class="nav-item">
                         <span class="navbar-text small">{{ dash_user.username }}{% if dash_user.is_admin %} <span class="badge bg-secondary">admin</span>{% endif %}</span>

@@ -87,6 +87,38 @@ def calibrations(db: Database) -> CalibrationStore:
     return store
 
 
+async def _ask(
+    pm: ProviderManager,
+    provider_id: int,
+    backend_model: str,
+    state: d.State,
+    question: Any,
+    acquire: bool = True,
+) -> tuple[d.Distribution, dict[str, Any]]:
+    client = get_v1_client(pm, provider_id)
+    prompt = d.build_prompt(state, question)
+    body = d.upstream_body(backend_model, prompt)
+    if acquire:
+        async with pm.acquire_provider(provider_id):
+            resp = await client.chat_completions(body)
+    else:
+        resp = await client.chat_completions(body)
+    top = d.top_logprobs_from_response(resp)
+    return d.distribution(top, prompt.labels), resp
+
+
+async def raw_distribution(
+    pm: ProviderManager,
+    provider_id: int,
+    backend_model: str,
+    state: d.State,
+    question: Any,
+) -> d.Distribution:
+    """One question's uncalibrated distribution, for fitting a calibration."""
+    dist, _resp = await _ask(pm, provider_id, backend_model, state, question)
+    return dist
+
+
 async def emulate(
     pm: ProviderManager,
     provider_id: int,
@@ -104,20 +136,15 @@ async def emulate(
     *acquire* false skips the provider's request accounting, for checks
     that must not count as traffic (the auto-benchmarker).
     """
-    client = get_v1_client(pm, provider_id)
     calibration = calibration or {}
 
     async def one(qid: str, q: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        prompt = d.build_prompt(request.state, q)
-        body = d.upstream_body(backend_model, prompt)
-        if acquire:
-            async with pm.acquire_provider(provider_id):
-                resp = await client.chat_completions(body)
-        else:
-            resp = await client.chat_completions(body)
-        top = d.top_logprobs_from_response(resp)
         try:
-            dist = d.distribution(top, prompt.labels)
+            dist, resp = await _ask(
+                pm, provider_id, backend_model, request.state, q, acquire
+            )
+        except d.NoLogprobs:
+            raise
         except d.DecisionError as exc:
             raise d.DecisionError(f"question {qid!r}: {exc}") from None
         return d.answer(q, dist, calibration.get(qid)), resp
