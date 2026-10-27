@@ -236,7 +236,14 @@ async def _decide(
             request_body=req.model_dump(exclude_none=True),
         )
 
-        def failed(detail: str, **extra: Any) -> _Failed:
+        def failed(
+            detail: str,
+            *,
+            log: dict[str, Any] = log,
+            start: float = start,
+            provider_name: str = provider.name,
+            **extra: Any,
+        ) -> _Failed:
             log_request_background(
                 db,
                 **log,
@@ -245,7 +252,7 @@ async def _decide(
                 error_detail=f"decision policy: {detail}"[:500],
                 **extra,
             )
-            return _Failed(f"{detail} (provider {provider.name})")
+            return _Failed(f"{detail} (provider {provider_name})")
 
         try:
             inputs = rt.inputs
@@ -258,19 +265,21 @@ async def _decide(
                 req.model_dump(exclude_none=True),
                 inputs.aliases if inputs else None,
             )
-        except d.NoLogprobs:
+        except d.NoLogprobs as e:
             pm.stats.record_logprobs(provider.id, ok=False)
-            exc = failed("backend returned no logprobs", sample=False)
+            failure = failed("backend returned no logprobs", sample=False)
             if attempt == 0:
                 await rt.rebuild()
                 continue
-            raise exc
+            raise failure from e
         except d.DecisionError as e:
-            raise failed(str(e), sample=False)
+            raise failed(str(e), sample=False) from e
         except httpx.HTTPStatusError as e:
-            raise failed(f"HTTP {e.response.status_code}: {e.response.text[:300]}")
+            raise failed(
+                f"HTTP {e.response.status_code}: {e.response.text[:300]}"
+            ) from e
         except httpx.HTTPError as e:
-            raise failed(describe_httpx_error(e))
+            raise failed(describe_httpx_error(e)) from e
         log["duration_ms"] = (time.monotonic() - start) * 1000
         log["response_body"] = out
         answers = out.get("answers") if isinstance(out, dict) else None

@@ -52,7 +52,7 @@ async def generate(request: Request):
         try:
             client.validate("generate", body)
         except TranslationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     stream = body.get("stream", True)
     start = time.monotonic()
 

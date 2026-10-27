@@ -50,8 +50,8 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
 async def decide(request: Request):
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     prefs = await routing_preferences_from_request(deps.get_db(), request)
     return await serve(request, body, request.url.path, prefs)
 
@@ -104,7 +104,7 @@ async def serve(
             out, calibrated = await svc.answer_routed(
                 pm, db, result, req, path, body, inputs.aliases if inputs else None
             )
-        except d.NoLogprobs:
+        except d.NoLogprobs as exc:
             pm.stats.record_logprobs(provider.id, ok=False)
             log_request_background(
                 db,
@@ -125,7 +125,7 @@ async def serve(
             raise HTTPException(
                 status_code=502,
                 detail="No provider for this model returned logprobs",
-            )
+            ) from exc
         except d.DecisionError as exc:
             log_request_background(
                 db,
@@ -135,7 +135,7 @@ async def serve(
                 error_detail=str(exc)[:500],
                 sample=False,
             )
-            raise HTTPException(status_code=502, detail=str(exc))
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         except httpx.HTTPStatusError as exc:
             log_request_background(
                 db,
@@ -163,7 +163,9 @@ async def serve(
                 provider.name,
                 detail,
             )
-            raise HTTPException(status_code=502, detail="upstream request failed")
+            raise HTTPException(
+                status_code=502, detail="upstream request failed"
+            ) from exc
 
         log_request_background(
             db,

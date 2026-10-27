@@ -53,14 +53,14 @@ def parse_question(raw: Any) -> Any:
         return _QUESTION.validate_python(raw)
     except ValidationError as exc:
         msg = "; ".join(e.get("msg", "") for e in exc.errors(include_url=False))
-        raise HTTPException(status_code=400, detail=f"invalid question: {msg}")
+        raise HTTPException(status_code=400, detail=f"invalid question: {msg}") from exc
 
 
 def _finite(x: Any, what: str) -> float:
     try:
         v = float(x)
-    except TypeError, ValueError:
-        raise HTTPException(status_code=400, detail=f"{what} must be a number")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{what} must be a number") from exc
     if not math.isfinite(v):
         raise HTTPException(status_code=400, detail=f"{what} must be finite")
     return v
@@ -146,8 +146,8 @@ async def api_set_calibration(request: Request):
     """
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
     model = str(body.get("model") or "").strip()
@@ -209,7 +209,7 @@ def _labelled_states(question: Any, raw: Any) -> list[tuple[Any, str]]:
             )
         except ValidationError as exc:
             msg = "; ".join(e.get("msg", "") for e in exc.errors(include_url=False))
-            raise HTTPException(status_code=400, detail=f"example {i}: {msg}")
+            raise HTTPException(status_code=400, detail=f"example {i}: {msg}") from exc
         out.append((req.state, _label(question, ex.get("answer"), i)))
     return out
 
@@ -268,8 +268,8 @@ async def api_fit_calibration(request: Request):
     """
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
     model = str(body.get("model") or "").strip()
@@ -298,19 +298,19 @@ async def api_fit_calibration(request: Request):
         dists = await _distributions(
             provider.id, result.backend_model, question, [s for s, _y in labelled]
         )
-    except d.NoLogprobs:
+    except d.NoLogprobs as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Provider '{provider.name}' returned no logprobs",
-        )
+        ) from exc
     except d.DecisionError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
         detail = describe_httpx_error(exc)
         logger.error("Calibration fit on %s failed: %s", provider.name, detail)
         raise HTTPException(
             status_code=502, detail=f"upstream request failed: {detail}"
-        )
+        ) from exc
 
     examples = [(dist.probabilities, y) for dist, (_s, y) in zip(dists, labelled)]
     cal, report = await asyncio.to_thread(
@@ -344,8 +344,8 @@ async def api_try_decision(request: Request):
     """Answer a decision request as ``/v1/systemone`` would."""
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     return await serve_decision(request, body, "/v1/systemone", None)
 
 
@@ -385,8 +385,8 @@ async def api_set_key_policy(key_id: int, request: Request):
     await _require_key(db, key_id)
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     try:
         policy = parse_policy(body)
     except ValidationError as exc:
@@ -394,7 +394,7 @@ async def api_set_key_policy(key_id: int, request: Request):
             ".".join(str(p) for p in e.get("loc", ())) + ": " + e.get("msg", "")
             for e in exc.errors(include_url=False)
         )
-        raise HTTPException(status_code=400, detail=f"invalid policy: {msg}")
+        raise HTTPException(status_code=400, detail=f"invalid policy: {msg}") from exc
     stored = policy.model_dump(exclude_none=True, exclude_defaults=True)
     await db.set_api_key_decision_policy(key_id, stored)
     return JSONResponse({"id": key_id, "policy": stored})

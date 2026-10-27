@@ -81,11 +81,11 @@ select = [
 # Findings that predate python-ai-rules. Remove each code once the code base
 # is clean of it; new code should not add to them.
 ignore = [
-  "B007", "B023", "B904", "B905", "C408", "DTZ007", "E402", "E501",
+  "B007", "B905", "C408", "DTZ007", "E402", "E501",
   "E741", "F811", "N818", "PT006", "PT011", "PT018", "PTH100", "PTH118",
-  "PTH123", "PTH202", "RET503", "RUF001", "RUF002", "RUF005", "RUF006", "RUF012",
+  "PTH123", "PTH202", "RET503", "RUF001", "RUF002", "RUF005", "RUF012",
   "RUF059", "S101", "S104", "S105", "S110", "S112", "S310", "S311",
-  "S608", "SIM102", "SIM103", "SIM105", "SIM108", "UP007", "UP042",
+  "SIM102", "SIM103", "SIM105", "SIM108", "UP007", "UP042",
 ]
 
 [tool.ruff.lint.per-file-ignores]

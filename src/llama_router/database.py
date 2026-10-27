@@ -287,7 +287,7 @@ class Database:
     ) -> None:
         """Store the last probe result (or clear it with None), and its flavor."""
         await self._execute(
-            "UPDATE providers SET capabilities = ?, flavor = ?, probed_at = "
+            "UPDATE providers SET capabilities = ?, flavor = ?, probed_at = "  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
             + ("CURRENT_TIMESTAMP" if capabilities is not None else "NULL")
             + " WHERE id = ?",
             (
@@ -327,7 +327,7 @@ class Database:
             params.append(value)
         params.append(provider_id)
         await self._execute(
-            f"UPDATE providers SET {', '.join(sets)}, "
+            f"UPDATE providers SET {', '.join(sets)}, "  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
             "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             tuple(params),
         )
@@ -1244,7 +1244,7 @@ class Database:
         else:
             order_sql = "ORDER BY LOWER(username) ASC"
         rows = await self._select_all(
-            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users {order_sql}"
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users {order_sql}"  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
         )
         users = [_row_to_dashboard_user(r) for r in rows]
         for u in users:
@@ -1255,13 +1255,13 @@ class Database:
         u = username.strip()
         if self._dialect_name == "sqlite":
             row = await self._select_one(
-                f"SELECT {_DASHBOARD_USER_COLUMNS} "
+                f"SELECT {_DASHBOARD_USER_COLUMNS} "  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
                 "FROM dashboard_users WHERE username = ? COLLATE NOCASE",
                 (u,),
             )
         else:
             row = await self._select_one(
-                f"SELECT {_DASHBOARD_USER_COLUMNS} "
+                f"SELECT {_DASHBOARD_USER_COLUMNS} "  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
                 "FROM dashboard_users WHERE LOWER(username) = LOWER(?)",
                 (u,),
             )
@@ -1269,7 +1269,7 @@ class Database:
 
     async def get_dashboard_user_by_id(self, user_id: int) -> dict | None:
         row = await self._select_one(
-            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users WHERE id = ?",
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users WHERE id = ?",  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
             (user_id,),
         )
         return _row_to_dashboard_user(row) if row else None
@@ -1278,7 +1278,7 @@ class Database:
         self, issuer: str, subject: str
     ) -> dict | None:
         row = await self._select_one(
-            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users "
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users "  # noqa: S608 - column names are whitelisted / fixed SQL fragments; values are bound
             "WHERE oidc_issuer = ? AND oidc_subject = ?",
             (issuer, subject),
         )
