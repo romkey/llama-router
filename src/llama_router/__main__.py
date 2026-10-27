@@ -38,6 +38,11 @@ def _log_oidc_config() -> None:
     if problems:
         for p in problems:
             logger.error("OIDC sign-in disabled: %s", p)
+        if cfg.only:
+            logger.error(
+                "LLAMA_ROUTER_OIDC_ONLY is ignored while OIDC is misconfigured; "
+                "password sign-in stays enabled"
+            )
         return
     callback = (
         cfg.redirect_base_url + CALLBACK_PATH

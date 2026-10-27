@@ -246,6 +246,9 @@ def test_config_problems() -> None:
     assert any("openid" in p for p in _cfg(scopes="profile").problems())
     assert _cfg(only=True).password_login_enabled is False
     assert _cfg(issuer="", only=True).password_login_enabled is True
+    # A broken configuration must not lock everyone out.
+    assert _cfg(client_secret="", only=True).password_login_enabled is True
+    assert _cfg(issuer="http://idp", only=True).password_login_enabled is True
 
 
 def test_state_cookie_round_trip_and_tampering() -> None:
@@ -314,6 +317,23 @@ async def test_oidc_only_hides_password_form(dash_client, idp, monkeypatch) -> N
         "/login", data={"username": "root", "password": "password123"}
     )
     assert r.status_code == 404
+
+
+async def test_oidc_only_with_broken_config_keeps_password_login(
+    dash_client, idp, monkeypatch
+) -> None:
+    client, db = dash_client
+    monkeypatch.setattr(settings, "oidc_only", True)
+    monkeypatch.setattr(settings, "oidc_client_secret", "")
+    await _seed_local_admin(db)
+    r = await client.get("/login")
+    assert 'name="password"' in r.text
+    assert "/login/oidc" not in r.text
+    r = await client.post(
+        "/login", data={"username": "root", "password": "password123"}
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert AUTH_COOKIE in r.cookies
 
 
 async def test_login_page_open_in_bootstrap_when_oidc_on(dash_client, idp) -> None:

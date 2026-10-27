@@ -104,7 +104,9 @@ class OIDCConfig:
 
     @property
     def password_login_enabled(self) -> bool:
-        return not (self.enabled and self.only)
+        # OIDC_ONLY takes effect only while SSO actually works; a broken
+        # configuration must not lock out every account.
+        return not (self.usable and self.only)
 
     def problems(self) -> list[str]:
         """Configuration errors that stop OIDC from working at all."""
