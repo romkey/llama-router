@@ -109,6 +109,8 @@ class ProviderManager:
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
         self._active_requests: dict[int, int] = defaultdict(int)
         self._hot_models: dict[int, list[HotModel]] = {}
+        # The model each llama.cpp upstream reports as loaded (/props).
+        self._llamacpp_loaded: dict[int, set[str]] = {}
         self._active_urls: dict[int, tuple[str, str]] = {}
         self._router: Router | None = None
         # Live round-trip and request samples that feed the routing table.
@@ -400,6 +402,7 @@ class ProviderManager:
         self._active_requests.pop(provider_id, None)
         self._active_urls.pop(provider_id, None)
         self._hot_models.pop(provider_id, None)
+        self._llamacpp_loaded.pop(provider_id, None)
         self._status_detail.pop(provider_id, None)
         self._logged_detail.pop(provider_id, None)
         self.stats.forget_provider(provider_id)
@@ -560,10 +563,30 @@ class ProviderManager:
     def get_hot_models(self, provider_id: int) -> list[HotModel]:
         return self._hot_models.get(provider_id, [])
 
-    def hot_model_names(self, provider_id: int) -> set[str]:
-        return {
+    def hot_model_names(
+        self, provider_id: int, upstream: str | None = None
+    ) -> set[str]:
+        """Models loaded right now: on the Ollama upstream (/api/ps), the
+        llama.cpp upstream (/props), or either when *upstream* is None."""
+        ollama = {
             hm["name"] for hm in self._hot_models.get(provider_id, []) if hm.get("name")
         }
+        if upstream == "ollama":
+            return ollama
+        llamacpp = self._llamacpp_loaded.get(provider_id, set())
+        if upstream == "llamacpp":
+            return set(llamacpp)
+        return ollama | llamacpp
+
+    def _set_llamacpp_loaded(self, provider_id: int, loaded: set[str]) -> None:
+        if self._llamacpp_loaded.get(provider_id, set()) != loaded:
+            self._llamacpp_loaded[provider_id] = loaded
+            self._routing_changed("hot models")
+
+    def _clear_loaded(self, provider_id: int) -> None:
+        """Nothing is loaded on a provider that does not answer."""
+        self._set_hot_models(provider_id, [])
+        self._set_llamacpp_loaded(provider_id, set())
 
     def _set_hot_models(self, provider_id: int, hot: list[HotModel]) -> None:
         before = self.hot_model_names(provider_id)
@@ -572,7 +595,28 @@ class ProviderManager:
             self._routing_changed("hot models")
 
     async def _refresh_hot_models(self, provider: Provider) -> None:
-        """Fetch running models via /api/ps for Ollama providers."""
+        """Refresh which models are loaded: /api/ps on Ollama, /props on llama.cpp."""
+        await self._refresh_llamacpp_loaded(provider)
+        await self._refresh_ollama_hot(provider)
+
+    async def _refresh_llamacpp_loaded(self, provider: Provider) -> None:
+        assert provider.id is not None
+        client = self._llamacpp_clients.get(provider.id)
+        if not provider.supports_llamacpp or client is None:
+            self._set_llamacpp_loaded(provider.id, set())
+            return
+        try:
+            current = self._extract_llamacpp_current_model(await client.get_props())
+        except Exception as exc:
+            logger.debug(
+                "Failed to read /props for provider %s: %s", provider.name, exc
+            )
+            current = None
+        self._set_llamacpp_loaded(
+            provider.id, {self._strip_cache_prefix(current)} if current else set()
+        )
+
+    async def _refresh_ollama_hot(self, provider: Provider) -> None:
         assert provider.id is not None
         if not provider.supports_ollama or provider.id not in self._ollama_clients:
             self._set_hot_models(provider.id, [])
@@ -732,7 +776,7 @@ class ProviderManager:
                     # A new socket arrived; its connect handler, waiting on the
                     # lock, sets status. Do not mark it offline first.
                     return await self._superseded(provider, source)
-                self._set_hot_models(pid, [])
+                self._clear_loaded(pid)
                 live = [a for a in await self._db.get_addresses(pid) if a.is_live]
                 return await self._commit_check(
                     provider,
@@ -785,7 +829,7 @@ class ProviderManager:
             else:
                 urls = ", ".join(a.url for a in addresses) or "no addresses"
                 detail = f"no address responded ({urls})"
-            self._set_hot_models(pid, [])
+            self._clear_loaded(pid)
         else:
             await self._maybe_rebuild_clients(provider, addresses)
             needs_discovery = rediscover or prev_status in (
@@ -1563,7 +1607,7 @@ class ProviderManager:
             return
         await self._set_worker_addresses_live(provider_id, False)
         await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
-        self._set_hot_models(provider_id, [])
+        self._clear_loaded(provider_id)
         # No socket means nothing answers; any "reachable but unusable" reason
         # from the last session no longer applies.
         self._status_detail.pop(provider_id, None)

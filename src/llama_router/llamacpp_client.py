@@ -17,6 +17,13 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = httpx.Timeout(10.0, read=120.0)
 
 
+# The rest of a llama.cpp request's wall time (beyond the server's prompt and
+# generation timings) includes network and queueing, not just a model load.
+# Loading a model from disk takes at least about a second, so only a remainder
+# that long is taken as a cold start.
+LOAD_MIN_MS = 1000.0
+
+
 def _chat_metrics(data: dict, elapsed_s: float) -> dict[str, float | None]:
     """Generation speed and startup from a llama.cpp chat response.
 
@@ -36,7 +43,8 @@ def _chat_metrics(data: dict, elapsed_s: float) -> dict[str, float | None]:
         if isinstance(prompt_ms, (int, float)) and isinstance(
             predicted_ms, (int, float)
         ):
-            startup = max(0.0, elapsed_ms - prompt_ms - predicted_ms)
+            rest = elapsed_ms - prompt_ms - predicted_ms
+            startup = rest if rest >= LOAD_MIN_MS else None
         return {"startup_time_ms": startup, "tokens_per_second": float(pps)}
     usage = data.get("usage") or {}
     completion_tokens = usage.get("completion_tokens", 0)

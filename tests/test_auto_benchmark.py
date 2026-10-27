@@ -223,18 +223,50 @@ async def test_warm_runs_do_not_record_startup(db: Database, pm: ProviderManager
     assert "auto-benchmark" in logs and "benchmark" in logs
 
 
-async def test_llamacpp_loaded_model_counts_as_hot(db: Database, pm: ProviderManager):
+class _FakeLlamaCpp:
+    def __init__(self, model: str | None) -> None:
+        self.model = model
+
+    async def get_props(self):
+        return {"model_alias": self.model} if self.model else {}
+
+    async def close(self):
+        pass
+
+
+async def test_llamacpp_loaded_model_is_hot_on_its_own_upstream(
+    db: Database, pm: ProviderManager
+):
     from llama_router.router import Router
 
-    p = await db.add_provider("lcpp", ProviderType.LLAMACPP)
-    await db.update_provider_status(p.id, ProviderStatus.IDLE)
-    await db.set_provider_models(
-        p.id,
-        [ProviderModel(provider_id=p.id, name="m", details={"_from_props": True})],
-    )
-    table = await Router(db, pm).rebuild()
-    cand = table.all_candidates[("m", "/v1/chat/completions")][0]
-    assert cand.is_hot
+    p = await _provider(db, "both", ["m", "n"], ptype=ProviderType.BOTH)
+    provider = await db.get_provider(p.id)
+    lcpp = _FakeLlamaCpp("m")
+    pm._llamacpp_clients[p.id] = lcpp
+    await pm._refresh_hot_models(provider)
+    rt = Router(db, pm)
+
+    def hot(model: str, endpoint: str) -> bool:
+        return next(
+            c
+            for c in rt.table.all_candidates[(model, endpoint)]
+            if c.provider.id == p.id
+        ).is_hot
+
+    await rt.rebuild()
+    # v1 routes reach llama.cpp, where m is loaded; Ollama routes do not.
+    assert hot("m", "/v1/chat/completions") and not hot("m", "/api/chat")
+    assert not hot("n", "/v1/chat/completions")
+
+    # The health check re-reads /props: a swapped model stops counting.
+    lcpp.model = "n"
+    await pm._refresh_hot_models(provider)
+    await rt.rebuild()
+    assert not hot("m", "/v1/chat/completions") and hot("n", "/v1/chat/completions")
+    # A provider that stops answering has nothing loaded.
+    pm._clear_loaded(p.id)
+    await rt.rebuild()
+    assert not hot("n", "/v1/chat/completions")
 
 
 def test_latest_benchmarks_ignore_fake_zero_startups():
@@ -303,6 +335,9 @@ def test_llamacpp_metrics_use_server_timings():
     m = _chat_metrics(data, elapsed_s=3.44)
     assert m["tokens_per_second"] == 61.5
     assert m["startup_time_ms"] == pytest.approx(2500.0)
+    # A few hundred ms left over is network and queueing, not a model load.
+    m = _chat_metrics(data, elapsed_s=1.24)
+    assert m["startup_time_ms"] is None and m["tokens_per_second"] == 61.5
     # No timings: no startup claim, speed from tokens over wall time.
     m = _chat_metrics({"usage": {"completion_tokens": 50}}, elapsed_s=2.0)
     assert m == {"startup_time_ms": None, "tokens_per_second": 25.0}
