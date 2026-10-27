@@ -203,7 +203,9 @@ async def get_manifest(name: str, reference: str):
         resp = await client.get(url, timeout=30.0)
     except Exception as exc:
         logger.error("Manifest upstream fetch failed: %s:%s — %s", name, reference, exc)
-        raise HTTPException(status_code=502, detail=f"Upstream fetch error: {exc}")
+        raise HTTPException(
+            status_code=502, detail=f"Upstream fetch error: {exc}"
+        ) from exc
 
     if resp.status_code != 200:
         logger.error(
@@ -264,7 +266,7 @@ async def head_blob(name: str, digest: str):
         resp = await client.head(url, timeout=30.0)
     except Exception as exc:
         logger.error("HEAD blob upstream failed: %s — %s", digest[:24], exc)
-        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Upstream error: {exc}") from exc
 
     if resp.status_code != 200:
         logger.warning(

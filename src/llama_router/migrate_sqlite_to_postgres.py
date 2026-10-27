@@ -267,7 +267,7 @@ def _fetch_sqlite_rows(
     sqlite: Connection, table: str, columns: Sequence[str]
 ) -> list[dict[str, Any]]:
     cols = ", ".join(_pg_quote_ident(c) for c in columns)
-    result = sqlite.execute(text(f"SELECT {cols} FROM {_pg_quote_ident(table)}"))
+    result = sqlite.execute(text(f"SELECT {cols} FROM {_pg_quote_ident(table)}"))  # noqa: S608 - identifiers come from the fixed table list and are quoted; values are bound
     return [dict(row._mapping) for row in result]
 
 
@@ -280,7 +280,7 @@ def _insert_rows_pg(
     col_sql = ", ".join(_pg_quote_ident(c) for c in columns)
     binds = [f":c{i}" for i in range(len(columns))]
     params_sql = ", ".join(binds)
-    stmt = text(f"INSERT INTO {tq} ({col_sql}) VALUES ({params_sql})")
+    stmt = text(f"INSERT INTO {tq} ({col_sql}) VALUES ({params_sql})")  # noqa: S608 - identifiers come from the fixed table list and are quoted; values are bound
     for row in rows:
         payload = {f"c{i}": row.get(columns[i]) for i in range(len(columns))}
         pg.execute(stmt, payload)
@@ -294,7 +294,7 @@ def _reset_sequences(pg: Connection) -> None:
         if seq is None:
             continue
         mx = pg.execute(
-            text(f"SELECT MAX({_pg_quote_ident('id')}) FROM {_pg_quote_ident(table)}")
+            text(f"SELECT MAX({_pg_quote_ident('id')}) FROM {_pg_quote_ident(table)}")  # noqa: S608 - identifiers come from the fixed table list and are quoted; values are bound
         ).scalar()
         if mx is None:
             pg.execute(text("SELECT setval(:seq, 1, false)"), {"seq": seq})

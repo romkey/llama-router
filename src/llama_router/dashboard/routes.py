@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from .. import __version__, hf_download
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
+from ..background import spawn
 from ..cloud_presets import PRESETS, get_preset
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
@@ -1114,8 +1115,10 @@ async def api_explain_routing(request: Request):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
             key_id = int(raw_key_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="key_id must be a number")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="key_id must be a number"
+            ) from exc
         key = next((k for k in await db.list_api_keys() if k["id"] == key_id), None)
         if key is None:
             raise HTTPException(status_code=404, detail="API key not found")
@@ -1214,8 +1217,8 @@ async def api_set_key_spend_cap(key_id: int, request: Request):
     limited to local providers until the next UTC day."""
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     if not await deps.get_db().set_api_key_spend_cap(key_id, cap):
         raise HTTPException(status_code=404, detail="API key not found")
@@ -1277,8 +1280,8 @@ async def api_set_key_locality(key_id: int, request: Request):
     """Limit a key to local or cloud providers, or allow either (``any``)."""
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     locality = _key_locality(body.get("locality"))
     if not await deps.get_db().set_api_key_locality(key_id, locality):
         raise HTTPException(status_code=404, detail="API key not found")
@@ -1397,8 +1400,8 @@ def _usd(value: Any, what: str) -> float | None:
         return None
     try:
         amount = float(raw)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"{what} must be a number")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{what} must be a number") from exc
     if amount < 0 or amount > 1_000_000:
         raise HTTPException(status_code=400, detail=f"{what} is out of range")
     return amount
@@ -1435,8 +1438,8 @@ def _timeout(value: str | None) -> float | None:
         return None
     try:
         seconds = float(raw)
-    except ValueError:
-        raise ValueError("read timeout must be a number of seconds")
+    except ValueError as exc:
+        raise ValueError("read timeout must be a number of seconds") from exc
     if not 1 <= seconds <= 3600:
         raise ValueError("read timeout must be between 1 and 3600 seconds")
     return seconds
@@ -1502,7 +1505,7 @@ async def add_provider(
         if model_filter is not None and model_filter.strip():
             settings_["model_filter"] = _model_filter(model_filter)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         await pm.add_provider(
             name,
@@ -1515,9 +1518,9 @@ async def add_provider(
             api_key_header=api_key_header or None,
             provider_settings=settings_ or None,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("add_provider failed")
-        raise HTTPException(status_code=400, detail="Could not add provider")
+        raise HTTPException(status_code=400, detail="Could not add provider") from exc
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -1526,8 +1529,8 @@ async def api_probe_url(request: Request):
     """Probe a URL before a provider is saved (Add Provider dialog)."""
     try:
         body = await request.json()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="JSON body required")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="JSON body required") from exc
     url = str(body.get("url") or "")
     api_key = (str(body.get("api_key") or "")).strip() or None
     header = (str(body.get("api_key_header") or "")).strip() or None
@@ -1543,7 +1546,7 @@ async def api_probe_url(request: Request):
             headers.update(auth_headers(api_key, header))
         result = await probe_url(url, headers=headers or None, key_sent=bool(api_key))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     data = result.to_dict()
     data["family_labels"] = FAMILY_LABELS
     return JSONResponse(data)
@@ -1556,7 +1559,7 @@ async def api_probe_provider(provider_id: int):
     try:
         caps = await pm.probe_provider(provider_id)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if caps is None:
         raise HTTPException(status_code=404, detail="Provider not found")
     return JSONResponse(caps)
@@ -1599,7 +1602,9 @@ async def edit_provider(
         if locality:
             settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "Invalid protocol")
+        raise HTTPException(
+            status_code=400, detail=str(exc) or "Invalid protocol"
+        ) from exc
     try:
         await pm.update_provider(
             provider_id,
@@ -1614,10 +1619,12 @@ async def edit_provider(
             provider_settings=settings_ or None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
         logger.exception("update_provider failed (provider_id=%s)", provider_id)
-        raise HTTPException(status_code=400, detail="Could not update provider")
+        raise HTTPException(
+            status_code=400, detail="Could not update provider"
+        ) from exc
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -1680,7 +1687,7 @@ async def api_start_benchmark(request: Request):
             entry["completed_at"] = time.monotonic()
             entry["error"] = str(exc)
 
-    asyncio.create_task(_run_benchmark())
+    spawn(_run_benchmark())
     return JSONResponse({"bench_id": bench_id, "status": "running"})
 
 
@@ -1738,7 +1745,7 @@ async def benchmark_model(provider_id: int, model_name: str):
             entry["completed_at"] = time.monotonic()
             entry["error"] = str(exc)
 
-    asyncio.create_task(_run_benchmark())
+    spawn(_run_benchmark())
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -1782,7 +1789,9 @@ async def delete_model(provider_id: int, model_name: str):
             provider_id,
             model_name,
         )
-        raise HTTPException(status_code=500, detail="Could not delete model on backend")
+        raise HTTPException(
+            status_code=500, detail="Could not delete model on backend"
+        ) from exc
     except httpx.HTTPError as exc:
         logger.error(
             "Delete model failed (provider_id=%s, model=%r): %s",
@@ -1790,14 +1799,18 @@ async def delete_model(provider_id: int, model_name: str):
             model_name,
             describe_httpx_error(exc),
         )
-        raise HTTPException(status_code=500, detail="Could not delete model on backend")
-    except Exception:
+        raise HTTPException(
+            status_code=500, detail="Could not delete model on backend"
+        ) from exc
+    except Exception as exc:
         logger.exception(
             "Delete model failed (provider_id=%s, model=%r)",
             provider_id,
             model_name,
         )
-        raise HTTPException(status_code=500, detail="Could not delete model on backend")
+        raise HTTPException(
+            status_code=500, detail="Could not delete model on backend"
+        ) from exc
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -1810,9 +1823,9 @@ async def add_address(
     pm = deps.get_pm()
     try:
         await pm.add_address(provider_id, url, is_preferred=bool(is_preferred))
-    except Exception:
+    except Exception as exc:
         logger.exception("add_address failed (provider_id=%s)", provider_id)
-        raise HTTPException(status_code=400, detail="Could not add address")
+        raise HTTPException(status_code=400, detail="Could not add address") from exc
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -1839,15 +1852,15 @@ async def save_provider_address(
             await pm.update_address(aid, url, is_preferred=pref)
     except HTTPException:
         raise
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid address")
-    except Exception:
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid address") from exc
+    except Exception as exc:
         logger.exception(
             "save_provider_address failed (provider_id=%s address_id=%r)",
             provider_id,
             raw_id or None,
         )
-        raise HTTPException(status_code=400, detail="Could not save address")
+        raise HTTPException(status_code=400, detail="Could not save address") from exc
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -1861,13 +1874,13 @@ async def edit_address(
     pm = deps.get_pm()
     try:
         await pm.update_address(address_id, url, is_preferred=bool(is_preferred))
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "update_address failed (provider_id=%s address_id=%s)",
             provider_id,
             address_id,
         )
-        raise HTTPException(status_code=400, detail="Could not update address")
+        raise HTTPException(status_code=400, detail="Could not update address") from exc
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -1964,7 +1977,7 @@ async def api_pull_model(request: Request):
                 pull_entry["status"] = "done"
                 pull_entry["completed_at"] = time.monotonic()
 
-    asyncio.create_task(_run_pull())
+    spawn(_run_pull())
 
     return JSONResponse({"pull_id": pull_id, "status": "pulling"})
 
@@ -1995,11 +2008,11 @@ async def api_hf_files(request: Request):
         pattern = hf_download.validate_pattern(body.get("pattern"))
         revision = hf_download.validate_revision(body.get("revision"))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         files = await hf_download.plan(repo, pattern, revision)
     except hf_download.HfError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     models = hf_download.model_files([f["file"] for f in files])
     suggested = (
         hf_download.default_ollama_name(repo, models[0]) if len(models) == 1 else None
@@ -2087,7 +2100,7 @@ async def api_hf_pull(request: Request):
         push_ids = [int(x) for x in body.get("push_provider_ids") or []]
         refresh_ids = [int(x) for x in body.get("refresh_provider_ids") or []]
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     pm = deps.get_pm()
     db = deps.get_db()
@@ -2202,7 +2215,7 @@ async def api_hf_pull(request: Request):
                 entry["status"] = "done"
                 entry["completed_at"] = time.monotonic()
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return JSONResponse({"pull_id": pull_id, "status": "pulling"})
 
 
@@ -2332,7 +2345,7 @@ async def api_fill_missing_pulls():
             job["errors"].append(str(exc))
             logger.exception("Bulk fill-missing pull job failed")
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return JSONResponse({"job_id": job_id, "status": "running"})
 
 
@@ -2364,7 +2377,7 @@ async def api_auto_benchmark_configure(request: Request):
             kwargs["max_age_days"] = float(body["max_age_days"])
         cfg = await deps.get_auto_benchmark().set_config(**kwargs)
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(cfg.to_dict())
 
 
@@ -2459,7 +2472,7 @@ async def api_fill_missing_benchmarks():
             job["errors"].append(str(exc))
             logger.exception("Bulk fill-missing benchmark job failed")
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return JSONResponse({"job_id": job_id, "status": "running"})
 
 
@@ -2511,7 +2524,7 @@ async def pull_model_legacy(provider_id: int, model: str = Form(...)):
                 pull_entry["status"] = "done"
                 pull_entry["completed_at"] = time.monotonic()
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -2569,7 +2582,7 @@ async def pull_model_all_legacy(model: str = Form(...)):
                 pull_entry["status"] = "done"
                 pull_entry["completed_at"] = time.monotonic()
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return RedirectResponse(url="/#models-pane", status_code=303)
 
 
@@ -2645,7 +2658,7 @@ async def api_cache_model(request: Request):
         pull_entry["status"] = "done"
         pull_entry["completed_at"] = time.monotonic()
 
-    asyncio.create_task(_run())
+    spawn(_run())
     return JSONResponse({"pull_id": pull_id, "status": "pulling"})
 
 
