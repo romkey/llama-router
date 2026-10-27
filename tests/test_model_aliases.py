@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from llama_router.dashboard.routes import suggest_aliases
 from llama_router.models import (
     BenchmarkResult,
@@ -91,7 +89,7 @@ def test_suggestions() -> None:
     ]
 
 
-async def test_alias_api(dash_client) -> None:  # noqa: F811
+async def test_alias_api(dash_client) -> None:
     client, db = dash_client
     r = await client.post("/api/model-aliases", json={"alias": "a/m", "canonical": "m"})
     assert r.status_code == 200

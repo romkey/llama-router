@@ -59,7 +59,7 @@ def parse_question(raw: Any) -> Any:
 def _finite(x: Any, what: str) -> float:
     try:
         v = float(x)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise HTTPException(status_code=400, detail=f"{what} must be a number")
     if not math.isfinite(v):
         raise HTTPException(status_code=400, detail=f"{what} must be finite")

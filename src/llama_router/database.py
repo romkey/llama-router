@@ -4,10 +4,10 @@ import asyncio
 import functools
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine.url import URL
@@ -26,8 +26,8 @@ from .models import (
     Provider,
     ProviderAddress,
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
     RequestLog,
 )
 
@@ -73,7 +73,7 @@ def _notifies(reason: str):
 
     def wrap(fn):
         @functools.wraps(fn)
-        async def inner(self: "Database", *args: Any, **kwargs: Any):
+        async def inner(self: Database, *args: Any, **kwargs: Any):
             result = await fn(self, *args, **kwargs)
             self._changed(reason)
             return result
@@ -169,34 +169,31 @@ class Database:
     async def _execute(self, sql: str, *args: Any) -> None:
         stmt, bind = qmark(sql, *_bind_params(*args))
         sf = self._require_session_factory()
-        async with sf() as session:
-            async with session.begin():
-                await session.execute(stmt, bind)
+        async with sf() as session, session.begin():
+            await session.execute(stmt, bind)
 
     async def _execute_rowcount(self, sql: str, *args: Any) -> int:
         stmt, bind = qmark(sql, *_bind_params(*args))
         sf = self._require_session_factory()
-        async with sf() as session:
-            async with session.begin():
-                r = await session.execute(stmt, bind)
-                return cursor_rowcount(r)
+        async with sf() as session, session.begin():
+            r = await session.execute(stmt, bind)
+            return cursor_rowcount(r)
 
     async def _insert_get_id(self, insert_sql: str, *args: Any) -> int:
         """Run INSERT and return primary key ``id`` (portable across SQLite / PG / MySQL)."""
         sf = self._require_session_factory()
-        async with sf() as session:
-            async with session.begin():
-                if self._dialect_name in ("mysql", "mariadb"):
-                    st, bd = qmark(insert_sql, *_bind_params(*args))
-                    await session.execute(st, bd)
-                    r = await session.execute(text("SELECT LAST_INSERT_ID() AS id"))
-                    row = r.mappings().first()
-                    assert row is not None
-                    return int(row["id"])
-                st, bd = qmark(insert_sql + " RETURNING id", *_bind_params(*args))
-                r = await session.execute(st, bd)
-                val = r.scalar_one()
-                return int(val)
+        async with sf() as session, session.begin():
+            if self._dialect_name in ("mysql", "mariadb"):
+                st, bd = qmark(insert_sql, *_bind_params(*args))
+                await session.execute(st, bd)
+                r = await session.execute(text("SELECT LAST_INSERT_ID() AS id"))
+                row = r.mappings().first()
+                assert row is not None
+                return int(row["id"])
+            st, bd = qmark(insert_sql + " RETURNING id", *_bind_params(*args))
+            r = await session.execute(st, bd)
+            val = r.scalar_one()
+            return int(val)
 
     # --- Providers ---
 
@@ -459,27 +456,26 @@ class Database:
         self, provider_id: int, models: list[ProviderModel]
     ) -> None:
         sf = self._require_session_factory()
-        async with sf() as session:
-            async with session.begin():
-                st_del, bd_del = qmark(
-                    "DELETE FROM provider_models WHERE provider_id = ?",
+        async with sf() as session, session.begin():
+            st_del, bd_del = qmark(
+                "DELETE FROM provider_models WHERE provider_id = ?",
+                provider_id,
+            )
+            await session.execute(st_del, bd_del)
+            for m in models:
+                st_ins, bd_ins = qmark(
+                    "INSERT INTO provider_models "
+                    "(provider_id, name, raw_name, size, digest, modified_at, details) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     provider_id,
+                    m.name,
+                    m.raw_name,
+                    m.size,
+                    m.digest,
+                    m.modified_at,
+                    json.dumps(m.details) if m.details else None,
                 )
-                await session.execute(st_del, bd_del)
-                for m in models:
-                    st_ins, bd_ins = qmark(
-                        "INSERT INTO provider_models "
-                        "(provider_id, name, raw_name, size, digest, modified_at, details) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        provider_id,
-                        m.name,
-                        m.raw_name,
-                        m.size,
-                        m.digest,
-                        m.modified_at,
-                        json.dumps(m.details) if m.details else None,
-                    )
-                    await session.execute(st_ins, bd_ins)
+                await session.execute(st_ins, bd_ins)
 
     async def get_backend_model_name(self, provider_id: int, model_name: str) -> str:
         row = await self._select_one(
@@ -1132,7 +1128,7 @@ class Database:
             return None
         try:
             policy = json.loads(row["policy"])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.warning("Decision policy of API key %s is not JSON", key_id)
             return None
         return policy if isinstance(policy, dict) else None
@@ -1332,8 +1328,7 @@ class Database:
 
     async def touch_dashboard_user_login(self, user_id: int) -> None:
         await self._execute(
-            "UPDATE dashboard_users SET last_login_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
+            "UPDATE dashboard_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
             (user_id,),
         )
 
@@ -1423,7 +1418,7 @@ def _json_or_none(raw: Any) -> dict | None:
         return None
     try:
         val = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return val if isinstance(val, dict) else None
 
@@ -1433,7 +1428,7 @@ def _json_list_or_none(raw: Any) -> list | None:
         return None
     try:
         val = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return val if isinstance(val, list) else None
 
@@ -1478,7 +1473,7 @@ def _row_to_address(row: Mapping[str, Any]) -> ProviderAddress:
 def _row_to_calibration(row: Mapping[str, Any]) -> dict[str, Any]:
     try:
         offsets = json.loads(row["offsets"] or "{}")
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         offsets = {}
     return {
         "id": row["id"],

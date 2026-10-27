@@ -121,7 +121,7 @@ class ScoreQuestion(BaseModel):
 
 
 Question = Annotated[
-    Union[NoulQuestion, ChoiceQuestion, ScoreQuestion], Field(discriminator="type")
+    NoulQuestion | ChoiceQuestion | ScoreQuestion, Field(discriminator="type")
 ]
 State = Union[str, dict[str, Any], list[str]]
 
@@ -269,7 +269,7 @@ def top_logprobs_from_response(resp: Mapping[str, Any]) -> list[dict[str, Any]]:
     try:
         content = resp["choices"][0]["logprobs"]["content"]
         return list(content[0]["top_logprobs"])
-    except (KeyError, IndexError, TypeError):
+    except KeyError, IndexError, TypeError:
         raise NoLogprobs("backend response has no first-token logprobs") from None
 
 

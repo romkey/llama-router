@@ -7,8 +7,8 @@ from llama_router.endpoints import ENDPOINTS, UnknownEndpoint, endpoint_class
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
-import time
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -19,22 +19,20 @@ from .database import Database
 from .httpx_errors import describe_httpx_error
 from .llamacpp_client import LlamaCppClient
 from .models import (
+    WORKER_URL_SCHEME,
     BenchmarkResult,
     HotModel,
-    measured_cold_start,
     Provider,
     ProviderAddress,
     ProviderInfo,
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
     RequestLog,
-    WORKER_URL_SCHEME,
+    measured_cold_start,
 )
 from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
-from .upstream_url import guess_locality, split_api_base
-from .routing_stats import ProviderStats, retry_after_seconds
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailable,
@@ -43,6 +41,8 @@ from .provider_secrets import (
     encrypt_api_key,
     normalize_header,
 )
+from .routing_stats import ProviderStats, retry_after_seconds
+from .upstream_url import guess_locality, split_api_base
 from .worker_link.hub import WorkerConnection, WorkerHub
 
 if TYPE_CHECKING:
@@ -207,8 +207,8 @@ class ProviderManager:
         if at is None:
             return True
         if at.tzinfo is None:
-            at = at.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - at).total_seconds()
+            at = at.replace(tzinfo=UTC)
+        age = (datetime.now(UTC) - at).total_seconds()
         return age >= max_age * 3600
 
     @classmethod
@@ -325,7 +325,7 @@ class ProviderManager:
         for task in list(self._probing.values()):
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError, Exception:
                 pass
         self._probing.clear()
         for client in self._ollama_clients.values():
@@ -401,8 +401,7 @@ class ProviderManager:
                 seconds = retry_after_seconds(resp.headers.get("retry-after"))
                 self.stats.mark_busy(provider_id, seconds)
                 logger.info(
-                    "Provider %d rate-limited (HTTP 429); routing around it for "
-                    "%.0fs",
+                    "Provider %d rate-limited (HTTP 429); routing around it for %.0fs",
                     provider_id,
                     min(seconds, 300.0),
                 )
@@ -952,7 +951,7 @@ class ProviderManager:
                     ),
                     timeout=cap,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Commit a consistent result rather than leaving liveness
                 # written and status, reason and Log untouched.
                 logger.warning(

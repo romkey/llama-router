@@ -167,7 +167,8 @@ def _mock_ollama_everywhere(httpx_mock) -> None:
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_probe_routes_store_capabilities(
-    dash_client, httpx_mock  # noqa: F811
+    dash_client,
+    httpx_mock,
 ) -> None:
     _mock_ollama_everywhere(httpx_mock)
     client, db = dash_client
@@ -213,7 +214,7 @@ async def test_malformed_model_lists_do_not_crash(tags_body) -> None:
 
 
 def test_merge_keeps_targets_apart() -> None:
-    from llama_router.probe import ProbeResult, EndpointResult, merge_results
+    from llama_router.probe import EndpointResult, ProbeResult, merge_results
 
     a = ProbeResult(base_url="worker://edge (ollama)", reachable=True)
     b = ProbeResult(base_url="worker://edge (llamacpp)", reachable=True)

@@ -26,7 +26,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from . import decision_service
@@ -91,7 +91,7 @@ def _age_days(created_at: datetime | None, now: datetime) -> float | None:
     if created_at is None:
         return None
     if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=timezone.utc)
+        created_at = created_at.replace(tzinfo=UTC)
     return max(0.0, (now - created_at).total_seconds() / 86400)
 
 
@@ -108,7 +108,7 @@ class AutoBenchmarker:
         pm: ProviderManager,
         *,
         clock: Callable[[], float] = time.monotonic,
-        wall: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        wall: Callable[[], datetime] = lambda: datetime.now(UTC),
         check_seconds: float | None = None,
         concurrency: int | None = None,
     ) -> None:
@@ -219,7 +219,7 @@ class AutoBenchmarker:
                 logger.exception("Auto-benchmark check failed")
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._check_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             self._wake.clear()
 

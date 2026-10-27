@@ -112,7 +112,7 @@ def filter_headers(pairs: Any) -> list[list[str]]:
     for item in items:
         try:
             k, v = item
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         k = str(k)
         if k.lower() in _DROP_HEADERS:

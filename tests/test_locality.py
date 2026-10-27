@@ -200,7 +200,7 @@ async def test_add_provider_guesses_locality(db, httpx_mock) -> None:
     assert got == {"a": "local", "b": "cloud", "c": "local"}
 
 
-async def test_dashboard_key_locality(dash_client) -> None:  # noqa: F811
+async def test_dashboard_key_locality(dash_client) -> None:
     client, db = dash_client
     r = await client.post(
         "/api/keys/generate", json={"routing_mode": "balanced", "locality": "local"}

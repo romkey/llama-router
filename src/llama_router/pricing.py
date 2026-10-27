@@ -48,7 +48,7 @@ def listed_price(model: ProviderModel) -> Price | None:
     try:
         prompt = float(pricing.get("prompt"))
         completion = float(pricing.get("completion"))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if prompt < 0 or completion < 0:  # OpenRouter uses -1 for "varies"
         return None

@@ -235,7 +235,7 @@ async def test_spend_cap_limits_a_key_to_local(db) -> None:
     assert exc.value.status_code == 429
 
 
-async def test_dashboard_prices_and_caps(dash_client) -> None:  # noqa: F811
+async def test_dashboard_prices_and_caps(dash_client) -> None:
     client, db = dash_client
     p = await db.add_provider("cloud", ProviderProtocol.OPENAI)
     r = await client.post(

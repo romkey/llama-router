@@ -25,7 +25,7 @@ async def _seed(db):
 
 
 @pytest.mark.asyncio
-async def test_status_api_carries_filter_fields(dash_client) -> None:  # noqa: F811
+async def test_status_api_carries_filter_fields(dash_client) -> None:
     client, db = dash_client
     await _seed(db)
     data = (await client.get("/api/status")).json()
@@ -37,7 +37,7 @@ async def test_status_api_carries_filter_fields(dash_client) -> None:  # noqa: F
 
 
 @pytest.mark.asyncio
-async def test_dashboard_embeds_provider_seed(dash_client) -> None:  # noqa: F811
+async def test_dashboard_embeds_provider_seed(dash_client) -> None:
     client, db = dash_client
     await _seed(db)
     html = (await client.get("/")).text

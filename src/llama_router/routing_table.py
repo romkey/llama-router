@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import settings
 from .database import Database
 from .endpoints import (
     DECISION_PATHS,
@@ -34,9 +35,8 @@ from .models import (
     ProviderStatus,
     measured_cold_start,
 )
-from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
-from .config import settings
 from .pricing import Price, PriceBook
+from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
 from .upstream_url import LOCALITIES
 
 # Decisions that are not passed through are asked as chat completions.

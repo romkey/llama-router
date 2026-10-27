@@ -11,6 +11,8 @@ from fastapi import FastAPI
 from llama_router import decision_service as svc
 from llama_router import decisions as d
 from llama_router import request_logger
+from llama_router.api import deps as ollama_deps
+from llama_router.api.app import app as ollama_app
 from llama_router.auth import generate_api_key, key_hash_legacy, key_prefix
 from llama_router.background import drain
 from llama_router.config import settings
@@ -18,8 +20,6 @@ from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.decisions import router as dash_decisions_router
 from llama_router.database import Database
 from llama_router.decision_policy import MAX_STATE_CHARS, parse_policy, request_text
-from llama_router.api import deps as ollama_deps
-from llama_router.api.app import app as ollama_app
 from llama_router.llamacpp_api import deps
 from llama_router.llamacpp_api.app import app as api_app
 from llama_router.models import (

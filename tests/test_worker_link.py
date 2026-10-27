@@ -18,17 +18,17 @@ from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
 from llama_router.database import Database
 from llama_router.llamacpp_api import deps as v1_deps
-from llama_router.models import ProviderStatus, ProviderProtocol
+from llama_router.models import ProviderProtocol, ProviderStatus
 from llama_router.probe import MISSING, NEEDS_KEY, _classify
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.worker_link import protocol as p
+from llama_router.worker_link import worker as worker_mod
 from llama_router.worker_link.hub import (
     generate_worker_token,
     worker_token_hash,
     worker_token_prefix,
 )
-from llama_router.worker_link import worker as worker_mod
 from llama_router.worker_link.worker import (
     WorkerClient,
     normalize_hub_url,
@@ -221,7 +221,7 @@ async def _stop(server: uvicorn.Server, task: asyncio.Task) -> None:
     server.should_exit = True
     try:
         await asyncio.wait_for(task, 5)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         task.cancel()
 
 

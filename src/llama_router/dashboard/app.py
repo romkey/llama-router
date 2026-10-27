@@ -8,9 +8,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ..request_logger import log_request
 from . import deps
-
-from .middleware import DashboardAuthMiddleware
 from .decisions import router as decisions_router
+from .middleware import DashboardAuthMiddleware
 from .routes import router
 
 app = FastAPI(title="llama-router Dashboard")

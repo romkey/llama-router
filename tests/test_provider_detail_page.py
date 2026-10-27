@@ -23,7 +23,7 @@ class _EditButtons(HTMLParser):
 
 @pytest.mark.asyncio
 async def test_edit_address_button_carries_address_in_data_attributes(
-    dash_client,  # noqa: F811
+    dash_client,
 ) -> None:
     client, db = dash_client
     provider = await db.add_provider("gpu-1", ProviderProtocol.OLLAMA)

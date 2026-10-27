@@ -191,13 +191,13 @@ def retry_after_seconds(value: str | None) -> float:
         from email.utils import parsedate_to_datetime
 
         when = parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_BUSY_S
     import datetime as _dt
 
     if when.tzinfo is None:
-        when = when.replace(tzinfo=_dt.timezone.utc)
-    return max((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds(), 1.0)
+        when = when.replace(tzinfo=_dt.UTC)
+    return max((when - _dt.datetime.now(_dt.UTC)).total_seconds(), 1.0)
 
 
 class ProviderStats:

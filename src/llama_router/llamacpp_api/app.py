@@ -9,7 +9,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .. import __version__
 from ..request_logger import log_request
 from ..timing import RequestTimingMiddleware
-
 from . import deps
 from .audio import router as audio_router
 from .chat import router as chat_router

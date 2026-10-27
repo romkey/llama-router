@@ -46,7 +46,7 @@ def verify_password(password: str, stored: str | None) -> bool:
         sh, kh = stored.split(":")
         salt = bytes.fromhex(sh)
         expected = bytes.fromhex(kh)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return False
     dk = hashlib.scrypt(
         password.encode("utf-8"),
@@ -69,7 +69,7 @@ def unsign_session(token: str, secret: str) -> int | None:
     try:
         d = ser.loads(token, max_age=SESSION_MAX_AGE)
         return int(d["u"])
-    except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
+    except BadSignature, SignatureExpired, KeyError, TypeError, ValueError:
         return None
 
 

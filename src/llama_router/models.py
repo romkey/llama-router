@@ -37,7 +37,7 @@ class ProviderProtocol(str, Enum):
     OPENAI = "openai"
 
     @classmethod
-    def parse(cls, value: str | None) -> "ProviderProtocol":
+    def parse(cls, value: str | None) -> ProviderProtocol:
         """Accept the protocol names, plus ``llamacpp`` from older clients."""
         v = (value or "").strip().lower()
         if v == "llamacpp":

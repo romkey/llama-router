@@ -45,8 +45,8 @@ from .routing_table import (
     RoutingTable,
     alias_groups,
     build_table,
-    reaches,
     load_inputs,
+    reaches,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ _MAX_REASONS = 20
 class RouteResult:
     """Wraps a routing decision, including which model was actually resolved."""
 
-    __slots__ = ("provider", "resolved_model", "backend_model", "model_key")
+    __slots__ = ("backend_model", "model_key", "provider", "resolved_model")
 
     def __init__(
         self,
@@ -372,8 +372,7 @@ class Router:
                         # The key's locality outranks its pin: never send a
                         # local-only key's request to a cloud provider.
                         logger.warning(
-                            "Pin for %s to %s ignored: provider is %s, key "
-                            "requires %s",
+                            "Pin for %s to %s ignored: provider is %s, key requires %s",
                             candidate_model,
                             pinned.provider.name,
                             pinned.provider.locality,
@@ -655,9 +654,9 @@ class Router:
         elif eligible:
             step["outcome"] = f"lowest {mode} score: {eligible[0]['provider']}"
             if best_tier != TIER_OK:
-                step[
-                    "outcome"
-                ] += " (every provider has a problem; using the least bad)"
+                step["outcome"] += (
+                    " (every provider has a problem; using the least bad)"
+                )
         else:
             step["outcome"] = "no provider can serve this model"
             if pid is not None:

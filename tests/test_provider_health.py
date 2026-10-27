@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llama_router.models import ProviderStatus, ProviderProtocol
+from llama_router.models import ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 
 pytestmark = pytest.mark.httpx_mock(
