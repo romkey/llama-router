@@ -8,6 +8,7 @@ import logging
 import uvicorn
 
 from .config import settings
+from .dashboard.oidc import CALLBACK_PATH, OIDCConfig
 from .database import Database
 from .auto_benchmark import AutoBenchmarker
 from .provider_manager import ProviderManager
@@ -29,8 +30,37 @@ logging.basicConfig(
 logger = logging.getLogger("llama_router")
 
 
+def _log_oidc_config() -> None:
+    cfg = OIDCConfig.from_settings(settings)
+    if not cfg.enabled:
+        return
+    problems = cfg.problems()
+    if problems:
+        for p in problems:
+            logger.error("OIDC sign-in disabled: %s", p)
+        if cfg.only:
+            logger.error(
+                "LLAMA_ROUTER_OIDC_ONLY is ignored while OIDC is misconfigured; "
+                "password sign-in stays enabled"
+            )
+        return
+    callback = (
+        cfg.redirect_base_url + CALLBACK_PATH
+        if cfg.redirect_base_url
+        else f"https://<dashboard host>{CALLBACK_PATH}"
+    )
+    logger.info(
+        "OIDC sign-in enabled: issuer %s, callback %s, admin group %s%s",
+        cfg.issuer,
+        callback,
+        repr(cfg.admin_group) if cfg.admin_group else "(none)",
+        ", password sign-in disabled" if cfg.only else "",
+    )
+
+
 async def run() -> None:
     init_sentry()
+    _log_oidc_config()
 
     db = Database()
     await db.connect()

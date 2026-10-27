@@ -47,6 +47,65 @@ docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/
 docker compose restart llama-router
 ```
 
+### Single sign-on (OpenID Connect)
+
+The dashboard can sign people in through an OpenID Connect provider such as Authentik, Keycloak, Okta, Entra ID or dex. Members of an admin group become administrators. Everyone else who signs in is a read-only viewer. Local accounts keep working alongside SSO unless you turn password sign-in off.
+
+Register a confidential client at your provider with this redirect URI:
+
+```
+https://<dashboard host>/login/oidc/callback
+```
+
+Then set:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LLAMA_ROUTER_OIDC_ISSUER` | empty | Issuer URL. Empty turns SSO off. |
+| `LLAMA_ROUTER_OIDC_CLIENT_ID` | empty | Client ID. |
+| `LLAMA_ROUTER_OIDC_CLIENT_SECRET` | empty | Client secret. |
+| `LLAMA_ROUTER_OIDC_ADMIN_GROUP` | empty | Members are administrators. |
+| `LLAMA_ROUTER_OIDC_ALLOWED_GROUP` | empty | If set, only members (and admins) may sign in. |
+| `LLAMA_ROUTER_OIDC_GROUPS_CLAIM` | `groups` | Claim holding the groups. Dots reach nested claims. |
+| `LLAMA_ROUTER_OIDC_SCOPES` | `openid profile email groups` | Requested scopes. |
+| `LLAMA_ROUTER_OIDC_REDIRECT_BASE_URL` | empty | External dashboard URL, e.g. `https://llm.example.org`. Empty uses the request's host and `X-Forwarded-*` headers. |
+| `LLAMA_ROUTER_OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with ...". |
+| `LLAMA_ROUTER_OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. |
+| `LLAMA_ROUTER_OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the provider on logout. |
+| `LLAMA_ROUTER_OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only. |
+
+Behind HTTPS, also set `LLAMA_ROUTER_DASHBOARD_COOKIE_SECURE=true`. The **Users** page shows the issuer, callback URL and group rules in effect, and marks SSO accounts.
+
+How accounts behave:
+
+- **First sign-in creates the account.** It is matched to the provider by issuer and subject, never by email, so SSO cannot take over a local account. If the username is taken, a number is appended.
+- **Roles follow the provider.** The admin flag is recomputed from the groups claim at every sign-in. A removed admin loses access at their next sign-in. Sessions last up to 14 days.
+- **Groups.** If the ID token has no groups claim, the userinfo endpoint is asked.
+- **No passwords.** SSO accounts cannot use password sign-in and cannot be given a password.
+- **Removing access.** Deleting an SSO account on the **Users** page signs it out, but the account is recreated at the person's next sign-in. To keep someone out, remove them at the provider or set `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`.
+- **Bootstrap.** With no accounts at all, the dashboard is open as before. The first SSO sign-in creates the first account. If an admin group is set, that first person must be in it. Otherwise the first account is an administrator.
+- **Break-glass.** Keep one local administrator, or use the lockout steps above, in case the provider is unreachable.
+
+Provider notes:
+
+- **Authentik:** add the `groups` scope mapping to the provider. Group names appear as-is.
+- **Keycloak:** add a *Group Membership* mapper with "Full group path" off, or use realm roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=realm_access.roles`.
+- **Okta:** add a `groups` claim with a filter on the authorization server.
+- **Entra ID:** group claims carry object IDs, not names, so use the group's ID as the admin group. Users in many groups get an overage marker instead of a list, so app roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=roles` are more reliable.
+- **Google:** has no groups claim. Leave the admin group empty so the first account administers, and promote others by hand.
+
+To try it locally, start the mock provider in `docker-compose.dev.yml`. It shows a form where you type any subject and claims, such as `{"preferred_username": "ada", "groups": ["router-admins"]}`:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile oidc up -d mock-oidc
+```
+
+Then run the router on the host with SSO pointed at it:
+
+```bash
+LLAMA_ROUTER_OIDC_ISSUER=http://localhost:18080/default LLAMA_ROUTER_OIDC_ALLOW_INSECURE=true LLAMA_ROUTER_OIDC_CLIENT_ID=llama-router LLAMA_ROUTER_OIDC_CLIENT_SECRET=dev LLAMA_ROUTER_OIDC_ADMIN_GROUP=router-admins LLAMA_ROUTER_DASHBOARD_PORT=8099 uv run llama-router
+```
+
 ### Connecting routers: hubs and workers
 
 One llama-router can serve as a **hub** for others. A **worker** is a llama-router that opens a single outbound WebSocket to the hub and serves the inference jobs the hub sends down it. The worker needs no open ports, port forwarding, or VPN, so it works from a home network, behind NAT, or while the machine is on another tailnet or VPN. Nothing on the worker's network becomes reachable from the hub.
