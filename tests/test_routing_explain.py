@@ -96,7 +96,12 @@ async def test_explanation_matches_real_decision(
     assert real.provider.name in out["summary"]
 
 
-async def test_explains_unusable_providers(db: Database, pm: ProviderManager):
+async def test_explains_unusable_providers(
+    db: Database, pm: ProviderManager, monkeypatch
+):
+    from llama_router.config import settings
+
+    monkeypatch.setattr(settings, "ollama_api_translation", False)
     good = await _provider(db, "good", ["m"])
     await _provider(db, "down", ["m"], status=ProviderStatus.OFFLINE)
     await _provider(db, "lcpp", ["m"], ptype=ProviderProtocol.OPENAI)

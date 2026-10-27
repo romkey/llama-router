@@ -254,7 +254,6 @@ async def test_llamacpp_loaded_model_is_hot(db: Database, pm: ProviderManager):
     await rt.rebuild()
     # m is loaded per /props; an OpenAI provider takes no Ollama routes.
     assert hot("m", "/v1/chat/completions") and not hot("n", "/v1/chat/completions")
-    assert ("m", "/api/chat") not in rt.table.all_candidates
 
     # The health check re-reads /props: a swapped model stops counting.
     lcpp.model = "n"

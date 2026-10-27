@@ -20,7 +20,7 @@ from .images import router as images_router
 from .models import router as models_router
 from .responses import router as responses_router
 
-app = FastAPI(title="llama-router llama.cpp API")
+app = FastAPI(title="llama-router OpenAI API")
 app.add_middleware(RequestTimingMiddleware)
 
 

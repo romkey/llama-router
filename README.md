@@ -63,7 +63,7 @@ LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 
 The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
 
-**What a worker serves.** Jobs run against the worker's own Ollama and llama.cpp APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
 **Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 
@@ -87,10 +87,11 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `DASHBOARD_PORT` | `80` | Dashboard port |
 | `API_HOST` | `0.0.0.0` | Ollama API bind address |
 | `API_PORT` | `11434` | Ollama API port |
-| `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
-| `LLAMACPP_PORT` | `8080` | llama.cpp API port |
+| `LLAMACPP_HOST` | `0.0.0.0` | OpenAI API bind address (the name predates other backends) |
+| `LLAMACPP_PORT` | `8080` | OpenAI API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
+| `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
 | `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
@@ -99,7 +100,7 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `WORKER_HUB_URL` | *(empty)* | Hub to connect to as a worker. With `WORKER_TOKEN`, overrides the dashboard setting |
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub |
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
-| `WORKER_LLAMACPP_URL` | *(this router)* | llama.cpp API the worker relays jobs to; `none` disables llama.cpp jobs |
+| `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
 | `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
@@ -207,7 +208,7 @@ All three API ports expose a `GET /health` endpoint that returns JSON:
 {"status": "ok", "version": "0.7.8", "providers": 3, "providers_online": 2}
 ```
 
-The dashboard port (80) includes provider counts; the Ollama (11434) and llama.cpp (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
+The dashboard port (80) includes provider counts; the Ollama (11434) and OpenAI (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
 
 ## Hugging Face Downloads
 
@@ -259,6 +260,7 @@ Each API key picks a mode. Requests without a key use **balanced**.
 | `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed. For embeddings, images and audio, the measured time those calls take |
 | `latency` | starts answering soonest: a model already loaded wins, then the lowest startup time and round trip |
 | `throughput` | generates the most tokens per second. For embeddings, images and audio, completes calls fastest |
+| `cheapest` | charges least for a typical request (see [Cost](#cost)); local providers with no price set cost nothing |
 | `chaos` | is chosen at random, with a random model |
 
 Pins on the key override the mode for the pinned models.
@@ -304,7 +306,7 @@ The header never widens or flips a key's setting. The request log records whethe
 
 ### Endpoints
 
-Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to Ollama providers. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.
+Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. Ollama routes (`/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`) go to Ollama providers and, translated, to OpenAI-compatible ones, so Ollama clients can use llama.cpp, vLLM and cloud services. Translation carries messages, images, tools and tool calls, `format`, the common sampling options and token counts; `suffix` and `raw` are refused with 400, and Ollama-only options such as `top_k` and `num_ctx` are dropped. Set `LLAMA_ROUTER_OLLAMA_API_TRANSLATION=false` to keep Ollama routes on Ollama providers. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.
 
 Measurements are kept per kind of endpoint: text generation, embeddings, images, audio and decisions. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
 
@@ -475,6 +477,30 @@ curl http://localhost/api/fallbacks
 # Remove a fallback
 curl -X DELETE http://localhost/api/fallbacks/llama3:70b
 ```
+
+## Cost
+
+The request log records each request's tokens in and out, the API key that made it, and its cost when the provider's price for the model is known. Tokens come from the response's `usage` (or Ollama's counts); a streamed OpenAI-style response carries usage only when the client sends `stream_options: {"include_usage": true}`.
+
+**Prices** are USD per million tokens, set per provider on its page: a model name, a pattern such as `gpt-4o*`, or `*` for every model. A price set by hand wins over one from the provider's own model list (OpenRouter lists one for every model). Local providers cost nothing unless priced; a cloud model with no price has an unknown cost.
+
+**Cheapest** routing ranks candidates by the price of a typical request (1,000 tokens in, 256 out), then by the balanced score. A cloud model with an unknown price comes last.
+
+**Daily spend caps.** An API key can have a cap in USD per UTC day. Once its logged spend reaches the cap, the key is limited to local providers until the next day; a cloud-only key is refused with HTTP 429. The key list shows each key's spend today.
+
+## Model Aliases
+
+The same model often has different names at different providers: `claude-sonnet-4-5` at Anthropic, `anthropic/claude-sonnet-4-5` at OpenRouter, `llama3.2:latest` and `llama3.2` across Ollama and llama.cpp. An alias joins them. A request for any name in the group can go to any provider that serves one of them, and each provider is sent its own name for the model. Aliases chain, so `a → b → c` is one group.
+
+Add them in **Model Aliases** on the Models tab; **Suggest aliases** proposes `vendor/model` and `model:latest` names whose bare form another provider serves. Or use the API:
+
+```bash
+curl -X POST http://localhost/api/model-aliases \
+  -H 'Content-Type: application/json' \
+  -d '{"alias": "anthropic/claude-sonnet-4-5", "canonical": "claude-sonnet-4-5"}'
+```
+
+Aliases combine with API key locality: a local-only key asking for `vendor/model` reaches a local provider that serves `model`.
 
 ## API Key Model Pinning
 

@@ -367,6 +367,28 @@
             </div>
         </div>
 
+        <div class="card mt-4" id="prices-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Prices</h5>
+                <span class="small text-muted">USD per million tokens</span>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">
+                    {% if info.provider.is_cloud %}Used for request costs, spend caps and <em>cheapest</em> routing. A price set here wins over one from the provider's model list; a cloud model with neither has an unknown cost.{% else %}Local providers cost nothing unless priced here.{% endif %}
+                </p>
+                <table class="table table-sm mb-2"><thead><tr><th>Model</th><th class="text-end">In</th><th class="text-end">Out</th><th></th></tr></thead><tbody id="prices-body"><tr><td colspan="4" class="text-muted">Loading…</td></tr></tbody></table>
+                <div id="prices-listed" class="small text-muted mb-2"></div>
+                {% if not read_only %}
+                <form class="row g-2 align-items-end" onsubmit="addPrice(event)">
+                    <div class="col-5"><label class="form-label small text-muted mb-1" for="price-model">Model or pattern</label><input id="price-model" class="form-control form-control-sm font-monospace" placeholder="* or gpt-4o*" required></div>
+                    <div class="col-3"><label class="form-label small text-muted mb-1" for="price-in">In</label><input id="price-in" type="number" min="0" step="0.001" class="form-control form-control-sm" required></div>
+                    <div class="col-3"><label class="form-label small text-muted mb-1" for="price-out">Out</label><input id="price-out" type="number" min="0" step="0.001" class="form-control form-control-sm" required></div>
+                    <div class="col-1"><button class="btn btn-sm btn-outline-primary" type="submit" title="Save price"><i class="bi bi-plus-lg"></i></button></div>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+
         <div class="card mt-4">
             <div class="card-header">
                 <h5 class="mb-0">Info</h5>
@@ -613,6 +635,62 @@
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
 const PROVIDER_IS_CLOUD = {{ info.provider.is_cloud | tojson }};
+const PROVIDER_ID = {{ info.provider.id | tojson }};
+
+function loadPrices() {
+    fetch('/api/providers/' + PROVIDER_ID + '/prices').then(function(r) { return r.json(); }).then(function(d) {
+        var body = document.getElementById('prices-body');
+        body.innerHTML = '';
+        if (!d.prices.length) {
+            var tr = document.createElement('tr');
+            var td = document.createElement('td');
+            td.colSpan = 4; td.className = 'text-muted'; td.textContent = 'None set by hand.';
+            tr.appendChild(td); body.appendChild(tr);
+        }
+        d.prices.forEach(function(p) {
+            var tr = document.createElement('tr');
+            [p.model_pattern, p.input_per_mtok, p.output_per_mtok].forEach(function(v, i) {
+                var td = document.createElement('td');
+                if (i) td.className = 'text-end';
+                if (i === 0) { var c = document.createElement('code'); c.textContent = v; td.appendChild(c); } else { td.textContent = '$' + Number(v).toFixed(3); }
+                tr.appendChild(td);
+            });
+            var td = document.createElement('td'); td.className = 'text-end';
+            if (!DASH_READ_ONLY) {
+                var b = document.createElement('button');
+                b.className = 'btn btn-sm btn-outline-danger py-0'; b.title = 'Remove price';
+                b.innerHTML = '<i class="bi bi-trash"></i>';
+                b.addEventListener('click', function() {
+                    fetch('/api/providers/' + PROVIDER_ID + '/prices/' + p.id, {method: 'DELETE'}).then(loadPrices);
+                });
+                td.appendChild(b);
+            }
+            tr.appendChild(td); body.appendChild(tr);
+        });
+        document.getElementById('prices-listed').textContent = d.listed.length
+            ? d.listed.length + ' model' + (d.listed.length === 1 ? '' : 's') + ' priced by the provider\'s own list.' : '';
+    });
+}
+
+function addPrice(ev) {
+    ev.preventDefault();
+    if (DASH_READ_ONLY) return;
+    fetch('/api/providers/' + PROVIDER_ID + '/prices', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            model_pattern: document.getElementById('price-model').value.trim(),
+            input_per_mtok: document.getElementById('price-in').value,
+            output_per_mtok: document.getElementById('price-out').value,
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        ev.target.reset();
+        loadPrices();
+    }).catch(function(err) { alert(err.message); });
+}
+
+document.addEventListener('DOMContentLoaded', loadPrices);
 
 document.addEventListener('click', function (ev) {
     const probeBtn = ev.target.closest('#probe-provider');
