@@ -10,6 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
+from llama_router.db_types import ShortText
+
 revision = "001_initial"
 down_revision = None
 branch_labels = None
@@ -22,19 +24,19 @@ def upgrade() -> None:
 
     op.create_table(
         "wireguard_interface",
-        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=False),
         sa.Column("enabled", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("listen_port", sa.Integer(), nullable=False, server_default="51820"),
-        sa.Column("private_key", sa.Text(), nullable=False, server_default=""),
+        sa.Column("private_key", ShortText, nullable=False, server_default=""),
         sa.Column(
-            "address_cidr", sa.Text(), nullable=False, server_default="10.8.0.1/24"
+            "address_cidr", ShortText, nullable=False, server_default="10.8.0.1/24"
         ),
         sa.Column("mtu", sa.Integer(), nullable=True),
         sa.Column("endpoint_public", sa.Text(), nullable=True),
         sa.Column(
             "updated_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
         ),
-        sa.Column("peering_api_key", sa.Text(), nullable=False, server_default=""),
+        sa.Column("peering_api_key", ShortText, nullable=False, server_default=""),
         sa.Column("peering_enabled", sa.Integer(), nullable=False, server_default="0"),
         sa.CheckConstraint("id = 1", name="ck_wireguard_interface_singleton"),
         if_not_exists=True,
@@ -43,7 +45,7 @@ def upgrade() -> None:
     op.create_table(
         "wireguard_peers",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("name", sa.Text(), nullable=False, server_default=""),
+        sa.Column("name", ShortText, nullable=False, server_default=""),
         sa.Column("public_key", sa.Text(), nullable=False),
         sa.Column("preshared_key", sa.Text(), nullable=True),
         sa.Column("allowed_ips", sa.Text(), nullable=False),
@@ -59,11 +61,11 @@ def upgrade() -> None:
     op.create_table(
         "providers",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("name", ShortText, nullable=False),
         sa.Column("url", sa.Text(), nullable=False),
         sa.Column("llamacpp_url", sa.Text(), nullable=True),
-        sa.Column("provider_type", sa.Text(), nullable=False, server_default="ollama"),
-        sa.Column("status", sa.Text(), nullable=False, server_default="unknown"),
+        sa.Column("provider_type", ShortText, nullable=False, server_default="ollama"),
+        sa.Column("status", ShortText, nullable=False, server_default="unknown"),
         sa.Column("machine_type", sa.Text(), nullable=True),
         sa.Column("gpu_type", sa.Text(), nullable=True),
         sa.Column("gpu_ram", sa.Text(), nullable=True),
@@ -92,7 +94,7 @@ def upgrade() -> None:
             sa.ForeignKey("providers.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column("name", sa.Text(), nullable=False),
+        sa.Column("name", ShortText, nullable=False),
         sa.Column("raw_name", sa.Text(), nullable=True),
         sa.Column("size", sa.Integer(), nullable=True),
         sa.Column("digest", sa.Text(), nullable=True),
@@ -136,7 +138,7 @@ def upgrade() -> None:
         sa.Column("response_size", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("request_meta", sa.Text(), nullable=True),
         sa.Column("duration_ms", sa.Float(), nullable=False, server_default="0"),
-        sa.Column("status", sa.Text(), nullable=False, server_default="ok"),
+        sa.Column("status", ShortText, nullable=False, server_default="ok"),
         sa.Column("streamed", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error_detail", sa.Text(), nullable=True),
         sa.Column(
@@ -144,17 +146,23 @@ def upgrade() -> None:
         ),
         if_not_exists=True,
     )
-    op.create_index(
-        "idx_request_log_created",
-        "request_log",
-        ["created_at"],
-        if_not_exists=True,
-    )
+    if not is_mysql:
+        op.create_index(
+            "idx_request_log_created",
+            "request_log",
+            ["created_at"],
+            if_not_exists=True,
+        )
+    elif "idx_request_log_created" not in {
+        ix["name"] for ix in sa.inspect(bind).get_indexes("request_log")
+    }:
+        # MySQL has no CREATE INDEX IF NOT EXISTS.
+        op.create_index("idx_request_log_created", "request_log", ["created_at"])
 
     op.create_table(
         "model_fallbacks",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("model_name", sa.Text(), nullable=False),
+        sa.Column("model_name", ShortText, nullable=False),
         sa.Column("fallback_model", sa.Text(), nullable=False),
         sa.UniqueConstraint("model_name", name="uq_model_fallbacks_model_name"),
         if_not_exists=True,
@@ -183,8 +191,8 @@ def upgrade() -> None:
         "api_keys",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
         sa.Column("key_prefix", sa.Text(), nullable=False),
-        sa.Column("key_hash", sa.Text(), nullable=False),
-        sa.Column("routing_mode", sa.Text(), nullable=False, server_default="latency"),
+        sa.Column("key_hash", ShortText, nullable=False),
+        sa.Column("routing_mode", ShortText, nullable=False, server_default="latency"),
         sa.Column("allow_fallback", sa.Integer(), nullable=False, server_default="1"),
         sa.Column(
             "created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")
@@ -203,7 +211,7 @@ def upgrade() -> None:
             sa.ForeignKey("api_keys.id", ondelete="CASCADE"),
             nullable=False,
         ),
-        sa.Column("model_name", sa.Text(), nullable=False),
+        sa.Column("model_name", ShortText, nullable=False),
         sa.Column(
             "provider_id",
             sa.Integer(),
@@ -221,7 +229,7 @@ def upgrade() -> None:
 
     op.create_table(
         "app_settings",
-        sa.Column("key", sa.Text(), primary_key=True),
+        sa.Column("key", ShortText, primary_key=True),
         sa.Column("value", sa.Text(), nullable=False),
         if_not_exists=True,
     )
@@ -229,7 +237,7 @@ def upgrade() -> None:
     op.create_table(
         "dashboard_users",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("username", sa.Text(), nullable=False),
+        sa.Column("username", ShortText, nullable=False),
         sa.Column("password_hash", sa.Text(), nullable=False),
         sa.Column("is_admin", sa.Integer(), nullable=False, server_default="0"),
         sa.Column(
@@ -255,7 +263,7 @@ def upgrade() -> None:
     if is_mysql:
         op.execute(
             sa.text(
-                "INSERT IGNORE INTO app_settings (key, value) "
+                "INSERT IGNORE INTO app_settings (`key`, value) "
                 "VALUES ('allow_unauthenticated', 'true')"
             )
         )
@@ -277,13 +285,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    is_mysql = op.get_bind().dialect.name in ("mysql", "mariadb")
     op.drop_table("dashboard_users", if_exists=True)
     op.drop_table("app_settings", if_exists=True)
     op.drop_table("api_key_model_pins", if_exists=True)
     op.drop_table("api_keys", if_exists=True)
     op.drop_table("provider_addresses", if_exists=True)
     op.drop_table("model_fallbacks", if_exists=True)
-    op.drop_index("idx_request_log_created", table_name="request_log", if_exists=True)
+    if not is_mysql:
+        # On MySQL the index goes with the table (no DROP INDEX IF EXISTS).
+        op.drop_index(
+            "idx_request_log_created", table_name="request_log", if_exists=True
+        )
     op.drop_table("request_log", if_exists=True)
     op.drop_table("benchmarks", if_exists=True)
     op.drop_table("provider_models", if_exists=True)

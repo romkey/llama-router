@@ -14,20 +14,19 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
+from llama_router.db_types import ShortText
+
 revision = "016_decision_calibrations"
 down_revision = "015_cost"
 branch_labels = None
 depends_on = None
-
-# MySQL and MariaDB reject TEXT in a key without a prefix length.
-_KEY_TEXT = sa.Text().with_variant(sa.String(255), "mysql", "mariadb")
 
 
 def upgrade() -> None:
     op.create_table(
         "decision_calibrations",
         sa.Column("id", sa.Integer(), autoincrement=True, primary_key=True),
-        sa.Column("model_name", _KEY_TEXT, nullable=False),
+        sa.Column("model_name", ShortText, nullable=False),
         sa.Column("question_key", sa.String(64), nullable=False),
         sa.Column("question_type", sa.String(16), nullable=False),
         # The question as given, for the dashboard.

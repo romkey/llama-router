@@ -565,13 +565,13 @@ class Database:
         if protocol:
             query = (
                 "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-                "AND protocol = ? ORDER BY created_at DESC LIMIT 1"
+                "AND protocol = ? ORDER BY created_at DESC, id DESC LIMIT 1"
             )
             params: tuple[Any, ...] = (provider_id, model_name, protocol)
         else:
             query = (
                 "SELECT * FROM benchmarks WHERE provider_id = ? AND model_name = ? "
-                "ORDER BY created_at DESC LIMIT 1"
+                "ORDER BY created_at DESC, id DESC LIMIT 1"
             )
             params = (provider_id, model_name)
         row = await self._select_one(query, params)
@@ -588,7 +588,8 @@ class Database:
         self, provider_id: int
     ) -> list[BenchmarkResult]:
         rows = await self._select_all(
-            "SELECT * FROM benchmarks WHERE provider_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM benchmarks WHERE provider_id = ? "
+            "ORDER BY created_at DESC, id DESC",
             (provider_id,),
         )
         return [_row_to_benchmark(r) for r in rows]
@@ -746,7 +747,9 @@ class Database:
         self, limit: int = 200, offset: int = 0
     ) -> list[RequestLog]:
         rows = await self._select_all(
-            "SELECT * FROM request_log ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            # id breaks ties: MySQL TIMESTAMP has whole-second precision.
+            "SELECT * FROM request_log ORDER BY created_at DESC, id DESC "
+            "LIMIT ? OFFSET ?",
             (limit, offset),
         )
         return [_row_to_request_log(r) for r in rows]
@@ -1033,7 +1036,7 @@ class Database:
             "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
             "k.last_used_at "
-            "ORDER BY k.created_at DESC"
+            "ORDER BY k.created_at DESC, k.id DESC"
         )
         return [
             {
@@ -1139,7 +1142,9 @@ class Database:
 
     async def get_allow_unauthenticated(self) -> bool:
         row = await self._select_one(
-            "SELECT value FROM app_settings WHERE key = 'allow_unauthenticated'"
+            # Qualified so MySQL accepts the reserved word without quoting.
+            "SELECT value FROM app_settings "
+            "WHERE app_settings.key = 'allow_unauthenticated'"
         )
         if not row:
             return True
@@ -1169,7 +1174,7 @@ class Database:
 
     async def get_app_setting(self, key: str) -> str | None:
         row = await self._select_one(
-            "SELECT value FROM app_settings WHERE key = ?", (key,)
+            "SELECT value FROM app_settings WHERE app_settings.key = ?", (key,)
         )
         return str(row["value"]) if row else None
 
@@ -1203,57 +1208,45 @@ class Database:
         else:
             order_sql = "ORDER BY LOWER(username) ASC"
         rows = await self._select_all(
-            f"SELECT id, username, is_admin, created_at FROM dashboard_users {order_sql}"
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users {order_sql}"
         )
-        return [
-            {
-                "id": int(r["id"]),
-                "username": r["username"],
-                "is_admin": bool(r["is_admin"]),
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
+        users = [_row_to_dashboard_user(r) for r in rows]
+        for u in users:
+            u["has_password"] = bool(u.pop("password_hash"))
+        return users
 
     async def get_dashboard_user_by_username(self, username: str) -> dict | None:
         u = username.strip()
         if self._dialect_name == "sqlite":
             row = await self._select_one(
-                "SELECT id, username, password_hash, is_admin, created_at "
+                f"SELECT {_DASHBOARD_USER_COLUMNS} "
                 "FROM dashboard_users WHERE username = ? COLLATE NOCASE",
                 (u,),
             )
         else:
             row = await self._select_one(
-                "SELECT id, username, password_hash, is_admin, created_at "
+                f"SELECT {_DASHBOARD_USER_COLUMNS} "
                 "FROM dashboard_users WHERE LOWER(username) = LOWER(?)",
                 (u,),
             )
-        if not row:
-            return None
-        return {
-            "id": int(row["id"]),
-            "username": row["username"],
-            "password_hash": row["password_hash"],
-            "is_admin": bool(row["is_admin"]),
-            "created_at": row["created_at"],
-        }
+        return _row_to_dashboard_user(row) if row else None
 
     async def get_dashboard_user_by_id(self, user_id: int) -> dict | None:
         row = await self._select_one(
-            "SELECT id, username, password_hash, is_admin, created_at "
-            "FROM dashboard_users WHERE id = ?",
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users WHERE id = ?",
             (user_id,),
         )
-        if not row:
-            return None
-        return {
-            "id": int(row["id"]),
-            "username": row["username"],
-            "password_hash": row["password_hash"],
-            "is_admin": bool(row["is_admin"]),
-            "created_at": row["created_at"],
-        }
+        return _row_to_dashboard_user(row) if row else None
+
+    async def get_dashboard_user_by_oidc(
+        self, issuer: str, subject: str
+    ) -> dict | None:
+        row = await self._select_one(
+            f"SELECT {_DASHBOARD_USER_COLUMNS} FROM dashboard_users "
+            "WHERE oidc_issuer = ? AND oidc_subject = ?",
+            (issuer, subject),
+        )
+        return _row_to_dashboard_user(row) if row else None
 
     async def create_dashboard_user(
         self, username: str, password_hash: str, is_admin: bool
@@ -1262,6 +1255,46 @@ class Database:
             "INSERT INTO dashboard_users (username, password_hash, is_admin) "
             "VALUES (?, ?, ?)",
             (username.strip(), password_hash, int(is_admin)),
+        )
+
+    async def create_oidc_dashboard_user(
+        self,
+        username: str,
+        issuer: str,
+        subject: str,
+        *,
+        email: str | None,
+        display_name: str | None,
+        is_admin: bool,
+    ) -> int:
+        """Create an account that signs in only through OpenID Connect."""
+        return await self._insert_get_id(
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "
+            "auth_source, oidc_issuer, oidc_subject, email, display_name, "
+            "last_login_at) VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (username.strip(), int(is_admin), issuer, subject, email, display_name),
+        )
+
+    async def update_oidc_dashboard_user(
+        self,
+        user_id: int,
+        *,
+        email: str | None,
+        display_name: str | None,
+        is_admin: bool,
+    ) -> None:
+        """Refresh an OIDC account from the identity provider at sign-in."""
+        await self._execute(
+            "UPDATE dashboard_users SET email = ?, display_name = ?, is_admin = ?, "
+            "last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (email, display_name, int(is_admin), user_id),
+        )
+
+    async def touch_dashboard_user_login(self, user_id: int) -> None:
+        await self._execute(
+            "UPDATE dashboard_users SET last_login_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (user_id,),
         )
 
     async def update_dashboard_user_password(
@@ -1280,6 +1313,28 @@ class Database:
             "SELECT COUNT(*) AS c FROM dashboard_users WHERE is_admin = 1"
         )
         return int(row["c"]) if row else 0
+
+
+_DASHBOARD_USER_COLUMNS = (
+    "id, username, password_hash, is_admin, created_at, auth_source, "
+    "oidc_issuer, oidc_subject, email, display_name, last_login_at"
+)
+
+
+def _row_to_dashboard_user(row: Mapping[str, Any]) -> dict:
+    return {
+        "id": int(row["id"]),
+        "username": row["username"],
+        "password_hash": row["password_hash"],
+        "is_admin": bool(row["is_admin"]),
+        "created_at": row["created_at"],
+        "auth_source": row["auth_source"] or "local",
+        "oidc_issuer": row["oidc_issuer"],
+        "oidc_subject": row["oidc_subject"],
+        "email": row["email"],
+        "display_name": row["display_name"],
+        "last_login_at": row["last_login_at"],
+    }
 
 
 def _row_to_worker(row: Mapping[str, Any]) -> dict:
