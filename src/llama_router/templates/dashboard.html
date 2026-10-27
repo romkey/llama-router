@@ -165,7 +165,7 @@
                                 </h5>
                                 <div>
                                     {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
-                                    <span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>
+                                    <span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
                                     <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status title="{{ info.status_detail or '' }}">
                                         {{ info.provider.status.value }}
                                     </span>
@@ -267,7 +267,7 @@
                                     {{ info.provider.name }}
                                 </a>
                             </td>
-                            <td><span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span></td>
+                            <td><span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %} <span class="badge bg-body-secondary text-body" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}</td>
                             <td class="text-muted small" data-list-addresses>
                                 {% for addr in info.addresses %}
                                 <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
@@ -475,7 +475,7 @@
                         </div>
                         <div class="col-md-4">
                             <div class="form-label">Push to Ollama providers</div>
-                            {% for info in providers if info.provider.is_ollama and not info.provider.is_worker %}
+                            {% for info in providers if info.provider.is_ollama and not info.provider.is_worker and not info.provider.lacks('/api/create') %}
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" id="hf-push-{{ info.provider.id }}" data-hf-push="{{ info.provider.id }}">
                                 <label class="form-check-label" for="hf-push-{{ info.provider.id }}">{{ info.provider.name }}</label>
@@ -1553,9 +1553,8 @@
                     <button type="button" class="btn btn-sm btn-outline-primary" id="probe-new-provider">
                         <i class="bi bi-search me-1"></i>Probe URL
                     </button>
-                    <span class="small text-muted">Optional: detect the server type and the endpoints it supports.</span>
+                    <span class="small text-muted">Runs when you enter a URL or key: finds the server, its protocol and its endpoints. Saving probes again.</span>
                 </div>
-                <input type="hidden" name="probe_after_add" id="probe_after_add" value="">
                 <div id="probe-new-result" class="small mb-3" style="display:none"></div>
                 <hr>
                 <p class="text-muted small mb-2">Hardware (optional)</p>
@@ -1670,10 +1669,13 @@ function renderProbeResult(box, data) {
         return;
     }
     const head = probeEl('div', 'mb-1');
-    head.appendChild(probeEl('strong', '', (data.servers.length ? data.servers.join(', ') : 'Unrecognised server')));
+    head.appendChild(probeEl('strong', '', data.flavor || (data.servers.length ? data.servers.join(', ') : 'Unrecognised server')));
+    if (data.flavor && data.servers.length) head.appendChild(probeEl('span', 'text-muted ms-2', '(' + data.servers.join(', ') + ')'));
     if (data.version) head.appendChild(probeEl('span', 'text-muted ms-2', 'version ' + data.version));
     box.appendChild(head);
-    if (data.auth_required) {
+    if (data.key_rejected) {
+        box.appendChild(probeEl('div', 'text-danger', 'The key was rejected: every endpoint that answered refused it. Check the key and its header.'));
+    } else if (data.auth_required) {
         box.appendChild(probeEl('div', 'text-warning', 'Some endpoints need an API key' + (document.getElementById('api_key').value ? ' (the key given was not accepted everywhere).' : '; enter one above and probe again.')));
     }
     box.appendChild(probeEl('div', 'text-muted', data.models.length + ' model' + (data.models.length === 1 ? '' : 's') + ' listed; ' + data.supported.length + ' endpoints answered.'));
@@ -1704,13 +1706,11 @@ function renderProbeResult(box, data) {
     box.appendChild(details);
     if (data.suggested_type) {
         const sel = document.getElementById('protocol');
-        const apply = probeEl('button', 'btn btn-sm btn-link p-0 mt-1', 'Use protocol: ' + data.suggested_type);
-        apply.type = 'button';
-        apply.addEventListener('click', function() {
+        if (sel.value !== data.suggested_type) {
             sel.value = data.suggested_type;
             toggleUrlFields();
-        });
-        box.appendChild(apply);
+        }
+        box.appendChild(probeEl('div', 'text-muted mt-1', 'Protocol set to ' + sel.options[sel.selectedIndex].text + ' from the probe; change it above if this server speaks both.'));
     }
 }
 
@@ -1743,7 +1743,6 @@ function probeNewProvider() {
                 box.appendChild(probeEl('div', 'text-danger', res.d.detail || 'Probe failed.'));
                 return;
             }
-            document.getElementById('probe_after_add').value = '1';
             renderProbeResult(box, res.d);
         })
         .catch(function() {
@@ -1755,6 +1754,16 @@ function probeNewProvider() {
 
 document.addEventListener('click', function(ev) {
     if (ev.target.closest('#probe-new-provider')) probeNewProvider();
+});
+// Probe-first: probe as soon as there is a URL to probe, and again when the
+// key changes.
+document.addEventListener('change', function(ev) {
+    if (!ev.target.closest('#addProviderModal')) return;
+    const id = ev.target.id;
+    if (id !== 'url' && id !== 'api_key' && id !== 'api_key_header') return;
+    if (!document.getElementById('url').value.trim()) return;
+    if (id === 'url' && !ev.target.checkValidity()) return;
+    probeNewProvider();
 });
 
 // ---- Hugging Face downloads ---------------------------------------------

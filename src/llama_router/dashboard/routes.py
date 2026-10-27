@@ -777,6 +777,7 @@ def _provider_status_payload(info: Any) -> dict[str, Any]:
         "status": info.provider.status.value,
         "status_detail": info.status_detail,
         "protocol": info.provider.protocol.value,
+        "flavor": info.provider.flavor,
         "is_worker": info.provider.is_worker,
         "model_count": len(info.models),
         "model_names": sorted({m.name for m in info.models}),
@@ -1191,16 +1192,16 @@ async def add_provider(
     gpu_ram: Optional[str] = Form(None),
     api_key: Optional[str] = Form(None),
     api_key_header: Optional[str] = Form(None),
-    probe_after_add: Optional[str] = Form(None),
 ):
-    """Create a provider; *url* becomes its first address."""
+    """Create a provider; *url* becomes its first address. It is probed in the
+    background, so the stored endpoint list does not wait on the dialog."""
     pm = deps.get_pm()
     try:
         proto = ProviderProtocol.parse(protocol)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid protocol")
     try:
-        provider = await pm.add_provider(
+        await pm.add_provider(
             name,
             url,
             proto,
@@ -1213,17 +1214,6 @@ async def add_provider(
     except Exception:
         logger.exception("add_provider failed")
         raise HTTPException(status_code=400, detail="Could not add provider")
-    if probe_after_add and provider.id is not None:
-        # Record the endpoint list in the background; the dialog already showed it.
-        pid = provider.id
-
-        async def _probe() -> None:
-            try:
-                await pm.probe_provider(pid)
-            except Exception:
-                logger.exception("probe after add failed (provider_id=%s)", pid)
-
-        asyncio.create_task(_probe())
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -1588,7 +1578,9 @@ async def api_pull_model(request: Request):
         provider_ids = [
             i.provider.id
             for i in infos
-            if i.provider.is_ollama and i.provider.id is not None
+            if i.provider.is_ollama
+            and not i.provider.lacks("/api/pull")
+            and i.provider.id is not None
         ]
 
     _active_pulls[pull_id] = {
@@ -1932,7 +1924,7 @@ async def api_fill_missing_pulls():
     provider_names: dict[int, str] = {}
     for info in infos:
         provider = info.provider
-        if not provider.is_ollama or provider.id is None:
+        if not provider.is_ollama or provider.lacks("/api/pull") or provider.id is None:
             continue
         existing_ollama = {m.name for m in info.models}
         missing = [name for name in all_model_names if name not in existing_ollama]
@@ -2194,7 +2186,9 @@ async def pull_model_all_legacy(model: str = Form(...)):
     provider_ids = [
         i.provider.id
         for i in infos
-        if i.provider.is_ollama and i.provider.id is not None
+        if i.provider.is_ollama
+        and not i.provider.lacks("/api/pull")
+        and i.provider.id is not None
     ]
     pull_id = str(uuid.uuid4())
     _active_pulls[pull_id] = {

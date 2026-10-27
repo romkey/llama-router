@@ -23,6 +23,9 @@ from .endpoints import (
     normalize_endpoint,  # noqa: F401  (re-exported for callers)
 )
 from .models import (
+    ENDPOINT_MISSING,
+    ENDPOINT_SUPPORTED,
+    ENDPOINT_UNKNOWN,
     BenchmarkResult,
     Provider,
     ProviderAddress,
@@ -30,7 +33,6 @@ from .models import (
     ProviderStatus,
     measured_cold_start,
 )
-from .probe import MISSING, SUPPORTED
 from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
 
 MODES = ("latency", "throughput", "balanced")
@@ -66,9 +68,9 @@ TIER_OK = 0
 TIER_FAILING = 1  # circuit open: failing recently, may still work
 TIER_MISSING = 2  # the last probe found the endpoint missing: a near-certain 404
 
-SUPPORT_SUPPORTED = "supported"
-SUPPORT_MISSING = "missing"
-SUPPORT_UNKNOWN = "unknown"
+SUPPORT_SUPPORTED = ENDPOINT_SUPPORTED
+SUPPORT_MISSING = ENDPOINT_MISSING
+SUPPORT_UNKNOWN = ENDPOINT_UNKNOWN
 
 
 @dataclass(slots=True)
@@ -226,15 +228,7 @@ def upstream_for(provider: Provider) -> str:
 
 def endpoint_support(provider: Provider, path: str) -> str:
     """What the last probe said about *path* on the provider's upstream."""
-    caps = provider.capabilities or {}
-    entries = [e for e in caps.get("endpoints") or [] if e.get("path") == path]
-    if not entries:
-        return SUPPORT_UNKNOWN
-    if any(e.get("state") in SUPPORTED for e in entries):
-        return SUPPORT_SUPPORTED
-    if any(e.get("state") == MISSING for e in entries):
-        return SUPPORT_MISSING
-    return SUPPORT_UNKNOWN
+    return provider.endpoint_state(path)
 
 
 def serves(provider: Provider, protocol: str | None) -> bool:

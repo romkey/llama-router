@@ -30,7 +30,7 @@
     <div>
         <h2>
             {{ info.provider.name }}
-            <span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.protocol.value }}</span>
+            <span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body fs-6 align-middle me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
             {% if info.provider.has_api_key %}<span class="badge bg-secondary fs-6 align-middle me-1" title="Requests to this provider carry an API key"><i class="bi bi-key"></i></span>{% endif %}
             <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle" title="{{ info.status_detail or '' }}">
                 {{ info.provider.status.value }}
@@ -242,7 +242,7 @@
                                     <button class="btn btn-sm btn-outline-info btn-benchmark" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" title="Benchmark">
                                         <i class="bi bi-speedometer"></i>
                                     </button>
-                                    {% if info.provider.is_ollama %}
+                                    {% if info.provider.is_ollama and not info.provider.lacks('/api/delete') %}
                                     <form method="post" action="/providers/{{ info.provider.id }}/delete-model/{{ m.name }}" class="d-inline">
                                         <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick="return confirm('Delete {{ m.name }} from this provider?')">
                                             <i class="bi bi-trash"></i>
@@ -262,7 +262,7 @@
             </div>
         </div>
 
-        {% if info.provider.is_ollama and not read_only %}
+        {% if info.provider.is_ollama and not info.provider.lacks('/api/pull') and not read_only %}
         <div class="card mt-4">
             <div class="card-header">
                 <h5 class="mb-0">Pull Model</h5>
@@ -375,6 +375,14 @@
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Protocol</span>
                     <span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Server</span>
+                    <span>{{ info.provider.flavor or 'not recognised yet' }}</span>
+                </li>
+                <li class="list-group-item d-flex justify-content-between">
+                    <span class="text-muted">Health check</span>
+                    <code>{{ info.provider.liveness_path or 'default' }}</code>
                 </li>
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Status</span>

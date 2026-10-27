@@ -282,13 +282,14 @@ class Database:
     async def set_provider_capabilities(
         self, provider_id: int, capabilities: dict | None
     ) -> None:
-        """Store the last probe result (or clear it with None)."""
+        """Store the last probe result (or clear it with None), and its flavor."""
         await self._execute(
-            "UPDATE providers SET capabilities = ?, probed_at = "
+            "UPDATE providers SET capabilities = ?, flavor = ?, probed_at = "
             + ("CURRENT_TIMESTAMP" if capabilities is not None else "NULL")
             + " WHERE id = ?",
             (
                 json.dumps(capabilities) if capabilities is not None else None,
+                (capabilities or {}).get("flavor"),
                 provider_id,
             ),
         )
@@ -1061,6 +1062,7 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         api_key_header=row["api_key_header"],
         capabilities=_json_or_none(row["capabilities"]),
         probed_at=row["probed_at"],
+        flavor=row["flavor"],
     )
 
 

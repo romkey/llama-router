@@ -47,19 +47,34 @@ def decrypt_api_key(token: str) -> str:
         ) from exc
 
 
+def _header_names(name: str | None) -> list[str]:
+    return [h.strip() for h in (name or "").split(",") if h.strip()]
+
+
 def normalize_header(name: str | None) -> str:
-    """Header that carries the key. Empty means ``Authorization``."""
-    value = (name or "").strip()
-    if not value:
+    """Header(s) that carry the key, comma-separated. Empty means ``Authorization``.
+
+    Some services read the key from different headers on different routes
+    (Anthropic: ``Authorization`` for its OpenAI-compatible routes, ``x-api-key``
+    for its model list), so several may be named.
+    """
+    names = _header_names(name)
+    if not names:
         return DEFAULT_HEADER
-    if not all(c.isalnum() or c in "-_" for c in value) or len(value) > 64:
-        raise ValueError("header name may contain only letters, digits, - and _")
-    return value
+    for value in names:
+        if not all(c.isalnum() or c in "-_" for c in value) or len(value) > 64:
+            raise ValueError("header name may contain only letters, digits, - and _")
+    if len(names) > 4:
+        raise ValueError("at most four key headers")
+    return ", ".join(names)
 
 
 def auth_headers(api_key: str, header: str | None) -> dict[str, str]:
     """Headers to send upstream. ``Authorization`` gets a Bearer token."""
-    name = normalize_header(header)
-    if name.lower() == "authorization":
-        return {"Authorization": f"Bearer {api_key}"}
-    return {name: api_key}
+    out: dict[str, str] = {}
+    for name in _header_names(normalize_header(header)):
+        if name.lower() == "authorization":
+            out["Authorization"] = f"Bearer {api_key}"
+        else:
+            out[name] = api_key
+    return out

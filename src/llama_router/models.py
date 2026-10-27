@@ -53,6 +53,13 @@ WORKER_TARGETS: dict[ProviderProtocol, str] = {
 }
 
 
+ENDPOINT_SUPPORTED = "supported"
+ENDPOINT_MISSING = "missing"
+ENDPOINT_UNKNOWN = "unknown"
+# Probe states that mean the route exists (see probe.SUPPORTED).
+_PROBE_SUPPORTED = ("available", "exists", "needs_key")
+
+
 class Provider(BaseModel):
     id: int | None = None
     name: str
@@ -72,6 +79,9 @@ class Provider(BaseModel):
     # Result of the last endpoint probe (see probe.py), if any.
     capabilities: dict | None = None
     probed_at: datetime | None = None
+    # Server the last probe recognised ("vllm", "ollama", a cloud preset id,
+    # ...). Shown in the dashboard; routing never reads it.
+    flavor: str | None = None
 
     @property
     def is_worker(self) -> bool:
@@ -96,6 +106,35 @@ class Provider(BaseModel):
     @property
     def is_openai(self) -> bool:
         return self.protocol is ProviderProtocol.OPENAI
+
+    def endpoint_state(self, path: str) -> str:
+        """What the last probe said about *path*: supported, missing or unknown.
+
+        An OpenAI route also counts under its bare form (``/v1/models`` as
+        ``/models``): for an address that is itself the API base
+        (``https://api.openai.com/v1``) the bare form is the one that answers.
+        """
+        caps = self.capabilities or {}
+        paths = {path}
+        if path.startswith("/v1/"):
+            paths.add(path[3:])
+        entries = [e for e in caps.get("endpoints") or [] if e.get("path") in paths]
+        if not entries:
+            return ENDPOINT_UNKNOWN
+        if any(e.get("state") in _PROBE_SUPPORTED for e in entries):
+            return ENDPOINT_SUPPORTED
+        if any(e.get("state") == "missing" for e in entries):
+            return ENDPOINT_MISSING
+        return ENDPOINT_UNKNOWN
+
+    def lacks(self, path: str) -> bool:
+        """The last probe found *path* missing."""
+        return self.endpoint_state(path) == ENDPOINT_MISSING
+
+    @property
+    def liveness_path(self) -> str | None:
+        """The GET the last probe found cheapest for health checks."""
+        return (self.capabilities or {}).get("liveness") or None
 
     @property
     def worker_target(self) -> str:

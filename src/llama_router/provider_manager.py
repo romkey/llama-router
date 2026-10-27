@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -32,6 +33,7 @@ from .models import (
 )
 from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
+from .upstream_url import split_api_base
 from .routing_stats import ProviderStats
 from .provider_secrets import (
     DEFAULT_HEADER,
@@ -139,6 +141,8 @@ class ProviderManager:
         # Last offline reason written to the Log, so automatic checks log a
         # failure once rather than on every cycle.
         self._logged_detail: dict[int, str] = {}
+        # Endpoint probes running in the background, one per provider.
+        self._probing: dict[int, asyncio.Task] = {}
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -151,6 +155,47 @@ class ProviderManager:
         """In-memory routing input changed (database writes notify on their own)."""
         if self._router is not None:
             self._router.mark_dirty(reason, reload=False)
+
+    def schedule_probe(self, provider_id: int, reason: str = "auto") -> None:
+        """Probe a provider's endpoints in the background, once at a time.
+
+        Probes never run inference, so they run on add, on every edit and
+        address change, when a provider comes back, and when the last one is
+        older than LLAMA_ROUTER_PROBE_MAX_AGE_HOURS.
+        """
+        if not settings.auto_probe_enabled:
+            return
+        running = self._probing.get(provider_id)
+        if running is not None and not running.done():
+            return
+
+        async def _run() -> None:
+            try:
+                await self.probe_provider(provider_id)
+            except ValueError as exc:
+                logger.debug("Probe of provider %d skipped: %s", provider_id, exc)
+            except Exception:
+                logger.exception(
+                    "Background probe failed (provider_id=%s, %s)", provider_id, reason
+                )
+            finally:
+                self._probing.pop(provider_id, None)
+
+        self._probing[provider_id] = asyncio.create_task(
+            _run(), name=f"probe-{provider_id}"
+        )
+
+    def _probe_is_stale(self, provider: Provider) -> bool:
+        max_age = settings.probe_max_age_hours
+        if max_age <= 0:
+            return False
+        at = provider.probed_at
+        if at is None:
+            return True
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - at).total_seconds()
+        return age >= max_age * 3600
 
     @classmethod
     def _get_cache_prefixes(cls) -> list[str]:
@@ -194,6 +239,14 @@ class ProviderManager:
                 await self._health_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._probing.values()):
+            task.cancel()
+        for task in list(self._probing.values()):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._probing.clear()
         for client in self._ollama_clients.values():
             await client.close()
         for client in self._llamacpp_clients.values():
@@ -298,6 +351,7 @@ class ProviderManager:
             await self._store_api_key(provider, api_key, header)
         await self._db.add_address(provider.id, url, is_preferred=True)
         await self._rebuild_clients(provider)
+        self.schedule_probe(provider.id, "add")
         await self.check_provider(provider, rediscover=True, source="add")
         return provider
 
@@ -354,6 +408,7 @@ class ProviderManager:
         if not provider:
             return
         await self._rebuild_clients(provider)
+        self.schedule_probe(provider_id, "edit")
         await self.check_provider(provider, rediscover=True, source="edit")
 
     async def _store_api_key(
@@ -430,6 +485,7 @@ class ProviderManager:
         provider = await self._db.get_provider(provider_id)
         if provider:
             await self._rebuild_clients(provider)
+            self.schedule_probe(provider_id, "address")
         return addr
 
     async def update_address(
@@ -445,6 +501,8 @@ class ProviderManager:
         provider = await self._db.get_provider(addr.provider_id)
         if provider:
             await self._rebuild_clients(provider)
+            if url.rstrip("/") != addr.url.rstrip("/"):
+                self.schedule_probe(addr.provider_id, "address")
 
     async def remove_address(self, address_id: int) -> None:
         addr = await self._db.get_address(address_id)
@@ -610,7 +668,8 @@ class ProviderManager:
     async def _refresh_llamacpp_loaded(self, provider: Provider) -> None:
         assert provider.id is not None
         client = self._llamacpp_clients.get(provider.id)
-        if not provider.is_openai or client is None:
+        if not provider.is_openai or client is None or provider.lacks("/props"):
+            # Only llama.cpp-style servers report their loaded model in /props.
             self._set_llamacpp_loaded(provider.id, set())
             return
         try:
@@ -926,6 +985,9 @@ class ProviderManager:
             )
         elif online and not was_online:
             logger.info("Provider %s is online (%s)", provider.name, live_urls)
+            if prev_status == ProviderStatus.OFFLINE:
+                # It may have come back as a different server or version.
+                self.schedule_probe(pid, "recovered")
             await self._log_event(
                 provider,
                 source,
@@ -1238,8 +1300,10 @@ class ProviderManager:
 
             # Also probe each configured llama.cpp instance for its currently loaded
             # model via /props; some instances expose active model there even when
-            # /v1/models is sparse.
-            if provider.is_worker:
+            # /v1/models is sparse. Skip servers whose probe found no /props.
+            if provider.lacks("/props"):
+                pass
+            elif provider.is_worker:
                 props = await self._llamacpp_clients[provider.id].get_props()
                 current = self._extract_llamacpp_current_model(props)
                 if current:
@@ -1251,14 +1315,16 @@ class ProviderManager:
                         details={"_from_props": True},
                     )
             addresses = (
-                [] if provider.is_worker else await self._db.get_addresses(provider.id)
+                []
+                if provider.is_worker or provider.lacks("/props")
+                else await self._db.get_addresses(provider.id)
             )
             timeout = httpx.Timeout(10.0)
             async with httpx.AsyncClient(
                 timeout=timeout, headers=self._upstream_headers(provider)
             ) as probe_client:
                 for addr in addresses:
-                    base = addr.url.rstrip("/")
+                    base = split_api_base(addr.url)[0]
                     try:
                         resp = await probe_client.get(f"{base}/props")
                         props = resp.json() if resp.status_code == 200 else None
@@ -1330,6 +1396,13 @@ class ProviderManager:
     async def _run_health_checks(self) -> None:
         providers = await self._db.list_providers()
         await self._check_many(providers, rediscover=False, source="health")
+        for p in providers:
+            if (
+                p.id is not None
+                and p.status != ProviderStatus.OFFLINE
+                and self._probe_is_stale(p)
+            ):
+                self.schedule_probe(p.id, "stale")
 
     async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
         """Check one address and record how long a successful check took.
@@ -1359,6 +1432,17 @@ class ProviderManager:
         """Check if a single address is reachable via the provider's protocol."""
         if provider.is_worker:
             return await self._probe_worker(provider)
+        liveness = provider.liveness_path
+        if liveness:
+            # The probe found this GET answers cheaply on this server.
+            try:
+                async with httpx.AsyncClient(
+                    timeout=_PROBE_TIMEOUT, headers=self._upstream_headers(provider)
+                ) as http:
+                    resp = await http.get(addr.url.rstrip("/") + liveness)
+                return 200 <= resp.status_code < 300
+            except httpx.HTTPError:
+                return False
         client_cls = OllamaClient if provider.is_ollama else LlamaCppClient
         tmp = client_cls(
             addr.url,

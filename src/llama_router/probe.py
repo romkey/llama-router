@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .cloud_presets import preset_for_url
 from .provider_secrets import auth_headers
 
 _TIMEOUT = httpx.Timeout(4.0)
@@ -141,6 +142,16 @@ CATALOG: list[Endpoint] = [
     _ep("litellm", "POST", "/utils/token_counter", "token counter"),
     _ep("litellm", "POST", "/v1/extraction", "extraction"),
     _ep("litellm", "POST", "/guardrails/apply_guardrail", "guardrails"),
+    # --- Other servers, for recognising them (their OpenAI routes are above) ---
+    _ep("lemonade", "GET", "/api/v1/health", "Lemonade health"),
+    _ep("lemonade", "GET", "/api/v1/models", "Lemonade models"),
+    _ep("lmstudio", "GET", "/api/v0/models", "LM Studio models"),
+    _ep("sglang", "GET", "/get_server_info", "SGLang server info"),
+    _ep("sglang", "GET", "/get_model_info", "SGLang model info"),
+    _ep("tgi", "GET", "/info", "TGI server info"),
+    _ep("koboldcpp", "GET", "/api/v1/model", "KoboldCpp model"),
+    _ep("koboldcpp", "GET", "/api/extra/version", "KoboldCpp version"),
+    _ep("localai", "GET", "/readyz", "LocalAI readiness"),
 ]
 
 
@@ -156,6 +167,9 @@ def _dedupe(endpoints: list[Endpoint]) -> list[Endpoint]:
     return out
 
 
+# Routes in the OpenAI-style API, whichever family the deduplicated catalog
+# files them under (bare /models is also llama.cpp's router-mode listing).
+_OPENAI_ROUTES = {(e.method, e.path) for e in CATALOG if e.family == "openai"}
 CATALOG = _dedupe(CATALOG)
 
 FAMILY_LABELS = {
@@ -166,7 +180,40 @@ FAMILY_LABELS = {
     "anthropic": "Anthropic-compatible",
     "decisions": "Decision models",
     "litellm": "LiteLLM",
+    "lemonade": "Lemonade",
+    "lmstudio": "LM Studio",
+    "sglang": "SGLang",
+    "tgi": "Text Generation Inference",
+    "koboldcpp": "KoboldCpp",
+    "localai": "LocalAI",
 }
+
+# GETs that answer cheaply when a server is up, best first. The first one a
+# probe finds available becomes the provider's health check.
+LIVENESS_PATHS = (
+    "/health",
+    "/api/version",
+    "/v1/models",
+    "/models",
+    "/api/v1/health",
+    "/health/liveliness",
+)
+
+# The most specific recognised server names the provider's flavor.
+_FLAVOR_ORDER = (
+    "llama-router",
+    "ollama",
+    "lemonade",
+    "lm-studio",
+    "koboldcpp",
+    "sglang",
+    "tgi",
+    "vllm",
+    "llama.cpp",
+    "litellm",
+    "localai",
+    "openai-compatible",
+)
 
 AVAILABLE = "available"
 EXISTS = "exists"
@@ -195,6 +242,14 @@ class ProbeResult:
     servers: list[str] = field(default_factory=list)
     version: str | None = None
     suggested_type: str | None = None
+    # Most specific server recognised, e.g. "vllm" or a cloud preset id.
+    flavor: str | None = None
+    # Cloud preset the hostname belongs to, if any.
+    preset: str | None = None
+    # Path of the cheapest GET that answered, for health checks.
+    liveness: str | None = None
+    # A key was sent and every endpoint that answered refused it.
+    key_rejected: bool = False
     models: list[str] = field(default_factory=list)
     endpoints: list[EndpointResult] = field(default_factory=list)
     duration_ms: float = 0.0
@@ -236,6 +291,10 @@ def merge_results(results: list[ProbeResult]) -> dict[str, Any]:
         "suggested_type": next(
             (r.suggested_type for r in results if r.suggested_type), None
         ),
+        "flavor": next((r.flavor for r in results if r.flavor), None),
+        "preset": next((r.preset for r in results if r.preset), None),
+        "liveness": next((r.liveness for r in results if r.liveness), None),
+        "key_rejected": any(r.key_rejected for r in results),
         "models": models[:_MAX_MODELS],
         "supported": supported,
         "families": {
@@ -314,11 +373,30 @@ def _json(resp: httpx.Response | None) -> Any:
         return None
 
 
+def _str(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
+
+
+def _json_any(resp: httpx.Response | None) -> Any:
+    """JSON body of any response, including errors."""
+    if resp is None:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
+
+
 def _detect(
     result: ProbeResult, responses: dict[tuple[str, str], httpx.Response | None]
 ) -> None:
     def get(path: str, method: str = "GET") -> Any:
-        return _json(responses.get((method, path)))
+        resp = responses.get((method, path))
+        # A 200 that the classifier calls missing ("unexpected endpoint") is
+        # not an answer from that route.
+        if resp is None or _classify(resp) != AVAILABLE:
+            return None
+        return _json(resp)
 
     servers: list[str] = []
     version = get("/api/version")
@@ -366,7 +444,57 @@ def _detect(
         if has_version and not result.version:
             result.version = str(vllm_version["version"])
 
+    lemonade = get("/api/v1/health")
+    if isinstance(lemonade, dict) and (
+        "model_loaded" in lemonade or "checkpoint_loaded" in lemonade
+    ):
+        servers.append("lemonade")
+        result.version = result.version or _str(lemonade.get("version"))
+
+    lms = get("/api/v0/models")
+    if isinstance(lms, dict) and isinstance(lms.get("data"), list):
+        servers.append("lm-studio")
+
+    sglang = get("/get_server_info")
+    if isinstance(sglang, dict) and sglang:
+        servers.append("sglang")
+        result.version = result.version or _str(sglang.get("version"))
+
+    tgi = get("/info")
+    if (
+        isinstance(tgi, dict)
+        and "model_id" in tgi
+        and ("router" in tgi or "max_input_tokens" in tgi or "max_input_length" in tgi)
+    ):
+        servers.append("tgi")
+        result.version = result.version or _str(tgi.get("version"))
+
+    kobold = get("/api/extra/version")
+    if (
+        isinstance(kobold, dict)
+        and "koboldcpp" in str(kobold.get("result", "")).lower()
+    ):
+        servers.append("koboldcpp")
+        result.version = result.version or _str(kobold.get("version"))
+
+    ready = responses.get(("GET", "/readyz"))
+    if (
+        ready is not None
+        and _classify(ready) == AVAILABLE
+        and "openai-compatible" in servers
+        and not {"vllm", "llama.cpp", "sglang", "tgi", "litellm"} & set(servers)
+    ):
+        servers.append("localai")
+
+    messages = responses.get(("POST", "/v1/messages"))
+    if messages is not None and messages.status_code in (400, 401, 403):
+        err = _json_any(messages)
+        if isinstance(err, dict) and err.get("type") == "error":
+            servers.append("anthropic-api")
+
     result.servers = servers
+    flavor = next((f for f in _FLAVOR_ORDER if f in servers), None)
+    result.flavor = result.preset or flavor
     if "ollama" in servers or "llama-router" in servers:
         result.suggested_type = "ollama"
     elif servers:
@@ -404,6 +532,21 @@ async def probe_url(
     result = ProbeResult(base_url=base)
     if headers is None and api_key:
         headers = auth_headers(api_key, api_key_header)
+    preset = preset_for_url(base)
+    catalog = CATALOG
+    if preset is not None:
+        # A known cloud service: skip the self-hosted servers' routes, which
+        # only cost requests against its rate limit.
+        result.preset = preset.id
+        result.suggested_type = preset.protocol
+        families = {"openai", "anthropic"} | (
+            {"ollama"} if preset.protocol == "ollama" else set()
+        )
+        catalog = [
+            ep
+            for ep in CATALOG
+            if ep.family in families or (ep.method, ep.path) in _OPENAI_ROUTES
+        ]
     started = time.monotonic()
     sem = asyncio.Semaphore(_CONCURRENCY)
     async with httpx.AsyncClient(
@@ -413,13 +556,24 @@ async def probe_url(
         transport=transport,
         follow_redirects=False,
     ) as client:
-        pairs = await asyncio.gather(*(_probe_one(client, ep, sem) for ep in CATALOG))
+        pairs = await asyncio.gather(*(_probe_one(client, ep, sem) for ep in catalog))
     result.endpoints = [r for r, _ in pairs]
     responses = {(r.method, r.path): resp for r, resp in pairs}
     result.reachable = any(r.status_code is not None for r in result.endpoints)
     result.auth_required = any(r.state == NEEDS_KEY for r in result.endpoints)
+    answered = [r for r in result.endpoints if r.status_code is not None]
+    result.key_rejected = bool(
+        headers and answered and all(r.state == NEEDS_KEY for r in answered)
+    )
+    states = {(r.method, r.path): r.state for r in result.endpoints}
+    result.liveness = next(
+        (p for p in LIVENESS_PATHS if states.get(("GET", p)) == AVAILABLE), None
+    )
     if result.reachable:
+        suggested = result.suggested_type
         _detect(result, responses)
+        if preset is not None:
+            result.suggested_type = suggested
     else:
         result.error = "no response from any endpoint"
     result.duration_ms = (time.monotonic() - started) * 1000
