@@ -44,7 +44,7 @@ def env_files(root: Path) -> list[Path]:
     ]
 
 
-def local_secrets(root: Path) -> dict[str, str]:
+def local_values(root: Path) -> dict[str, str]:
     """Maps each real value in local .env files to its variable's name."""
     files = env_files(root)
     dummies = {
@@ -54,17 +54,17 @@ def local_secrets(root: Path) -> dict[str, str]:
         for value in parse_env(path).values()
     }
     return {
-        value: key
+        value: name
         for path in files
         if not path.name.endswith(".example")
-        for key, value in parse_env(path).items()
+        for name, value in parse_env(path).items()
         if len(value) >= MIN_SECRET_LENGTH and value not in dummies
     }
 
 
 def main(argv: list[str]) -> int:
-    secrets = local_secrets(Path.cwd())
-    if not secrets:
+    values = local_values(Path.cwd())
+    if not values:
         return 0
     failed = False
     for name in argv:
@@ -78,9 +78,11 @@ def main(argv: list[str]) -> int:
         for number, line in enumerate(lines, 1):
             if ALLOW in line:
                 continue
-            for value, key in secrets.items():
+            for value, variable in values.items():
                 if value in line:
-                    print(f"{name}:{number}: contains the value of {key} from .env")
+                    print(
+                        f"{name}:{number}: contains the value of {variable} from .env"
+                    )
                     failed = True
     if failed:
         print("Remove it (and rotate it if it was ever pushed).")

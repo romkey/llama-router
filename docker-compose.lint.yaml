@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.lint.yaml run --rm lint
 #   docker compose -f docker-compose.lint.yaml run --rm secrets   # whole git history
 #
-# Or run the same checks on every commit: uvx pre-commit install
+# Or run the same checks on every commit: uvx --python 3.14 pre-commit install
 
 services:
   # Runs .pre-commit-config.yaml: ruff, mypy, yamllint, actionlint,

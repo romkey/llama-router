@@ -679,8 +679,8 @@ docker compose -f docker-compose.lint.yaml run --rm secrets   # scan git history
 uv sync
 uv run llama-router
 uv run pytest
-uvx pre-commit run --all-files
-uvx pre-commit install     # run the same checks on every commit
+uvx --python 3.14 pre-commit run --all-files
+uvx --python 3.14 pre-commit install     # run the same checks on every commit
 ```
 
 ### With pip

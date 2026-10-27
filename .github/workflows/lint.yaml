@@ -35,7 +35,7 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
-      - run: uvx pre-commit@4.7.0 run --all-files --show-diff-on-failure --color=always
+      - run: uvx --python 3.14 pre-commit@4.7.0 run --all-files --show-diff-on-failure --color=always
       # pre-commit's gitleaks hook only sees staged changes; scan every commit.
       - name: Scan git history for secrets
         run: |

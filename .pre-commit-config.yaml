@@ -1,8 +1,13 @@
 # Lint, format, type and secret checks. The same hooks run three ways:
 #   docker compose -f docker-compose.lint.yaml run --rm lint   # nothing to install
-#   uvx pre-commit install                                     # on every git commit
+#   uvx --python 3.14 pre-commit install                       # on every git commit
 #   .github/workflows/lint.yaml                                # CI
 # Renovate keeps the revs current.
+
+# The local hooks parse src/ with ast, which needs the Python the app targets
+# (3.14 syntax such as unparenthesized except clauses).
+default_language_version:
+  python: python3.14
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
