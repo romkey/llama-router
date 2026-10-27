@@ -121,8 +121,7 @@ class Candidate:
 
     @property
     def provider_id(self) -> int:
-        assert self.provider.id is not None
-        return self.provider.id
+        return self.provider.require_id()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -592,8 +591,7 @@ def build_table(
     table.prices = book
 
     for p in online:
-        pid = p.id
-        assert pid is not None
+        pid = p.require_id()
         models = inputs.models.get(pid, [])
         up = upstream_for(p)
         hot = hot_models(pid, up)

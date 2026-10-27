@@ -15,7 +15,7 @@ def _status_error(status: int) -> httpx.HTTPStatusError:
 
 
 @pytest.mark.parametrize(
-    "exc,transient",
+    ("exc", "transient"),
     [
         (httpx.ReadTimeout("t"), True),
         (httpx.ConnectError("c"), True),

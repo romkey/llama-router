@@ -60,12 +60,14 @@ def get_worker_link() -> WorkerLinkManager:
 
 
 def get_db() -> Database:
-    assert _db is not None
+    if _db is None:
+        raise RuntimeError("db is not initialised; call init() first")
     return _db
 
 
 def get_pm() -> ProviderManager:
-    assert _pm is not None
+    if _pm is None:
+        raise RuntimeError("pm is not initialised; call init() first")
     return _pm
 
 

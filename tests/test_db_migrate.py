@@ -316,7 +316,8 @@ def test_upgrade_009_splits_both_providers(
     con = sqlite3.connect(dbfile)
     try:
         cols = {r[1] for r in con.execute("PRAGMA table_info(providers)")}
-        assert "provider_type" not in cols and "protocol" in cols
+        assert "provider_type" not in cols
+        assert "protocol" in cols
         addr_cols = {r[1] for r in con.execute("PRAGMA table_info(provider_addresses)")}
         assert "llamacpp_url" not in addr_cols
 

@@ -149,7 +149,8 @@ class Database:
         self._session_factory = None
 
     def _require_session_factory(self) -> async_sessionmaker[AsyncSession]:
-        assert self._session_factory is not None, "Database not connected"
+        if self._session_factory is None:
+            raise RuntimeError("Database not connected")
         return self._session_factory
 
     async def _select_all(self, sql: str, *args: Any) -> list[Mapping[str, Any]]:
@@ -187,8 +188,7 @@ class Database:
                 st, bd = qmark(insert_sql, *_bind_params(*args))
                 await session.execute(st, bd)
                 r = await session.execute(text("SELECT LAST_INSERT_ID() AS id"))
-                row = r.mappings().first()
-                assert row is not None
+                row = r.mappings().one()
                 return int(row["id"])
             st, bd = qmark(insert_sql + " RETURNING id", *_bind_params(*args))
             r = await session.execute(st, bd)

@@ -45,9 +45,9 @@ async def generate(request: Request):
     if route_result.resolved_model != model:
         body["model"] = route_result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = route_result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     if hasattr(client, "validate"):
         try:
             client.validate("generate", body)
@@ -60,7 +60,7 @@ async def generate(request: Request):
 
         async def generate_chunks():
             try:
-                async with pm.acquire_provider(provider.id):
+                async with pm.acquire_provider(provider_id):
                     async for chunk in client.generate_stream(body):
                         yield chunk
             except Exception:
@@ -82,7 +82,7 @@ async def generate(request: Request):
         return StreamingResponse(logged, media_type="application/x-ndjson")
 
     try:
-        async with pm.acquire_provider(provider.id):
+        async with pm.acquire_provider(provider_id):
             payload = await client.generate(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

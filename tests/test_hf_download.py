@@ -16,7 +16,6 @@ import pytest
 from llama_router import hf_download
 from llama_router.config import settings
 from llama_router.dashboard import routes
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 FAKE_HF = textwrap.dedent("""\
     #!{python}
@@ -84,7 +83,7 @@ def test_default_ollama_name(repo, file, name) -> None:
     "bad", ["", "noslash", "a/b/c", "../etc", "owner/..", "owner/na me", "-x/y"]
 )
 def test_validate_repo_rejects(bad) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="repository must look"):
         hf_download.validate_repo(bad)
 
 
@@ -94,7 +93,7 @@ def test_validate_repo_accepts_hf_co_prefix() -> None:
 
 @pytest.mark.parametrize("bad", ["../x.gguf", "a b", "x;rm", "$(x)"])
 def test_validate_pattern_rejects(bad) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="file pattern may use"):
         hf_download.validate_pattern(bad)
 
 
@@ -118,7 +117,8 @@ def test_env_summary_masks_token(monkeypatch) -> None:
 
 def test_local_dir_stays_under_root(fake_hf) -> None:
     d = hf_download.local_dir_for("owner/model-GGUF")
-    assert d.parent == fake_hf.resolve() and d.name == "owner__model-GGUF"
+    assert d.parent == fake_hf.resolve()
+    assert d.name == "owner__model-GGUF"
 
 
 async def test_plan_and_download_with_cli(fake_hf) -> None:
@@ -197,7 +197,8 @@ async def test_hf_pull_pushes_blob_and_creates_model(
     )
     assert r.status_code == 200
     entry = await _wait_done(r.json()["pull_id"])
-    assert entry["completed"] == [pid] and entry["failed"] == []
+    assert entry["completed"] == [pid]
+    assert entry["failed"] == []
     assert entry["model"] == "model:q4_k_m"
 
     expected = "sha256:" + hashlib.sha256(b"GGUFModel-Q4_K_M.gguf").hexdigest()
@@ -254,7 +255,8 @@ async def test_hf_routes_validate_input(dash_client, fake_hf) -> None:
     assert body["suggested_name"] == "model:q4_k_m"
 
     env = await client.get("/api/hf/env")
-    assert env.status_code == 200 and env.json()["hf_available"] is True
+    assert env.status_code == 200
+    assert env.json()["hf_available"] is True
 
 
 async def test_download_ignores_leftovers_from_earlier_runs(fake_hf) -> None:
@@ -329,7 +331,8 @@ async def test_hf_pull_refuses_worker_push(dash_client, fake_hf) -> None:
     r = await client.post(
         "/api/hf/pull", json={"repo": "owner/x", "push_provider_ids": [w.id]}
     )
-    assert r.status_code == 400 and "worker" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "worker" in r.json()["detail"]
 
 
 async def test_plan_keeps_nested_files_hf_selected(fake_hf, monkeypatch) -> None:

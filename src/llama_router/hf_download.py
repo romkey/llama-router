@@ -199,7 +199,8 @@ async def _run(
         stderr=asyncio.subprocess.PIPE,
         env={**os.environ, "HF_HUB_DISABLE_UPDATE_CHECK": "1", "NO_COLOR": "1"},
     )
-    assert proc.stdout is not None and proc.stderr is not None
+    if proc.stdout is None or proc.stderr is None:
+        raise RuntimeError("hf subprocess started without its pipes")
     err_tail: list[str] = []
 
     async def read_stderr() -> None:

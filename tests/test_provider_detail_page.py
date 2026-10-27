@@ -7,7 +7,6 @@ from html.parser import HTMLParser
 import pytest
 
 from llama_router.models import ProviderProtocol
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 
 class _EditButtons(HTMLParser):

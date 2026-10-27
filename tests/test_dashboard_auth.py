@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import pytest
-import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
 
 from llama_router.config import settings
 from llama_router.dashboard import deps as dash_deps
-from llama_router.dashboard.app import app as dashboard_app
 from llama_router.dashboard.auth_core import (
     AUTH_COOKIE,
     hash_password,
@@ -18,44 +15,12 @@ from llama_router.dashboard.auth_core import (
     verify_password,
 )
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
-from llama_router.database import Database
-from llama_router.provider_manager import ProviderManager
 
 
 def _session_cookie_header(user_id: int) -> dict[str, str]:
     secret = settings.session_secret.strip()
     token = sign_session(user_id, secret)
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
-
-
-@pytest_asyncio.fixture
-async def dash_client(tmp_path, monkeypatch):
-    """ASGI client with isolated DB and fixed session secret."""
-    monkeypatch.setattr(
-        settings, "session_secret", "test-session-secret-key-min-16chars"
-    )
-    monkeypatch.setattr(settings, "dashboard_cookie_secure", False)
-
-    db = Database(str(tmp_path / "dash_auth.db"))
-    await db.connect()
-    pm = ProviderManager(db)
-    dash_deps.invalidate_dashboard_session_secret_cache()
-    invalidate_dashboard_user_count_cache()
-    dash_deps.init(db, pm)
-
-    transport = ASGITransport(app=dashboard_app)
-    async with AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-        follow_redirects=False,
-    ) as client:
-        yield client, db
-
-    await db.close()
-    dash_deps._db = None
-    dash_deps._pm = None
-    dash_deps.invalidate_dashboard_session_secret_cache()
-    invalidate_dashboard_user_count_cache()
 
 
 def test_normalize_username_accepts_valid() -> None:
@@ -72,7 +37,7 @@ def test_normalize_username_accepts_valid() -> None:
     ],
 )
 def test_normalize_username_rejects_invalid(raw: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Username"):
         normalize_username(raw)
 
 
@@ -519,9 +484,11 @@ async def test_admin_can_create_rotate_disable_and_delete_worker(dash_client) ->
     assert token.startswith("lrw_")
     assert "LLAMA_ROUTER_WORKER_TOKEN=" + token in body["env_example"]
     row = await db.get_worker_by_token_hash(worker_token_hash(token))
-    assert row is not None and row["provider_id"] == body["provider_id"]
+    assert row is not None
+    assert row["provider_id"] == body["provider_id"]
     prov = await db.get_provider(body["provider_id"])
-    assert prov.worker_name == "alice-gpu" and prov.is_worker
+    assert prov.worker_name == "alice-gpu"
+    assert prov.is_worker
     assert [a.url for a in await db.get_addresses(prov.id)] == ["worker://alice-gpu"]
     assert prov.status.value == "offline"
 
@@ -590,7 +557,8 @@ async def test_worker_link_save_and_clear(dash_client, monkeypatch) -> None:
     )
     assert r.status_code == 200, r.text
     st = r.json()
-    assert st["configured"] is True and st["source"] == "dashboard"
+    assert st["configured"] is True
+    assert st["source"] == "dashboard"
     assert st["hub_url"] == "http://127.0.0.1:9"
     assert st["state"] in ("connecting", "backoff")
     assert await db.get_app_setting("worker_token") == "lrw_abc"
@@ -599,7 +567,8 @@ async def test_worker_link_save_and_clear(dash_client, monkeypatch) -> None:
         "/api/worker-link", headers=hdr, json={"hub_url": "", "token": ""}
     )
     st = r.json()
-    assert st["configured"] is False and st["state"] == "disabled"
+    assert st["configured"] is False
+    assert st["state"] == "disabled"
     await dash_deps.get_worker_link().stop()
 
 

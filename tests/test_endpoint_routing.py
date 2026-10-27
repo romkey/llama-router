@@ -123,7 +123,8 @@ async def test_probed_missing_endpoint_demotes_only_that_endpoint(
         if c.provider.name == "fast"
     )
     assert cand.upstream == "openai"
-    assert cand.endpoint_support == "missing" and cand.tier == TIER_MISSING
+    assert cand.endpoint_support == "missing"
+    assert cand.tier == TIER_MISSING
     assert (await rt.route("m", "/v1/audio/speech")).provider.id == other.id
     # Chat is unaffected.
     assert (await rt.route("m", CHAT, _mode("latency"))).provider.id == fast.id
@@ -215,7 +216,8 @@ async def test_provider_wide_failures_open_its_circuit(
             pm.stats.record_request(flaky.id, model, ok=False)
     pm.stats.record_request(flaky.id, "m1", ok=False)
     health = pm.stats.provider_health(flaky.id)
-    assert health.circuit_open and health.score < 50
+    assert health.circuit_open
+    assert health.score < 50
     rt = Router(db, pm)
     for mode in ("latency", "throughput", "balanced"):
         assert (await rt.route("m3", CHAT, _mode(mode))).provider.id == steady.id
@@ -270,11 +272,15 @@ def test_latency_tally(clock: FakeClock):
         stats.record_probe(1, 7, ok=True, ms=ms)
     stats.record_probe(1, 7, ok=False, ms=5000.0)
     t = stats.tally(1, 7).to_dict()
-    assert t["checks"] == 6 and t["failures"] == 1
+    assert t["checks"] == 6
+    assert t["failures"] == 1
     assert t["consecutive_failures"] == 1
-    assert t["min_ms"] == 10.0 and t["max_ms"] == 100.0
-    assert t["p50_ms"] == 30.0 and t["p95_ms"] == 100.0
-    assert t["mean_ms"] == 40.0 and t["last_ms"] == 100.0
+    assert t["min_ms"] == 10.0
+    assert t["max_ms"] == 100.0
+    assert t["p50_ms"] == 30.0
+    assert t["p95_ms"] == 100.0
+    assert t["mean_ms"] == 40.0
+    assert t["last_ms"] == 100.0
     # Routing uses the moving average of successful checks only.
     assert stats.rtt_ms(1, [7]) == pytest.approx(stats.tally(1, 7).ewma.value)
 
@@ -314,7 +320,8 @@ async def test_dashboard_shows_provider_health(db: Database, pm: ProviderManager
     with TestClient(dash_app) as client:
         page = client.get("/").text
         table = client.get("/api/routing-table").json()
-    assert "Provider health" in page and "p50 12 ms" in page
+    assert "Provider health" in page
+    assert "p50 12 ms" in page
     assert "Balanced (default)" in page
     assert table["provider_health"][str(p.id)]["score"] == 100
 

@@ -279,9 +279,9 @@ async def pass_through(
     stored probe result can still say otherwise, so the request is emulated
     instead and the worker is probed again.
     """
-    assert provider.id is not None
+    provider_id = provider.require_id()
     try:
-        return await native(pm, provider.id, path, body)
+        return await native(pm, provider_id, path, body)
     except httpx.HTTPStatusError as exc:
         resp = exc.response
         if not (provider.is_worker and worker_refused(resp.status_code, resp.text)):
@@ -291,7 +291,7 @@ async def pass_through(
         provider.name,
         path,
     )
-    pm.schedule_probe(provider.id, "worker refused decisions")
+    pm.schedule_probe(provider_id, "worker refused decisions")
     return None
 
 
@@ -312,7 +312,7 @@ async def answer_routed(
     questions. Raises like :func:`emulate` and :func:`native`.
     """
     provider = result.provider
-    assert provider.id is not None
+    provider_id = provider.require_id()
     native_path = native_decision_path(provider, path)
     if native_path is not None:
         out = await pass_through(
@@ -325,6 +325,6 @@ async def answer_routed(
         aliases,
     )
     cal = await calibrations(db).for_request(names, request)
-    answered = await emulate(pm, provider.id, result.backend_model, request, cal)
-    pm.stats.record_logprobs(provider.id, ok=True)
+    answered = await emulate(pm, provider_id, result.backend_model, request, cal)
+    pm.stats.record_logprobs(provider_id, ok=True)
     return {"model": result.resolved_model, **answered}, len(cal)

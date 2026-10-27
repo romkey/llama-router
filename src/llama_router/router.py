@@ -183,12 +183,12 @@ class Router:
             self._need_rescore = False
             started = time.perf_counter()
             try:
-                if reload:
-                    self._inputs = await load_inputs(self._db)
-                assert self._inputs is not None
+                inputs = self._inputs
+                if reload or inputs is None:
+                    inputs = self._inputs = await load_inputs(self._db)
                 self._version += 1
                 table = build_table(
-                    self._inputs,
+                    inputs,
                     hot_models=self._pm.hot_model_names,
                     stats=self._pm.stats,
                     version=self._version,
@@ -202,7 +202,7 @@ class Router:
             self._table = table
             if reload:
                 gone = self.affinity.forget_providers_not_in(
-                    {p.id for p in self._inputs.providers if p.id is not None}
+                    {p.id for p in inputs.providers if p.id is not None}
                 )
                 if gone:
                     logger.debug("Dropped %d sessions bound to removed providers", gone)
@@ -789,7 +789,7 @@ class Router:
             return None
         provider, eligible = random.choice(entries)
         resolved_model = random.choice(eligible)
-        assert provider.id is not None
+        provider_id = provider.require_id()
         logger.info(
             "Chaos routing requested=%s protocol=%s -> provider=%s model=%s",
             requested_model,
@@ -798,7 +798,7 @@ class Router:
             resolved_model,
         )
         return RouteResult(
-            provider, resolved_model, table.backend_name(provider.id, resolved_model)
+            provider, resolved_model, table.backend_name(provider_id, resolved_model)
         )
 
 

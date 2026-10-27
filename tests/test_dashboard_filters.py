@@ -8,7 +8,6 @@ import re
 import pytest
 
 from llama_router.models import ProviderModel, ProviderProtocol
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 
 async def _seed(db):

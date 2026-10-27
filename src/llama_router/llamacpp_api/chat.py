@@ -47,9 +47,9 @@ async def chat_completions(request: Request):
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = get_v1_client(pm, provider.id)
+    client = get_v1_client(pm, provider_id)
     stream = body.get("stream", False)
     start = time.monotonic()
 
@@ -57,7 +57,7 @@ async def chat_completions(request: Request):
 
         async def generate():
             try:
-                async with pm.acquire_provider(provider.id):
+                async with pm.acquire_provider(provider_id):
                     async for chunk in client.chat_completions_stream(body):
                         yield chunk
             except Exception:
@@ -79,7 +79,7 @@ async def chat_completions(request: Request):
         return StreamingResponse(logged, media_type="text/event-stream")
 
     try:
-        async with pm.acquire_provider(provider.id):
+        async with pm.acquire_provider(provider_id):
             resp = await client.chat_completions(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

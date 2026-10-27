@@ -19,15 +19,18 @@ def init(db: Database, pm: ProviderManager, router: Router) -> None:
 
 
 def get_db() -> Database:
-    assert _db is not None
+    if _db is None:
+        raise RuntimeError("db is not initialised; call init() first")
     return _db
 
 
 def get_pm() -> ProviderManager:
-    assert _pm is not None
+    if _pm is None:
+        raise RuntimeError("pm is not initialised; call init() first")
     return _pm
 
 
 def get_router() -> Router:
-    assert _router is not None
+    if _router is None:
+        raise RuntimeError("router is not initialised; call init() first")
     return _router

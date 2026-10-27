@@ -41,13 +41,13 @@ async def audio_speech(request: Request):
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = get_v1_client(pm, provider.id)
+    client = get_v1_client(pm, provider_id)
     start = time.monotonic()
 
     async def generate():
-        async with pm.acquire_provider(provider.id):
+        async with pm.acquire_provider(provider_id):
             async for chunk in client.audio_speech(body):
                 yield chunk
 
@@ -152,11 +152,11 @@ async def audio_transcriptions(request: Request):
 
     provider = result.provider
     routed = result.model_key
-    assert provider.id is not None
-    client = get_v1_client(pm, provider.id)
+    provider_id = provider.require_id()
+    client = get_v1_client(pm, provider_id)
     start = time.monotonic()
     try:
-        async with pm.acquire_provider(provider.id):
+        async with pm.acquire_provider(provider_id):
             resp = await client.audio_transcriptions(raw_body, content_type)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

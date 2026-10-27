@@ -44,9 +44,9 @@ async def chat(request: Request):
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     stream = body.get("stream", True)
     start = time.monotonic()
 
@@ -54,7 +54,7 @@ async def chat(request: Request):
 
         async def generate():
             try:
-                async with pm.acquire_provider(provider.id):
+                async with pm.acquire_provider(provider_id):
                     async for chunk in client.chat_stream(body):
                         yield chunk
             except Exception:
@@ -76,7 +76,7 @@ async def chat(request: Request):
         return StreamingResponse(logged, media_type="application/x-ndjson")
 
     try:
-        async with pm.acquire_provider(provider.id):
+        async with pm.acquire_provider(provider_id):
             result = await client.chat(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

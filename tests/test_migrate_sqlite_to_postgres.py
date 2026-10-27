@@ -19,7 +19,7 @@ def test_sqlite_url_is_absolute_file_path(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
-    "raw,expect_substr",
+    ("raw", "expect_substr"),
     [
         (
             "postgresql+asyncpg://u:p@h/db",

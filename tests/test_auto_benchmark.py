@@ -139,7 +139,8 @@ async def test_real_request_cancels_benchmark(db: Database, pm: ProviderManager)
     pm.acquire(p.id)  # a real request arrives
     await _drain(ab)
     pm.release(p.id)
-    assert ab.interrupted == 1 and ab.completed == 0
+    assert ab.interrupted == 1
+    assert ab.completed == 0
     # The provider's run stopped; m2 was not started.
     assert [c[1] for c in fake.calls] == ["m1"]
     assert (await ab.status())["recent"][0]["outcome"] == "interrupted"
@@ -154,7 +155,8 @@ async def test_failures_back_off(db: Database, pm: ProviderManager):
     ab = AutoBenchmarker(db, pm)
     await ab.run_once()
     await _drain(ab)
-    assert ab.failed == 1 and ab.completed == 1
+    assert ab.failed == 1
+    assert ab.completed == 1
     status = await ab.status()
     assert status["backed_off"] == 1
     assert "bad is broken" in status["recent"][-1]["error"]
@@ -174,9 +176,9 @@ async def test_settings_persist_and_disable(db: Database, pm: ProviderManager):
     # A fresh instance reads the saved settings.
     again = await AutoBenchmarker(db, pm).config()
     assert again == cfg
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="at least 30 seconds"):
         await ab.set_config(idle_seconds=5)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="more than 0 days"):
         await ab.set_config(max_age_days=0)
 
 
@@ -189,7 +191,8 @@ async def test_stop_cancels_running_benchmark(db: Database, pm: ProviderManager)
     await ab.start()
     await asyncio.wait_for(fake.started.wait(), 1)
     await ab.stop()
-    assert ab._runs == {} and ab._current == {}
+    assert ab._runs == {}
+    assert ab._current == {}
 
 
 class _FakeOllama:
@@ -209,18 +212,21 @@ async def test_warm_runs_do_not_record_startup(db: Database, pm: ProviderManager
     # loaded: here the router believes nothing is.
     pm._ollama_clients[p.id] = _FakeOllama(startup_ms=2.0)
     warm = await pm.benchmark_provider(p.id, "m", source="auto")
-    assert warm.startup_time_ms is None and warm.source == "auto"
+    assert warm.startup_time_ms is None
+    assert warm.source == "auto"
 
     # ...and a real load is recorded even if the router thinks it is loaded.
     pm._set_hot_models(p.id, [{"name": "m"}])
     pm._ollama_clients[p.id] = _FakeOllama(startup_ms=4200.0)
     cold = await pm.benchmark_provider(p.id, "m")
-    assert cold.startup_time_ms == 4200.0 and cold.source == "manual"
+    assert cold.startup_time_ms == 4200.0
+    assert cold.source == "manual"
 
     rows = await db.get_all_benchmark_results()
     assert {r.source for r in rows} == {"auto", "manual"}
     logs = [e.endpoint for e in await db.get_request_logs(10, 0)]
-    assert "auto-benchmark" in logs and "benchmark" in logs
+    assert "auto-benchmark" in logs
+    assert "benchmark" in logs
 
 
 class _FakeLlamaCpp:
@@ -253,13 +259,15 @@ async def test_llamacpp_loaded_model_is_hot(db: Database, pm: ProviderManager):
 
     await rt.rebuild()
     # m is loaded per /props; an OpenAI provider takes no Ollama routes.
-    assert hot("m", "/v1/chat/completions") and not hot("n", "/v1/chat/completions")
+    assert hot("m", "/v1/chat/completions")
+    assert not hot("n", "/v1/chat/completions")
 
     # The health check re-reads /props: a swapped model stops counting.
     lcpp.model = "n"
     await pm._refresh_hot_models(provider)
     await rt.rebuild()
-    assert not hot("m", "/v1/chat/completions") and hot("n", "/v1/chat/completions")
+    assert not hot("m", "/v1/chat/completions")
+    assert hot("n", "/v1/chat/completions")
     # A provider that stops answering has nothing loaded.
     pm._clear_loaded(p.id)
     await rt.rebuild()
@@ -334,7 +342,8 @@ def test_llamacpp_metrics_use_server_timings():
     assert m["startup_time_ms"] == pytest.approx(2500.0)
     # A few hundred ms left over is network and queueing, not a model load.
     m = _chat_metrics(data, elapsed_s=1.24)
-    assert m["startup_time_ms"] is None and m["tokens_per_second"] == 61.5
+    assert m["startup_time_ms"] is None
+    assert m["tokens_per_second"] == 61.5
     # No timings: no startup claim, speed from tokens over wall time.
     m = _chat_metrics({"usage": {"completion_tokens": 50}}, elapsed_s=2.0)
     assert m == {"startup_time_ms": None, "tokens_per_second": 25.0}
@@ -352,7 +361,8 @@ async def test_auto_benchmark_api(db: Database, pm: ProviderManager):
     with TestClient(dash_app) as client:
         status = client.get("/api/auto-benchmark").json()
         assert status["config"]["enabled"] is True
-        assert status["pending"] == 1 and status["next"][0]["model"] == "m"
+        assert status["pending"] == 1
+        assert status["next"][0]["model"] == "m"
         saved = client.post(
             "/api/auto-benchmark",
             json={"enabled": False, "idle_minutes": 10, "max_age_days": 2},
@@ -361,5 +371,6 @@ async def test_auto_benchmark_api(db: Database, pm: ProviderManager):
         bad = client.post("/api/auto-benchmark", json={"idle_minutes": 0.1})
         assert bad.status_code == 400
         page = client.get("/").text
-        assert "Auto-benchmark" in page and 'id="ab-status"' in page
+        assert "Auto-benchmark" in page
+        assert 'id="ab-status"' in page
     dash_deps.init_auto_benchmark(None)
