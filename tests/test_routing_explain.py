@@ -80,8 +80,8 @@ async def test_explanation_matches_real_decision(
     pm._active_requests[b.id] = 1
     rt = Router(db, pm)
     prefs = RoutingPreferences(mode=mode)
-    real = await rt.route("m", preferences=prefs)
-    out = await rt.explain("m", preferences=prefs)
+    real = await rt.route("m", "/v1/chat/completions", preferences=prefs)
+    out = await rt.explain("m", "/v1/chat/completions", preferences=prefs)
     assert out["chosen"]["provider_id"] == real.provider.id
     step = out["steps"][0]
     ranked = [c for c in step["candidates"] if c["rank"]]
@@ -104,7 +104,7 @@ async def test_explains_unusable_providers(db: Database, pm: ProviderManager):
     for _ in range(5):
         pm.stats.record_request(flaky.id, "m", ok=False)
     rt = Router(db, pm)
-    out = await rt.explain("m", protocol="ollama", endpoint="/api/chat")
+    out = await rt.explain("m", "/api/chat")
     rows = _by_name(out["steps"][0])
     assert out["chosen"]["provider_id"] == good.id
     assert rows["down"]["excluded"] == "provider is offline"
@@ -121,10 +121,12 @@ async def test_explains_missing_endpoint(db: Database, pm: ProviderManager):
         speechless.id, {"endpoints": [{"path": "/v1/audio/speech", "state": "missing"}]}
     )
     rt = Router(db, pm)
-    out = await rt.explain("m", endpoint="/v1/audio/speech")
+    out = await rt.explain("m", "/v1/audio/speech")
     rows = _by_name(out["steps"][0])
     assert out["chosen"]["provider_id"] == full.id
-    assert rows["speechless"]["excluded"] == "last probe found /v1/audio/speech missing"
+    assert rows["speechless"]["excluded"].startswith(
+        "last probe found /v1/audio/speech missing on its llamacpp API"
+    )
 
 
 async def test_explains_fallback_and_pins(db: Database, pm: ProviderManager):
@@ -134,19 +136,23 @@ async def test_explains_fallback_and_pins(db: Database, pm: ProviderManager):
     await db.set_model_fallback("big", "small")
     rt = Router(db, pm)
 
-    out = await rt.explain("big")
+    out = await rt.explain("big", "/v1/chat/completions")
     assert out["fallback_chain"] == ["big", "small"]
     assert out["steps"][0]["outcome"] == "no provider can serve this model"
     assert out["chosen"]["model"] == "small" and out["chosen"]["fell_back"]
     assert "falling back" in out["summary"]
 
     no_fb = await rt.explain(
-        "big", preferences=RoutingPreferences(allow_fallback=False)
+        "big",
+        "/v1/chat/completions",
+        preferences=RoutingPreferences(allow_fallback=False),
     )
     assert no_fb["chosen"] is None and len(no_fb["steps"]) == 1
 
     pinned = await rt.explain(
-        "small", preferences=RoutingPreferences(pinned_providers={"small": b.id})
+        "small",
+        "/v1/chat/completions",
+        preferences=RoutingPreferences(pinned_providers={"small": b.id}),
     )
     rows = _by_name(pinned["steps"][0])
     assert pinned["chosen"]["provider_id"] == b.id
@@ -157,7 +163,9 @@ async def test_explains_fallback_and_pins(db: Database, pm: ProviderManager):
 async def test_explains_chaos(db: Database, pm: ProviderManager):
     await _provider(db, "a", ["m1", "m2"])
     rt = Router(db, pm)
-    out = await rt.explain("anything", preferences=RoutingPreferences(mode="chaos"))
+    out = await rt.explain(
+        "anything", "/v1/chat/completions", preferences=RoutingPreferences(mode="chaos")
+    )
     assert out["chaos_pool"][0]["models"] == ["m1", "m2"]
     assert "random" in out["summary"] and "this time: a" in out["summary"]
 
@@ -165,7 +173,9 @@ async def test_explains_chaos(db: Database, pm: ProviderManager):
 async def test_explains_empty_chaos_pool(db: Database, pm: ProviderManager):
     await _provider(db, "down", ["m"], status=ProviderStatus.OFFLINE)
     rt = Router(db, pm)
-    out = await rt.explain("m", preferences=RoutingPreferences(mode="chaos"))
+    out = await rt.explain(
+        "m", "/v1/chat/completions", preferences=RoutingPreferences(mode="chaos")
+    )
     assert out["chosen"] is None and out["chaos_pool"] == []
     assert out["summary"].startswith("No provider can serve this request")
 

@@ -15,6 +15,7 @@ from fastapi import Request
 
 from .background import spawn
 from .database import Database
+from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error
 from .models import Provider, RequestLog
 from .routing_stats import ProviderStats
@@ -97,8 +98,10 @@ def _record_outcome(
     *,
     status: str,
     error_detail: str | None,
+    endpoint: str | None = None,
     ttft_ms: float | None = None,
     tokens_per_second: float | None = None,
+    duration_ms: float | None = None,
 ) -> None:
     stats = _stats
     if stats is None or provider is None or provider.id is None or not model:
@@ -110,8 +113,10 @@ def _record_outcome(
         provider.id,
         model,
         ok=ok,
+        endpoint_class=endpoint_class(endpoint),
         ttft_ms=ttft_ms,
         tokens_per_second=tokens_per_second,
+        duration_ms=duration_ms,
     )
 
 
@@ -230,9 +235,11 @@ async def log_request(
             routed_model or model,
             status=status,
             error_detail=error_detail,
+            endpoint=endpoint,
             tokens_per_second=(
                 _tps_from_body(response_body, duration_ms) if status == "ok" else None
             ),
+            duration_ms=duration_ms,
         )
     ip = source_ip or (_client_ip(request) if request else "internal")
     entry = RequestLog(
@@ -360,8 +367,10 @@ class StreamLogger:
                 self._routed_model or self._model,
                 status=status,
                 error_detail=error_detail,
+                endpoint=self._endpoint,
                 ttft_ms=ttft_ms,
                 tokens_per_second=tps,
+                duration_ms=duration,
             )
             try:
                 log_request_background(

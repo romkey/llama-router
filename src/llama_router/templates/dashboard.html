@@ -712,6 +712,25 @@
                             <div class="text-muted">No online providers.</div>
                             {% endif %}
                         </div>
+                        <div class="mb-2">
+                            <div class="fw-semibold mb-1"><i class="bi bi-speedometer2 me-1"></i>Balanced (default)</div>
+                            {% if key_routing_preview.balanced %}
+                            <ol class="mb-2 ps-3">
+                                {% for p in key_routing_preview.balanced %}
+                                <li>
+                                    <strong>{{ p.name }}</strong>
+                                    <span class="text-muted">
+                                        — {{ p.active_requests }} active,
+                                        {{ "%.0f ms" | format(p.avg_startup_ms) if p.avg_startup_ms is not none else "no startup data" }},
+                                        {{ "%.1f tok/s" | format(p.avg_tps) if p.avg_tps is not none else "no TPS data" }}
+                                    </span>
+                                </li>
+                                {% endfor %}
+                            </ol>
+                            {% else %}
+                            <div class="text-muted">No online providers.</div>
+                            {% endif %}
+                        </div>
                         <div>
                             <div class="fw-semibold mb-1"><i class="bi bi-lightning-charge me-1"></i>Maximum tokens/sec</div>
                             {% if key_routing_preview.throughput %}
@@ -772,6 +791,37 @@
                         {% else %}
                         <div class="text-muted">No routable models.</div>
                         {% endif %}
+                        {% if routing_summary.health %}
+                        <div class="fw-semibold mt-3 mb-1">Provider health</div>
+                        <p class="text-muted mb-1">Score from recent request failures and health checks. Round trips are from health checks over the last hour.</p>
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0">
+                                <thead><tr><th>Provider</th><th class="text-end">Score</th><th>Health-check round trip</th></tr></thead>
+                                <tbody>
+                                    {% for h in routing_summary.health %}
+                                    <tr>
+                                        <td>{{ h.provider }}{% if h.status == 'offline' %} <span class="badge bg-secondary">offline</span>{% endif %}</td>
+                                        <td class="text-end">
+                                            <span class="badge {{ 'bg-success' if h.health.score >= 90 else ('bg-warning text-dark' if h.health.score >= 50 else 'bg-danger') }}">{{ h.health.score }}</span>
+                                            {% if h.health.circuit_open %}<div class="text-danger">circuit open</div>{% endif %}
+                                        </td>
+                                        <td>
+                                            {% for a in h.addresses %}
+                                            <div class="text-break">
+                                                <code>{{ a.url }}</code>
+                                                {% if a.latency and a.latency.p50_ms is not none %}
+                                                — p50 {{ "%.0f" | format(a.latency.p50_ms) }} ms, p95 {{ "%.0f" | format(a.latency.p95_ms) }} ms
+                                                {% endif %}
+                                                {% if a.latency %}<span class="text-muted">({{ a.latency.checks }} checks{% if a.latency.failures %}, {{ a.latency.failures }} failed{% endif %})</span>{% else %}<span class="text-muted">(no checks yet)</span>{% endif %}
+                                            </div>
+                                            {% endfor %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
                 <div class="card mt-3">
@@ -830,12 +880,17 @@
                         var rows = (s.candidates || []).map(function (c) {
                             var why = c.excluded ? '<span class="text-danger">' + esc(c.excluded) + "</span>" :
                                 (c.rank === 1 ? '<span class="text-success fw-semibold">chosen</span>' : "#" + c.rank);
+                            if (!c.excluded && c.warnings && c.warnings.length) {
+                                why += '<div class="text-warning">' + esc(c.warnings.join("; ")) + "</div>";
+                            }
                             var facts = [];
                             if (c.hot) facts.push("loaded");
                             if (c.startup_ms != null) facts.push("startup " + ms(c.startup_ms));
                             if (c.ttft_ms != null) facts.push("first token " + ms(c.ttft_ms));
                             if (c.tokens_per_second != null) facts.push(num(c.tokens_per_second, 1) + " tok/s");
                             if (c.rtt_ms != null) facts.push("rtt " + num(c.rtt_ms, 1) + " ms");
+                            if (c.service_ms != null) facts.push("service " + ms(c.service_ms));
+                            if (c.health_score != null && c.health_score < 100) facts.push("health " + c.health_score);
                             if (c.active_requests) facts.push(c.active_requests + " in flight");
                             if (c.failure_rate) facts.push(Math.round(c.failure_rate * 100) + "% failing");
                             return "<tr><td>" + esc(c.provider) + '</td><td class="text-end">' +

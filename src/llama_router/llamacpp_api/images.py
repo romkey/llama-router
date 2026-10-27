@@ -29,7 +29,7 @@ async def images_generations(request: Request):
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, preferences=prefs, endpoint=request.url.path)
+    result = await rt.route(model, request.url.path, prefs)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -129,7 +129,7 @@ async def images_edits(request: Request):
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, preferences=prefs, endpoint=request.url.path)
+    result = await rt.route(model, request.url.path, prefs)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"

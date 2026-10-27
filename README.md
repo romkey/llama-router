@@ -215,7 +215,7 @@ docker compose exec llama-router traceroute 192.168.1.100
 
 ## Routing
 
-Every request is routed from an in-memory routing table. Building the table reads the database once, combines it with live measurements, and ranks each model's providers for every routing mode. A request only looks up its model, adds the number of requests already in flight on each candidate, and takes the best one. It does no database queries and no hashing on the way to the backend. Request logging happens after the response is sent.
+Every request is routed from an in-memory routing table. Building the table reads the database once, combines it with live measurements, and ranks each model's providers separately for every proxied endpoint and every routing mode. A request only looks up its model and endpoint, adds the number of requests already in flight on each candidate, and takes the best one. It does no database queries and no hashing on the way to the backend. Request logging happens after the response is sent.
 
 ### Routing modes
 
@@ -223,12 +223,34 @@ Each API key picks a mode. Requests without a key use **balanced**.
 
 | Mode | Picks the provider that |
 |------|-------------------------|
-| `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed |
+| `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed. For embeddings, images and audio, the measured time those calls take |
 | `latency` | starts answering soonest: a model already loaded wins, then the lowest startup time and round trip |
-| `throughput` | generates the most tokens per second |
+| `throughput` | generates the most tokens per second. For embeddings, images and audio, completes calls fastest |
 | `chaos` | is chosen at random, with a random model |
 
 Pins on the key override the mode for the pinned models.
+
+### Endpoints
+
+Routing always knows the endpoint. Ollama routes such as `/api/chat` and `/api/embed` only go to providers that serve the Ollama API. OpenAI-style routes such as `/v1/chat/completions` go to any provider and reach its llama.cpp API when it has one. For each provider the table records which of its APIs a request on that endpoint reaches, and whether that API's last probe found the endpoint. A provider can have `/v1/audio/speech` on its Ollama URL and not on its llama.cpp URL, and that is taken into account.
+
+Measurements are kept per kind of endpoint: text generation, embeddings, images and audio. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
+
+Candidates fall into three tiers, and a request goes to the best tier that has anyone in it:
+
+1. Healthy providers.
+2. Providers with an open circuit, because the model or the whole provider has been failing.
+3. Providers whose last probe found the endpoint missing.
+
+### Provider health
+
+Every provider has a health score from 0 to 100. It drops with the share of recent requests that failed for reasons on the provider's side, such as errors, timeouts, 401, 404 and 429. Client mistakes such as HTTP 400 don't count. It also drops when a whole health check fails, meaning no address answered, so a provider that keeps dropping out is penalized for a while after it comes back. One dead address among live ones doesn't count. Failures fade with a two-minute half-life.
+
+The score's failure rate adds a penalty to every routing mode. A provider failing at least half of its recent requests across all models, over at least five, has its circuit opened. It is then used only if no healthier provider can serve the request, and is retried as its failures age out.
+
+### Health-check latency
+
+Every health check times each address. The router keeps a running tally per address: checks, failures, consecutive failures, last, min, max and mean, and the median and 95th percentile of the last 120 checks, about an hour at the default interval. Routing uses a moving average of successful checks on live addresses. The tallies appear on the **API Keys** tab under **Provider health** and in `/api/routing-table`.
 
 ### What goes into the table
 
@@ -240,8 +262,9 @@ Pins on the key override the mode for the pinned models.
 | Model already loaded | Ollama `/api/ps`, or a successful request in the last four minutes |
 | Network round trip | Timed health-check probes, best live address |
 | Time to first token | Measured on streamed requests |
-| Recent failures | Upstream errors and timeouts. Client mistakes such as HTTP 400 do not count. A provider failing at least half its recent requests is skipped while another can serve the model, and is retried as the failures age out over a few minutes |
-| Endpoint support | The provider's last probe. A provider whose probe found the endpoint missing is skipped while another can serve it |
+| Service time | Measured end to end on embedding, image and audio requests |
+| Recent failures | Per model and kind of endpoint, and for the provider as a whole. See **Provider health** |
+| Endpoint support | The last probe of the API the request would reach |
 | Model larger than GPU memory | Provider GPU RAM and model size, as a small penalty |
 
 ### When the table is rebuilt
@@ -257,7 +280,7 @@ curl http://localhost/api/routing-table
 curl -X POST http://localhost/api/routing-table/rebuild
 ```
 
-The **API Keys** tab shows each model's first choice per mode.
+The **API Keys** tab shows each model's first choice per mode for `/v1/chat/completions`, and each provider's health and latency tally.
 
 ### Explaining a route
 
