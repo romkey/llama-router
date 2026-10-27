@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     session_affinity_ttl_seconds: int = 1800
     # Most sessions remembered at once; the least recently used go first.
     session_affinity_max_sessions: int = 1000
+    # Longest a key's decision policy (tiered routing, gates) may take before
+    # the request goes on without it.
+    decision_policy_timeout_seconds: float = 3.0
     cache_enabled: bool = True
     cache_dir: str = "./model_cache"
     cache_host: str = "0.0.0.0"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
 import weakref
 from dataclasses import replace
@@ -13,10 +14,13 @@ from fastapi import HTTPException, Request
 from .background import spawn
 from .config import settings
 from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
+from .decision_policy import DecisionPolicy, parse_policy
 from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
 from .spend import tracker_for
 from .upstream_url import LOCALITIES
+
+logger = logging.getLogger(__name__)
 
 _PBKDF2_ROUNDS = 390_000
 # Resolved keys are reused for this long unless an edit invalidates them.
@@ -136,8 +140,24 @@ async def _resolve_key(
         key_id=int(record["id"]),
         locality=_locality(record.get("locality")),
         daily_spend_cap_usd=record.get("daily_spend_cap_usd"),
+        decision_policy=await _decision_policy(db, int(record["id"])),
     )
     return prefs, int(record["id"])
+
+
+async def _decision_policy(db: Database, key_id: int) -> DecisionPolicy | None:
+    raw = await db.get_api_key_decision_policy(key_id)
+    if raw is None:
+        return None
+    try:
+        return parse_policy(raw)
+    except ValueError as exc:
+        # Written through the dashboard, which validates; this is a policy
+        # from an older version or edited by hand. Route as if it had none.
+        logger.warning(
+            "Ignoring invalid decision policy of API key %s: %s", key_id, exc
+        )
+        return None
 
 
 LOCALITY_HEADER = "X-Llama-Router-Locality"

@@ -1105,6 +1105,9 @@
                                             <button class="btn btn-sm btn-outline-primary me-1" onclick="openKeyPins({{ k.id }}, '{{ k.key_prefix }}')" title="Manage pinned routes">
                                                 <i class="bi bi-diagram-3"></i>
                                             </button>
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick="openKeyPolicy({{ k.id }}, '{{ k.key_prefix }}')" title="Decision policy (tiered routing, gates)">
+                                                <i class="bi bi-signpost-split"></i>
+                                            </button>
                                             <button class="btn btn-sm btn-outline-danger" onclick="deleteApiKey({{ k.id }})">
                                                 <i class="bi bi-trash"></i>
                                             </button>
@@ -1767,6 +1770,35 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- API Key Decision Policy Modal -->
+<div class="modal fade" id="apiKeyPolicyModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Decision Policy for API Key</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="small text-muted mb-2">Key: <code id="policy-key-prefix">—</code></div>
+                <div class="small text-muted mb-2">
+                    JSON: <code>model</code> (the decision model), optional <code>tier</code>
+                    (<code>question</code>: a score question, <code>targets</code>: level → model,
+                    <code>models</code>: requested models it applies to) and optional <code>gates</code>
+                    (name → <code>question</code>: a noul question, <code>threshold</code>).
+                    Empty means no policy. See the README, "Decision models".
+                </div>
+                <textarea class="form-control font-monospace small" id="policy-json" rows="16" spellcheck="false"></textarea>
+                <div id="policy-status" class="small text-muted mt-2"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-danger me-auto" onclick="deleteKeyPolicy()">Remove policy</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="saveKeyPolicy()">Save</button>
             </div>
         </div>
     </div>
@@ -2722,6 +2754,61 @@ function openKeyPins(keyId, keyPrefix) {
     if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-muted text-center">Loading…</td></tr>';
     bootstrap.Modal.getOrCreateInstance(document.getElementById('apiKeyPinsModal')).show();
     loadKeyPins();
+}
+
+var _policyKeyId = null;
+
+function openKeyPolicy(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
+    _policyKeyId = keyId;
+    document.getElementById('policy-key-prefix').textContent = keyPrefix || ('id=' + keyId);
+    var statusEl = document.getElementById('policy-status');
+    var text = document.getElementById('policy-json');
+    statusEl.textContent = 'Loading…';
+    text.value = '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('apiKeyPolicyModal')).show();
+    fetch('/api/keys/' + keyId + '/decision-policy')
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to load policy'); });
+            return r.json();
+        })
+        .then(function(data) {
+            text.value = data.policy ? JSON.stringify(data.policy, null, 2) : '';
+            statusEl.textContent = data.policy ? '' : 'No policy: requests are routed as asked.';
+        })
+        .catch(function(err) { statusEl.textContent = err.message || 'Failed to load policy'; });
+}
+
+function saveKeyPolicy() {
+    if (_policyKeyId == null) return;
+    var statusEl = document.getElementById('policy-status');
+    var raw = document.getElementById('policy-json').value.trim();
+    if (!raw) { deleteKeyPolicy(); return; }
+    var policy;
+    try { policy = JSON.parse(raw); } catch (e) { statusEl.textContent = 'Not valid JSON: ' + e.message; return; }
+    fetch('/api/keys/' + _policyKeyId + '/decision-policy', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(policy)
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to save policy'); });
+        return r.json();
+    }).then(function(data) {
+        document.getElementById('policy-json').value = JSON.stringify(data.policy, null, 2);
+        statusEl.textContent = 'Saved.';
+    }).catch(function(err) { statusEl.textContent = err.message || 'Failed to save policy'; });
+}
+
+function deleteKeyPolicy() {
+    if (_policyKeyId == null) return;
+    var statusEl = document.getElementById('policy-status');
+    fetch('/api/keys/' + _policyKeyId + '/decision-policy', {method: 'DELETE'})
+        .then(function(r) {
+            if (!r.ok && r.status !== 404) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to remove policy'); });
+            document.getElementById('policy-json').value = '';
+            statusEl.textContent = 'No policy: requests are routed as asked.';
+        })
+        .catch(function(err) { statusEl.textContent = err.message || 'Failed to remove policy'; });
 }
 
 function loadKeyPins() {

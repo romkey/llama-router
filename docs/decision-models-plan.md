@@ -160,7 +160,13 @@ script and numbers in this document.
 **Phase 2, endpoint.** Done 2026-10-27, see "Phase 2 results" below.
 
 **Phase 3, internal use.** Tiered routing policy per API key, then gating,
-then background classification. Each its own PR with its own migration.
+then background classification. Tiered routing and gating are done
+(2026-10-27) as one policy per key in `api_key_decision_policies`
+(migration 017, `decision_policy.py`): the tier question and every gate go
+in one decision request, a policy that fails or takes longer than
+`DECISION_POLICY_TIMEOUT_SECONDS` (3 s) lets the request through as asked,
+and the request log shows what the policy did and how long it took.
+Background classification remains, as its own PR and migration.
 
 **Phase 4, optional.** Calibration UI; TypeSafe hosted provider; worker
 link support so hub workers can serve decision jobs. Worker link support done

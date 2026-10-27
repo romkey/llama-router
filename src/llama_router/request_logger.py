@@ -373,6 +373,13 @@ def log_request_background(
     kwargs.setdefault("sample", True)
     request = kwargs.get("request")
     if request is not None:
+        policy = getattr(request.state, "decision_policy", None)
+        if policy and kwargs.get("request_meta") is None:
+            # What the key's decision policy did, and how long it took.
+            summary = _request_meta_summary(kwargs.get("request_body"))
+            kwargs["request_meta"] = (
+                f"{policy}; {summary}" if summary else str(policy)
+            )[:240]
         # Resolve what is needed now; the request object is done after.
         kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
         if kwargs.get("api_key_id") is None:

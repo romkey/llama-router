@@ -1122,6 +1122,46 @@ class Database:
             (key_id, model_name),
         )
 
+    async def get_api_key_decision_policy(self, key_id: int) -> dict | None:
+        """The key's decision policy as stored (a JSON object), or None."""
+        row = await self._select_one(
+            "SELECT policy FROM api_key_decision_policies WHERE api_key_id = ?",
+            (key_id,),
+        )
+        if not row:
+            return None
+        try:
+            policy = json.loads(row["policy"])
+        except (TypeError, ValueError):
+            logger.warning("Decision policy of API key %s is not JSON", key_id)
+            return None
+        return policy if isinstance(policy, dict) else None
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_decision_policy(self, key_id: int, policy: dict) -> None:
+        data = json.dumps(policy, ensure_ascii=False)
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT INTO api_key_decision_policies (api_key_id, policy) "
+                "VALUES (?, ?) ON DUPLICATE KEY UPDATE policy = VALUES(policy), "
+                "updated_at = CURRENT_TIMESTAMP",
+                (key_id, data),
+            )
+        else:
+            await self._execute(
+                "INSERT INTO api_key_decision_policies (api_key_id, policy) "
+                "VALUES (?, ?) ON CONFLICT (api_key_id) DO UPDATE SET "
+                "policy = ?, updated_at = CURRENT_TIMESTAMP",
+                (key_id, data, data),
+            )
+
+    @_notifies(CHANGE_API_KEYS)
+    async def delete_api_key_decision_policy(self, key_id: int) -> bool:
+        n = await self._execute_rowcount(
+            "DELETE FROM api_key_decision_policies WHERE api_key_id = ?", (key_id,)
+        )
+        return n > 0
+
     async def list_api_key_model_pins(self, key_id: int) -> list[dict]:
         rows = await self._select_all(
             "SELECT p.model_name, p.provider_id, pr.name AS provider_name "

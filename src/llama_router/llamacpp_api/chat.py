@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth import routing_preferences_from_request
+from ..decision_policy import apply_decision_policy
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import StreamLogger, log_request_background
 from ..v1_client import get_v1_client
@@ -30,6 +31,9 @@ async def chat_completions(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
+    model = await apply_decision_policy(
+        request, body, model, prefs, rt=rt, pm=pm, db=db
+    )
     session = rt.session_for(request.headers, body, prefs)
 
     result = await rt.route(model, request.url.path, prefs, session=session)

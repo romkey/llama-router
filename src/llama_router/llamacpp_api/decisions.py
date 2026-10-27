@@ -30,8 +30,6 @@ from ..endpoints import normalize_endpoint
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import log_request_background
 from ..router import RoutingPreferences
-from ..routing_table import native_decision_path
-from ..worker_link.protocol import refused as worker_refused
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -43,28 +41,6 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
         {"loc": list(e.get("loc", ())), "msg": e.get("msg", "")}
         for e in exc.errors(include_url=False, include_context=False)
     ]
-
-
-async def _pass_through(pm, provider, path: str, body: dict) -> dict | None:
-    """Send the request on as it came; None when a worker will not relay it.
-
-    A worker older than decision support refuses the route with 403. Its
-    stored probe result can still say otherwise, so the request is emulated
-    instead and the worker is probed again.
-    """
-    try:
-        return await svc.native(pm, provider.id, path, body)
-    except httpx.HTTPStatusError as exc:
-        resp = exc.response
-        if not (provider.is_worker and worker_refused(resp.status_code, resp.text)):
-            raise
-    logger.info(
-        "Worker %s does not relay %s; answering from logprobs instead",
-        provider.name,
-        path,
-    )
-    pm.schedule_probe(provider.id, "worker refused decisions")
-    return None
 
 
 @router.post("/v1/systemone")
@@ -123,31 +99,11 @@ async def serve(
             request_body=body,
         )
         calibrated = 0
-        native_path = native_decision_path(provider, path)
         try:
-            out = None
-            if native_path is not None:
-                out = await _pass_through(
-                    pm, provider, native_path, {**body, "model": result.backend_model}
-                )
-            if out is None:
-                inputs = rt.inputs
-                names = svc.model_names(
-                    (
-                        result.model_key,
-                        result.resolved_model,
-                        req.model,
-                        result.backend_model,
-                    ),
-                    inputs.aliases if inputs else None,
-                )
-                cal = await svc.calibrations(db).for_request(names, req)
-                calibrated = len(cal)
-                answered = await svc.emulate(
-                    pm, provider.id, result.backend_model, req, cal
-                )
-                out = {"model": result.resolved_model, **answered}
-                pm.stats.record_logprobs(provider.id, ok=True)
+            inputs = rt.inputs
+            out, calibrated = await svc.answer_routed(
+                pm, db, result, req, path, body, inputs.aliases if inputs else None
+            )
         except d.NoLogprobs:
             pm.stats.record_logprobs(provider.id, ok=False)
             log_request_background(

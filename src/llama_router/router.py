@@ -18,7 +18,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .affinity import SessionAffinity, session_key, short_key
 from .config import settings
@@ -33,6 +33,9 @@ from .endpoints import (  # noqa: F401  (re-exported)
 )
 from .models import Provider, ProviderStatus
 from .provider_manager import ProviderManager
+
+if TYPE_CHECKING:
+    from .decision_policy import DecisionPolicy
 from .routing_table import (
     DEFAULT_MODE,
     MODES,
@@ -96,6 +99,8 @@ class RoutingPreferences:
     daily_spend_cap_usd: float | None = None
     # Set when the cap was reached and the locality narrowed because of it.
     spend_capped: bool = False
+    # Decision questions asked before a generation request is routed.
+    decision_policy: DecisionPolicy | None = None
 
 
 class Router:
