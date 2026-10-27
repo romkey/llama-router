@@ -270,3 +270,35 @@ async def test_list_all_models_excludes_offline_providers(db: Database) -> None:
     models = await db.list_all_models()
     assert len(models) == 1
     assert models[0]["name"] == "shared"
+
+
+@pytest.mark.parametrize(
+    "dialect,expected",
+    [
+        ("sqlite", "TEXT"),
+        ("postgresql", "TEXT"),
+        ("mysql", "VARCHAR(255)"),
+        ("mariadb", "VARCHAR(255)"),
+    ],
+)
+def test_short_text_is_varchar_only_on_mysql(dialect: str, expected: str) -> None:
+    """MySQL cannot default or index TEXT; other databases keep TEXT."""
+    from sqlalchemy.engine import make_url
+
+    from llama_router.db_types import ShortText
+
+    sa_dialect = make_url(f"{dialect}://").get_dialect()()
+    assert ShortText.compile(dialect=sa_dialect) == expected
+
+
+@pytest.mark.asyncio
+async def test_request_logs_same_second_newest_first(db: Database) -> None:
+    """MySQL TIMESTAMP has whole-second precision; ties must still sort newest first."""
+    for size in (10, 20, 30):
+        await db._execute(
+            "INSERT INTO request_log (protocol, endpoint, request_size, created_at) "
+            "VALUES ('ollama', '/api/chat', ?, '2026-01-01 00:00:00')",
+            (size,),
+        )
+    page = await db.get_request_logs(limit=3)
+    assert [x.request_size for x in page] == [30, 20, 10]
