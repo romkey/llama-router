@@ -1,4 +1,4 @@
-"""Entrypoint: runs the dashboard, Ollama API, llama.cpp API, and cache servers."""
+"""Entrypoint: runs the dashboard, Ollama API, OpenAI API, and cache servers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .config import settings
 from .database import Database
 from .auto_benchmark import AutoBenchmarker
 from .provider_manager import ProviderManager
-from .request_logger import attach_stats
+from .request_logger import attach_pricer, attach_stats
 from .router import Router
 from .sentry import init_sentry
 from .worker_link.worker import WorkerLinkManager
@@ -44,6 +44,7 @@ async def run() -> None:
     rt = Router(db, pm)
     pm.attach_router(rt)
     attach_stats(pm.stats)
+    attach_pricer(rt.price_for)
     # Build the first routing table before any API accepts requests.
     await rt.start()
     auto_bench = AutoBenchmarker(db, pm)
@@ -100,7 +101,7 @@ async def run() -> None:
         servers.append(uvicorn.Server(cache_config))
         logger.info(
             "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
-            "llama.cpp API on :%d, registry cache on :%d",
+            "OpenAI API on :%d, registry cache on :%d",
             settings.dashboard_port,
             settings.api_port,
             settings.llamacpp_port,
@@ -109,7 +110,7 @@ async def run() -> None:
     else:
         logger.info(
             "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
-            "llama.cpp API on :%d (cache disabled)",
+            "OpenAI API on :%d (cache disabled)",
             settings.dashboard_port,
             settings.api_port,
             settings.llamacpp_port,

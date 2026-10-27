@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import httpx
@@ -18,17 +18,21 @@ from .database import Database
 from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error
 from .models import Provider, RequestLog
+from .pricing import Price
 from .routing_stats import ProviderStats
+from .spend import tracker_for
 from .timing import received_at
 
 logger = logging.getLogger(__name__)
 
 # Live request outcomes feed the routing table through these stats.
 _stats: ProviderStats | None = None
+# Prices requests by (provider id, model); the router's current price book.
+_pricer: Callable[[int, str], Price | None] | None = None
 
 # Upstream answers that say the provider, not the request, is the problem.
 # 429 is left out: the provider is busy, not broken. Its client marks it busy
-# for the Retry-After period instead (see ProviderManager._on_response).
+# for the Retry-After period instead (see ProviderManager._response_hook).
 _PROVIDER_FAULT_4XX = frozenset({401, 403, 404, 408})
 _STATUS_RE = re.compile(r"^(?:HTTP |HTTPStatusError )(\d{3})")
 # Final-chunk fields that give generation speed.
@@ -36,6 +40,24 @@ _EVAL_COUNT_RE = re.compile(rb'"eval_count"\s*:\s*(\d+)')
 _EVAL_DURATION_RE = re.compile(rb'"eval_duration"\s*:\s*(\d+)')
 _PREDICTED_PER_SECOND_RE = re.compile(rb'"predicted_per_second"\s*:\s*([0-9.eE+-]+)')
 _COMPLETION_TOKENS_RE = re.compile(rb'"completion_tokens"\s*:\s*(\d+)')
+# Token counts in a stream's last chunks: OpenAI usage, Responses API usage,
+# Ollama's final chunk.
+_PROMPT_TOKEN_RES = tuple(
+    re.compile(p)
+    for p in (
+        rb'"prompt_tokens"\s*:\s*(\d+)',
+        rb'"input_tokens"\s*:\s*(\d+)',
+        rb'"prompt_eval_count"\s*:\s*(\d+)',
+    )
+)
+_COMPLETION_TOKEN_RES = tuple(
+    re.compile(p)
+    for p in (
+        rb'"completion_tokens"\s*:\s*(\d+)',
+        rb'"output_tokens"\s*:\s*(\d+)',
+        rb'"eval_count"\s*:\s*(\d+)',
+    )
+)
 # Chunks kept from the end of a stream to read those fields from.
 _TAIL_CHUNKS = 3
 
@@ -44,6 +66,51 @@ def attach_stats(stats: ProviderStats | None) -> None:
     """Send request outcomes to *stats* (the provider manager's)."""
     global _stats
     _stats = stats
+
+
+def attach_pricer(pricer: Callable[[int, str], Price | None] | None) -> None:
+    """Price logged requests with *pricer* (the router's ``price_for``)."""
+    global _pricer
+    _pricer = pricer
+
+
+def usage_from_body(body: Any) -> tuple[int | None, int | None]:
+    """(prompt, completion) tokens a non-streamed response reports."""
+    if not isinstance(body, dict):
+        return None, None
+    usage = body.get("usage")
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+        if isinstance(prompt, int) or isinstance(completion, int):
+            return (
+                prompt if isinstance(prompt, int) else None,
+                completion if isinstance(completion, int) else None,
+            )
+    prompt, completion = body.get("prompt_eval_count"), body.get("eval_count")
+    if isinstance(prompt, int) or isinstance(completion, int):
+        return (
+            prompt if isinstance(prompt, int) else None,
+            completion if isinstance(completion, int) else None,
+        )
+    return None, None
+
+
+def usage_from_tail(tail: bytes) -> tuple[int | None, int | None]:
+    """(prompt, completion) tokens from a stream's last chunks, if reported.
+
+    OpenAI-style streams carry usage only when the client asked for it
+    (``stream_options.include_usage``); Ollama's final chunk always does.
+    """
+
+    def last(patterns) -> int | None:
+        for pattern in patterns:
+            matches = pattern.findall(tail)
+            if matches:
+                return int(matches[-1])
+        return None
+
+    return last(_PROMPT_TOKEN_RES), last(_COMPLETION_TOKEN_RES)
 
 
 def _is_provider_failure(error_detail: str | None) -> bool:
@@ -226,6 +293,9 @@ async def log_request(
     sample: bool = False,
     ttfb_ms: float | None = None,
     router_ms: float | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    api_key_id: int | None = None,
     request_meta: str | None = None,
 ) -> None:
     """Write one request to the log.
@@ -250,6 +320,22 @@ async def log_request(
             duration_ms=duration_ms,
         )
     ip = source_ip or (_client_ip(request) if request else "internal")
+    if api_key_id is None and request is not None:
+        api_key_id = getattr(request.state, "api_key_id", None)
+    if prompt_tokens is None and completion_tokens is None:
+        prompt_tokens, completion_tokens = usage_from_body(response_body)
+    cost = None
+    if (
+        _pricer is not None
+        and provider is not None
+        and provider.id is not None
+        and (prompt_tokens is not None or completion_tokens is not None)
+    ):
+        price = _pricer(provider.id, routed_model or model or "")
+        if price is not None:
+            cost = price.cost(prompt_tokens, completion_tokens)
+    if cost and api_key_id is not None:
+        tracker_for(db).add(api_key_id, cost)
     entry = RequestLog(
         provider_id=provider.id if provider else None,
         provider_name=provider.name if provider else None,
@@ -267,6 +353,10 @@ async def log_request(
         streamed=streamed,
         error_detail=error_detail,
         locality=provider.locality if provider else None,
+        api_key_id=api_key_id,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=cost,
     )
     await db.save_request_log(entry)
 
@@ -292,6 +382,8 @@ def log_request_background(
             )[:240]
         # Resolve what is needed now; the request object is done after.
         kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
+        if kwargs.get("api_key_id") is None:
+            kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
         if kwargs.get("router_ms") is None:
             kwargs["router_ms"] = _router_ms(
                 request, dispatched_at, kwargs.get("duration_ms", 0.0)
@@ -372,6 +464,7 @@ class StreamLogger:
             duration = (ended - self._start) * 1000
             ttft_ms = None
             tps = None
+            prompt_tokens, completion_tokens = usage_from_tail(b"".join(self._tail))
             if self._first_chunk_at is not None:
                 ttft_ms = (self._first_chunk_at - self._start) * 1000
                 if status == "ok":
@@ -405,6 +498,9 @@ class StreamLogger:
                     sample=False,
                     ttfb_ms=ttft_ms,
                     dispatched_at=self._start,
+                    routed_model=self._routed_model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
             except Exception:
                 logger.exception("Could not schedule request log write")

@@ -46,7 +46,7 @@ async def chat(request: Request):
 
     assert provider.id is not None
     body["model"] = result.backend_model
-    client = pm.get_client(provider.id)
+    client = pm.ollama_api_client(provider.id)
     stream = body.get("stream", True)
     start = time.monotonic()
 

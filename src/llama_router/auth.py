@@ -17,6 +17,7 @@ from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
 from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
+from .spend import tracker_for
 from .upstream_url import LOCALITIES
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ async def _resolve_key(
         session_affinity=record.get("session_affinity"),
         key_id=int(record["id"]),
         locality=_locality(record.get("locality")),
+        daily_spend_cap_usd=record.get("daily_spend_cap_usd"),
         decision_policy=await _decision_policy(db, int(record["id"])),
     )
     return prefs, int(record["id"])
@@ -185,8 +187,34 @@ async def routing_preferences_from_request(
     db: Database, request: Request
 ) -> RoutingPreferences | None:
     """The request's routing preferences: its API key's, narrowed by the
-    X-Llama-Router-Locality header."""
-    return _narrow_locality(request, await _key_preferences(db, request))
+    X-Llama-Router-Locality header and the key's daily spend cap.
+
+    Also records the key on ``request.state.api_key_id`` for the request log.
+    """
+    prefs = _narrow_locality(request, await _key_preferences(db, request))
+    if prefs is not None and prefs.key_id is not None:
+        request.state.api_key_id = prefs.key_id
+        prefs = await _apply_spend_cap(db, prefs)
+    return prefs
+
+
+async def _apply_spend_cap(
+    db: Database, prefs: RoutingPreferences
+) -> RoutingPreferences:
+    """A key over its daily cap is limited to local providers, which cost
+    nothing; a cloud-only key over its cap is refused until the next UTC day."""
+    cap = prefs.daily_spend_cap_usd
+    if cap is None or prefs.key_id is None:
+        return prefs
+    spent = await tracker_for(db).spent_today(prefs.key_id)
+    if spent < cap:
+        return prefs
+    if prefs.locality == "cloud":
+        raise HTTPException(
+            status_code=429,
+            detail=f"daily spend cap of ${cap:.2f} reached for this API key",
+        )
+    return replace(prefs, locality="local", spend_capped=True)
 
 
 async def _key_preferences(db: Database, request: Request) -> RoutingPreferences | None:

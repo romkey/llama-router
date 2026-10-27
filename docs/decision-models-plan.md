@@ -162,7 +162,7 @@ script and numbers in this document.
 **Phase 3, internal use.** Tiered routing policy per API key, then gating,
 then background classification. Tiered routing and gating are done
 (2026-10-27) as one policy per key in `api_key_decision_policies`
-(migration 015, `decision_policy.py`): the tier question and every gate go
+(migration 017, `decision_policy.py`): the tier question and every gate go
 in one decision request, a policy that fails or takes longer than
 `DECISION_POLICY_TIMEOUT_SECONDS` (3 s) lets the request through as asked,
 and the request log shows what the policy did and how long it took.
@@ -306,7 +306,7 @@ forms, on port 8080. It is built on `feature/single-protocol-providers`.
   thing.
 - **Emulation** (`decision_service.py`). All questions of a request go to
   one provider in parallel, one slot each, state first.
-- **Calibrations.** A new `decision_calibrations` table, migration 014,
+- **Calibrations.** A new `decision_calibrations` table, migration 016,
   holds one calibration per model and question wording, keyed by
   `decisions.question_key`. It is cached in memory and dropped on change.
   The dashboard API at `/api/decisions/calibrations` sets one directly,

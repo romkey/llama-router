@@ -40,7 +40,7 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
 
     assert provider.id is not None
     body["model"] = result.backend_model
-    client = pm.get_client(provider.id)
+    client = pm.ollama_api_client(provider.id)
     start = time.monotonic()
     pm.acquire(provider.id)
     try:

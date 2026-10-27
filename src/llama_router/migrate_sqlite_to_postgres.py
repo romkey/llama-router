@@ -125,6 +125,10 @@ _TABLES: list[tuple[str, list[str]]] = [
             "streamed",
             "error_detail",
             "locality",
+            "api_key_id",
+            "prompt_tokens",
+            "completion_tokens",
+            "cost_usd",
             "created_at",
         ],
     ),
@@ -153,9 +157,18 @@ _TABLES: list[tuple[str, list[str]]] = [
             "allow_fallback",
             "session_affinity",
             "locality",
+            "daily_spend_cap_usd",
             "created_at",
             "last_used_at",
         ],
+    ),
+    (
+        "model_prices",
+        ["id", "provider_id", "model_pattern", "input_per_mtok", "output_per_mtok"],
+    ),
+    (
+        "model_aliases",
+        ["id", "alias", "canonical", "created_at"],
     ),
     (
         "api_key_model_pins",
@@ -202,6 +215,8 @@ _SEQUENCE_TABLES = [
     "api_keys",
     "api_key_model_pins",
     "dashboard_users",
+    "model_aliases",
+    "model_prices",
     "decision_calibrations",
 ]
 
