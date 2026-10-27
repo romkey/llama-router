@@ -7,17 +7,17 @@ import httpx
 import pytest
 
 from llama_router import decisions as d
+from llama_router import request_logger
 from llama_router.auto_benchmark import AutoBenchmarker
 from llama_router.background import drain
-from llama_router.database import Database
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.decisions import router as dash_decisions_router
+from llama_router.database import Database
 from llama_router.endpoints import DECIDE, DECISION_PATHS, endpoint_class
 from llama_router.llamacpp_api import deps
 from llama_router.llamacpp_api.app import app as api_app
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
-from llama_router import request_logger
 from llama_router.request_logger import _request_meta_summary
 from llama_router.router import Router
 from llama_router.routing_stats import NO_LOGPROBS_TTL_S, ProviderStats

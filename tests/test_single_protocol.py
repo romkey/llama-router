@@ -38,7 +38,8 @@ def test_worker_target_keeps_wire_names() -> None:
 @pytest.mark.asyncio
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_add_provider_form_takes_protocol(
-    dash_client, httpx_mock  # noqa: F811
+    dash_client,
+    httpx_mock,
 ) -> None:
     httpx_mock.add_exception(httpx.ConnectError("refused"), is_reusable=True)
     client, db = dash_client

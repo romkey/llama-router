@@ -1,0 +1,10 @@
+# gitleaks: the default rules, minus the dummy values in .env.example.
+# To accept a finding that isn't a secret, add its fingerprint (printed by
+# gitleaks) to .gitleaksignore. A real secret must be rotated instead.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Dummy configuration values"
+paths = ['''(^|/)\.env\.example$''']

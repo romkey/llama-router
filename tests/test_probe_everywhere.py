@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -271,12 +271,10 @@ async def test_add_probes_in_background_and_stores_flavor(
 
 async def test_stale_probe_is_rescheduled(db, monkeypatch) -> None:
     pm = ProviderManager(db)
-    old = datetime.now(timezone.utc) - timedelta(hours=25)
+    old = datetime.now(UTC) - timedelta(hours=25)
     p = Provider(name="x", probed_at=old)
     assert pm._probe_is_stale(p)
-    assert not pm._probe_is_stale(
-        Provider(name="y", probed_at=datetime.now(timezone.utc))
-    )
+    assert not pm._probe_is_stale(Provider(name="y", probed_at=datetime.now(UTC)))
     assert pm._probe_is_stale(Provider(name="z"))
     monkeypatch.setattr(settings, "probe_max_age_hours", 0)
     assert not pm._probe_is_stale(p)

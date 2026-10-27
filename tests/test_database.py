@@ -6,8 +6,8 @@ from llama_router.database import Database
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
     RequestLog,
 )
 

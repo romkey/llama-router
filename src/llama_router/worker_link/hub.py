@@ -50,13 +50,13 @@ def _bearer(websocket: WebSocket) -> str:
 
 
 class _Pending:
-    __slots__ = ("id", "started", "queue", "finished")
+    __slots__ = ("finished", "id", "queue", "started")
 
     def __init__(self, req_id: int) -> None:
         self.id = req_id
         loop = asyncio.get_running_loop()
         self.started: asyncio.Future[tuple[int, list[list[str]]]] = loop.create_future()
-        self.queue: asyncio.Queue[bytes | None | BaseException] = asyncio.Queue()
+        self.queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue()
         self.finished = False
 
 
@@ -164,7 +164,7 @@ class WorkerConnection:
             raise httpx.ConnectError("worker disconnected", request=request)
         try:
             await asyncio.wait_for(self._slots.acquire(), timeout=pool_t)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise httpx.PoolTimeout(
                 f"worker {self.name!r} is at its concurrency limit "
                 f"({self.max_concurrency})",
@@ -196,7 +196,7 @@ class WorkerConnection:
 
             try:
                 await asyncio.wait_for(_send_all(), timeout=write_t)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise httpx.WriteTimeout(
                     "timed out sending request to worker", request=request
                 ) from None
@@ -209,7 +209,7 @@ class WorkerConnection:
                 status, headers = await asyncio.wait_for(
                     asyncio.shield(pend.started), timeout=read_t
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise httpx.ReadTimeout(
                     "timed out waiting for worker response", request=request
                 ) from None
@@ -329,7 +329,7 @@ class _WorkerStream(httpx.AsyncByteStream):
                 item = await asyncio.wait_for(
                     self._pend.queue.get(), timeout=self._read_timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await self._conn.cancel(self._pend.id)
                 raise httpx.ReadTimeout(
                     "timed out reading from worker", request=self._request
@@ -447,12 +447,7 @@ class WorkerHub:
             if not protocols:
                 raise ValueError("hello must list at least one protocol")
             max_c = max(1, min(int(hello.get("max_concurrency") or 4), 64))
-        except (
-            asyncio.TimeoutError,
-            ValueError,
-            TypeError,
-            WebSocketDisconnect,
-        ) as exc:
+        except (TimeoutError, ValueError, TypeError, WebSocketDisconnect) as exc:
             logger.warning("Worker %s handshake failed: %s", row.get("name"), exc)
             if websocket.application_state == WebSocketState.CONNECTED:
                 await websocket.close(code=p.CLOSE_PROTOCOL, reason=str(exc)[:120])

@@ -1,56 +1,206 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "llama-router"
 version = "0.21.0"
-description = "An Ollama router that aggregates multiple Ollama backends behind a single API"
-requires-python = ">=3.11"
+description = "An LLM router that aggregates Ollama and OpenAI-compatible backends behind unified APIs"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "John Romkey" }]
+# Keep in step with .python-version and the Dockerfile's python image.
+requires-python = ">=3.14"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+]
 dependencies = [
-    "cryptography",
-    "itsdangerous>=2.0",
-    "fastapi",
-    "uvicorn[standard]",
-    "httpx",
-    "huggingface_hub>=1.0",
-    "aiosqlite",
-    "alembic>=1.13",
-    "sqlalchemy[asyncio]>=2.0",
-    "jinja2",
-    "pydantic",
-    "pydantic-settings",
-    "python-multipart",
-    "sentry-sdk[fastapi]",
-    "websockets>=13",
-    "joserfc>=1.6",
+  "aiosqlite>=0.21",
+  "alembic>=1.13",
+  "cryptography>=45.0",
+  "fastapi>=0.115",
+  "httpx>=0.28",
+  "huggingface_hub>=1.0",
+  "itsdangerous>=2.0",
+  "jinja2>=3.1",
+  "joserfc>=1.6",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.7",
+  "python-multipart>=0.0.20",
+  "sentry-sdk[fastapi]>=2.20",
+  "sqlalchemy[asyncio]>=2.0",
+  "uvicorn[standard]>=0.34",
+  "websockets>=13",
 ]
 
 [project.optional-dependencies]
 postgres = [
-    "asyncpg",
-    "psycopg[binary]",
+  "asyncpg>=0.30",
+  "psycopg[binary]>=3.2",
 ]
 mysql = [
-    "asyncmy",
-    "pymysql",
+  "asyncmy>=0.2.10",
+  "pymysql>=1.1",
 ]
-dev = [
-    "pytest",
-    "pytest-asyncio",
-    "pytest-httpx",
-    "black",
-    "httpx",
-]
+
+[project.urls]
+Homepage = "https://github.com/romkey/llama-router"
+Changelog = "https://github.com/romkey/llama-router/blob/main/CHANGELOG.md"
+Issues = "https://github.com/romkey/llama-router/issues"
 
 [project.scripts]
 llama-router = "llama_router.__main__:main"
 llama-router-migrate-sqlite-pg = "llama_router.migrate_sqlite_to_postgres:main"
 
+[dependency-groups]
+dev = [
+  "mypy>=2.4.0",
+  "pytest>=9.1.1",
+  "pytest-asyncio>=1.4.1",
+  "pytest-cov>=7.1.0",
+  "pytest-httpx>=0.36.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F",  # pycodestyle, pyflakes
+  "I",            # import order
+  "N",            # naming
+  "UP",           # modern syntax for requires-python
+  "B",            # likely bugs
+  "S",            # security
+  "C4", "SIM", "RET", "PTH",
+  "DTZ",          # timezone-aware datetimes
+  "T20",          # no print(); use logging
+  "LOG", "G",     # logging calls
+  "PT",           # pytest style
+  "RUF",
+]
+# Findings that predate python-ai-rules. Remove each code once the code base
+# is clean of it; new code should not add to them.
+ignore = [
+  "B007", "B023", "B904", "B905", "C408", "DTZ007", "E402", "E501",
+  "E741", "F811", "N818", "PT006", "PT011", "PT018", "PTH100", "PTH118",
+  "PTH123", "PTH202", "RET503", "RUF001", "RUF002", "RUF005", "RUF006", "RUF012",
+  "RUF059", "S101", "S104", "S105", "S110", "S112", "S310", "S311",
+  "S608", "SIM102", "SIM103", "SIM105", "SIM108", "UP007", "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest works
+"scripts/**" = ["T20"]  # command-line tools print
+
+[tool.mypy]
+strict = true
+files = ["src", "tests", "scripts"]
+
+# Modules written before mypy --strict was required. Remove each one from
+# this list once it type-checks; new modules must pass strict.
+[[tool.mypy.overrides]]
+module = [
+  "calib",
+  "check_library",
+  "llama_router.affinity",
+  "llama_router.alembic.versions.003_workers_drop_wireguard",
+  "llama_router.alembic.versions.009_single_protocol_providers",
+  "llama_router.api.app",
+  "llama_router.api.chat",
+  "llama_router.api.embeddings",
+  "llama_router.api.generate",
+  "llama_router.api.tags",
+  "llama_router.auto_benchmark",
+  "llama_router.background",
+  "llama_router.dashboard.app",
+  "llama_router.dashboard.decisions",
+  "llama_router.dashboard.deps",
+  "llama_router.dashboard.middleware",
+  "llama_router.dashboard.oidc",
+  "llama_router.dashboard.routes",
+  "llama_router.database",
+  "llama_router.hf_download",
+  "llama_router.llamacpp_api.app",
+  "llama_router.llamacpp_api.audio",
+  "llama_router.llamacpp_api.chat",
+  "llama_router.llamacpp_api.completions",
+  "llama_router.llamacpp_api.decisions",
+  "llama_router.llamacpp_api.embeddings",
+  "llama_router.llamacpp_api.images",
+  "llama_router.llamacpp_api.models",
+  "llama_router.llamacpp_api.responses",
+  "llama_router.llamacpp_client",
+  "llama_router.migrate_sqlite_to_postgres",
+  "llama_router.models",
+  "llama_router.ollama_client",
+  "llama_router.pricing",
+  "llama_router.probe",
+  "llama_router.provider_manager",
+  "llama_router.registry_cache.app",
+  "llama_router.registry_cache.cache",
+  "llama_router.request_logger",
+  "llama_router.router",
+  "llama_router.routing_stats",
+  "llama_router.routing_table",
+  "llama_router.timing",
+  "llama_router.v1_client",
+  "llama_router.worker_link.hub",
+  "llama_router.worker_link.protocol",
+  "llama_router.worker_link.worker",
+  "spike",
+  "tests.conftest",
+  "tests.test_auto_benchmark",
+  "tests.test_cloud_operation",
+  "tests.test_cloud_presets",
+  "tests.test_cloud_presets_live",
+  "tests.test_config_database_urls",
+  "tests.test_cost",
+  "tests.test_dashboard_auth",
+  "tests.test_dashboard_filters",
+  "tests.test_database",
+  "tests.test_database_sqlalchemy",
+  "tests.test_db_migrate",
+  "tests.test_decision_calibration_ui",
+  "tests.test_decision_endpoint",
+  "tests.test_decision_policy",
+  "tests.test_decisions",
+  "tests.test_endpoint_routing",
+  "tests.test_hf_download",
+  "tests.test_locality",
+  "tests.test_migrate_sqlite_to_postgres",
+  "tests.test_model_aliases",
+  "tests.test_oidc",
+  "tests.test_probe",
+  "tests.test_probe_everywhere",
+  "tests.test_provider_api_key",
+  "tests.test_provider_detail_page",
+  "tests.test_provider_health",
+  "tests.test_registry_cache",
+  "tests.test_request_latency",
+  "tests.test_router",
+  "tests.test_routing_explain",
+  "tests.test_routing_table",
+  "tests.test_session_affinity",
+  "tests.test_shared_port",
+  "tests.test_single_protocol",
+  "tests.test_translate",
+  "tests.test_typesafe_provider",
+  "tests.test_worker_link",
+]
+ignore_errors = true
+
 [tool.pytest.ini_options]
+addopts = ["--cov", "--cov-report=term-missing", "--strict-markers"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+xfail_strict = true
 
-[tool.black]
-line-length = 88
-target-version = ["py311"]
+[tool.coverage.run]
+source = ["llama_router"]
+branch = true
+
+[tool.coverage.report]
+# RULES.md §4 wants 80; raise this as coverage improves.
+fail_under = 74
+skip_covered = true
+exclude_also = ['if __name__ == "__main__":']

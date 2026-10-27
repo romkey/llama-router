@@ -18,8 +18,9 @@ import logging
 import re
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -81,7 +82,7 @@ class OIDCConfig:
     allow_insecure: bool
 
     @classmethod
-    def from_settings(cls, s: Settings | None = None) -> "OIDCConfig":
+    def from_settings(cls, s: Settings | None = None) -> OIDCConfig:
         s = s or settings
         return cls(
             issuer=s.oidc_issuer.strip().rstrip("/"),

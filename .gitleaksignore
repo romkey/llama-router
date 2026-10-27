@@ -1,0 +1,6 @@
+# Not secrets: test dummies (sk-test-0123456789, first-secret-0123456789,
+# wrong-pass-12345) and an import of generate_wireguard_private_key.
+e6d16964cee2d7bed46685073ad4d038844db4bd:tests/test_provider_api_key.py:generic-api-key:20
+e6d16964cee2d7bed46685073ad4d038844db4bd:tests/test_provider_api_key.py:generic-api-key:32
+73cf093cb20ef4e2badf6e3e023bcdae32b49c8a:src/llama_router/dashboard/routes.py:generic-api-key:25
+17105cf4b4760dfaba7cd8ed55e09ef81a2ff95e:tests/test_dashboard_auth.py:generic-api-key:219

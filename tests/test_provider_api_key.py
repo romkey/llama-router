@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from llama_router.config import settings
-from llama_router.models import ProviderStatus, ProviderProtocol
+from llama_router.models import ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 from llama_router.provider_secrets import (
     ApiKeyUnavailable,
@@ -100,7 +100,8 @@ async def test_worker_provider_rejects_key(db) -> None:
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_dashboard_keeps_replaces_and_clears_key(
-    dash_client, httpx_mock  # noqa: F811
+    dash_client,
+    httpx_mock,
 ) -> None:
     httpx_mock.add_callback(
         _keyed_ollama({"Authorization": f"Bearer {KEY}"}), is_reusable=True

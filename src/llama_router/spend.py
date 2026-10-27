@@ -8,13 +8,13 @@ it. A restart re-reads, so a cap holds across restarts.
 from __future__ import annotations
 
 import weakref
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .database import Database
 
 
 def _day_start(now: datetime | None = None) -> datetime:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 

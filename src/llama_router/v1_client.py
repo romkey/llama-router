@@ -140,10 +140,10 @@ def get_v1_client(pm: ProviderManager, provider_id: int) -> V1Client:
     llamacpp = None
     try:
         llamacpp = pm.get_llamacpp_client(provider_id)
-    except (KeyError, Exception):
+    except KeyError, Exception:
         pass
     try:
         ollama = pm.get_ollama_client(provider_id)
-    except (KeyError, Exception):
+    except KeyError, Exception:
         pass
     return V1Client(ollama=ollama, llamacpp=llamacpp)

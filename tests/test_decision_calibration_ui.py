@@ -16,8 +16,10 @@ from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
-from tests.test_dashboard_auth import _session_cookie_header
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
+from tests.test_dashboard_auth import (
+    _session_cookie_header,
+    dash_client,  # noqa: F401  (fixture)
+)
 from tests.test_decision_endpoint import (  # noqa: F401  (fixtures)
     MODEL,
     QUESTIONS,
@@ -264,7 +266,7 @@ async def test_try_rejects_bad_requests(dash, router: Router):
 
 
 async def test_decisions_page_renders_for_a_logged_in_user(
-    dash_client,  # noqa: F811
+    dash_client,
 ) -> None:
     client, db = dash_client
     uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
@@ -283,7 +285,7 @@ async def test_decisions_page_renders_for_a_logged_in_user(
 
 
 async def test_decisions_page_is_read_only_for_viewers(
-    dash_client,  # noqa: F811
+    dash_client,
 ) -> None:
     client, db = dash_client
     await db.create_dashboard_user("adm", hash_password("password-12345"), True)

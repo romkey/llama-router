@@ -170,9 +170,7 @@ async def test_read_timeout_reaches_the_client(db) -> None:
     await pm.stop()
 
 
-async def test_dashboard_edit_cloud_settings(
-    dash_client, httpx_mock
-) -> None:  # noqa: F811
+async def test_dashboard_edit_cloud_settings(dash_client, httpx_mock) -> None:
     httpx_mock.add_exception(httpx.ConnectError("offline"), is_reusable=True)
     client, db = dash_client
     p = await db.add_provider("or", ProviderProtocol.OPENAI)

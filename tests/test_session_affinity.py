@@ -13,7 +13,7 @@ from llama_router.affinity import (
 )
 from llama_router.auth import key_hash, routing_preferences_from_request
 from llama_router.database import Database
-from llama_router.models import ProviderModel, ProviderStatus, ProviderProtocol
+from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_stats import ProviderStats

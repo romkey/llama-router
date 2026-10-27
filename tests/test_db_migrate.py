@@ -11,7 +11,6 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 import llama_router
-
 from llama_router import config
 from llama_router.db_migrate import run_upgrade_sync
 

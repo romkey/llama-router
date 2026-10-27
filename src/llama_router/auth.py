@@ -86,7 +86,7 @@ class _AuthCache:
         self.prefs.clear()
 
 
-_caches: "weakref.WeakKeyDictionary[Database, _AuthCache]" = weakref.WeakKeyDictionary()
+_caches: weakref.WeakKeyDictionary[Database, _AuthCache] = weakref.WeakKeyDictionary()
 
 
 def _cache_for(db: Database) -> _AuthCache:

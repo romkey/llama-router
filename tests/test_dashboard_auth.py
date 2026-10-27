@@ -128,6 +128,15 @@ async def test_health_always_public_without_db_users(dash_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_healthz_public_after_users_exist(dash_client) -> None:
+    client, db = dash_client
+    await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    r = await client.get("/healthz", follow_redirects=False)
+    assert r.status_code == 200
+    assert r.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_no_users_dashboard_and_api_status_open(dash_client) -> None:
     client, _db = dash_client
     r = await client.get("/")

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 # Ollama option -> OpenAI parameter.
@@ -41,7 +41,7 @@ class TranslationError(ValueError):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _image_url(data: str) -> str:

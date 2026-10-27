@@ -1,6 +1,43 @@
 # llama-router
 
-An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (llama.cpp, vLLM, LiteLLM and others) behind unified APIs.
+[![CI](https://github.com/romkey/llama-router/actions/workflows/ci.yaml/badge.svg)](https://github.com/romkey/llama-router/actions/workflows/ci.yaml)
+[![Lint](https://github.com/romkey/llama-router/actions/workflows/lint.yaml/badge.svg)](https://github.com/romkey/llama-router/actions/workflows/lint.yaml)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/romkey/llama-router?color=blue)](https://github.com/romkey/llama-router/releases)
+
+An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (llama.cpp, vLLM, LiteLLM and others) behind unified APIs. It serves an Ollama-compatible API, an OpenAI-compatible API and a web dashboard, picks the best backend for each request from health checks, benchmarks and live measurements, and can link routers on different networks into one pool.
+
+> **AI disclosure:** This project was written by AI under human oversight,
+> following [these rules](https://github.com/romkey/python-ai-rules/blob/main/RULES.md).
+
+## Project breakdown
+
+Everything lives in the `llama_router` package under `src/`:
+
+| Part | What it does |
+|------|--------------|
+| `__main__.py` | Starts the dashboard, Ollama API, OpenAI API and registry cache servers and shuts them down cleanly |
+| `config.py` | Settings from `LLAMA_ROUTER_*` environment variables |
+| `api/` | Ollama-compatible API (port 11434), decisions API and the hub's worker socket |
+| `llamacpp_api/` | OpenAI-compatible API (port 8080) |
+| `dashboard/` and `templates/` | Web dashboard (port 80): providers, models, benchmarks, users, sign-in and OIDC |
+| `registry_cache/` | Pull-through cache for Ollama model downloads (port 9200) |
+| `worker_link/` | Hub and worker links over one outbound WebSocket |
+| `shared_port.py` | Serves the APIs on the dashboard port too, when enabled |
+| `provider_manager.py`, `probe.py` | Provider lifecycle: discovery, probing, health checks |
+| `ollama_client.py`, `llamacpp_client.py`, `v1_client.py`, `translate.py` | Clients for backends, and Ollama-to-OpenAI translation |
+| `router.py`, `routing_table.py`, `routing_stats.py`, `affinity.py`, `endpoints.py` | Picking a provider: precomputed tables, live stats, session affinity |
+| `auto_benchmark.py` | Benchmarks models while their providers are idle |
+| `decisions.py`, `decision_service.py`, `decision_policy.py` | Decision models (`/v1/systemone`) and per-key decision policies |
+| `cloud_presets.py`, `pricing.py`, `spend.py` | Cloud service presets, request cost and spend caps |
+| `hf_download.py` | Hugging Face GGUF downloads |
+| `database.py`, `db_*.py`, `alembic/` | Async SQLAlchemy storage and migrations (SQLite, PostgreSQL, MySQL) |
+| `migrate_sqlite_to_postgres.py` | The `llama-router-migrate-sqlite-pg` command |
+| `provider_secrets.py`, `auth.py` | Encryption of provider keys, API-key authentication |
+| `sentry.py` | Optional Sentry reporting |
+
+[docs/overview.md](docs/overview.md) is a short map for contributors; [docs/workers.md](docs/workers.md) describes the worker protocol.
 
 ## Features
 
@@ -18,310 +55,6 @@ An LLM router that aggregates multiple Ollama and OpenAI-compatible backends (ll
 - **API Key Routing Policies** — Per-key balanced/latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
 - **Hub and Worker Links** — Member routers dial out to a hub over one WebSocket and serve its jobs, with no inbound ports or VPN
 - **OCI Registry Cache** — Built-in pull-through cache for Ollama model downloads, serving cached layers at LAN speed
-
-## Quick Start
-
-```bash
-docker compose up -d
-```
-
-Open http://localhost to access the dashboard and add your backends.
-
-### Dashboard login lockout (forgot password)
-
-After you create at least one account under **Users**, the dashboard requires sign-in. Passwords are stored hashed; they cannot be read back. If you lose the password, clear the dashboard user table and start over (you will briefly have an open dashboard until you create a new user).
-
-**Docker Compose** (default database path from `docker-compose.yml`):
-
-```bash
-docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users'); c.commit(); c.close()"
-docker compose restart llama-router
-```
-
-The first command removes **all** dashboard accounts. The restart clears the in-process user-count cache so the UI immediately returns to bootstrap mode (no login required). Then open **Users** and create a new administrator.
-
-If you set `LLAMA_ROUTER_DATABASE_PATH` to something else, use that path inside the `sqlite3.connect(...)` call. For a local SQLite file (no Docker), run the same `DELETE FROM dashboard_users` against your database file with any SQLite client.
-
-To remove a single user by name instead of wiping everyone:
-
-```bash
-docker compose exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users WHERE username = ?', ('myuser',)); c.commit(); c.close()"
-docker compose restart llama-router
-```
-
-### Single sign-on (OpenID Connect)
-
-The dashboard can sign people in through an OpenID Connect provider such as Authentik, Keycloak, Okta, Entra ID or dex. Members of an admin group become administrators. Everyone else who signs in is a read-only viewer. Local accounts keep working alongside SSO unless you turn password sign-in off.
-
-Register a confidential client at your provider with this redirect URI:
-
-```
-https://<dashboard host>/login/oidc/callback
-```
-
-Then set:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `LLAMA_ROUTER_OIDC_ISSUER` | empty | Issuer URL. Empty turns SSO off. |
-| `LLAMA_ROUTER_OIDC_CLIENT_ID` | empty | Client ID. |
-| `LLAMA_ROUTER_OIDC_CLIENT_SECRET` | empty | Client secret. |
-| `LLAMA_ROUTER_OIDC_ADMIN_GROUP` | empty | Members are administrators. |
-| `LLAMA_ROUTER_OIDC_ALLOWED_GROUP` | empty | If set, only members (and admins) may sign in. |
-| `LLAMA_ROUTER_OIDC_GROUPS_CLAIM` | `groups` | Claim holding the groups. Dots reach nested claims. |
-| `LLAMA_ROUTER_OIDC_SCOPES` | `openid profile email groups` | Requested scopes. |
-| `LLAMA_ROUTER_OIDC_REDIRECT_BASE_URL` | empty | External dashboard URL, e.g. `https://llm.example.org`. Empty uses the request's host and `X-Forwarded-*` headers. |
-| `LLAMA_ROUTER_OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with ...". |
-| `LLAMA_ROUTER_OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. |
-| `LLAMA_ROUTER_OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the provider on logout. |
-| `LLAMA_ROUTER_OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only. |
-
-Behind HTTPS, also set `LLAMA_ROUTER_DASHBOARD_COOKIE_SECURE=true`. The **Users** page shows the issuer, callback URL and group rules in effect, and marks SSO accounts.
-
-How accounts behave:
-
-- **First sign-in creates the account.** It is matched to the provider by issuer and subject, never by email, so SSO cannot take over a local account. If the username is taken, a number is appended.
-- **Roles follow the provider.** The admin flag is recomputed from the groups claim at every sign-in. A removed admin loses access at their next sign-in. Sessions last up to 14 days.
-- **Groups.** If the ID token has no groups claim, the userinfo endpoint is asked.
-- **No passwords.** SSO accounts cannot use password sign-in and cannot be given a password.
-- **Removing access.** Deleting an SSO account on the **Users** page signs it out, but the account is recreated at the person's next sign-in. To keep someone out, remove them at the provider or set `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`.
-- **Bootstrap.** With no accounts at all, the dashboard is open as before. The first SSO sign-in creates the first account. If an admin group is set, that first person must be in it. Otherwise the first account is an administrator.
-- **Break-glass.** Keep one local administrator, or use the lockout steps above, in case the provider is unreachable.
-
-Provider notes:
-
-- **Authentik:** add the `groups` scope mapping to the provider. Group names appear as-is.
-- **Keycloak:** add a *Group Membership* mapper with "Full group path" off, or use realm roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=realm_access.roles`.
-- **Okta:** add a `groups` claim with a filter on the authorization server.
-- **Entra ID:** group claims carry object IDs, not names, so use the group's ID as the admin group. Users in many groups get an overage marker instead of a list, so app roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=roles` are more reliable.
-- **Google:** has no groups claim. Leave the admin group empty so the first account administers, and promote others by hand.
-
-To try it locally, start the mock provider in `docker-compose.dev.yml`. It shows a form where you type any subject and claims, such as `{"preferred_username": "ada", "groups": ["router-admins"]}`:
-
-```bash
-docker compose -f docker-compose.dev.yml --profile oidc up -d mock-oidc
-```
-
-Then run the router on the host with SSO pointed at it:
-
-```bash
-LLAMA_ROUTER_OIDC_ISSUER=http://localhost:18080/default LLAMA_ROUTER_OIDC_ALLOW_INSECURE=true LLAMA_ROUTER_OIDC_CLIENT_ID=llama-router LLAMA_ROUTER_OIDC_CLIENT_SECRET=dev LLAMA_ROUTER_OIDC_ADMIN_GROUP=router-admins LLAMA_ROUTER_DASHBOARD_PORT=8099 uv run llama-router
-```
-
-### Connecting routers: hubs and workers
-
-One llama-router can serve as a **hub** for others. A **worker** is a llama-router that opens a single outbound WebSocket to the hub and serves the inference jobs the hub sends down it. The worker needs no open ports, port forwarding, or VPN, so it works from a home network, behind NAT, or while the machine is on another tailnet or VPN. Nothing on the worker's network becomes reachable from the hub.
-
-**On the hub:** open the dashboard **Workers** tab, enter a name, and click **Create worker token**. The token is shown once. The worker also appears on the **Providers** tab and is routed to like any other provider once it connects.
-
-**On the worker:** open its **Workers** tab, paste the hub URL and token under **Serve a hub from this router**, and save. Or set the environment variables:
-
-```bash
-LLAMA_ROUTER_WORKER_HUB_URL=https://llm.example.org
-LLAMA_ROUTER_WORKER_TOKEN=lrw_...
-```
-
-The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way. With `API_ON_DASHBOARD_PORT=true` the socket is on the dashboard port too, so one proxy in front of port 80 serves the dashboard, the APIs and workers, and the hub URL is just `https://host`.
-
-**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
-
-**Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
-
-**Privacy.** A worker sees the prompts it serves. Make that clear to whoever uses the hub.
-
-**Loops.** Do not add the hub as a provider on a worker that relays to its own router, or a request can bounce between them. If a worker also wants to use the hub's models, point the worker's upstream at its local Ollama with `WORKER_OLLAMA_URL`.
-
-See [docs/workers.md](docs/workers.md) for the wire protocol.
-
-## Configuration
-
-All settings are configured via environment variables with the prefix `LLAMA_ROUTER_`.
-
-### Core
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_PATH` | `llama_router.db` | Path to SQLite database when `DATABASE_URL` is unset |
-| `DATABASE_URL` | *(empty)* | Async SQLAlchemy URL (e.g. `sqlite+aiosqlite:///…`, `postgresql+asyncpg://…`, `mysql+asyncmy://…`). When set, overrides `DATABASE_PATH`. Use optional install extras `postgres` or `mysql` for drivers; Alembic migrations use matching sync drivers (`psycopg`, `pymysql`) automatically. |
-| `DASHBOARD_HOST` | `0.0.0.0` | Dashboard bind address |
-| `DASHBOARD_PORT` | `80` | Dashboard port |
-| `API_HOST` | `0.0.0.0` | Ollama API bind address |
-| `API_PORT` | `11434` | Ollama API port |
-| `LLAMACPP_HOST` | `0.0.0.0` | OpenAI API bind address (the name predates other backends) |
-| `LLAMACPP_PORT` | `8080` | OpenAI API port |
-| `API_ON_DASHBOARD_PORT` | `false` | Also serve the Ollama API, the OpenAI API, decisions and worker links on the dashboard port. The Ollama and OpenAI ports keep listening either way (see [One port for everything](#one-port-for-everything)) |
-| `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
-| `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
-| `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
-| `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
-| `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
-| `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
-| `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
-| `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take; after that the request is routed as asked (see [Decision models](#decision-models)) |
-| `WORKER_HUB_ENABLED` | `true` | Accept worker connections at `/worker/ws` on the Ollama API port |
-| `WORKER_HUB_URL` | *(empty)* | Hub to connect to as a worker. With `WORKER_TOKEN`, overrides the dashboard setting |
-| `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub |
-| `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
-| `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
-| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
-| `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
-| `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
-| `TZ` | (system) | Timezone for dashboard timestamps (e.g. `America/New_York`) |
-
-### One port for everything
-
-With `LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true`, the dashboard port answers every Ollama and OpenAI API route, the decision routes, and the worker socket alongside the UI. Ports 11434 and 8080 still listen, so existing clients keep working.
-
-```bash
-curl http://localhost/api/tags
-curl http://localhost/v1/chat/completions -H 'API-KEY: lr_...' \
-  -d '{"model": "llama3.2", "messages": [{"role": "user", "content": "hi"}]}'
-```
-
-A request goes to the API when its path and method match an API route; the rest goes to the dashboard. `GET /decisions` is the dashboard page and `POST /decisions` is the API. `/health` stays the dashboard's.
-
-API requests on the dashboard port are checked by API key, not by dashboard login. Anyone who can reach port 80 can reach the API, so require API keys (turn off unauthenticated access) before exposing it.
-
-### Migrating data from SQLite to PostgreSQL
-
-Use the bundled CLI after creating an empty PostgreSQL database and granting a user DDL rights (Alembic will create tables).
-
-1. Install the Postgres extra: `pip install 'llama-router[postgres]'` (provides `psycopg` for this tool and optional runtime use).
-2. Run:
-
-```bash
-llama-router-migrate-sqlite-pg \
-  --sqlite /path/to/llama_router.db \
-  --postgres postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
-```
-
-The tool applies Alembic on the target, truncates all application tables (not `alembic_version`), copies rows in foreign-key order so IDs stay stable, then resets sequences. Your SQLite file should already match the current schema (run the app against SQLite once so migrations are applied there, or use a backup from a recent version).
-
-You can pass `postgresql+asyncpg://…` and it will be rewritten to `postgresql+psycopg://…` for the sync copy step.
-
-### Sentry (Optional)
-
-Set a DSN to enable Sentry reporting for unhandled exceptions and performance telemetry.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SENTRY_DSN` | *(empty)* | Sentry DSN. When empty, Sentry is disabled |
-| `SENTRY_ENVIRONMENT` | `production` | Sentry environment name |
-| `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Performance transaction sampling rate (`0.0` to `1.0`) |
-| `SENTRY_PROFILES_SAMPLE_RATE` | `0.0` | Profiling sampling rate (`0.0` to `1.0`) |
-| `SENTRY_SEND_DEFAULT_PII` | `false` | Include user/IP headers where available |
-
-### OCI Registry Cache
-
-The cache acts as a pull-through proxy for the Ollama model registry (`registry.ollama.ai`). When enabled, model pulls are routed through the cache so that large blob layers are stored locally on first download. Subsequent pulls of the same model — on any provider — are served from the local cache at LAN speed instead of re-downloading from the internet.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CACHE_ENABLED` | `true` | Enable the pull-through cache |
-| `CACHE_DIR` | `./model_cache` | Directory to store cached blobs and manifests |
-| `CACHE_HOST` | `0.0.0.0` | Cache registry bind address |
-| `CACHE_PORT` | `9200` | Cache registry port |
-| `CACHE_EXTERNAL_HOST` | *(none)* | **Required for cache.** The hostname or IP that Ollama backends use to reach the cache (e.g. `192.168.1.50`, `llama-router.local`). Falls back to `127.0.0.1` if unset, which only works when Ollama runs on the same machine. |
-| `CACHE_MANIFEST_TTL_HOURS` | `240` | Hours before re-fetching a cached manifest (default 10 days) |
-
-#### How the cache works
-
-1. You pull a model through the dashboard or the Ollama API (e.g. `llama3:8b`).
-2. llama-router rewrites the pull request so Ollama fetches layers from `http://<cache-external-host>:9200/...` instead of `registry.ollama.ai`.
-3. The cache checks its local blob store (content-addressed by SHA256 digest):
-   - **Cache hit** — the blob is streamed directly from disk at LAN speed.
-   - **Cache miss** — the blob is fetched from the upstream registry, streamed to the Ollama client, and simultaneously saved to disk for future requests.
-4. Manifests are cached with a configurable TTL (default 10 days). Blobs never expire because they are immutable content-addressed data.
-
-#### Requirements
-
-- The cache runs as an HTTP server on port 9200 (configurable). This port does **not** need to be exposed externally — it only needs to be reachable from the Ollama backends on your LAN.
-- In Docker, the cache directory should be on a persistent volume with enough space for the models you pull (models range from ~2 GB to ~200+ GB).
-
-#### Disabling the cache
-
-Set `LLAMA_ROUTER_CACHE_ENABLED=false` to disable the cache entirely. Pulls will go directly to the upstream registry as usual.
-
-#### Clearing the cache
-
-Use the **Cache** tab on the dashboard, or call the API directly:
-
-```bash
-curl -X POST http://localhost/api/cache/clear
-```
-
-## Cloud Services
-
-The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud, Azure OpenAI and TypeSafe (Jev, for [decision requests](#decision-models) only). A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.
-
-To attach a service without the dashboard, set its key in the environment. At startup the router creates a provider for each preset whose key is set, or updates the key of the one it created before:
-
-```bash
-LLAMA_ROUTER_PROVIDER_OPENAI_API_KEY=sk-...
-LLAMA_ROUTER_PROVIDER_OPENROUTER_API_KEY=sk-or-...
-LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_API_KEY=...
-LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_RESOURCE=my-resource
-```
-
-An OpenAI-compatible address can be the server root (`http://gpu:8080`, API under `/v1`) or the API base itself (`https://openrouter.ai/api/v1`); a URL ending in a version segment is taken as the API base.
-
-Each provider can also carry extra headers (one `Name: value` per line) and models added by hand, for services whose model list is missing or incomplete. Added models stay listed if the service's own list fails.
-
-`tests/test_cloud_presets_live.py` checks each preset against the real service when its key variable is set.
-
-### Running cloud providers
-
-- **Benchmarks cost money.** The idle auto-benchmarker and **Fill missing benchmarks** skip cloud providers; a provider's **Auto-benchmark** setting overrides that either way. A manual benchmark on a cloud provider asks first. Cloud benchmarks record no cold start, and cloud models always count as loaded.
-- **429 means busy, not broken.** When any provider answers HTTP 429, it is routed around for its `Retry-After` period (10 seconds without one, at most five minutes) as long as another provider can take the request. A 429 does not count toward its failure rate.
-- **Big catalogs.** A provider's **Model filter** (patterns such as `anthropic/claude-*`, one per line) keeps only the listed models that match; models added by hand are always kept. The OpenRouter preset starts with a filter for the main model families.
-- **Slow responses.** A provider's **Read timeout** replaces the default 120 seconds.
-
-## Health Check
-
-All three API ports expose a `GET /health` endpoint that returns JSON:
-
-```json
-{"status": "ok", "version": "0.7.8", "providers": 3, "providers_online": 2}
-```
-
-The dashboard port (80) includes provider counts; the Ollama (11434) and OpenAI (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
-
-## Hugging Face Downloads
-
-The Models tab can download GGUF models from Hugging Face with the `hf` CLI
-and deliver them to providers:
-
-- **Ollama providers:** the router uploads the file as a blob and creates the
-  model, so remote Ollama servers need no internet access or shared disk.
-  Name the model yourself or let the router derive one, such as
-  `qwen3-8b:q4_k_m`.
-- **llama.cpp providers:** mount `LLAMA_ROUTER_HF_MODELS_DIR` into the server's
-  `--models-dir` (router mode). The router then only refreshes the provider so
-  the new model is discovered.
-
-Worker providers are not push targets, since the worker link buffers whole
-request bodies; download on the worker itself instead.
-
-Use **List files** to preview what a pattern selects, then click a file to pick
-one quant. Split GGUF files work through a shared volume but cannot be pushed
-to Ollama. Set `HF_TOKEN` for gated or private repositories and `HF_ENDPOINT`
-for a mirror; see `.env.example` for the full list of variables the CLI reads.
-
-## Debugging from inside the container
-
-The image includes basic network tools so you can check reachability from the
-router's own point of view, which is often different from your laptop's:
-
-```bash
-docker compose exec llama-router ping -c 3 192.168.1.100
-docker compose exec llama-router host gpu-server.local
-docker compose exec llama-router dig +short gpu-server.local
-docker compose exec llama-router nc -zv 192.168.1.100 11434
-docker compose exec llama-router curl -s http://192.168.1.100:11434/api/version
-docker compose exec llama-router wget -qO- http://192.168.1.100:8080/health
-docker compose exec llama-router ip route
-docker compose exec llama-router traceroute 192.168.1.100
-```
 
 ## Routing
 
@@ -649,24 +382,327 @@ curl http://localhost/api/keys/1/pins
 curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 ```
 
+## Cloud Services
+
+The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud, Azure OpenAI and TypeSafe (Jev, for [decision requests](#decision-models) only). A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.
+
+To attach a service without the dashboard, set its key in the environment. At startup the router creates a provider for each preset whose key is set, or updates the key of the one it created before:
+
+```bash
+LLAMA_ROUTER_PROVIDER_OPENAI_API_KEY=sk-...
+LLAMA_ROUTER_PROVIDER_OPENROUTER_API_KEY=sk-or-...
+LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_API_KEY=...
+LLAMA_ROUTER_PROVIDER_AZURE_OPENAI_RESOURCE=my-resource
+```
+
+An OpenAI-compatible address can be the server root (`http://gpu:8080`, API under `/v1`) or the API base itself (`https://openrouter.ai/api/v1`); a URL ending in a version segment is taken as the API base.
+
+Each provider can also carry extra headers (one `Name: value` per line) and models added by hand, for services whose model list is missing or incomplete. Added models stay listed if the service's own list fails.
+
+`tests/test_cloud_presets_live.py` checks each preset against the real service when its key variable is set.
+
+### Running cloud providers
+
+- **Benchmarks cost money.** The idle auto-benchmarker and **Fill missing benchmarks** skip cloud providers; a provider's **Auto-benchmark** setting overrides that either way. A manual benchmark on a cloud provider asks first. Cloud benchmarks record no cold start, and cloud models always count as loaded.
+- **429 means busy, not broken.** When any provider answers HTTP 429, it is routed around for its `Retry-After` period (10 seconds without one, at most five minutes) as long as another provider can take the request. A 429 does not count toward its failure rate.
+- **Big catalogs.** A provider's **Model filter** (patterns such as `anthropic/claude-*`, one per line) keeps only the listed models that match; models added by hand are always kept. The OpenRouter preset starts with a filter for the main model families.
+- **Slow responses.** A provider's **Read timeout** replaces the default 120 seconds.
+
+## Single sign-on (OpenID Connect)
+
+The dashboard can sign people in through an OpenID Connect provider such as Authentik, Keycloak, Okta, Entra ID or dex. Members of an admin group become administrators. Everyone else who signs in is a read-only viewer. Local accounts keep working alongside SSO unless you turn password sign-in off.
+
+Register a confidential client at your provider with this redirect URI:
+
+```
+https://<dashboard host>/login/oidc/callback
+```
+
+Then set:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LLAMA_ROUTER_OIDC_ISSUER` | empty | Issuer URL. Empty turns SSO off. |
+| `LLAMA_ROUTER_OIDC_CLIENT_ID` | empty | Client ID. |
+| `LLAMA_ROUTER_OIDC_CLIENT_SECRET` | empty | Client secret. |
+| `LLAMA_ROUTER_OIDC_ADMIN_GROUP` | empty | Members are administrators. |
+| `LLAMA_ROUTER_OIDC_ALLOWED_GROUP` | empty | If set, only members (and admins) may sign in. |
+| `LLAMA_ROUTER_OIDC_GROUPS_CLAIM` | `groups` | Claim holding the groups. Dots reach nested claims. |
+| `LLAMA_ROUTER_OIDC_SCOPES` | `openid profile email groups` | Requested scopes. |
+| `LLAMA_ROUTER_OIDC_REDIRECT_BASE_URL` | empty | External dashboard URL, e.g. `https://llm.example.org`. Empty uses the request's host and `X-Forwarded-*` headers. |
+| `LLAMA_ROUTER_OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with ...". |
+| `LLAMA_ROUTER_OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. |
+| `LLAMA_ROUTER_OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the provider on logout. |
+| `LLAMA_ROUTER_OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only. |
+
+Behind HTTPS, also set `LLAMA_ROUTER_DASHBOARD_COOKIE_SECURE=true`. The **Users** page shows the issuer, callback URL and group rules in effect, and marks SSO accounts.
+
+How accounts behave:
+
+- **First sign-in creates the account.** It is matched to the provider by issuer and subject, never by email, so SSO cannot take over a local account. If the username is taken, a number is appended.
+- **Roles follow the provider.** The admin flag is recomputed from the groups claim at every sign-in. A removed admin loses access at their next sign-in. Sessions last up to 14 days.
+- **Groups.** If the ID token has no groups claim, the userinfo endpoint is asked.
+- **No passwords.** SSO accounts cannot use password sign-in and cannot be given a password.
+- **Removing access.** Deleting an SSO account on the **Users** page signs it out, but the account is recreated at the person's next sign-in. To keep someone out, remove them at the provider or set `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`.
+- **Bootstrap.** With no accounts at all, the dashboard is open as before. The first SSO sign-in creates the first account. If an admin group is set, that first person must be in it. Otherwise the first account is an administrator.
+- **Break-glass.** Keep one local administrator, or use the lockout steps above, in case the provider is unreachable.
+
+Provider notes:
+
+- **Authentik:** add the `groups` scope mapping to the provider. Group names appear as-is.
+- **Keycloak:** add a *Group Membership* mapper with "Full group path" off, or use realm roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=realm_access.roles`.
+- **Okta:** add a `groups` claim with a filter on the authorization server.
+- **Entra ID:** group claims carry object IDs, not names, so use the group's ID as the admin group. Users in many groups get an overage marker instead of a list, so app roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=roles` are more reliable.
+- **Google:** has no groups claim. Leave the admin group empty so the first account administers, and promote others by hand.
+
+To try it locally, start the mock provider in `docker-compose.yaml`. It shows a form where you type any subject and claims, such as `{"preferred_username": "ada", "groups": ["router-admins"]}`:
+
+```bash
+docker compose --profile oidc up -d mock-oidc
+```
+
+Then run the router on the host with SSO pointed at it:
+
+```bash
+LLAMA_ROUTER_OIDC_ISSUER=http://localhost:18080/default LLAMA_ROUTER_OIDC_ALLOW_INSECURE=true LLAMA_ROUTER_OIDC_CLIENT_ID=llama-router LLAMA_ROUTER_OIDC_CLIENT_SECRET=dev LLAMA_ROUTER_OIDC_ADMIN_GROUP=router-admins LLAMA_ROUTER_DASHBOARD_PORT=8099 uv run llama-router
+```
+
+## Connecting routers: hubs and workers
+
+One llama-router can serve as a **hub** for others. A **worker** is a llama-router that opens a single outbound WebSocket to the hub and serves the inference jobs the hub sends down it. The worker needs no open ports, port forwarding, or VPN, so it works from a home network, behind NAT, or while the machine is on another tailnet or VPN. Nothing on the worker's network becomes reachable from the hub.
+
+**On the hub:** open the dashboard **Workers** tab, enter a name, and click **Create worker token**. The token is shown once. The worker also appears on the **Providers** tab and is routed to like any other provider once it connects.
+
+**On the worker:** open its **Workers** tab, paste the hub URL and token under **Serve a hub from this router**, and save. Or set the environment variables:
+
+```bash
+LLAMA_ROUTER_WORKER_HUB_URL=https://llm.example.org
+LLAMA_ROUTER_WORKER_TOKEN=lrw_...
+```
+
+The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way. With `API_ON_DASHBOARD_PORT=true` the socket is on the dashboard port too, so one proxy in front of port 80 serves the dashboard, the APIs and workers, and the hub URL is just `https://host`.
+
+**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+
+**Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
+
+**Privacy.** A worker sees the prompts it serves. Make that clear to whoever uses the hub.
+
+**Loops.** Do not add the hub as a provider on a worker that relays to its own router, or a request can bounce between them. If a worker also wants to use the hub's models, point the worker's upstream at its local Ollama with `WORKER_OLLAMA_URL`.
+
+See [docs/workers.md](docs/workers.md) for the wire protocol.
+
+## Hugging Face Downloads
+
+The Models tab can download GGUF models from Hugging Face with the `hf` CLI
+and deliver them to providers:
+
+- **Ollama providers:** the router uploads the file as a blob and creates the
+  model, so remote Ollama servers need no internet access or shared disk.
+  Name the model yourself or let the router derive one, such as
+  `qwen3-8b:q4_k_m`.
+- **llama.cpp providers:** mount `LLAMA_ROUTER_HF_MODELS_DIR` into the server's
+  `--models-dir` (router mode). The router then only refreshes the provider so
+  the new model is discovered.
+
+Worker providers are not push targets, since the worker link buffers whole
+request bodies; download on the worker itself instead.
+
+Use **List files** to preview what a pattern selects, then click a file to pick
+one quant. Split GGUF files work through a shared volume but cannot be pushed
+to Ollama. Set `HF_TOKEN` for gated or private repositories and `HF_ENDPOINT`
+for a mirror; see `.env.example` for the full list of variables the CLI reads.
+
+## Health Check
+
+The dashboard port answers `GET /healthz` with `{"status": "ok"}` whenever the process is up, with no sign-in and no database work. The production compose file's health check uses it.
+
+All three API ports also expose `GET /health`, which returns JSON:
+
+```json
+{"status": "ok", "version": "0.7.8", "providers": 3, "providers_online": 2}
+```
+
+The dashboard port includes provider counts; the Ollama (11434) and OpenAI (8080) ports return a minimal response.
+
+## Configuration
+
+All settings are configured via environment variables, most with the prefix `LLAMA_ROUTER_`. [docs/configuration.md](docs/configuration.md) describes every one, and [`.env.example`](.env.example) lists them for copying into `.env`.
+
+### One port for everything
+
+With `LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true`, the dashboard port answers every Ollama and OpenAI API route, the decision routes, and the worker socket alongside the UI. Ports 11434 and 8080 still listen, so existing clients keep working.
+
+```bash
+curl http://localhost/api/tags
+curl http://localhost/v1/chat/completions -H 'API-KEY: lr_...' \
+  -d '{"model": "llama3.2", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+A request goes to the API when its path and method match an API route; the rest goes to the dashboard. `GET /decisions` is the dashboard page and `POST /decisions` is the API. `/health` stays the dashboard's.
+
+API requests on the dashboard port are checked by API key, not by dashboard login. Anyone who can reach port 80 can reach the API, so require API keys (turn off unauthenticated access) before exposing it.
+
+### Migrating data from SQLite to PostgreSQL
+
+Use the bundled CLI after creating an empty PostgreSQL database and granting a user DDL rights (Alembic will create tables).
+
+1. Install the Postgres extra: `pip install 'llama-router[postgres]'` (provides `psycopg` for this tool and optional runtime use).
+2. Run:
+
+```bash
+llama-router-migrate-sqlite-pg \
+  --sqlite /path/to/llama_router.db \
+  --postgres postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE
+```
+
+The tool applies Alembic on the target, truncates all application tables (not `alembic_version`), copies rows in foreign-key order so IDs stay stable, then resets sequences. Your SQLite file should already match the current schema (run the app against SQLite once so migrations are applied there, or use a backup from a recent version).
+
+You can pass `postgresql+asyncpg://…` and it will be rewritten to `postgresql+psycopg://…` for the sync copy step.
+
+### OCI Registry Cache
+
+The cache acts as a pull-through proxy for the Ollama model registry (`registry.ollama.ai`). When enabled, model pulls are routed through the cache so that large blob layers are stored locally on first download. Subsequent pulls of the same model — on any provider — are served from the local cache at LAN speed instead of re-downloading from the internet.
+
+Set `LLAMA_ROUTER_CACHE_EXTERNAL_HOST` to the host or IP your Ollama backends reach this machine on; without it the cache only works for Ollama on the same machine. The `CACHE_*` variables are in [docs/configuration.md](docs/configuration.md#ollama-registry-cache).
+
+#### How the cache works
+
+1. You pull a model through the dashboard or the Ollama API (e.g. `llama3:8b`).
+2. llama-router rewrites the pull request so Ollama fetches layers from `http://<cache-external-host>:9200/...` instead of `registry.ollama.ai`.
+3. The cache checks its local blob store (content-addressed by SHA256 digest):
+   - **Cache hit** — the blob is streamed directly from disk at LAN speed.
+   - **Cache miss** — the blob is fetched from the upstream registry, streamed to the Ollama client, and simultaneously saved to disk for future requests.
+4. Manifests are cached with a configurable TTL (default 10 days). Blobs never expire because they are immutable content-addressed data.
+
+#### Requirements
+
+- The cache runs as an HTTP server on port 9200 (configurable). This port does **not** need to be exposed externally — it only needs to be reachable from the Ollama backends on your LAN.
+- In Docker, the cache directory should be on a persistent volume with enough space for the models you pull (models range from ~2 GB to ~200+ GB).
+
+#### Disabling the cache
+
+Set `LLAMA_ROUTER_CACHE_ENABLED=false` to disable the cache entirely. Pulls will go directly to the upstream registry as usual.
+
+#### Clearing the cache
+
+Use the **Cache** tab on the dashboard, or call the API directly:
+
+```bash
+curl -X POST http://localhost/api/cache/clear
+```
+
+## Running it
+
+### With Docker
+
+The released image is on `ghcr.io/romkey/llama-router`. Copy [`docker-compose.prod.yaml`](docker-compose.prod.yaml) and [`.env.example`](.env.example) (as `.env`, then edit it) into a directory and run:
+
+```bash
+docker compose -f docker-compose.prod.yaml up -d
+```
+
+Open http://localhost to access the dashboard and add your backends. The database, the registry cache and Hugging Face downloads live on the `llama-router-data` volume at `/app/data`. Set `APP_VERSION=0.21.0` to pin a release instead of `latest`.
+
+The container runs as user 10001 with a read-only root filesystem and no capabilities. A data volume created by an image older than 0.22 is owned by root; give it to the new user once:
+
+```bash
+docker compose -f docker-compose.prod.yaml run --rm --user root llama-router chown -R 10001:10001 /app/data
+```
+
+### With pip
+
+Python 3.14 or newer:
+
+```bash
+pip install git+https://github.com/romkey/llama-router
+llama-router
+```
+
+Add `[postgres]` or `[mysql]` for those databases, e.g. `pip install 'llama-router[postgres] @ git+https://github.com/romkey/llama-router'`. pip ignores `uv.lock`, so it may install newer dependency versions than the ones tested; uv (below) installs exactly the tested ones. Without Docker, the database, cache and downloads go in the current directory unless configured otherwise.
+
+### Dashboard login lockout (forgot password)
+
+After you create at least one account under **Users**, the dashboard requires sign-in. Passwords are stored hashed; they cannot be read back. If you lose the password, clear the dashboard user table and start over (you will briefly have an open dashboard until you create a new user).
+
+**Docker Compose** (the image keeps the database at `/app/data/llama_router.db`; with the development setup, drop `-f docker-compose.prod.yaml`):
+
+```bash
+docker compose -f docker-compose.prod.yaml exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users'); c.commit(); c.close()"
+docker compose -f docker-compose.prod.yaml restart llama-router
+```
+
+The first command removes **all** dashboard accounts. The restart clears the in-process user-count cache so the UI immediately returns to bootstrap mode (no login required). Then open **Users** and create a new administrator.
+
+If you set `LLAMA_ROUTER_DATABASE_PATH` to something else, use that path inside the `sqlite3.connect(...)` call. For a local SQLite file (no Docker), run the same `DELETE FROM dashboard_users` against your database file with any SQLite client.
+
+To remove a single user by name instead of wiping everyone:
+
+```bash
+docker compose -f docker-compose.prod.yaml exec llama-router python -c "import sqlite3; c=sqlite3.connect('/app/data/llama_router.db'); c.execute('DELETE FROM dashboard_users WHERE username = ?', ('myuser',)); c.commit(); c.close()"
+docker compose -f docker-compose.prod.yaml restart llama-router
+```
+
+### Debugging from inside the container
+
+The image includes basic network tools so you can check reachability from the
+router's own point of view, which is often different from your laptop's:
+
+```bash
+docker compose -f docker-compose.prod.yaml exec llama-router ping -c 3 192.168.1.100
+docker compose -f docker-compose.prod.yaml exec llama-router host gpu-server.local
+docker compose -f docker-compose.prod.yaml exec llama-router dig +short gpu-server.local
+docker compose -f docker-compose.prod.yaml exec llama-router nc -zv 192.168.1.100 11434
+docker compose -f docker-compose.prod.yaml exec llama-router curl -s http://192.168.1.100:11434/api/version
+docker compose -f docker-compose.prod.yaml exec llama-router wget -qO- http://192.168.1.100:8080/health
+docker compose -f docker-compose.prod.yaml exec llama-router ip route
+docker compose -f docker-compose.prod.yaml exec llama-router traceroute 192.168.1.100
+```
+
 ## Development
 
-```bash
-pip install -e '.[dev]'
-pytest -v
-black src/ tests/
-```
+### With Docker
 
-Or with Docker:
+Nothing but Docker is needed. The development compose file runs the router from your working tree:
 
 ```bash
-docker compose -f docker-compose.dev.yml run test
+cp .env.example .env      # optional
+docker compose up --build
+docker compose -f docker-compose.test.yaml run --rm test
+docker compose -f docker-compose.lint.yaml run --rm lint
+docker compose -f docker-compose.lint.yaml run --rm secrets   # scan git history
 ```
+
+### With uv
+
+```bash
+uv sync
+uv run llama-router
+uv run pytest
+uvx --python 3.14 pre-commit run --all-files
+uvx --python 3.14 pre-commit install     # run the same checks on every commit
+```
+
+### With pip
+
+```bash
+python3.14 -m venv .venv && . .venv/bin/activate
+pip install -e . --group dev
+pytest
+```
+
+Linting (ruff, mypy, yamllint, actionlint, hadolint, gitleaks and more) runs through pre-commit, configured in `.pre-commit-config.yaml`; CI runs the same hooks.
+
+### Tests
 
 Tests use a temporary SQLite file. To run the database-backed tests against PostgreSQL, MySQL or MariaDB instead, point them at a throwaway database. It is emptied before every test:
 
 ```bash
-LLAMA_ROUTER_TEST_DATABASE_URL=mysql+asyncmy://root:pw@127.0.0.1:3306/lr pytest tests/test_database.py tests/test_routing_table.py
+LLAMA_ROUTER_TEST_DATABASE_URL=mysql+asyncmy://root:pw@127.0.0.1:3306/lr pytest --no-cov tests/test_database.py tests/test_routing_table.py
 ```
 
 A few dashboard tests drive the app through a synchronous test client and fail against a server database with "attached to a different loop"; that is the test client, not the database.
+
+## License
+
+[MIT](LICENSE)

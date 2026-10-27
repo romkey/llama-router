@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,8 +11,8 @@ from llama_router.llamacpp_client import _chat_metrics
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.routing_table import latest_benchmarks
@@ -72,7 +72,7 @@ async def test_plan_orders_missing_then_oldest(db: Database, pm: ProviderManager
         await db.save_benchmark(
             BenchmarkResult(provider_id=a.id, model_name=model, protocol="ollama")
         )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ages = {"fresh": 1, "old": 10, "older": 30}
 
     async def aged():

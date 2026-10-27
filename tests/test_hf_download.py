@@ -176,7 +176,9 @@ async def _wait_done(pull_id: str) -> dict:
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_hf_pull_pushes_blob_and_creates_model(
-    dash_client, httpx_mock, fake_hf  # noqa: F811
+    dash_client,
+    httpx_mock,
+    fake_hf,
 ) -> None:
     created: list[dict] = []
     blobs: dict[str, bytes] = {}
@@ -215,7 +217,9 @@ async def test_hf_pull_pushes_blob_and_creates_model(
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_hf_pull_refuses_ambiguous_push(
-    dash_client, httpx_mock, fake_hf  # noqa: F811
+    dash_client,
+    httpx_mock,
+    fake_hf,
 ) -> None:
     httpx_mock.add_callback(_ollama_handler([], {}), is_reusable=True)
     client, db = dash_client
@@ -230,7 +234,7 @@ async def test_hf_pull_refuses_ambiguous_push(
     assert "narrow it to one quant" in entry["progress"]
 
 
-async def test_hf_routes_validate_input(dash_client, fake_hf) -> None:  # noqa: F811
+async def test_hf_routes_validate_input(dash_client, fake_hf) -> None:
     client, db = dash_client
     bad = await client.post("/api/hf/pull", json={"repo": "../etc"})
     assert bad.status_code == 400
@@ -268,7 +272,9 @@ async def test_download_ignores_leftovers_from_earlier_runs(fake_hf) -> None:
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
 async def test_refused_push_still_refreshes_shared_volume_providers(
-    dash_client, httpx_mock, fake_hf  # noqa: F811
+    dash_client,
+    httpx_mock,
+    fake_hf,
 ) -> None:
     httpx_mock.add_callback(_ollama_handler([], {}), is_reusable=True)
     client, db = dash_client
@@ -315,7 +321,7 @@ async def test_download_falls_back_when_plan_is_unreadable(
     assert [p.name for p in paths] == ["Model-Q4_K_M.gguf"]
 
 
-async def test_hf_pull_refuses_worker_push(dash_client, fake_hf) -> None:  # noqa: F811
+async def test_hf_pull_refuses_worker_push(dash_client, fake_hf) -> None:
     client, db = dash_client
     from llama_router.models import ProviderProtocol
 

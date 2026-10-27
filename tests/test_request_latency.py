@@ -4,6 +4,7 @@ import time
 
 import httpx
 import pytest
+from starlette.requests import Request
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
@@ -11,15 +12,14 @@ from llama_router.background import drain
 from llama_router.database import Database
 from llama_router.models import (
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
     RequestLog,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.request_logger import StreamLogger, log_request_background
 from llama_router.router import Router
 from llama_router.timing import RECEIVED_AT, RequestTimingMiddleware, received_at
-from starlette.requests import Request
 
 
 async def test_request_log_round_trips_latency_fields(db: Database):

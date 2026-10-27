@@ -5,38 +5,35 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
-from pydantic import BaseModel
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
+from .. import __version__, hf_download
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
+from ..cloud_presets import PRESETS, get_preset
+from ..config import settings
+from ..httpx_errors import describe_httpx_error
+from ..models import ProviderProtocol, RequestLog
+from ..probe import FAMILY_LABELS, probe_url
+from ..provider_manager import preset_settings
+from ..provider_secrets import format_extra_headers, parse_extra_headers
 from ..router import (
     ENDPOINT_PROTOCOLS,
     ROUTING_MODES,
     RoutingPreferences,
 )
 from ..routing_table import DEFAULT_MODE, MODES
-from .. import hf_download
-from ..probe import FAMILY_LABELS, probe_url
-from ..config import settings
-from ..httpx_errors import describe_httpx_error
-from ..cloud_presets import PRESETS, get_preset
-from ..models import ProviderProtocol, RequestLog
-from ..provider_manager import preset_settings
-from ..provider_secrets import format_extra_headers, parse_extra_headers
 from ..upstream_url import LOCALITIES
-from . import deps
-
-from .. import __version__
 from ..worker_link.hub import (
     generate_worker_token,
     worker_token_hash,
@@ -44,6 +41,7 @@ from ..worker_link.hub import (
 )
 from ..worker_link.protocol import CLOSE_REVOKED
 from ..worker_link.worker import normalize_hub_url
+from . import deps, oidc
 from .auth_core import (
     AUTH_COOKIE,
     SESSION_MAX_AGE,
@@ -52,7 +50,6 @@ from .auth_core import (
     sign_session,
     verify_password,
 )
-from . import oidc
 from .middleware import invalidate_dashboard_user_count_cache
 
 logger = logging.getLogger(__name__)
@@ -294,7 +291,7 @@ def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> 
             return str(value)
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         return value.astimezone().strftime(fmt)
     return str(value)
 
@@ -408,6 +405,12 @@ def _same_origin_referer_path(request: Request, fallback: str) -> str:
     if ref.query:
         return f"{path}?{ref.query}"
     return path
+
+
+@router.get("/healthz")
+async def healthz() -> JSONResponse:
+    """Liveness for container health checks: no auth, no database, no backends."""
+    return JSONResponse({"status": "ok"})
 
 
 @router.get("/health")
@@ -989,7 +992,7 @@ def _routing_summary(pm) -> dict[str, Any] | None:
     rows = table.first_choices(_DEFAULT_EXPLAIN_ENDPOINT)
     return {
         "version": table.version,
-        "built_at": datetime.fromtimestamp(table.built_at, tz=timezone.utc),
+        "built_at": datetime.fromtimestamp(table.built_at, tz=UTC),
         "build_ms": table.build_ms,
         "reasons": list(table.reasons),
         "modes": list(MODES),
@@ -1383,7 +1386,7 @@ async def provider_detail(request: Request, provider_id: int):
 
 
 def _utc_day_start() -> datetime:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 
@@ -1456,17 +1459,17 @@ async def add_provider(
     name: str = Form(...),
     url: str = Form(""),
     protocol: str = Form("ollama"),
-    machine_type: Optional[str] = Form(None),
-    gpu_type: Optional[str] = Form(None),
-    gpu_ram: Optional[str] = Form(None),
-    api_key: Optional[str] = Form(None),
-    api_key_header: Optional[str] = Form(None),
-    preset: Optional[str] = Form(None),
-    preset_resource: Optional[str] = Form(None),
-    extra_headers: Optional[str] = Form(None),
-    manual_models: Optional[str] = Form(None),
-    locality: Optional[str] = Form(None),
-    model_filter: Optional[str] = Form(None),
+    machine_type: str | None = Form(None),
+    gpu_type: str | None = Form(None),
+    gpu_ram: str | None = Form(None),
+    api_key: str | None = Form(None),
+    api_key_header: str | None = Form(None),
+    preset: str | None = Form(None),
+    preset_resource: str | None = Form(None),
+    extra_headers: str | None = Form(None),
+    manual_models: str | None = Form(None),
+    locality: str | None = Form(None),
+    model_filter: str | None = Form(None),
 ):
     """Create a provider; *url* becomes its first address. It is probed in the
     background, so the stored endpoint list does not wait on the dialog.
@@ -1564,19 +1567,19 @@ async def edit_provider(
     provider_id: int,
     name: str = Form(...),
     protocol: str = Form("ollama"),
-    machine_type: Optional[str] = Form(None),
-    gpu_type: Optional[str] = Form(None),
-    gpu_ram: Optional[str] = Form(None),
-    api_key: Optional[str] = Form(None),
-    api_key_header: Optional[str] = Form(None),
-    clear_api_key: Optional[str] = Form(None),
-    extra_headers: Optional[str] = Form(None),
-    manual_models: Optional[str] = Form(None),
-    settings_form: Optional[str] = Form(None),
-    locality: Optional[str] = Form(None),
-    model_filter: Optional[str] = Form(None),
-    read_timeout_s: Optional[str] = Form(None),
-    auto_benchmark: Optional[str] = Form(None),
+    machine_type: str | None = Form(None),
+    gpu_type: str | None = Form(None),
+    gpu_ram: str | None = Form(None),
+    api_key: str | None = Form(None),
+    api_key_header: str | None = Form(None),
+    clear_api_key: str | None = Form(None),
+    extra_headers: str | None = Form(None),
+    manual_models: str | None = Form(None),
+    settings_form: str | None = Form(None),
+    locality: str | None = Form(None),
+    model_filter: str | None = Form(None),
+    read_timeout_s: str | None = Form(None),
+    auto_benchmark: str | None = Form(None),
 ):
     """Edit provider details. A blank API key keeps the stored one.
 
@@ -1802,7 +1805,7 @@ async def delete_model(provider_id: int, model_name: str):
 async def add_address(
     provider_id: int,
     url: str = Form(...),
-    is_preferred: Optional[str] = Form(None),
+    is_preferred: str | None = Form(None),
 ):
     pm = deps.get_pm()
     try:
@@ -1817,8 +1820,8 @@ async def add_address(
 async def save_provider_address(
     provider_id: int,
     url: str = Form(...),
-    is_preferred: Optional[str] = Form(None),
-    address_id: Optional[str] = Form(None),
+    is_preferred: str | None = Form(None),
+    address_id: str | None = Form(None),
 ):
     """Add or update an address; used by dashboard forms with a stable action URL."""
     db = deps.get_db()
@@ -1853,7 +1856,7 @@ async def edit_address(
     provider_id: int,
     address_id: int,
     url: str = Form(...),
-    is_preferred: Optional[str] = Form(None),
+    is_preferred: str | None = Form(None),
 ):
     pm = deps.get_pm()
     try:
@@ -2792,7 +2795,7 @@ def _iso(value: Any) -> str | None:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         return value.isoformat()
     return str(value)
 
@@ -2842,7 +2845,7 @@ class WorkerEnabledBody(BaseModel):
 
 class WorkerLinkBody(BaseModel):
     hub_url: str = ""
-    token: Optional[str] = None
+    token: str | None = None
 
 
 @router.get("/api/workers")

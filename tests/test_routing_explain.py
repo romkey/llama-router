@@ -10,8 +10,8 @@ from llama_router.database import Database
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
-    ProviderStatus,
     ProviderProtocol,
+    ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import (

@@ -82,7 +82,7 @@ def path_allowed(method: str, raw_path: str, allow_admin: bool) -> bool:
 
 
 class _Job:
-    __slots__ = ("id", "meta", "body", "body_size", "body_done", "task")
+    __slots__ = ("body", "body_done", "body_size", "id", "meta", "task")
 
     def __init__(self, req_id: int, meta: dict[str, Any]) -> None:
         self.id = req_id
@@ -230,7 +230,7 @@ class WorkerClient:
                 else:
                     self.last_error = f"connection lost: {exc}"
                     delay = backoff
-            except (OSError, asyncio.TimeoutError, WebSocketException) as exc:
+            except (TimeoutError, OSError, WebSocketException) as exc:
                 self.last_error = (
                     f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
                 )
@@ -371,7 +371,7 @@ class WorkerClient:
                 await self._execute(job)
         except asyncio.CancelledError:
             pass
-        except (ConnectionError, ConnectionClosed):
+        except ConnectionError, ConnectionClosed:
             pass
         except Exception as exc:
             logger.exception("Worker job %d failed", req_id)

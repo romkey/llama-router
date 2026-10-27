@@ -170,7 +170,7 @@ async def test_added_models_survive_a_failed_listing(db, httpx_mock) -> None:
     await pm.stop()
 
 
-async def test_dashboard_add_from_preset(dash_client, httpx_mock) -> None:  # noqa: F811
+async def test_dashboard_add_from_preset(dash_client, httpx_mock) -> None:
     httpx_mock.add_exception(httpx.ConnectError("offline"), is_reusable=True)
     client, db = dash_client
     r = await client.post(
@@ -215,7 +215,8 @@ async def test_dashboard_add_from_preset(dash_client, httpx_mock) -> None:  # no
 
 
 async def test_dashboard_edit_extra_headers_and_models(
-    dash_client, httpx_mock  # noqa: F811
+    dash_client,
+    httpx_mock,
 ) -> None:
     httpx_mock.add_exception(httpx.ConnectError("offline"), is_reusable=True)
     client, db = dash_client
