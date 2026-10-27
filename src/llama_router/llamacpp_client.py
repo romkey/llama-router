@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -69,6 +69,7 @@ class OpenAIClient:
         *,
         timeout: httpx.Timeout | None = None,
         headers: dict[str, str] | None = None,
+        on_response: Callable[[httpx.Response], Awaitable[None]] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         root, api_path = split_api_base(self._base_url)
@@ -80,7 +81,10 @@ class OpenAIClient:
             timeout=timeout or _TIMEOUT,
             transport=transport,
             headers=headers,
-            event_hooks={"request": [self._to_api_base]},
+            event_hooks={
+                "request": [self._to_api_base],
+                "response": [on_response] if on_response else [],
+            },
         )
 
     def _map_path(self, path: str) -> str:

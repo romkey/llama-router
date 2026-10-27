@@ -191,6 +191,13 @@ Each provider can also carry extra headers (one `Name: value` per line) and mode
 
 `tests/test_cloud_presets_live.py` checks each preset against the real service when its key variable is set.
 
+### Running cloud providers
+
+- **Benchmarks cost money.** The idle auto-benchmarker and **Fill missing benchmarks** skip cloud providers; a provider's **Auto-benchmark** setting overrides that either way. A manual benchmark on a cloud provider asks first. Cloud benchmarks record no cold start, and cloud models always count as loaded.
+- **429 means busy, not broken.** When any provider answers HTTP 429, it is routed around for its `Retry-After` period (10 seconds without one, at most five minutes) as long as another provider can take the request. A 429 does not count toward its failure rate.
+- **Big catalogs.** A provider's **Model filter** (patterns such as `anthropic/claude-*`, one per line) keeps only the listed models that match; models added by hand are always kept. The OpenRouter preset starts with a filter for the main model families.
+- **Slow responses.** A provider's **Read timeout** replaces the default 120 seconds.
+
 ## Health Check
 
 All three API ports expose a `GET /health` endpoint that returns JSON:

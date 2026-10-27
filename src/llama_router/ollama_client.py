@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -28,6 +28,7 @@ class OllamaClient:
         *,
         timeout: httpx.Timeout | None = None,
         headers: dict[str, str] | None = None,
+        on_response: Callable[[httpx.Response], Awaitable[None]] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._http = httpx.AsyncClient(
@@ -35,6 +36,7 @@ class OllamaClient:
             timeout=timeout or _TIMEOUT,
             transport=transport,
             headers=headers,
+            event_hooks={"response": [on_response]} if on_response else None,
         )
 
     def _upstream_url(self, path: str) -> str:

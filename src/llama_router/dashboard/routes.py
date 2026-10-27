@@ -1227,6 +1227,25 @@ def _key_locality(value: Any) -> str | None:
     return v
 
 
+def _model_filter(text: str | None) -> str | None:
+    """Model filter patterns, normalised to one per line; None for none."""
+    patterns = _model_lines(text)
+    return "\n".join(patterns) or None
+
+
+def _timeout(value: str | None) -> float | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError("read timeout must be a number of seconds")
+    if not 1 <= seconds <= 3600:
+        raise ValueError("read timeout must be between 1 and 3600 seconds")
+    return seconds
+
+
 def _model_lines(text: str | None) -> list[str]:
     """Model names, one per line or comma-separated."""
     out: list[str] = []
@@ -1254,6 +1273,7 @@ async def add_provider(
     extra_headers: Optional[str] = Form(None),
     manual_models: Optional[str] = Form(None),
     locality: Optional[str] = Form(None),
+    model_filter: Optional[str] = Form(None),
 ):
     """Create a provider; *url* becomes its first address. It is probed in the
     background, so the stored endpoint list does not wait on the dialog.
@@ -1283,6 +1303,8 @@ async def add_provider(
             raise ValueError("URL is required")
         if (locality or "auto") != "auto":
             settings_["locality"] = _parse_locality(locality)
+        if model_filter is not None and model_filter.strip():
+            settings_["model_filter"] = _model_filter(model_filter)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
@@ -1359,6 +1381,9 @@ async def edit_provider(
     manual_models: Optional[str] = Form(None),
     settings_form: Optional[str] = Form(None),
     locality: Optional[str] = Form(None),
+    model_filter: Optional[str] = Form(None),
+    read_timeout_s: Optional[str] = Form(None),
+    auto_benchmark: Optional[str] = Form(None),
 ):
     """Edit provider details. A blank API key keeps the stored one.
 
@@ -1372,6 +1397,9 @@ async def edit_provider(
         if settings_form:
             settings_["extra_headers"] = parse_extra_headers(extra_headers) or None
             settings_["manual_models"] = _model_lines(manual_models) or None
+            settings_["model_filter"] = _model_filter(model_filter)
+            settings_["read_timeout_s"] = _timeout(read_timeout_s)
+            settings_["auto_benchmark"] = _tristate(auto_benchmark)
         if locality:
             settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:
@@ -2154,7 +2182,11 @@ async def api_auto_benchmark_check():
 
 @router.post("/api/benchmarks/fill-missing")
 async def api_fill_missing_benchmarks():
-    """Run missing protocol-specific benchmarks for all providers/models."""
+    """Run missing benchmarks for every provider and model.
+
+    Providers that opt out of automatic benchmarks (cloud ones by default,
+    where each run costs money) are left out; benchmark those one by one.
+    """
     pm = deps.get_pm()
     db = deps.get_db()
     infos = await pm.list_provider_infos()
@@ -2168,7 +2200,7 @@ async def api_fill_missing_benchmarks():
     provider_names: dict[int, str] = {}
     for info in infos:
         provider = info.provider
-        if provider.id is None:
+        if provider.id is None or not provider.auto_benchmarks:
             continue
         api = provider.protocol.value
         runs: list[tuple[str, str]] = [

@@ -300,6 +300,9 @@ class Database:
         "extra_headers": True,
         "manual_models": True,
         "locality": False,
+        "model_filter": False,
+        "read_timeout_s": False,
+        "auto_benchmark": False,
     }
 
     @_notifies(CHANGE_PROVIDERS)
@@ -316,6 +319,8 @@ class Database:
             sets.append(f"{name} = ?")
             if self._PROVIDER_SETTINGS[name] and value is not None:
                 value = json.dumps(value) if value else None
+            elif isinstance(value, bool):
+                value = int(value)  # integer columns; asyncpg refuses a bool
             params.append(value)
         params.append(provider_id)
         await self._execute(
@@ -1111,6 +1116,9 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         extra_headers=_json_or_none(row["extra_headers"]),
         manual_models=_json_list_or_none(row["manual_models"]),
         locality=row["locality"] or "local",
+        model_filter=row["model_filter"],
+        read_timeout_s=row["read_timeout_s"],
+        auto_benchmark=_tristate(row["auto_benchmark"]),
     )
 
 

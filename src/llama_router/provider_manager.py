@@ -34,7 +34,7 @@ from .models import (
 from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
 from .upstream_url import guess_locality, split_api_base
-from .routing_stats import ProviderStats
+from .routing_stats import ProviderStats, retry_after_seconds
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailable,
@@ -116,6 +116,7 @@ def preset_settings(preset) -> dict[str, Any]:
         "extra_headers": dict(preset.extra_headers) or None,
         "manual_models": list(preset.models) or None,
         "locality": "cloud",
+        "model_filter": preset.model_filter or None,
     }
 
 
@@ -374,26 +375,36 @@ class ProviderManager:
         if not addr:
             self._active_urls.pop(provider.id, None)
             return
+        kw: dict[str, Any] = {"on_response": self._response_hook(provider.id)}
+        if provider.read_timeout_s:
+            kw["timeout"] = httpx.Timeout(10.0, read=provider.read_timeout_s)
         if provider.is_worker:
-            transport = self.worker_hub.transport(provider.id, provider.worker_target)
-            if provider.is_ollama:
-                self._ollama_clients[provider.id] = OllamaClient(
-                    addr.url, transport=transport
-                )
-            else:
-                self._llamacpp_clients[provider.id] = LlamaCppClient(
-                    addr.url, transport=transport
-                )
-            self._active_urls[provider.id] = self._address_url_sig(addr)
-            return
-        headers = self._upstream_headers(provider)
-        if provider.is_ollama:
-            self._ollama_clients[provider.id] = OllamaClient(addr.url, headers=headers)
-        else:
-            self._llamacpp_clients[provider.id] = LlamaCppClient(
-                addr.url, headers=headers
+            kw["transport"] = self.worker_hub.transport(
+                provider.id, provider.worker_target
             )
+        else:
+            kw["headers"] = self._upstream_headers(provider)
+        if provider.is_ollama:
+            self._ollama_clients[provider.id] = OllamaClient(addr.url, **kw)
+        else:
+            self._llamacpp_clients[provider.id] = LlamaCppClient(addr.url, **kw)
         self._active_urls[provider.id] = self._address_url_sig(addr)
+
+    def _response_hook(self, provider_id: int):
+        """Every upstream response passes here: a 429 marks the provider busy."""
+
+        async def on_response(resp: httpx.Response) -> None:
+            if resp.status_code == 429:
+                seconds = retry_after_seconds(resp.headers.get("retry-after"))
+                self.stats.mark_busy(provider_id, seconds)
+                logger.info(
+                    "Provider %d rate-limited (HTTP 429); routing around it for "
+                    "%.0fs",
+                    provider_id,
+                    min(seconds, 300.0),
+                )
+
+        return on_response
 
     async def _close_clients(self, provider_id: int) -> None:
         if provider_id in self._ollama_clients:
@@ -1183,7 +1194,12 @@ class ProviderManager:
                 protocol=protocol,
                 # The backend's own load time says whether this was a cold
                 # start; the router's view of what is loaded can be stale.
-                startup_time_ms=measured_cold_start(metrics["startup_time_ms"]),
+                # A cloud service has no cold start the router can measure.
+                startup_time_ms=(
+                    None
+                    if provider.is_cloud
+                    else measured_cold_start(metrics["startup_time_ms"])
+                ),
                 tokens_per_second=metrics["tokens_per_second"],
                 source=source,
             )
@@ -1387,6 +1403,7 @@ class ProviderManager:
 
         if provider.is_ollama and provider.id in self._ollama_clients:
             tags = await _listed(self._ollama_clients[provider.id].get_tags)
+            tags = [m for m in tags if provider.keeps_model(m.name)]
             for m in tags:
                 clean_name = self._strip_cache_prefix(m.name)
                 raw_name = m.name if clean_name != m.name else None
@@ -1403,6 +1420,7 @@ class ProviderManager:
 
         if provider.is_openai and provider.id in self._llamacpp_clients:
             lcpp_models = await _listed(self._llamacpp_clients[provider.id].get_models)
+            lcpp_models = [m for m in lcpp_models if provider.keeps_model(m.name)]
             for m in lcpp_models:
                 clean_name = self._strip_cache_prefix(m.name)
                 raw_name = m.name if clean_name != m.name else None

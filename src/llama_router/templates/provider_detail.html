@@ -474,6 +474,25 @@
                 </div>
                 {% endif %}
                 <div class="mb-3">
+                    <label for="edit-model-filter" class="form-label">Model filter</label>
+                    <textarea class="form-control font-monospace" id="edit-model-filter" name="model_filter" rows="2" placeholder="anthropic/claude-*">{{ (info.provider.model_patterns() | join('\n')) }}</textarea>
+                    <div class="form-text">Keep only listed models matching these patterns (one per line, <code>*</code> wildcards). Empty keeps all.</div>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-sm-6">
+                        <label for="edit-read-timeout" class="form-label">Read timeout (s)</label>
+                        <input type="number" min="1" max="3600" step="1" class="form-control" id="edit-read-timeout" name="read_timeout_s" placeholder="120" value="{{ info.provider.read_timeout_s | int if info.provider.read_timeout_s else '' }}">
+                    </div>
+                    <div class="col-sm-6">
+                        <label for="edit-auto-benchmark" class="form-label">Auto-benchmark</label>
+                        <select class="form-select" id="edit-auto-benchmark" name="auto_benchmark">
+                            <option value="" {% if info.provider.auto_benchmark is none %}selected{% endif %}>Default ({{ 'off for cloud' if info.provider.is_cloud else 'on' }})</option>
+                            <option value="on" {% if info.provider.auto_benchmark == true %}selected{% endif %}>On</option>
+                            <option value="off" {% if info.provider.auto_benchmark == false %}selected{% endif %}>Off</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="mb-3">
                     <label for="edit-manual-models" class="form-label">Models added by hand</label>
                     <textarea class="form-control font-monospace" id="edit-manual-models" name="manual_models" rows="2">{{ manual_models_text }}</textarea>
                     <div class="form-text">One per line; kept alongside the models the provider lists.</div>
@@ -593,6 +612,7 @@
 {% block scripts %}
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
+const PROVIDER_IS_CLOUD = {{ info.provider.is_cloud | tojson }};
 
 document.addEventListener('click', function (ev) {
     const probeBtn = ev.target.closest('#probe-provider');
@@ -650,6 +670,10 @@ document.addEventListener('click', function(e) {
         var apiSel = document.getElementById('benchmark-api');
         var benchmarkApi = apiSel ? apiSel.value : 'auto';
         if (!model) return;
+        if (PROVIDER_IS_CLOUD && !window._cloudBenchOk) {
+            if (!confirm('This is a cloud provider: a benchmark sends real requests and may cost money. Run it?')) return;
+            window._cloudBenchOk = true;
+        }
         benchBtn.disabled = true;
         var origHtml = benchBtn.innerHTML;
         benchBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';

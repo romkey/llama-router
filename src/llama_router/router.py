@@ -267,6 +267,14 @@ class Router:
         key_id = preferences.key_id if preferences is not None else None
         return session_key(headers, body, key_id)
 
+    def _not_busy(self, ranked: tuple[Candidate, ...]) -> tuple[Candidate, ...]:
+        """Drop providers cooling down after a 429, unless all of them are."""
+        busy = self._pm.stats.busy_for
+        if not any(busy(c.provider_id) > 0 for c in ranked):
+            return ranked
+        ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
+        return ready or ranked
+
     def forget_session(self, session: str | None) -> None:
         """Let the session's next request be placed afresh (after a failure)."""
         self.affinity.forget(session)
@@ -370,6 +378,7 @@ class Router:
             ranked = table.ranked_for(candidate_model, path, mode, locality)
             if not ranked:
                 continue
+            ranked = self._not_busy(ranked)
             chosen = None
             sticky = None
             if session is not None:
@@ -549,6 +558,8 @@ class Router:
         rows: list[dict[str, Any]] = []
         all_cands = table.all_candidates.get((model, path), ())
         ranked = table.ranked_for(model, path, mode, locality)
+        ready = self._not_busy(ranked)
+        busy = self._pm.stats.busy_for
         ranked_ids = {c.provider_id for c in ranked}
         best_tier = ranked[0].tier if ranked else TIER_OK
         pid = pins.get(model)
@@ -592,9 +603,18 @@ class Router:
                 row["excluded"] = "; ".join(c.problems) + (
                     "; healthier providers are available"
                 )
+            elif c not in ready:
+                row["excluded"] = (
+                    f"rate limited (HTTP 429) for {busy(c.provider_id):.0f}s more; "
+                    "other providers are ready"
+                )
             else:
                 # In the best tier available, so it is used despite problems.
                 row["warnings"] = list(c.problems)
+                if busy(c.provider_id) > 0:
+                    row["warnings"].append(
+                        f"rate limited (HTTP 429) for {busy(c.provider_id):.0f}s more"
+                    )
             rows.append(row)
 
         if locality is not None:

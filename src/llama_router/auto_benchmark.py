@@ -225,6 +225,8 @@ class AutoBenchmarker:
         for p in await self._db.list_providers():
             if p.id is None or p.status == ProviderStatus.OFFLINE:
                 continue
+            if not p.auto_benchmarks:
+                continue  # cloud providers cost money; see Provider.auto_benchmark
             api = p.protocol.value
             for m in models_by_provider.get(p.id, []):
                 key = (p.id, m.name, api)

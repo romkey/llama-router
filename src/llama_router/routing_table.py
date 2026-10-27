@@ -490,7 +490,8 @@ def build_table(
                     upstream=up,
                     # Loaded now: Ollama's /api/ps, or the model llama.cpp
                     # reports in /props.
-                    is_hot=m.name in hot or recently_used,
+                    # A cloud service has every model loaded.
+                    is_hot=p.is_cloud or m.name in hot or recently_used,
                     startup_ms=bench.startup_time_ms if bench else None,
                     tokens_per_second=(
                         observed_tps or (bench.tokens_per_second if bench else None)

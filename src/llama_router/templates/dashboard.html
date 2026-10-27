@@ -1621,6 +1621,11 @@
                         <div class="form-text">One <code>Name: value</code> per line, sent with every request. Keys go in the API key field.</div>
                     </div>
                     <div class="mt-2">
+                        <label for="model_filter" class="form-label">Model filter</label>
+                        <input type="text" class="form-control font-monospace" id="model_filter" name="model_filter" placeholder="anthropic/claude-*, openai/gpt-*">
+                        <div class="form-text">Keep only listed models matching these patterns. For services that list hundreds.</div>
+                    </div>
+                    <div class="mt-2">
                         <label for="manual_models" class="form-label">Models added by hand</label>
                         <textarea class="form-control font-monospace" id="manual_models" name="manual_models" rows="2" placeholder="sonar-pro"></textarea>
                         <div class="form-text">One per line. For services that cannot list (all of) their models.</div>
@@ -1869,6 +1874,8 @@ function applyPreset(id) {
     document.getElementById('extra_headers').value = p
         ? Object.entries(p.extra_headers).map(([k, v]) => k + ': ' + v).join('\n') : '';
     document.getElementById('manual_models').value = p ? p.models.join('\n') : '';
+    document.getElementById('model_filter').value = p ? (p.model_filter || '') : '';
+    if (p && (p.model_filter || p.models.length)) document.getElementById('add-advanced').open = true;
     info.innerHTML = '';
     info.style.display = p ? '' : 'none';
     if (p) {

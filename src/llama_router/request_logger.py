@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 _stats: ProviderStats | None = None
 
 # Upstream answers that say the provider, not the request, is the problem.
-_PROVIDER_FAULT_4XX = frozenset({401, 403, 404, 408, 429})
+# 429 is left out: the provider is busy, not broken. Its client marks it busy
+# for the Retry-After period instead (see ProviderManager._on_response).
+_PROVIDER_FAULT_4XX = frozenset({401, 403, 404, 408})
 _STATUS_RE = re.compile(r"^(?:HTTP |HTTPStatusError )(\d{3})")
 # Final-chunk fields that give generation speed.
 _EVAL_COUNT_RE = re.compile(rb'"eval_count"\s*:\s*(\d+)')

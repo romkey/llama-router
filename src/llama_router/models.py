@@ -91,10 +91,36 @@ class Provider(BaseModel):
     # "local" (this machine, the LAN, a tailnet) or "cloud". API keys can be
     # limited to one; see upstream_url.guess_locality for the default.
     locality: str = "local"
+    # Discovery keeps only listed models matching these patterns (fnmatch,
+    # comma or newline separated). For services that list hundreds.
+    model_filter: str | None = None
+    # Seconds to wait for a response; None keeps the client default (120).
+    read_timeout_s: float | None = None
+    # Auto-benchmark override; None means on for local, off for cloud
+    # (benchmarking a cloud service costs money).
+    auto_benchmark: bool | None = None
 
     @property
     def is_cloud(self) -> bool:
         return self.locality == "cloud"
+
+    @property
+    def auto_benchmarks(self) -> bool:
+        """Whether the idle auto-benchmarker may run on this provider."""
+        if self.auto_benchmark is not None:
+            return self.auto_benchmark
+        return not self.is_cloud
+
+    def model_patterns(self) -> list[str]:
+        raw = (self.model_filter or "").replace(",", "\n")
+        return [p.strip() for p in raw.splitlines() if p.strip()]
+
+    def keeps_model(self, name: str) -> bool:
+        """Whether *name* passes the provider's model filter."""
+        import fnmatch
+
+        patterns = self.model_patterns()
+        return not patterns or any(fnmatch.fnmatchcase(name, p) for p in patterns)
 
     @property
     def is_worker(self) -> bool:

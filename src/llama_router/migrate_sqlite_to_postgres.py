@@ -60,6 +60,9 @@ _TABLES: list[tuple[str, list[str]]] = [
             "extra_headers",
             "manual_models",
             "locality",
+            "model_filter",
+            "read_timeout_s",
+            "auto_benchmark",
         ],
     ),
     (
