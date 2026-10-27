@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..request_logger import log_request
+from ..timing import RequestTimingMiddleware
 
 from . import deps
 from .audio import router as audio_router
@@ -19,6 +20,7 @@ from .models import router as models_router
 from .responses import router as responses_router
 
 app = FastAPI(title="llama-router llama.cpp API")
+app.add_middleware(RequestTimingMiddleware)
 
 
 @app.get("/health")

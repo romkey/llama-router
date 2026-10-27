@@ -1036,6 +1036,13 @@
                             {{ "%.0f ms" | format(entry.duration_ms) }}
                             {% endif %}
                             {% if entry.streamed %}<i class="bi bi-broadcast ms-1 text-muted" title="Streamed"></i>{% endif %}
+                            {% if entry.ttfb_ms is not none or entry.router_ms is not none %}
+                            <div class="text-muted" style="font-size: 0.75em" title="First byte: backend's first byte after dispatch. Router: arrival at the router until dispatch.">
+                                {% if entry.ttfb_ms is not none %}first byte {{ "%.0f ms" | format(entry.ttfb_ms) }}{% endif %}
+                                {% if entry.ttfb_ms is not none and entry.router_ms is not none %}&middot;{% endif %}
+                                {% if entry.router_ms is not none %}router {{ "%.1f ms" | format(entry.router_ms) }}{% endif %}
+                            </div>
+                            {% endif %}
                         </td>
                         <td>
                             {% if entry.status == 'ok' %}

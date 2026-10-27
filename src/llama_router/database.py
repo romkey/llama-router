@@ -605,8 +605,9 @@ class Database:
         await self._execute(
             "INSERT INTO request_log "
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
-            "request_size, response_size, request_meta, duration_ms, status, streamed, error_detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
+            "router_ms, status, streamed, error_detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -618,6 +619,8 @@ class Database:
                 entry.response_size,
                 entry.request_meta,
                 entry.duration_ms,
+                entry.ttfb_ms,
+                entry.router_ms,
                 entry.status,
                 int(entry.streamed),
                 entry.error_detail,
@@ -1116,6 +1119,8 @@ def _row_to_request_log(row: Mapping[str, Any]) -> RequestLog:
         response_size=row["response_size"],
         request_meta=row.get("request_meta"),
         duration_ms=row["duration_ms"],
+        ttfb_ms=row.get("ttfb_ms"),
+        router_ms=row.get("router_ms"),
         status=row["status"],
         streamed=bool(row["streamed"]),
         error_detail=row["error_detail"],

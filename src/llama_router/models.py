@@ -138,6 +138,10 @@ class RequestLog(BaseModel):
     response_size: int = 0
     request_meta: str | None = None
     duration_ms: float = 0.0
+    # Dispatch to the backend's first byte (streamed responses only).
+    ttfb_ms: float | None = None
+    # Arrival at the router to dispatch: parsing, auth and routing.
+    router_ms: float | None = None
     status: str = "ok"  # "ok" or "error"
     streamed: bool = False
     error_detail: str | None = None
