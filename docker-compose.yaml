@@ -1,0 +1,51 @@
+# Development: runs llama-router from your working tree, with the dev
+# dependencies installed.
+#
+#   cp .env.example .env              # then edit it, or leave it all default
+#   docker compose up --build         # dashboard at http://localhost
+#   docker compose run --rm llama-router bash  # a shell with everything installed
+#
+# Restart the app (docker compose restart llama-router) to pick up code
+# changes. Tests, lint and production have their own compose files:
+#
+#   docker compose -f docker-compose.test.yaml run --rm test
+#   docker compose -f docker-compose.lint.yaml run --rm lint
+#   docker compose -f docker-compose.prod.yaml up -d
+#
+# Try dashboard single sign-on against a mock OpenID Connect provider (README,
+# "Single sign-on (OpenID Connect)"):
+#
+#   docker compose --profile oidc up -d mock-oidc
+
+services:
+  llama-router:
+    build:
+      context: .
+      target: dev
+    # uv run re-syncs /venv if pyproject.toml or uv.lock changed.
+    command: uv run --locked python -m llama_router
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "80:80"
+      - "8080:8080"
+      - "9200:9200"
+      - "11434:11434"
+    volumes:
+      - .:/app
+      - llama-router-data:/app/data
+      - uv-cache:/root/.cache/uv
+
+  # Its login form accepts any subject and any claims JSON.
+  mock-oidc:
+    image: ghcr.io/navikt/mock-oauth2-server:2.1.10
+    profiles: ["oidc"]
+    ports:
+      - "18080:8080"
+    environment:
+      JSON_CONFIG: '{"interactiveLogin": true}'
+
+volumes:
+  llama-router-data:
+  uv-cache:

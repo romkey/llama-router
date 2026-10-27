@@ -1,0 +1,21 @@
+# Tests, as CI runs them: pytest with coverage against your working tree.
+#
+#   docker compose -f docker-compose.test.yaml run --rm test
+#   docker compose -f docker-compose.test.yaml run --rm test pytest -k healthz
+#
+# The working tree is mounted, so code changes need no rebuild; dependency
+# changes are synced from uv.lock on each run.
+
+services:
+  test:
+    build:
+      context: .
+      target: dev
+    entrypoint: ["uv", "run", "--locked"]
+    command: ["pytest"]
+    volumes:
+      - .:/app
+      - uv-cache:/root/.cache/uv
+
+volumes:
+  uv-cache:
