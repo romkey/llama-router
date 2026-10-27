@@ -62,7 +62,7 @@ LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 
 The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way.
 
-**What a worker serves.** Jobs run against the worker's own Ollama and llama.cpp APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
 **Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 
@@ -86,8 +86,8 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `DASHBOARD_PORT` | `80` | Dashboard port |
 | `API_HOST` | `0.0.0.0` | Ollama API bind address |
 | `API_PORT` | `11434` | Ollama API port |
-| `LLAMACPP_HOST` | `0.0.0.0` | llama.cpp API bind address |
-| `LLAMACPP_PORT` | `8080` | llama.cpp API port |
+| `LLAMACPP_HOST` | `0.0.0.0` | OpenAI API bind address (the name predates other backends) |
+| `LLAMACPP_PORT` | `8080` | OpenAI API port |
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between health checks |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
@@ -99,7 +99,7 @@ All settings are configured via environment variables with the prefix `LLAMA_ROU
 | `WORKER_HUB_URL` | *(empty)* | Hub to connect to as a worker. With `WORKER_TOKEN`, overrides the dashboard setting |
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub |
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
-| `WORKER_LLAMACPP_URL` | *(this router)* | llama.cpp API the worker relays jobs to; `none` disables llama.cpp jobs |
+| `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
 | `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
@@ -207,7 +207,7 @@ All three API ports expose a `GET /health` endpoint that returns JSON:
 {"status": "ok", "version": "0.7.8", "providers": 3, "providers_online": 2}
 ```
 
-The dashboard port (80) includes provider counts; the Ollama (11434) and llama.cpp (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
+The dashboard port (80) includes provider counts; the Ollama (11434) and OpenAI (8080) ports return a minimal response. The Docker Compose file includes a health check configuration using this endpoint.
 
 ## Hugging Face Downloads
 

@@ -1,4 +1,4 @@
-"""Entrypoint: runs the dashboard, Ollama API, llama.cpp API, and cache servers."""
+"""Entrypoint: runs the dashboard, Ollama API, OpenAI API, and cache servers."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ async def run() -> None:
         servers.append(uvicorn.Server(cache_config))
         logger.info(
             "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
-            "llama.cpp API on :%d, registry cache on :%d",
+            "OpenAI API on :%d, registry cache on :%d",
             settings.dashboard_port,
             settings.api_port,
             settings.llamacpp_port,
@@ -110,7 +110,7 @@ async def run() -> None:
     else:
         logger.info(
             "Starting llama-router: dashboard on :%d, Ollama API on :%d, "
-            "llama.cpp API on :%d (cache disabled)",
+            "OpenAI API on :%d (cache disabled)",
             settings.dashboard_port,
             settings.api_port,
             settings.llamacpp_port,
