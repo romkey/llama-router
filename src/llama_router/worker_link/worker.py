@@ -52,6 +52,11 @@ _INFERENCE_PATHS = {
         "/v1/images/edits",
         "/v1/audio/speech",
         "/v1/audio/transcriptions",
+        # Decision questions (Jev's routes and their aliases).
+        "/v1/decisions",
+        "/decisions",
+        "/v1/systemone",
+        "/systemone",
     )
 }
 _ADMIN_PATHS = {("POST", "/api/pull"), ("DELETE", "/api/delete")}
@@ -406,7 +411,7 @@ class WorkerClient:
             await self._reply_json(
                 req_id,
                 403,
-                {"error": f"worker does not allow {method} {path.split('?', 1)[0]}"},
+                {"error": f"{p.REFUSED_PREFIX} {method} {path.split('?', 1)[0]}"},
             )
             return
 

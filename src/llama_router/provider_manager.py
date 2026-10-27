@@ -154,6 +154,9 @@ class ProviderManager:
         self._logged_detail: dict[int, str] = {}
         # Endpoint probes running in the background, one per provider.
         self._probing: dict[int, asyncio.Task] = {}
+        # Software version each worker last connected with, so a worker that
+        # comes back upgraded (with new routes to relay) is probed again.
+        self._worker_versions: dict[int, str | None] = {}
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -1747,6 +1750,16 @@ class ProviderManager:
             await self._db.update_provider_status(
                 provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
             )
+            known = provider_id in self._worker_versions
+            previous = self._worker_versions.get(provider_id)
+            self._worker_versions[provider_id] = conn.software_version
+            if reachable and (
+                not known
+                or previous != conn.software_version
+                or provider.probed_at is None
+            ):
+                # What the worker relays depends on its version and upstream.
+                self.schedule_probe(provider_id, "worker connected")
 
     async def _on_worker_disconnected(self, conn: WorkerConnection) -> None:
         provider_id = conn.provider_id
