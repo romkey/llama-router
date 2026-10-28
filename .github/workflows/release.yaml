@@ -246,8 +246,15 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Merging a release PR starts CI on main at the same moment, and
+          # CI builds this image too. Sharing CI's cache scope made both jobs
+          # reserve the same cache keys and the loser's export failed, which
+          # aborted the push. The release reads CI's cache (amd64 layers)
+          # but writes only its own scope, and a cache error never fails it.
+          cache-from: |
+            type=gha
+            type=gha,scope=release
+          cache-to: type=gha,scope=release,mode=max,ignore-error=true
           provenance: mode=max
           sbom: true
 

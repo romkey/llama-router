@@ -78,7 +78,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       # Layers are cached in GitHub's cache, so an unchanged lockfile skips
-      # the dependency install.
+      # the dependency install. The cache is an optimization: a failed
+      # export (e.g. "failed to reserve cache") must not fail CI.
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -86,7 +87,7 @@ jobs:
           load: true
           tags: ${{ env.IMAGE }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
       - name: Smoke test
         run: docker run --rm "$IMAGE" llama-router --version
 
