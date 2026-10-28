@@ -26,12 +26,16 @@ async def version() -> JSONResponse:
 
 
 @router.get("/api/ps")
-async def ps() -> JSONResponse:
-    """Show which models are being served across providers."""
+async def ps(request: Request) -> JSONResponse:
+    """Show which models are being served across providers (a hub sees only
+    the providers shared with it)."""
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
+    hub = from_hub(request)
     running = []
     for info in infos:
+        if hub and not info.provider.hub_shared:
+            continue
         if info.active_requests > 0:
             for m in info.models:
                 running.append(

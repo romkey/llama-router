@@ -180,6 +180,18 @@ async def test_model_listings_hide_unshared_providers_from_the_hub(
     assert (await get(v1_app, "/v1/models/private", VIA)).status_code == 404
     assert (await get(v1_app, "/v1/models/private")).status_code == 200
 
+    # /api/ps lists loaded models of busy providers: not the unshared one.
+    for p in await db.list_providers():
+        pm.acquire(p.require_id())
+    try:
+        ps = (await get(api_app, "/api/ps")).json()["models"]
+        assert {m["name"] for m in ps} == {"private", "public"}
+        ps = (await get(api_app, "/api/ps", VIA)).json()["models"]
+        assert {m["name"] for m in ps} == {"public"}
+    finally:
+        for p in await db.list_providers():
+            pm.release(p.require_id())
+
 
 async def test_dashboard_hub_provider_api(dash_client: Any) -> None:
     client, db = dash_client

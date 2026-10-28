@@ -343,13 +343,17 @@ class Database:
     async def set_hub_shared_providers(self, provider_ids: Iterable[int]) -> None:
         """Share exactly *provider_ids* with the hub this router works for."""
         ids = sorted({int(i) for i in provider_ids})
-        await self._execute("UPDATE providers SET hub_shared = 0")
-        if ids:
-            marks = ", ".join("?" for _ in ids)
-            await self._execute(
-                f"UPDATE providers SET hub_shared = 1 WHERE id IN ({marks})",  # noqa: S608 - placeholders only; values are bound
-                tuple(ids),
-            )
+        if not ids:
+            await self._execute("UPDATE providers SET hub_shared = 0")
+            return
+        # One statement, so a failure or a concurrent save cannot leave a
+        # half-applied set.
+        marks = ", ".join("?" for _ in ids)
+        await self._execute(
+            "UPDATE providers SET hub_shared = "  # noqa: S608 - placeholders only; values are bound
+            f"CASE WHEN id IN ({marks}) THEN 1 ELSE 0 END",
+            tuple(ids),
+        )
 
     async def set_provider_api_key(
         self, provider_id: int, api_key_enc: str | None, header: str | None
