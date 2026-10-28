@@ -110,6 +110,18 @@ async def test_groups_are_stored_with_ordered_unique_members(db: Database) -> No
     g = await db.get_model_group("coding")
     assert g is not None
     assert g.description == "for code"
+    # Renaming alone keeps the description; a description alone keeps the name.
+    assert await db.update_model_group("coding", new_name="code")
+    g = await db.get_model_group("code")
+    assert g is not None
+    assert g.description == "for code"
+    assert await db.update_model_group("code")
+    assert not await db.update_model_group("missing")
+    assert not await db.update_model_group("missing", description="x")
+    assert await db.update_model_group("code", description=None, new_name="coding")
+    g = await db.get_model_group("coding")
+    assert g is not None
+    assert g.description is None
 
     assert await db.delete_model_group("coding")
     assert not await db.delete_model_group("coding")

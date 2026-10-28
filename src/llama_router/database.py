@@ -95,6 +95,13 @@ def _notifies[**P, R](
     return wrap
 
 
+class _Keep:
+    """Marks an optional update argument the caller left out."""
+
+
+_KEEP = _Keep()
+
+
 def _bind_params(*args: Any) -> tuple[Any, ...]:
     """Flatten legacy ``(single_tuple,)`` call style to match ``qmark`` placeholders."""
     if len(args) == 1 and isinstance(args[0], (tuple, list)):
@@ -971,11 +978,27 @@ class Database:
 
     @_notifies(CHANGE_GROUPS)
     async def update_model_group(
-        self, name: str, *, description: str | None = None, new_name: str | None = None
+        self,
+        name: str,
+        *,
+        description: str | None | _Keep = _KEEP,
+        new_name: str | None = None,
     ) -> bool:
+        """Rename the group and/or set its description. A field left out is
+        unchanged; ``description=None`` clears it."""
+        sets: list[str] = []
+        params: list[Any] = []
+        if not isinstance(description, _Keep):
+            sets.append("description = ?")
+            params.append(description)
+        if new_name is not None and new_name != name:
+            sets.append("name = ?")
+            params.append(new_name)
+        if not sets:
+            return await self.get_model_group(name) is not None
         n = await self._execute_rowcount(
-            "UPDATE model_groups SET description = ?, name = ? WHERE name = ?",
-            (description, new_name or name, name),
+            f"UPDATE model_groups SET {', '.join(sets)} WHERE name = ?",  # noqa: S608 - fixed column names; values are bound
+            (*params, name),
         )
         return n > 0
 
