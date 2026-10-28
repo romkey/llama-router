@@ -361,6 +361,7 @@ class WorkerTransport(httpx.AsyncBaseTransport):
         conn = self._hub.get(self._provider_id)
         if conn is None or conn.closed:
             raise httpx.ConnectError("worker is not connected", request=request)
+        self._hub.count_job(self._provider_id)
         return await conn.open(self._target, request)
 
 
@@ -378,9 +379,9 @@ class WorkerHub:
         self._on_connect: ConnectCallback | None = None
         self._on_disconnect: DisconnectCallback | None = None
         self._bg: set[asyncio.Task[None]] = set()
-        # Jobs served by sockets that have since closed, per provider, so the
-        # total survives reconnects (see jobs_total).
-        self._closed_jobs: dict[int, int] = {}
+        # Jobs dispatched per provider since start-up, counted as they are
+        # sent so the total never dips while a socket is being replaced.
+        self._jobs: dict[int, int] = {}
 
     def set_callbacks(
         self,
@@ -400,13 +401,12 @@ class WorkerHub:
         conn = self._conns.get(provider_id)
         return conn is not None and not conn.closed
 
+    def count_job(self, provider_id: int) -> None:
+        self._jobs[provider_id] = self._jobs.get(provider_id, 0) + 1
+
     def jobs_total(self, provider_id: int) -> int:
         """Requests sent to the worker since start-up, across reconnects."""
-        total = self._closed_jobs.get(provider_id, 0)
-        conn = self._conns.get(provider_id)
-        if conn is not None:
-            total += conn.jobs_total
-        return total
+        return self._jobs.get(provider_id, 0)
 
     def connections(self) -> list[WorkerConnection]:
         return list(self._conns.values())
@@ -511,9 +511,6 @@ class WorkerHub:
             logger.warning("Worker %s session error: %s", name, exc)
         finally:
             conn.fail_all("socket closed")
-            self._closed_jobs[provider_id] = (
-                self._closed_jobs.get(provider_id, 0) + conn.jobs_total
-            )
             if self._conns.get(provider_id) is conn:
                 del self._conns[provider_id]
                 logger.info("Worker %s disconnected", name)
