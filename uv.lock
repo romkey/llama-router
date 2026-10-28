@@ -818,7 +818,7 @@ wheels = [
 
 [[package]]
 name = "llama-router"
-version = "0.21.1"
+version = "0.21.2"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
