@@ -157,7 +157,8 @@ def test_noul_with_negative_lists_both_situations_without_true_false():
     q = d.NoulQuestion(type="noul", instructions="It is urgent", negative="It can wait")
     user = d.build_prompt("s", q).messages[-1]["content"]
     assert "A) It is urgent\nB) It can wait" in user
-    assert "True" not in user and "False" not in user
+    assert "True" not in user
+    assert "False" not in user
 
 
 def test_score_prompt_numbers_levels_from_zero():
@@ -330,13 +331,14 @@ def test_offsets_shift_the_prior_and_temperature_flattens():
 
 def test_calibration_handles_zero_probability():
     out = d.Calibration().apply({"0": 1.0, "1": 0.0})
-    assert out["1"] > 0 and out["0"] == pytest.approx(1.0)
+    assert out["1"] > 0
+    assert out["0"] == pytest.approx(1.0)
 
 
 def test_calibration_round_trips_through_dict():
     c = d.Calibration(0.5, {"a": 1.0, "b": -1.0})
     assert d.Calibration.from_dict(c.to_dict()) == c
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="temperature must be positive"):
         d.Calibration.from_dict({"temperature": 0})
 
 
@@ -382,11 +384,11 @@ def test_fit_corrects_middle_level_bias():
 
 
 def test_fit_rejects_inconsistent_examples():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no examples"):
         d.fit_calibration([])
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="examples must share keys"):
         d.fit_calibration([({"a": 1.0, "b": 0.0}, "c")])
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="examples must share keys"):
         d.fit_calibration([({"a": 1.0, "b": 0.0}, "a"), ({"a": 1.0}, "a")])
 
 
@@ -414,6 +416,6 @@ def test_answer_keys_per_type():
 
 
 def test_missing_logprobs_is_its_own_error():
-    with pytest.raises(d.NoLogprobs):
+    with pytest.raises(d.NoLogprobsError):
         d.top_logprobs_from_response({"choices": [{"message": {}}]})
-    assert issubclass(d.NoLogprobs, d.DecisionError)
+    assert issubclass(d.NoLogprobsError, d.DecisionError)

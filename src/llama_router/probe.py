@@ -427,9 +427,12 @@ def _detect(
         result.version = result.version or str(health["version"])
 
     liveliness = responses.get(("GET", "/health/liveliness"))
-    if liveliness is not None and liveliness.status_code == 200:
-        if "alive" in liveliness.text.lower():
-            servers.append("litellm")
+    if (
+        liveliness is not None
+        and liveliness.status_code == 200
+        and "alive" in liveliness.text.lower()
+    ):
+        servers.append("litellm")
 
     models_json = get("/v1/models") or get("/models")
     if isinstance(models_json, dict) and isinstance(models_json.get("data"), list):
@@ -509,7 +512,7 @@ def _detect(
     # Servers answer with all sorts of shapes; never let one crash the probe.
     names: list[str] = []
 
-    def entries(obj: Any, key: str) -> list[dict]:
+    def entries(obj: Any, key: str) -> list[dict[str, Any]]:
         val = obj.get(key) if isinstance(obj, dict) else None
         return [m for m in val if isinstance(m, dict)] if isinstance(val, list) else []
 

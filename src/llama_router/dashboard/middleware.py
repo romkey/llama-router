@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import time
 
-from fastapi.responses import JSONResponse, RedirectResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 
+from ..database import Database
 from . import deps
 from .auth_core import (
     AUTH_COOKIE,
@@ -40,7 +41,7 @@ def invalidate_dashboard_user_count_cache() -> None:
     _USER_COUNT_CACHE = None
 
 
-async def _user_count(db) -> int:
+async def _user_count(db: Database) -> int:
     c = _cached_user_count()
     if c is not None:
         return c
@@ -49,14 +50,16 @@ async def _user_count(db) -> int:
     return n
 
 
-def _forbidden(request: Request):
+def _forbidden(request: Request) -> Response:
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
     return RedirectResponse(url="/?error=forbidden", status_code=302)
 
 
 class DashboardAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         path = request.url.path
 
         if path in ("/health", "/healthz"):

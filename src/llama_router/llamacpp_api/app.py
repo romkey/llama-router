@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -24,14 +26,16 @@ app.add_middleware(RequestTimingMiddleware)
 
 
 @app.get("/health")
-async def health():
+async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "version": __version__})
 
 
 @app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
     if exc.status_code in (400, 401, 403, 404):
-        try:
+        with contextlib.suppress(Exception):
             db = deps.get_db()
             await log_request(
                 db,
@@ -46,8 +50,6 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
-        except Exception:
-            pass
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 

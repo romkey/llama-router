@@ -12,7 +12,6 @@ from llama_router.probe import (
     normalize_base_url,
     probe_url,
 )
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 
 def _server(routes: dict[tuple[str, str], httpx.Response], default=None):
@@ -66,8 +65,10 @@ async def test_detects_ollama_and_lists_models() -> None:
     transport, seen = _server(OLLAMA)
     r = await probe_url("http://gpu:11434/", transport=transport)
     assert r.base_url == "http://gpu:11434"
-    assert r.reachable and not r.auth_required
-    assert "ollama" in r.servers and "openai-compatible" in r.servers
+    assert r.reachable
+    assert not r.auth_required
+    assert "ollama" in r.servers
+    assert "openai-compatible" in r.servers
     assert r.version == "0.12.6"
     assert r.suggested_type == "ollama"
     assert r.models == ["qwen3:8b", "llama3.2:latest"]
@@ -142,7 +143,8 @@ async def test_unreachable() -> None:
         raise httpx.ConnectError("refused")
 
     r = await probe_url("http://nothing:1", transport=httpx.MockTransport(boom))
-    assert not r.reachable and r.error
+    assert not r.reachable
+    assert r.error
     assert all(e.state == "error" for e in r.endpoints)
 
 
@@ -151,7 +153,7 @@ async def test_unreachable() -> None:
     ["ftp://x", "http://", "http://u:p@host", "http://host/?q=1", "nonsense"],
 )
 def test_normalize_rejects(bad: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"URL|credentials"):
         normalize_base_url(bad)
 
 
@@ -187,11 +189,13 @@ async def test_probe_routes_store_capabilities(
     r = await client.post(f"/api/providers/{p.id}/probe")
     assert r.status_code == 200
     stored = (await db.get_provider(p.id)).capabilities
-    assert stored and "GET /api/tags" in stored["supported"]
+    assert stored
+    assert "GET /api/tags" in stored["supported"]
     assert (await db.get_provider(p.id)).probed_at is not None
 
     page = await client.get(f"/providers/{p.id}")
-    assert "supported endpoints" in page.text and "ollama" in page.text
+    assert "supported endpoints" in page.text
+    assert "ollama" in page.text
 
     missing = await client.post("/api/providers/999/probe")
     assert missing.status_code == 404
@@ -251,7 +255,8 @@ VLLM = {
 async def test_detects_vllm() -> None:
     transport, _ = _server(VLLM)
     r = await probe_url("http://gpu:8000", transport=transport)
-    assert "vllm" in r.servers and "openai-compatible" in r.servers
+    assert "vllm" in r.servers
+    assert "openai-compatible" in r.servers
     assert "llama.cpp" not in r.servers
     assert r.version == "0.11.2"
     assert r.suggested_type == "openai"
@@ -265,7 +270,8 @@ async def test_vllm_detected_from_models_alone() -> None:
     routes = {("GET", "/v1/models"): VLLM[("GET", "/v1/models")]}
     transport, _ = _server(routes)
     r = await probe_url("http://gpu:8000", transport=transport)
-    assert "vllm" in r.servers and r.version is None
+    assert "vllm" in r.servers
+    assert r.version is None
 
 
 async def test_version_without_ping_is_not_vllm() -> None:

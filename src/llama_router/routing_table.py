@@ -121,8 +121,7 @@ class Candidate:
 
     @property
     def provider_id(self) -> int:
-        assert self.provider.id is not None
-        return self.provider.id
+        return self.provider.require_id()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -274,11 +273,12 @@ def best_address(addresses: list[ProviderAddress]) -> ProviderAddress | None:
     """The address the provider's clients use: live+preferred > live > preferred."""
     if not addresses:
         return None
-    for pick in (
+    picks: tuple[Callable[[ProviderAddress], bool], ...] = (
         lambda a: a.is_live and a.is_preferred,
         lambda a: a.is_live,
         lambda a: a.is_preferred,
-    ):
+    )
+    for pick in picks:
         for a in addresses:
             if pick(a):
                 return a
@@ -304,9 +304,12 @@ def endpoint_support(
         return native
     if native_decision_path(provider, path) is not None:
         return ENDPOINT_SUPPORTED
-    if stats is not None and provider.id is not None:
-        if stats.lacks_logprobs(provider.id):
-            return ENDPOINT_MISSING
+    if (
+        stats is not None
+        and provider.id is not None
+        and stats.lacks_logprobs(provider.id)
+    ):
+        return ENDPOINT_MISSING
     return provider.endpoint_state(DECISION_UPSTREAM)
 
 
@@ -592,8 +595,7 @@ def build_table(
     table.prices = book
 
     for p in online:
-        pid = p.id
-        assert pid is not None
+        pid = p.require_id()
         models = inputs.models.get(pid, [])
         up = upstream_for(p)
         hot = hot_models(pid, up)
@@ -681,13 +683,13 @@ def build_table(
                     if all(x.provider.id != pid for x in bucket):
                         bucket.append(c)
 
+    def _score_by(mode: str) -> Callable[[Candidate], float]:
+        return lambda c: c.scores[mode]
+
     def _rank(cands: list[Candidate]) -> dict[str, tuple[Candidate, ...]]:
         best_tier = min(c.tier for c in cands)
         usable = [c for c in cands if c.tier == best_tier]
-        return {
-            mode: tuple(sorted(usable, key=lambda c, m=mode: c.scores[m]))
-            for mode in MODES
-        }
+        return {mode: tuple(sorted(usable, key=_score_by(mode))) for mode in MODES}
 
     for (model, path), cands in grouped.items():
         table.all_candidates[(model, path)] = tuple(cands)

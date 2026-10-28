@@ -37,8 +37,8 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, MutableMapping
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import httpx
@@ -50,7 +50,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from ..config import settings
 from .cache import (
     BlobCache,
-    InvalidCacheKey,
+    InvalidCacheKeyError,
     validate_digest,
     validate_name,
     validate_reference,
@@ -69,7 +69,7 @@ _active_downloads: dict[str, asyncio.Event] = {}
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _upstream_client, _blob_semaphore
     _upstream_client = httpx.AsyncClient(
         follow_redirects=True,
@@ -89,8 +89,8 @@ app = FastAPI(
 )
 
 
-@app.exception_handler(InvalidCacheKey)
-async def _invalid_cache_key(_request: Request, exc: InvalidCacheKey) -> Response:
+@app.exception_handler(InvalidCacheKeyError)
+async def _invalid_cache_key(_request: Request, exc: InvalidCacheKeyError) -> Response:
     """Malformed repository name, tag or digest in a request path."""
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -104,12 +104,14 @@ def init_cache(cache: BlobCache) -> None:
 
 
 def _get_cache() -> BlobCache:
-    assert _cache is not None, "Registry cache not initialized"
+    if _cache is None:
+        raise RuntimeError("Registry cache not initialized")
     return _cache
 
 
 def _upstream() -> httpx.AsyncClient:
-    assert _upstream_client is not None, "upstream client not initialized"
+    if _upstream_client is None:
+        raise RuntimeError("upstream client not initialized")
     return _upstream_client
 
 
@@ -126,7 +128,7 @@ def _extract_blob_sizes(manifest_bytes: bytes) -> None:
         if config.get("digest") and config.get("size"):
             _blob_sizes[config["digest"]] = config["size"]
     except Exception:
-        pass
+        logger.debug("could not parse manifest for blob sizes", exc_info=True)
 
 
 class _RequestLogMiddleware:
@@ -150,7 +152,7 @@ class _RequestLogMiddleware:
 
         status_code = 0
 
-        async def _send_wrapper(message: dict) -> None:
+        async def _send_wrapper(message: MutableMapping[str, Any]) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message.get("status", 0)
@@ -165,6 +167,7 @@ class _RequestLogMiddleware:
 
         elapsed = (time.monotonic() - start) * 1000
         logger.info("Cache %s %s → %d (%.0fms)", method, path, status_code, elapsed)
+        return None
 
 
 app.add_middleware(_RequestLogMiddleware)
@@ -172,13 +175,13 @@ app.add_middleware(_RequestLogMiddleware)
 
 @app.get("/v2")
 @app.get("/v2/")
-async def v2_check():
+async def v2_check() -> JSONResponse:
     """OCI version check — Ollama calls this to verify the registry is reachable."""
     return JSONResponse({})
 
 
 @app.get("/v2/{name:path}/manifests/{reference}")
-async def get_manifest(name: str, reference: str):
+async def get_manifest(name: str, reference: str) -> Response:
     name = validate_name(name)
     reference = validate_reference(reference)
     cache = _get_cache()
@@ -229,7 +232,7 @@ async def get_manifest(name: str, reference: str):
 
 
 @app.head("/v2/{name:path}/blobs/{digest}")
-async def head_blob(name: str, digest: str):
+async def head_blob(name: str, digest: str) -> Response:
     """Return Content-Length for a blob.  Ollama calls this in Prepare()."""
     name = validate_name(name)
     digest = validate_digest(digest)
@@ -277,10 +280,8 @@ async def head_blob(name: str, digest: str):
 
     content_length = resp.headers.get("content-length", "0")
     logger.info("HEAD blob upstream OK: %s (%s bytes)", digest[:24], content_length)
-    try:
+    with suppress(ValueError):
         _blob_sizes[digest] = int(content_length)
-    except ValueError:
-        pass
     return Response(
         status_code=200,
         headers={
@@ -291,8 +292,8 @@ async def head_blob(name: str, digest: str):
 
 
 @app.get("/v2/{name:path}/blobs/{digest}")
-async def get_blob(name: str, digest: str, request: Request):
-    """Serve blob downloads: cache hit → Location to local file; miss → stream-through."""
+async def get_blob(name: str, digest: str, request: Request) -> Response:
+    """Serve blob downloads: hit → Location to local file; miss → stream-through."""
     name = validate_name(name)
     digest = validate_digest(digest)
     cache = _get_cache()
@@ -338,7 +339,7 @@ async def get_blob(name: str, digest: str, request: Request):
                 timeout=httpx.Timeout(30.0, read=1800.0),
             ) as resp:
                 resp.raise_for_status()
-                with open(tmp, "wb") as f:
+                with tmp.open("wb") as f:
                     async for chunk in resp.aiter_bytes(CHUNK_SIZE):
                         f.write(chunk)
                         yield chunk
@@ -363,7 +364,7 @@ async def get_blob(name: str, digest: str, request: Request):
 
 
 @app.get("/cache/blobs/{digest}")
-async def serve_cached_blob(digest: str):
+async def serve_cached_blob(digest: str) -> FileResponse:
     """Serve a cached blob.  Supports Range requests via FileResponse."""
     digest = validate_digest(digest)
     cache = _get_cache()
@@ -395,10 +396,7 @@ async def precache_model(
     else:
         name_part, tag = model, "latest"
 
-    if "/" not in name_part:
-        oci_name = f"library/{name_part}"
-    else:
-        oci_name = name_part
+    oci_name = f"library/{name_part}" if "/" not in name_part else name_part
 
     if progress_callback:
         progress_callback(f"fetching manifest for {model}")
@@ -417,15 +415,16 @@ async def precache_model(
     layers = manifest.get("layers", [])
     config = manifest.get("config")
     if config and config.get("digest"):
-        layers = [config] + layers
+        layers = [config, *layers]
 
     total = len(layers)
     sem = _blob_semaphore
-    assert sem is not None, "blob semaphore not initialized"
+    if sem is None:
+        raise RuntimeError("blob semaphore not initialized")
     precache_start = time.monotonic()
     total_downloaded: list[int] = [0]
 
-    async def _fetch_one_blob(i: int, layer: dict) -> None:
+    async def _fetch_one_blob(i: int, layer: dict[str, Any]) -> None:
         digest = layer.get("digest", "")
         size = layer.get("size", 0)
         if not digest:
@@ -458,7 +457,7 @@ async def precache_model(
                     timeout=httpx.Timeout(30.0, read=3600.0),
                 ) as blob_resp:
                     blob_resp.raise_for_status()
-                    with open(tmp, "wb") as f:
+                    with tmp.open("wb") as f:
                         async for chunk in blob_resp.aiter_bytes(CHUNK_SIZE):
                             f.write(chunk)
                             total_bytes += len(chunk)

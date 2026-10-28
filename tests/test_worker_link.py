@@ -44,7 +44,7 @@ def test_binary_frame_roundtrip() -> None:
 
 
 def test_binary_frame_too_short() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="binary frame too short"):
         p.decode_binary(b"\x01\x00")
 
 
@@ -63,7 +63,7 @@ def test_filter_headers_drops_hop_by_hop_and_credentials() -> None:
 
 
 @pytest.mark.parametrize(
-    "method,path,admin,ok",
+    ("method", "path", "admin", "ok"),
     [
         ("POST", "/api/chat", False, True),
         ("GET", "/api/tags", False, True),
@@ -97,7 +97,7 @@ def test_probe_reads_worker_refusal_as_missing() -> None:
 
 
 @pytest.mark.parametrize(
-    "raw,expected",
+    ("raw", "expected"),
     [
         ("https://hub.example.org", "wss://hub.example.org/worker/ws"),
         ("http://10.0.0.5:11434/", "ws://10.0.0.5:11434/worker/ws"),
@@ -452,7 +452,8 @@ async def test_revoked_token_stops_reconnecting(link) -> None:
     await pm.worker_hub.disconnect(pid, p.CLOSE_REVOKED, "token rotated")
     await _wait_for(lambda: w.state == "rejected")
     assert w.last_error == "token rotated"
-    assert w.next_retry_at is not None and w.next_retry_at - time.time() > 200
+    assert w.next_retry_at is not None
+    assert w.next_retry_at - time.time() > 200
 
 
 async def test_second_connection_with_same_token_replaces_first(link) -> None:
@@ -714,7 +715,8 @@ async def test_timeout_does_not_mark_reconnected_worker_offline(
     monkeypatch.setattr(pm_mod, "_WORKER_MANUAL_TIMEOUT", 0.2)
     await pm.check_provider(await db.get_provider(pid), source="refresh")
     rows = [e for e in await db.get_request_logs(50, 0) if e.endpoint == "refresh"]
-    assert rows and "reconnected" in (rows[0].request_meta or "")
+    assert rows
+    assert "reconnected" in (rows[0].request_meta or "")
 
 
 # --- decision requests through a worker ---
@@ -757,7 +759,8 @@ async def test_emulated_decision_through_worker(link) -> None:
     assert answer["type"] == "noul"
     assert answer["noul"] == pytest.approx(0.9)
     sent = link["seen"]["v1_chat_bodies"][-1]
-    assert sent["logprobs"] is True and sent["top_logprobs"] > 1
+    assert sent["logprobs"] is True
+    assert sent["top_logprobs"] > 1
     assert sent["max_tokens"] == 1
     assert link["seen"]["systemone_bodies"] == []
 

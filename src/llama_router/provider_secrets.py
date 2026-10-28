@@ -23,7 +23,7 @@ _CONTEXT = b"llama-router provider api key v1\x00"
 DEFAULT_HEADER = "Authorization"
 
 
-class ApiKeyUnavailable(Exception):
+class ApiKeyUnavailableError(Exception):
     """A stored provider API key could not be decrypted."""
 
 
@@ -41,7 +41,7 @@ def decrypt_api_key(token: str) -> str:
     try:
         return _fernet().decrypt(token.encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError) as exc:
-        raise ApiKeyUnavailable(
+        raise ApiKeyUnavailableError(
             "stored API key cannot be decrypted (was LLAMA_ROUTER_SESSION_SECRET "
             "changed?); enter the key again"
         ) from exc

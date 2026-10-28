@@ -28,7 +28,7 @@ def test_qmark_placeholder_count_mismatch_raises() -> None:
 
 
 def test_qmark_single_placeholder() -> None:
-    stmt, bind = qmark("DELETE FROM t WHERE id = ?", 99)
+    _stmt, bind = qmark("DELETE FROM t WHERE id = ?", 99)
     assert bind == {"p0": 99}
 
 

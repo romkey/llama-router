@@ -10,12 +10,13 @@ benchmarks all work without worker-specific code paths.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import itertools
 import logging
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -25,7 +26,7 @@ from . import protocol as p
 
 logger = logging.getLogger(__name__)
 
-TOKEN_PREFIX = "lrw_"
+TOKEN_PREFIX = "lrw_"  # noqa: S105  # public prefix, not a secret
 _HELLO_TIMEOUT = 15.0
 
 
@@ -149,10 +150,8 @@ class WorkerConnection:
         if req_id not in self._pending:
             return
         self._finish(req_id)
-        try:
+        with contextlib.suppress(Exception):
             await self._send_text({"type": "cancel", "id": req_id})
-        except Exception:
-            pass
 
     async def open(self, target: str, request: httpx.Request) -> httpx.Response:
         timeouts = request.extensions.get("timeout") or {}
@@ -219,7 +218,7 @@ class WorkerConnection:
 
         return httpx.Response(
             status,
-            headers=headers,
+            headers=[(k, v) for k, v in headers],
             stream=_WorkerStream(self, pend, read_t, request),
             request=request,
         )
@@ -303,10 +302,8 @@ class WorkerConnection:
     async def close(self, code: int, reason: str = "") -> None:
         self.fail_all(reason or "closed by hub")
         if self._ws.application_state == WebSocketState.CONNECTED:
-            try:
+            with contextlib.suppress(Exception):
                 await self._ws.close(code=code, reason=reason)
-            except Exception:
-                pass
 
 
 class _WorkerStream(httpx.AsyncByteStream):
@@ -323,7 +320,7 @@ class _WorkerStream(httpx.AsyncByteStream):
         self._request = request
         self._eof = False
 
-    async def __aiter__(self):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
         while not self._eof:
             try:
                 item = await asyncio.wait_for(
@@ -380,7 +377,7 @@ class WorkerHub:
         self._conns: dict[int, WorkerConnection] = {}
         self._on_connect: ConnectCallback | None = None
         self._on_disconnect: DisconnectCallback | None = None
-        self._bg: set[asyncio.Task] = set()
+        self._bg: set[asyncio.Task[None]] = set()
 
     def set_callbacks(
         self,

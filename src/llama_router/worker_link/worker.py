@@ -12,6 +12,7 @@ pulls and deletes are refused unless ``worker_allow_admin`` is set.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -90,10 +91,10 @@ class _Job:
         self.body: list[bytes] = []
         self.body_size = 0
         self.body_done = asyncio.Event()
-        self.task: asyncio.Task | None = None
+        self.task: asyncio.Task[None] | None = None
 
 
-class _Rejected(Exception):
+class _RejectedError(Exception):
     pass
 
 
@@ -121,7 +122,7 @@ class WorkerClient:
         self._allow_admin = allow_admin
         self._upstream_api_key = upstream_api_key.strip()
         self._http = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._jobs: dict[int, _Job] = {}
         self._slots = asyncio.Semaphore(self._max_concurrency)
         self._send_lock = asyncio.Lock()
@@ -160,10 +161,8 @@ class WorkerClient:
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
         await self._http.aclose()
         self.state = "stopped"
@@ -205,7 +204,7 @@ class WorkerClient:
                 else:
                     self.last_error = f"hub returned HTTP {code}"
                     delay = backoff
-            except _Rejected as exc:
+            except _RejectedError as exc:
                 self.state = "rejected"
                 self.last_error = str(exc)
                 delay = _REJECTED_RETRY
@@ -248,7 +247,7 @@ class WorkerClient:
                 backoff = 1.0
             else:
                 backoff = min(backoff * 2, _BACKOFF_MAX)
-            delay = delay * (0.8 + random.random() * 0.4)
+            delay = delay * (0.8 + random.random() * 0.4)  # noqa: S311  # reconnect jitter
             if self.state != "rejected":
                 self.state = "backoff"
             self.next_retry_at = time.time() + delay
@@ -275,10 +274,10 @@ class WorkerClient:
         )
         raw = await asyncio.wait_for(ws.recv(), timeout=15)
         if not isinstance(raw, str):
-            raise _Rejected("hub sent binary data before welcome")
+            raise _RejectedError("hub sent binary data before welcome")
         welcome = p.decode_json(raw)
         if welcome.get("type") != "welcome":
-            raise _Rejected(f"unexpected handshake reply {welcome.get('type')!r}")
+            raise _RejectedError(f"unexpected handshake reply {welcome.get('type')!r}")
         self.worker_name = str(welcome.get("worker_name") or "") or None
         self.state = "connected"
         self.last_error = None
@@ -309,9 +308,10 @@ class WorkerClient:
             self.jobs_total += 1
             job.task = asyncio.create_task(self._run_job(job))
         elif kind == "cancel":
-            job = self._jobs.get(msg.get("id"))
-            if job is not None and job.task is not None:
-                job.task.cancel()
+            cancel_id = msg.get("id")
+            target = self._jobs.get(cancel_id) if isinstance(cancel_id, int) else None
+            if target is not None and target.task is not None:
+                target.task.cancel()
         else:
             logger.debug("Worker ignoring hub frame %r", kind)
 
@@ -349,7 +349,7 @@ class WorkerClient:
         async with self._send_lock:
             await ws.send(data)
 
-    async def _reply_json(self, req_id: int, status: int, body: dict) -> None:
+    async def _reply_json(self, req_id: int, status: int, body: dict[str, Any]) -> None:
         data = json.dumps(body).encode()
         await self._send_text(
             {
@@ -375,7 +375,7 @@ class WorkerClient:
             pass
         except Exception as exc:
             logger.exception("Worker job %d failed", req_id)
-            try:
+            with contextlib.suppress(Exception):
                 await self._send_text(
                     {
                         "type": "error",
@@ -384,8 +384,6 @@ class WorkerClient:
                         "message": str(exc),
                     }
                 )
-            except Exception:
-                pass
         finally:
             self._jobs.pop(req_id, None)
 
@@ -421,7 +419,10 @@ class WorkerClient:
             headers.append(["API-KEY", self._upstream_api_key])
 
         request = self._http.build_request(
-            method, base + path, headers=headers, content=b"".join(job.body) or None
+            method,
+            base + path,
+            headers=[(k, v) for k, v in headers],
+            content=b"".join(job.body) or None,
         )
         try:
             response = await self._http.send(request, stream=True)
@@ -472,7 +473,7 @@ class WorkerLinkManager:
     """
 
     DB_HUB_URL = "worker_hub_url"
-    DB_TOKEN = "worker_token"
+    DB_TOKEN = "worker_token"  # noqa: S105  # settings key name, not a secret
 
     def __init__(self, db: Any) -> None:
         self._db = db

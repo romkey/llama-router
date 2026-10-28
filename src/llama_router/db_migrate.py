@@ -1,4 +1,4 @@
-"""Run Alembic upgrades synchronously (safe from async startup; no nested event loops)."""
+"""Run Alembic upgrades synchronously (safe from async startup; no nested loops)."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ _INITIAL_SCHEMA_TABLES = frozenset(
 def _clear_revision_if_marked_head_but_schema_incomplete(
     sync_database_url: str,
 ) -> None:
-    """Remove a false ``001_initial`` stamp when new tables were added after a legacy DB.
+    """Remove a false ``001_initial`` stamp when a legacy DB lacks newer tables.
 
     Older releases stamped ``001_initial`` whenever *any* app table existed, which
     skipped migration and left newer tables (e.g. ``dashboard_users``) missing.
@@ -76,9 +76,10 @@ def _clear_revision_if_marked_head_but_schema_incomplete(
 def _stamp_if_full_schema_exists_without_alembic_revision(
     cfg: Config, sync_database_url: str
 ) -> None:
-    """If every 001 table already exists (e.g. restored dump) but ``alembic_version`` is empty, stamp.
+    """Stamp when every 001 table exists (e.g. restored dump) but there is no revision.
 
-    Partial legacy schemas must *not* be stamped: ``upgrade`` runs with IF NOT EXISTS and fills gaps.
+    Partial legacy schemas must *not* be stamped: ``upgrade`` runs with IF NOT EXISTS
+    and fills gaps.
     """
     engine = create_engine(sync_database_url)
     try:

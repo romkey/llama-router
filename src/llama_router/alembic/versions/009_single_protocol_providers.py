@@ -28,6 +28,7 @@ Create Date: 2026-10-27
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -42,7 +43,7 @@ depends_on = None
 _MARKERS = ("_in_ollama", "_in_llamacpp")
 
 
-def _details(raw: str | None) -> dict:
+def _details(raw: str | None) -> dict[str, Any]:
     if not raw:
         return {}
     try:
@@ -52,12 +53,12 @@ def _details(raw: str | None) -> dict:
     return val if isinstance(val, dict) else {}
 
 
-def _dump(details: dict) -> str | None:
+def _dump(details: dict[str, Any]) -> str | None:
     clean = {k: v for k, v in details.items() if k not in _MARKERS}
     return json.dumps(clean) if clean else None
 
 
-def _free_name(bind, base: str) -> str:
+def _free_name(bind: sa.Connection, base: str) -> str:
     name = base
     n = 2
     while bind.execute(
@@ -68,7 +69,7 @@ def _free_name(bind, base: str) -> str:
     return name
 
 
-def _split(bind, row) -> None:
+def _split(bind: sa.Connection, row: sa.RowMapping) -> None:
     """Move the llama.cpp half of a ``both`` provider into its own provider."""
     old_id = row["id"]
     name = _free_name(bind, f"{row['name']} (llama.cpp)")
@@ -102,7 +103,8 @@ def _split(bind, row) -> None:
         url = (a["llamacpp_url"] or "").strip() or a["url"]
         bind.execute(
             sa.text(
-                "INSERT INTO provider_addresses (provider_id, url, is_preferred, is_live) "
+                "INSERT INTO provider_addresses "
+                "(provider_id, url, is_preferred, is_live) "
                 "VALUES (:pid, :url, :pref, 0)"
             ),
             {"pid": new_id, "url": url.rstrip("/"), "pref": a["is_preferred"]},

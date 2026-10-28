@@ -13,6 +13,11 @@ described in their git tags and GitHub Releases.
   provider that charges per token can be excluded from the idle
   auto-benchmarker before its first benchmark runs. It was already on the
   provider page.
+
+## [0.21.1] - 2026-10-28
+
+### Added
+
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
   database work, used by the production compose health check.
 - `llama-router --version`.

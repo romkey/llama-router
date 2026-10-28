@@ -19,7 +19,6 @@ from llama_router.provider_manager import ProviderManager
 from llama_router.request_logger import _is_provider_failure
 from llama_router.router import Router
 from llama_router.routing_stats import ProviderStats, retry_after_seconds
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.httpx_mock(
     assert_all_responses_were_requested=False,
@@ -135,7 +134,9 @@ async def test_model_filter_limits_discovery(db, httpx_mock) -> None:
 
 def test_keeps_model() -> None:
     p = Provider(name="x", model_filter="a/*, b")
-    assert p.keeps_model("a/1") and p.keeps_model("b") and not p.keeps_model("c")
+    assert p.keeps_model("a/1")
+    assert p.keeps_model("b")
+    assert not p.keeps_model("c")
     assert Provider(name="y").keeps_model("anything")
 
 
@@ -190,7 +191,8 @@ async def test_dashboard_edit_cloud_settings(dash_client, httpx_mock) -> None:
     bad = {**form, "read_timeout_s": "0"}
     assert (await client.post(f"/providers/{p.id}/edit", data=bad)).status_code == 400
     page = await client.get(f"/providers/{p.id}")
-    assert "anthropic/*" in page.text and "PROVIDER_IS_CLOUD" in page.text
+    assert "anthropic/*" in page.text
+    assert "PROVIDER_IS_CLOUD" in page.text
 
 
 async def test_dashboard_add_provider_without_auto_benchmark(
@@ -214,4 +216,6 @@ async def test_dashboard_add_provider_without_auto_benchmark(
     form = {**form, "name": "default", "auto_benchmark": ""}
     assert (await client.post("/providers/add", data=form)).status_code == 303
     p = await db.get_provider_by_name("default")
-    assert p is not None and p.auto_benchmark is None and p.auto_benchmarks
+    assert p is not None
+    assert p.auto_benchmark is None
+    assert p.auto_benchmarks

@@ -30,7 +30,6 @@ from llama_router.request_logger import (
 )
 from llama_router.router import Router, RoutingPreferences
 from llama_router.spend import tracker_for
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 CHAT = "/v1/chat/completions"
 
@@ -212,7 +211,8 @@ async def test_spend_cap_limits_a_key_to_local(db) -> None:
 
     plain, kid = await key()
     prefs = await routing_preferences_from_request(db, _request(plain))
-    assert prefs.locality is None and not prefs.spend_capped
+    assert prefs.locality is None
+    assert not prefs.spend_capped
     await db.save_request_log(
         RequestLog(protocol="v1", endpoint=CHAT, api_key_id=kid, cost_usd=0.6)
     )
@@ -223,7 +223,8 @@ async def test_spend_cap_limits_a_key_to_local(db) -> None:
     )
     tracker_for(db).add(kid, 0.6)
     prefs = await routing_preferences_from_request(db, req)
-    assert prefs.locality == "local" and prefs.spend_capped
+    assert prefs.locality == "local"
+    assert prefs.spend_capped
     assert req.state.api_key_id == kid
 
     cloud_plain, cloud_id = await key("cloud")
@@ -259,7 +260,8 @@ async def test_dashboard_prices_and_caps(dash_client) -> None:
         "/api/keys/generate",
         json={"routing_mode": "cheapest", "daily_spend_cap_usd": "5"},
     )
-    assert r.status_code == 200 and r.json()["daily_spend_cap_usd"] == 5.0
+    assert r.status_code == 200
+    assert r.json()["daily_spend_cap_usd"] == 5.0
     (k,) = await db.list_api_keys()
     assert (k["routing_mode"], k["daily_spend_cap_usd"]) == ("cheapest", 5.0)
     r = await client.post(
@@ -268,6 +270,7 @@ async def test_dashboard_prices_and_caps(dash_client) -> None:
     assert r.status_code == 200
     assert (await db.list_api_keys())[0]["daily_spend_cap_usd"] is None
     page = await client.get("/")
-    assert "setKeySpendCap(" in page.text and "cheapest" in page.text
+    assert "setKeySpendCap(" in page.text
+    assert "cheapest" in page.text
     detail = await client.get(f"/providers/{p.id}")
     assert 'id="prices-card"' in detail.text

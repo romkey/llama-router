@@ -70,7 +70,8 @@ async def _post(path: str, body: dict) -> httpx.Response:
 
 async def test_preset_makes_a_decision_only_cloud_provider(db, pm) -> None:
     preset = get_preset("typesafe")
-    assert preset.base_url == JEV and preset.api_key_header is None
+    assert preset.base_url == JEV
+    assert preset.api_key_header is None
     assert preset.env_var == "LLAMA_ROUTER_PROVIDER_TYPESAFE_API_KEY"
     p = await _jev(db, pm)
     assert (p.preset, p.locality, p.manual_models) == (
@@ -142,7 +143,8 @@ async def test_never_offered_for_anything_but_decisions(db, pm, router) -> None:
     assert await router.route("jev-latest", "/v1/chat/completions", chaos) is None
     for path in ("/v1/systemone", "/v1/decisions"):
         chosen = await router.route("jev-latest", path)
-        assert chosen is not None and chosen.provider.id == p.id
+        assert chosen is not None
+        assert chosen.provider.id == p.id
 
 
 async def test_chat_request_for_a_jev_model_is_a_404(db, pm, router) -> None:
@@ -170,7 +172,8 @@ async def test_probe_asks_only_the_declared_routes(httpx_mock) -> None:
     result = await probe_url(JEV)
     assert result.preset == "typesafe"
     probed = {r.url.path for r in httpx_mock.get_requests()}
-    assert probed and probed <= {
+    assert probed
+    assert probed <= {
         "/v1/models",
         "/v1/systemone",
         "/v1/v1/models",
