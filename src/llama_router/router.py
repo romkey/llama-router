@@ -142,6 +142,8 @@ class Router:
             settings.session_affinity_ttl_seconds,
             settings.session_affinity_max_sessions,
         )
+        # (group, member model, provider id) -> requests routed, for metrics.
+        self.group_routes: dict[tuple[str, str, int], int] = {}
         self.session_affinity_default = (
             settings.session_affinity_enabled
             if session_affinity is None
@@ -261,6 +263,10 @@ class Router:
             # No background task (tests, or before start): build inline.
             table = await self.rebuild()
         return table
+
+    def _count_group(self, group: str, chosen: Candidate) -> None:
+        key = (group, chosen.model, chosen.provider_id)
+        self.group_routes[key] = self.group_routes.get(key, 0) + 1
 
     # --- Session affinity ---
 
@@ -396,6 +402,8 @@ class Router:
                         )
                         pinned = None
                     if pinned is not None:
+                        if record and table.is_group(candidate_model):
+                            self._count_group(candidate_model, pinned)
                         if candidate_model != model_name:
                             logger.info(
                                 "Model %s unavailable; fell back to pinned model %s",
@@ -454,12 +462,15 @@ class Router:
                 chosen.model,
                 chosen.provider.name,
             )
+            group = _group_of(table, candidate_model)
+            if group is not None and record:
+                self._count_group(group, chosen)
             return RouteResult(
                 chosen.provider,
                 candidate_model,
                 chosen.backend_model,
                 chosen.model,
-                _group_of(table, candidate_model),
+                group,
             )
         return None
 

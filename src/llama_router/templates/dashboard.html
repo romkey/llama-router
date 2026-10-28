@@ -1336,14 +1336,14 @@
                         data-locality="{{ entry.locality or '' }}"
                         data-status="{{ entry.status }}"
                         data-endpoint="{{ entry.endpoint | lower }}"
-                        data-model="{{ (entry.model or '') | lower }}"
+                        data-model="{{ (entry.model or '') | lower }} {{ (entry.routed_model or '') | lower }}"
                         data-meta="{{ (entry.request_meta or '') | lower }}"
                     >
                         <td class="text-muted small text-nowrap">{{ entry.created_at | localtime }}</td>
                         <td class="small"><code>{{ entry.source_ip or "—" }}</code></td>
                         <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% elif entry.protocol == 'system' %}bg-secondary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
                         <td class="small"><code>{{ entry.endpoint }}</code></td>
-                        <td class="small"><code>{{ entry.model or "—" }}</code></td>
+                        <td class="small"><code>{{ entry.model or "—" }}</code>{% if entry.routed_model %}<br><span class="text-muted" title="The model that ran"><i class="bi bi-arrow-return-right"></i> <code>{{ entry.routed_model }}</code></span>{% endif %}</td>
                         <td class="small text-muted">{{ entry.request_meta or "—" }}</td>
                         <td class="small">
                             {% if entry.provider_id %}

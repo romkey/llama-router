@@ -667,8 +667,8 @@ class Database:
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
             "router_ms, status, streamed, error_detail, locality, api_key_id, "
-            "prompt_tokens, completion_tokens, cost_usd) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "prompt_tokens, completion_tokens, cost_usd, routed_model) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -690,6 +690,7 @@ class Database:
                 entry.prompt_tokens,
                 entry.completion_tokens,
                 entry.cost_usd,
+                entry.routed_model,
             ),
         )
 
@@ -1655,6 +1656,7 @@ def _row_to_request_log(row: Mapping[str, Any]) -> RequestLog:
         endpoint=row["endpoint"],
         source_ip=row["source_ip"],
         model=row["model"],
+        routed_model=row.get("routed_model"),
         request_size=row["request_size"],
         response_size=row["response_size"],
         request_meta=row.get("request_meta"),

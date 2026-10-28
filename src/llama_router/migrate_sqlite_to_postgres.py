@@ -131,6 +131,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "completion_tokens",
             "cost_usd",
             "created_at",
+            "routed_model",
         ],
     ),
     (
@@ -346,9 +347,13 @@ def migrate_sqlite_to_postgres(
             if table not in source_tables:
                 logger.info("Skipping %s (not in source database)", table)
                 continue
-            rows = _fetch_sqlite_rows(sl_conn, table, columns)
+            # An older source lacks columns added since; they keep their
+            # defaults on the target.
+            present = {c["name"] for c in inspect(sl_conn).get_columns(table)}
+            cols = [c for c in columns if c in present]
+            rows = _fetch_sqlite_rows(sl_conn, table, cols)
             logger.info("Copying %s (%d rows)", table, len(rows))
-            _insert_rows_pg(pg_conn, table, columns, rows)
+            _insert_rows_pg(pg_conn, table, cols, rows)
 
         logger.info("Resetting PostgreSQL sequences")
         _reset_sequences(pg_conn)

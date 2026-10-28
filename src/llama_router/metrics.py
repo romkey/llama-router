@@ -316,6 +316,28 @@ def collect(
         )
         build_ms.add(table.build_ms)
         families += [version, built, build_ms]
+        if table.groups:
+            group_up = Family(
+                "model_group_available",
+                "gauge",
+                "1 while at least one member of the model group can be served.",
+            )
+            for name in sorted(table.groups):
+                group_up.add(table.group_reach.get(name, (False, False))[0], group=name)
+            families.append(group_up)
+        group_routes = getattr(router, "group_routes", None)
+        if group_routes:
+            routed = Family(
+                "model_group_routes_total",
+                "counter",
+                "Requests for a model group since start-up, by the member model "
+                "and provider chosen.",
+            )
+            for (group, model, pid), n in sorted(group_routes.items()):
+                owner = by_id.get(pid)
+                if owner is not None:
+                    routed.add(n, **_provider_labels(owner), group=group, model=model)
+            families.append(routed)
         affinity = getattr(router, "affinity", None)
         if affinity is not None:
             sessions = Family(
