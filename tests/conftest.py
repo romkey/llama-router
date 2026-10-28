@@ -60,7 +60,9 @@ async def db(tmp_path: Path) -> AsyncIterator[Database]:
 
 
 @pytest_asyncio.fixture
-async def dash_client(tmp_path, monkeypatch):
+async def dash_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[httpx.AsyncClient, Database]]:
     """ASGI client with isolated DB and fixed session secret."""
     monkeypatch.setattr(
         settings, "session_secret", "test-session-secret-key-min-16chars"
@@ -103,7 +105,7 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
-async def pm(db: Database, clock: FakeClock):
+async def pm(db: Database, clock: FakeClock) -> AsyncIterator[ProviderManager]:
     manager = ProviderManager(db)
     manager.stats = ProviderStats(clock=clock)
     request_logger.attach_stats(manager.stats)
@@ -113,7 +115,7 @@ async def pm(db: Database, clock: FakeClock):
 
 
 @pytest.fixture
-async def router(db: Database, pm: ProviderManager):
+async def router(db: Database, pm: ProviderManager) -> Router:
     await db.set_allow_unauthenticated(True)
     rt = Router(db, pm)
     deps.init(db, pm, rt)
@@ -121,7 +123,7 @@ async def router(db: Database, pm: ProviderManager):
 
 
 @pytest.fixture
-async def dash(db: Database, pm: ProviderManager):
+async def dash(db: Database, pm: ProviderManager) -> AsyncIterator[httpx.AsyncClient]:
     dash_deps.init(db, pm)
     app = FastAPI()
     app.include_router(dash_decisions_router)

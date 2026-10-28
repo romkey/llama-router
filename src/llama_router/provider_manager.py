@@ -1503,7 +1503,7 @@ class ProviderManager:
             if name not in models_by_name:
                 _upsert_model(clean_name=name, raw_name=None, details={"_manual": True})
         all_models = list(models_by_name.values())
-        await self._db.set_provider_models(provider.id, all_models)
+        await self._db.set_provider_models(provider_id, all_models)
         if cache_prefixed:
             logger.info(
                 "Discovered %d models on provider %s (%d with cache prefix)",
