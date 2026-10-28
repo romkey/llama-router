@@ -99,6 +99,9 @@ class Provider(BaseModel):
     # Auto-benchmark override; None means on for local, off for cloud
     # (benchmarking a cloud service costs money).
     auto_benchmark: bool | None = None
+    # Whether a hub this router serves as a worker may route to this provider
+    # (and see its models). Set from the Workers tab.
+    hub_shared: bool = True
 
     @property
     def is_cloud(self) -> bool:

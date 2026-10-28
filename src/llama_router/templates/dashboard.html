@@ -1231,6 +1231,28 @@
                 </div>
                 <div class="small text-muted mt-3" id="worker-link-detail"></div>
                 <div id="worker-link-banner" class="alert d-none mt-3" role="alert"></div>
+                <hr>
+                <div id="hub-providers">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                        <div>
+                            <strong>Providers the hub may use</strong>
+                            <span class="small text-muted ms-1" id="hub-providers-summary"></span>
+                        </div>
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Quick picks">
+                            <button type="button" class="btn btn-outline-secondary" data-hub-pick="all" data-hub-on="1">All</button>
+                            <button type="button" class="btn btn-outline-secondary" data-hub-pick="all" data-hub-on="0">None</button>
+                        </div>
+                    </div>
+                    <p class="small text-muted mb-2">Jobs from the hub route only to the ticked providers, and the hub lists only their models. Keep metered cloud services and other people's remotes to yourself unless you mean to share them.</p>
+                    <div class="row g-3" id="hub-providers-groups">
+                        <div class="col-12 small text-muted">Loading…</div>
+                    </div>
+                    <div class="mt-2 d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-primary btn-sm" id="hub-providers-save"><i class="bi bi-check2 me-1"></i>Save</button>
+                        <span class="small text-muted" id="hub-providers-dirty"></span>
+                    </div>
+                    <div id="hub-providers-banner" class="alert d-none mt-3" role="alert"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -3606,7 +3628,95 @@ function renderWorkers(workers, link) {
     }
 }
 
+// --- Providers the hub may use ---
+var HUB_GROUPS = [
+    ['local', 'Local', 'This machine, the LAN or a tailnet'],
+    ['cloud', 'Cloud', 'Metered services: sharing them spends your money'],
+    ['remote', 'Remotes', 'Workers that dial in to this router']
+];
+var hubProvidersSaved = null;
+
+function hubProvidersChecked() {
+    var ids = [];
+    document.querySelectorAll('#hub-providers input[data-hub-provider]:checked').forEach(function(cb) {
+        ids.push(parseInt(cb.getAttribute('data-hub-provider'), 10));
+    });
+    return ids.sort(function(a, b) { return a - b; });
+}
+
+function hubProvidersRefreshSummary() {
+    var all = document.querySelectorAll('#hub-providers input[data-hub-provider]');
+    var on = hubProvidersChecked();
+    var sum = document.getElementById('hub-providers-summary');
+    if (sum) sum.textContent = all.length ? on.length + ' of ' + all.length + ' shared' : 'no providers yet';
+    var dirty = document.getElementById('hub-providers-dirty');
+    if (dirty) {
+        var changed = hubProvidersSaved !== null && JSON.stringify(on) !== JSON.stringify(hubProvidersSaved);
+        dirty.textContent = changed ? 'Unsaved changes' : '';
+    }
+}
+
+function hubPick(kind, on) {
+    var sel = kind === 'all' ? 'input[data-hub-provider]' : 'input[data-hub-provider][data-hub-kind="' + kind + '"]';
+    document.querySelectorAll('#hub-providers ' + sel).forEach(function(cb) { cb.checked = on; });
+    hubProvidersRefreshSummary();
+}
+
+function renderHubProviders(providers) {
+    var root = document.getElementById('hub-providers-groups');
+    if (!root) return;
+    hubProvidersSaved = providers.filter(function(p) { return p.hub_shared; })
+        .map(function(p) { return p.id; }).sort(function(a, b) { return a - b; });
+    var html = '';
+    HUB_GROUPS.forEach(function(g) {
+        var kind = g[0], title = g[1], hint = g[2];
+        var members = providers.filter(function(p) { return p.kind === kind; });
+        html += '<div class="col-md-4"><div class="border rounded p-2 h-100">' +
+            '<div class="d-flex justify-content-between align-items-baseline">' +
+            '<span class="fw-semibold">' + title + ' <span class="text-muted fw-normal small">(' + members.length + ')</span></span>' +
+            '<span class="small"><a href="#" data-hub-pick="' + kind + '" data-hub-on="1">all</a> · <a href="#" data-hub-pick="' + kind + '" data-hub-on="0">none</a></span>' +
+            '</div><div class="small text-muted mb-1">' + hint + '</div>';
+        if (!members.length) html += '<div class="small text-muted fst-italic">none</div>';
+        members.forEach(function(p) {
+            var off = p.status === 'offline' ? ' <span class="badge bg-secondary">offline</span>' : '';
+            html += '<div class="form-check"><input class="form-check-input" type="checkbox" id="hub-p-' + p.id + '" data-hub-provider="' + p.id + '" data-hub-kind="' + kind + '"' + (p.hub_shared ? ' checked' : '') + '>' +
+                '<label class="form-check-label" for="hub-p-' + p.id + '"><a href="/providers/' + p.id + '" class="text-decoration-none">' + workerEsc(p.name) + '</a>' + off + '</label></div>';
+        });
+        html += '</div></div>';
+    });
+    root.innerHTML = html;
+    hubProvidersRefreshSummary();
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+    var hub = document.getElementById('hub-providers');
+    if (hub) {
+        workerFetchJson('/api/hub-providers').then(function(res) {
+            renderHubProviders(res.providers || []);
+        }).catch(function(e) { workerBanner('hub-providers-banner', 'danger', e.message); });
+        hub.addEventListener('click', function(ev) {
+            var pick = ev.target.closest('[data-hub-pick]');
+            if (!pick) return;
+            ev.preventDefault();
+            hubPick(pick.getAttribute('data-hub-pick'), pick.getAttribute('data-hub-on') === '1');
+        });
+        hub.addEventListener('change', function(ev) {
+            if (ev.target.matches('input[data-hub-provider]')) hubProvidersRefreshSummary();
+        });
+        var save = document.getElementById('hub-providers-save');
+        if (save) save.addEventListener('click', function() {
+            if (!dashRequireWrite()) return;
+            workerFetchJson('/api/hub-providers', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({provider_ids: hubProvidersChecked()})
+            }).then(function(res) {
+                renderHubProviders(res.providers || []);
+                workerBanner('hub-providers-banner', 'success', 'Saved. The hub sees the change on its next request.');
+            }).catch(function(e) { workerBanner('hub-providers-banner', 'danger', e.message); });
+        });
+    }
+
     var params = new URLSearchParams(window.location.search);
     if (params.get('tab') === 'workers') {
         var t = document.getElementById('workers-tab');
