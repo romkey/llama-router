@@ -13,6 +13,10 @@ described in their git tags and GitHub Releases.
   addresses, benchmarks, live request outcomes, workers and the routing
   table. Scrapers authenticate with `LLAMA_ROUTER_METRICS_TOKEN`; see
   `docs/metrics.md`.
+- A worker can choose which of its providers its hub may use. The
+  Workers tab lists them as Local, Cloud and Remotes with all/none quick
+  picks; the hub's jobs route only to the ticked providers and it lists
+  only their models. See `docs/workers.md`.
 
 ## [0.21.1] - 2026-10-28
 

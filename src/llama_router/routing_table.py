@@ -516,6 +516,11 @@ class RoutingTable:
     ranked_by_locality: dict[tuple[str, str, str, str], tuple[Candidate, ...]] = field(
         default_factory=dict
     )
+    # The same for requests from a hub this router works for, which may only
+    # use providers shared with it: (model, endpoint, mode, locality or None).
+    ranked_for_hub: dict[tuple[str, str, str, str | None], tuple[Candidate, ...]] = (
+        field(default_factory=dict)
+    )
     chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
     chaos: dict[str | None, tuple[tuple[Provider, tuple[str, ...]], ...]] = field(
         default_factory=dict
@@ -528,9 +533,17 @@ class RoutingTable:
         return self.chains.get(model) or (model,)
 
     def ranked_for(
-        self, model: str, endpoint: str, mode: str, locality: str | None = None
+        self,
+        model: str,
+        endpoint: str,
+        mode: str,
+        locality: str | None = None,
+        hub_only: bool = False,
     ) -> tuple[Candidate, ...]:
-        """Ranked candidates, limited to *locality* when given."""
+        """Ranked candidates, limited to *locality* when given and to
+        providers shared with the hub when *hub_only*."""
+        if hub_only:
+            return self.ranked_for_hub.get((model, endpoint, mode, locality), ())
         if locality is None:
             return self.ranked.get((model, endpoint, mode), ())
         return self.ranked_by_locality.get((model, endpoint, mode, locality), ())
@@ -700,6 +713,15 @@ def build_table(
             if subset:
                 for mode, ranked in _rank(subset).items():
                     table.ranked_by_locality[(model, path, mode, locality)] = ranked
+        shared = [c for c in cands if c.provider.hub_shared]
+        scopes: tuple[str | None, ...] = (None, *LOCALITIES)
+        for scope in scopes:
+            subset = [
+                c for c in shared if scope is None or c.provider.locality == scope
+            ]
+            if subset:
+                for mode, ranked in _rank(subset).items():
+                    table.ranked_for_hub[(model, path, mode, scope)] = ranked
 
     for protocol in PROTOCOLS:
         entries = []
