@@ -308,6 +308,9 @@ class RequestLog(BaseModel):
     endpoint: str  # e.g. "/api/chat", "/v1/chat/completions"
     source_ip: str | None = None
     model: str | None = None
+    # The model that ran, when it differs from *model* (a model group's
+    # member, an alias or a fallback).
+    routed_model: str | None = None
     request_size: int = 0
     response_size: int = 0
     request_meta: str | None = None

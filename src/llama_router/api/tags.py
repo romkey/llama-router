@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..auth import from_hub
+from ..model_listing import listed_models
 from . import deps
 
 router = APIRouter()
@@ -11,10 +12,11 @@ router = APIRouter()
 
 @router.get("/api/tags")
 async def list_tags(request: Request) -> JSONResponse:
-    """Aggregate models from all online providers (a hub sees only the
-    providers shared with it)."""
-    db = deps.get_db()
-    models = await db.list_all_models(hub_only=from_hub(request))
+    """Aggregate models from all online providers, plus model groups (a hub
+    sees only the providers shared with it)."""
+    models = await listed_models(
+        deps.get_db(), deps.get_router(), hub_only=from_hub(request)
+    )
     return JSONResponse(content={"models": models})
 
 

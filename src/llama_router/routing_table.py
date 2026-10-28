@@ -543,6 +543,24 @@ class RoutingTable:
     def is_group(self, name: str) -> bool:
         return name in self.groups
 
+    def group_listing(self, hub_only: bool = False) -> list[dict[str, Any]]:
+        """Model-list rows for the groups a client can use, shaped like the
+        rows of ``Database.list_all_models``."""
+        return [
+            {
+                "name": name,
+                "size": 0,
+                "digest": "",
+                "modified_at": None,
+                "details": {
+                    "family": "group",
+                    "group": True,
+                    "members": list(self.groups.get(name, ())),
+                },
+            }
+            for name in self.listed_groups(hub_only)
+        ]
+
     def listed_groups(self, hub_only: bool = False) -> list[str]:
         """Groups a client should see: at least one member can be served."""
         return sorted(

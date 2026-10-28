@@ -343,6 +343,7 @@ async def log_request(
         endpoint=endpoint,
         source_ip=ip,
         model=model,
+        routed_model=routed_model if routed_model != model else None,
         request_size=_payload_size(request_body),
         response_size=response_size,
         request_meta=request_meta or _request_meta_summary(request_body),
