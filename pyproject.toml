@@ -157,6 +157,6 @@ branch = true
 
 [tool.coverage.report]
 # RULES.md §4 wants 80; raise this as coverage improves.
-fail_under = 74
+fail_under = 80
 skip_covered = true
 exclude_also = ['if __name__ == "__main__":']
