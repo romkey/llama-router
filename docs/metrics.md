@@ -53,7 +53,7 @@ All names start with `llama_router_`. Provider metrics carry the labels
 | `model_request_duration_milliseconds` | gauge | provider, `model`, `endpoint_class` | Moving-average time to the last byte of successful requests |
 | `worker_connected` | gauge | `worker`, `provider_id` | 1 while the worker's socket is open (hub side) |
 | `worker_in_flight` | gauge | `worker`, `provider_id` | Requests in flight over the worker's socket |
-| `worker_jobs_total` | counter | `worker`, `provider_id` | Requests sent over the worker's socket |
+| `worker_jobs_total` | counter | `worker`, `provider_id` | Requests sent to the worker since start-up, across reconnects |
 | `worker_link_connected` | gauge | `hub` | 1 while this router is connected to its hub as a worker |
 | `worker_link_jobs_total` | counter | | Jobs served for the hub since the link started |
 | `routing_table_version` | gauge | | Rebuilds of the routing table |

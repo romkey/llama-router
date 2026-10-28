@@ -378,6 +378,9 @@ class WorkerHub:
         self._on_connect: ConnectCallback | None = None
         self._on_disconnect: DisconnectCallback | None = None
         self._bg: set[asyncio.Task[None]] = set()
+        # Jobs served by sockets that have since closed, per provider, so the
+        # total survives reconnects (see jobs_total).
+        self._closed_jobs: dict[int, int] = {}
 
     def set_callbacks(
         self,
@@ -396,6 +399,14 @@ class WorkerHub:
     def is_connected(self, provider_id: int) -> bool:
         conn = self._conns.get(provider_id)
         return conn is not None and not conn.closed
+
+    def jobs_total(self, provider_id: int) -> int:
+        """Requests sent to the worker since start-up, across reconnects."""
+        total = self._closed_jobs.get(provider_id, 0)
+        conn = self._conns.get(provider_id)
+        if conn is not None:
+            total += conn.jobs_total
+        return total
 
     def connections(self) -> list[WorkerConnection]:
         return list(self._conns.values())
@@ -500,6 +511,9 @@ class WorkerHub:
             logger.warning("Worker %s session error: %s", name, exc)
         finally:
             conn.fail_all("socket closed")
+            self._closed_jobs[provider_id] = (
+                self._closed_jobs.get(provider_id, 0) + conn.jobs_total
+            )
             if self._conns.get(provider_id) is conn:
                 del self._conns[provider_id]
                 logger.info("Worker %s disconnected", name)

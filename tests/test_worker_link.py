@@ -427,6 +427,9 @@ async def test_disconnect_marks_offline_and_worker_reconnects(link) -> None:
     w = await _connected_worker(link)
     pm, pid, db = link["pm"], link["provider_id"], link["db"]
     first = pm.worker_hub.get(pid)
+    # Discovery already sent jobs; the hub's total must survive the restart.
+    before = pm.worker_hub.jobs_total(pid)
+    assert before > 0
 
     await pm.worker_hub.disconnect(pid, 1011, "test restart")
 
@@ -444,6 +447,7 @@ async def test_disconnect_marks_offline_and_worker_reconnects(link) -> None:
         return (await db.get_provider(pid)).status == ProviderStatus.IDLE
 
     await _wait_for(idle)
+    assert pm.worker_hub.jobs_total(pid) > before
 
 
 async def test_revoked_token_stops_reconnecting(link) -> None:

@@ -434,6 +434,7 @@ async def metrics() -> PlainTextResponse:
         await pm.list_provider_infos(),
         pm.stats,
         router=pm.router,
+        hub=pm.worker_hub,
         worker_link=await deps.get_worker_link().status(),
         auto_benchmark=deps.auto_benchmark_if_running(),
     )

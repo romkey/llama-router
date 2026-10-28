@@ -189,7 +189,9 @@ def collect(
         "worker_in_flight", "gauge", "Requests in flight over the worker's socket."
     )
     worker_jobs = Family(
-        "worker_jobs_total", "counter", "Requests sent over the worker's socket."
+        "worker_jobs_total",
+        "counter",
+        "Requests sent to the worker since start-up, across reconnects.",
     )
 
     by_id: dict[int, ProviderInfo] = {}
@@ -227,7 +229,11 @@ def collect(
             wlabels = {"worker": p.worker_name, "provider_id": p.id}
             worker_conn.add(bool(live.get("connected")), **wlabels)
             worker_inflight.add(int(live.get("in_flight") or 0), **wlabels)
-            worker_jobs.add(int(live.get("jobs_total") or 0), **wlabels)
+            if hub is not None:
+                jobs = int(hub.jobs_total(p.id))
+            else:
+                jobs = int(live.get("jobs_total") or 0)
+            worker_jobs.add(jobs, **wlabels)
 
     requests = Family(
         "requests_total",
