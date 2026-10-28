@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ..auth import routing_preferences_from_request
+from ..auth import from_hub, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import StreamLogger, log_request_background
 from ..v1_client import get_v1_client
@@ -231,16 +231,18 @@ async def audio_transcriptions(request: Request) -> Response:
 
 
 @router.get("/v1/audio/voices")
-async def audio_voices() -> JSONResponse:
-    """List available voices — aggregated from all online providers."""
+async def audio_voices(request: Request) -> JSONResponse:
+    """List available voices — aggregated from all online providers (a hub
+    sees only the providers shared with it)."""
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
+    hub = from_hub(request)
 
     all_voices: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     for info in infos:
-        if info.provider.id is None:
+        if info.provider.id is None or (hub and not info.provider.hub_shared):
             continue
         try:
             client = get_v1_client(pm, info.provider.id)

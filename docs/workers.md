@@ -25,6 +25,24 @@ client ──HTTP──▶ hub router ──WebSocket (outbound from worker)─�
 3. The worker connects, the hub discovers its models, and the provider goes
    idle. Rotating, disabling or deleting the worker on the hub disconnects it.
 
+## Choosing which providers a hub may use
+
+By default a worker serves every provider its router has. The worker's
+**Workers** tab, under *Serve a hub from this router*, lists the providers in
+three groups, **Local**, **Cloud** and **Remotes** (workers that dial in to
+this router), each with *all* and *none* quick picks, plus *All* and *None*
+for the lot. Untick a provider to keep it from the hub: jobs from the hub
+never route to it and the hub's model listing leaves its models out. Use it
+to keep a metered cloud service, or a remote someone else lends you, from
+being spent by the hub.
+
+The worker adds `X-Llama-Router-Via: hub` to every job it relays. Its own
+router reads the header and limits routing and `/api/tags` / `/v1/models` to
+the shared providers (`Provider.hub_shared`); any other upstream ignores it.
+A client sending the header to a router narrows only its own routing, so
+the header is not a credential. The choice is saved per provider, so a new
+provider is shared until it is unticked.
+
 ## Wire protocol (version 1)
 
 Endpoint: `GET /worker/ws` on the hub's Ollama API port, upgraded to a

@@ -19,6 +19,7 @@ from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
 from .spend import tracker_for
 from .upstream_url import LOCALITIES
+from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,12 @@ async def _decision_policy(db: Database, key_id: int) -> DecisionPolicy | None:
 LOCALITY_HEADER = "X-Llama-Router-Locality"
 
 
+def from_hub(request: Request) -> bool:
+    """The request was relayed by the worker link from this router's hub."""
+    value = (request.headers.get(HUB_HEADER) or "").strip().lower()
+    return value == HUB_HEADER_VALUE
+
+
 def _locality(value: Any) -> str | None:
     v = str(value or "").strip().lower()
     return v if v in LOCALITIES else None
@@ -192,6 +199,8 @@ async def routing_preferences_from_request(
     Also records the key on ``request.state.api_key_id`` for the request log.
     """
     prefs = _narrow_locality(request, await _key_preferences(db, request))
+    if from_hub(request):
+        prefs = replace(prefs or RoutingPreferences(), hub_only=True)
     if prefs is not None and prefs.key_id is not None:
         request.state.api_key_id = prefs.key_id
         prefs = await _apply_spend_cap(db, prefs)
