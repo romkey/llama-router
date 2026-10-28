@@ -13,6 +13,10 @@ described in their git tags and GitHub Releases.
   addresses, benchmarks, live request outcomes, workers and the routing
   table. Scrapers authenticate with `LLAMA_ROUTER_METRICS_TOKEN`; see
   `docs/metrics.md`.
+- The Add Provider dialog has a "Benchmark automatically" choice, so a
+  provider that charges per token can be excluded from the idle
+  auto-benchmarker before its first benchmark runs. It was already on the
+  provider page.
 - A worker can choose which of its providers its hub may use. The
   Workers tab lists them as Local, Cloud and Remotes with all/none quick
   picks; the hub's jobs route only to the ticked providers and it lists
