@@ -1654,6 +1654,15 @@
                     </select>
                     <div class="form-text">API keys can be limited to local or cloud providers.</div>
                 </div>
+                <div class="mb-3">
+                    <label for="add-auto-benchmark" class="form-label">Benchmark automatically</label>
+                    <select class="form-select" id="add-auto-benchmark" name="auto_benchmark">
+                        <option value="" selected>Default: on for local providers, off for cloud</option>
+                        <option value="on">On: benchmark its models while it is idle</option>
+                        <option value="off">Off: never benchmark unless asked (services that charge per token)</option>
+                    </select>
+                    <div class="form-text">Can be changed later on the provider page.</div>
+                </div>
                 <p class="text-muted small mb-2">First address (add more later on the provider page)</p>
                 <div class="mb-3" id="url-group">
                     <label for="url" class="form-label">URL</label>

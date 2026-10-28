@@ -9,6 +9,10 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- The Add Provider dialog has a "Benchmark automatically" choice, so a
+  provider that charges per token can be excluded from the idle
+  auto-benchmarker before its first benchmark runs. It was already on the
+  provider page.
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
   database work, used by the production compose health check.
 - `llama-router --version`.

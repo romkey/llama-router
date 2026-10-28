@@ -191,3 +191,27 @@ async def test_dashboard_edit_cloud_settings(dash_client, httpx_mock) -> None:
     assert (await client.post(f"/providers/{p.id}/edit", data=bad)).status_code == 400
     page = await client.get(f"/providers/{p.id}")
     assert "anthropic/*" in page.text and "PROVIDER_IS_CLOUD" in page.text
+
+
+async def test_dashboard_add_provider_without_auto_benchmark(
+    dash_client, httpx_mock
+) -> None:
+    """The Add Provider dialog can turn the idle auto-benchmarker off for a
+    provider that charges per token, before any benchmark has run."""
+    httpx_mock.add_exception(httpx.ConnectError("offline"), is_reusable=True)
+    client, db = dash_client
+    form = {
+        "name": "metered",
+        "url": "http://10.0.0.5:8080",
+        "protocol": "openai",
+        "auto_benchmark": "off",
+    }
+    assert (await client.post("/providers/add", data=form)).status_code == 303
+    p = await db.get_provider_by_name("metered")
+    assert p is not None
+    assert (p.locality, p.auto_benchmark, p.auto_benchmarks) == ("local", False, False)
+
+    form = {**form, "name": "default", "auto_benchmark": ""}
+    assert (await client.post("/providers/add", data=form)).status_code == 303
+    p = await db.get_provider_by_name("default")
+    assert p is not None and p.auto_benchmark is None and p.auto_benchmarks
