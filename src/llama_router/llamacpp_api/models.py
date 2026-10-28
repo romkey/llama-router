@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from ..auth import from_hub
 from . import deps
 
 router = APIRouter()
 
 
 @router.get("/v1/models")
-async def list_models() -> JSONResponse:
-    """Aggregate models from all online providers (OpenAI format)."""
+async def list_models(request: Request) -> JSONResponse:
+    """Aggregate models from all online providers (OpenAI format). A hub
+    sees only the providers shared with it."""
     db = deps.get_db()
-    models = await db.list_all_models()
+    models = await db.list_all_models(hub_only=from_hub(request))
     return JSONResponse(
         content={
             "object": "list",
@@ -32,10 +34,10 @@ async def list_models() -> JSONResponse:
 
 
 @router.get("/v1/models/{model_name:path}")
-async def get_model(model_name: str) -> JSONResponse:
+async def get_model(model_name: str, request: Request) -> JSONResponse:
     """Return a single model in OpenAI format."""
     db = deps.get_db()
-    models = await db.list_all_models()
+    models = await db.list_all_models(hub_only=from_hub(request))
     for m in models:
         if m["name"] == model_name:
             return JSONResponse(

@@ -105,6 +105,9 @@ class RoutingPreferences:
     spend_capped: bool = False
     # Decision questions asked before a generation request is routed.
     decision_policy: DecisionPolicy | None = None
+    # The request came from a hub this router works for (over the worker
+    # link): only providers shared with the hub may serve it.
+    hub_only: bool = False
 
 
 class Router:
@@ -352,8 +355,11 @@ class Router:
         pins = preferences.pinned_providers if preferences else None
         mode = preferences.mode if preferences else DEFAULT_MODE
         locality = preferences.locality if preferences else None
+        hub_only = bool(preferences and preferences.hub_only)
         if mode == "chaos" and not (pins and model_name in pins):
-            return self._route_chaos(table, model_name, ENDPOINTS[path][0], locality)
+            return self._route_chaos(
+                table, model_name, ENDPOINTS[path][0], locality, hub_only
+            )
         if mode not in MODES:
             mode = DEFAULT_MODE
 
@@ -368,17 +374,21 @@ class Router:
                 pid = pins.get(candidate_model)
                 if pid is not None:
                     pinned = self._pinned(table, candidate_model, path, pid)
-                    if pinned is not None and not _locality_ok(
-                        pinned.provider, locality
+                    if pinned is not None and not _eligible(
+                        pinned.provider, locality, hub_only
                     ):
                         # The key's locality outranks its pin: never send a
-                        # local-only key's request to a cloud provider.
+                        # local-only key's request to a cloud provider, nor a
+                        # hub's request to a provider kept from it.
                         logger.warning(
-                            "Pin for %s to %s ignored: provider is %s, key requires %s",
+                            "Pin for %s ignored: %s",
                             candidate_model,
-                            pinned.provider.name,
-                            pinned.provider.locality,
-                            locality,
+                            _why_ineligible(
+                                pinned.provider,
+                                locality,
+                                hub_only,
+                                pinned.provider.name,
+                            ),
                         )
                         pinned = None
                     if pinned is not None:
@@ -394,7 +404,7 @@ class Router:
                             pinned.backend_model,
                             pinned.model,
                         )
-            ranked = table.ranked_for(candidate_model, path, mode, locality)
+            ranked = table.ranked_for(candidate_model, path, mode, locality, hub_only)
             if not ranked:
                 continue
             ranked = self._not_busy(ranked)
@@ -480,11 +490,13 @@ class Router:
         mode = preferences.mode if preferences else DEFAULT_MODE
         allow_fallback = preferences.allow_fallback if preferences else True
         locality = preferences.locality if preferences else None
+        hub_only = bool(preferences and preferences.hub_only)
         out: dict[str, Any] = {
             "request": {
                 "model": model_name,
                 "mode": mode,
                 "locality": locality or "any",
+                "hub_only": hub_only,
                 "spend_capped": bool(preferences and preferences.spend_capped),
                 "endpoint": path,
                 "endpoint_class": endpoint_cls,
@@ -516,7 +528,7 @@ class Router:
             out["chaos_pool"] = [
                 {"provider_id": p.id, "provider": p.name, "models": list(models)}
                 for p, models in table.chaos.get(protocol, ())
-                if _locality_ok(p, locality)
+                if _eligible(p, locality, hub_only)
             ]
             if not out["chaos_pool"]:
                 out["summary"] = (
@@ -554,6 +566,7 @@ class Router:
                 chosen_id,
                 bound,
                 locality,
+                hub_only,
             )
             out["steps"].append(step)
             if decision is not None and decision.resolved_model == candidate_model:
@@ -573,11 +586,12 @@ class Router:
         chosen_id: int | None = None,
         bound: int | None = None,
         locality: str | None = None,
+        hub_only: bool = False,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         rows: list[dict[str, Any]] = []
         all_cands = table.all_candidates.get((model, path), ())
-        ranked = table.ranked_for(model, path, mode, locality)
+        ranked = table.ranked_for(model, path, mode, locality, hub_only)
         ready = self._not_busy(ranked)
         busy = self._pm.stats.busy_for
         ranked_ids = {c.provider_id for c in ranked}
@@ -587,10 +601,11 @@ class Router:
         if pid is not None:
             step["pinned_provider_id"] = pid
             pinned = next((c for c in all_cands if c.provider_id == pid), None)
-            if pinned is not None and not _locality_ok(pinned.provider, locality):
-                step["pin_ignored"] = (
-                    f"{pinned.provider.name} is {pinned.provider.locality}; "
-                    f"the key requires {locality}"
+            if pinned is not None and not _eligible(
+                pinned.provider, locality, hub_only
+            ):
+                step["pin_ignored"] = _why_ineligible(
+                    pinned.provider, locality, hub_only, pinned.provider.name
                 )
                 pinned = None
         skipped = 0
@@ -609,11 +624,10 @@ class Router:
                     "session_bound": bound is not None and c.provider_id == bound,
                 }
             )
-            if not _locality_ok(c.provider, locality):
-                row["excluded"] = (
-                    f"provider is {c.provider.locality}; the key requires {locality}"
-                )
-                skipped += 1
+            if not _eligible(c.provider, locality, hub_only):
+                row["excluded"] = _why_ineligible(c.provider, locality, hub_only)
+                if not _locality_ok(c.provider, locality):
+                    skipped += 1
             elif pinned is not None:
                 if c is not pinned:
                     row["excluded"] = "another provider is pinned for this model"
@@ -782,10 +796,13 @@ class Router:
         requested_model: str,
         protocol: str | None,
         locality: str | None = None,
+        hub_only: bool = False,
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model."""
         entries = [
-            e for e in table.chaos.get(protocol, ()) if _locality_ok(e[0], locality)
+            e
+            for e in table.chaos.get(protocol, ())
+            if _eligible(e[0], locality, hub_only)
         ]
         if not entries:
             return None
@@ -806,6 +823,19 @@ class Router:
 
 def _locality_ok(provider: Provider, locality: str | None) -> bool:
     return locality is None or provider.locality == locality
+
+
+def _eligible(provider: Provider, locality: str | None, hub_only: bool) -> bool:
+    """The request's key locality and hub scope allow *provider*."""
+    return _locality_ok(provider, locality) and (provider.hub_shared or not hub_only)
+
+
+def _why_ineligible(
+    provider: Provider, locality: str | None, hub_only: bool, subject: str = "provider"
+) -> str:
+    if not _locality_ok(provider, locality):
+        return f"{subject} is {provider.locality}; the key requires {locality}"
+    return f"{subject} is not shared with the hub"
 
 
 def _summary(out: dict[str, Any], requested: str) -> str:

@@ -2952,6 +2952,51 @@ async def api_delete_worker(worker_id: int):
     return JSONResponse({"deleted": worker_id})
 
 
+class HubProvidersBody(BaseModel):
+    provider_ids: list[int]
+
+
+def _hub_kind(provider: Any) -> str:
+    """Quick-pick group of a provider: local, cloud or remote (a worker)."""
+    if provider.is_worker:
+        return "remote"
+    return str(provider.locality)
+
+
+async def _hub_provider_rows(db: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "status": p.status.value,
+            "locality": p.locality,
+            "is_worker": p.is_worker,
+            "kind": _hub_kind(p),
+            "hub_shared": p.hub_shared,
+        }
+        for p in await db.list_providers()
+    ]
+
+
+@router.get("/api/hub-providers")
+async def api_hub_providers():
+    """Which providers a hub this router works for may use."""
+    return JSONResponse({"providers": await _hub_provider_rows(deps.get_db())})
+
+
+@router.post("/api/hub-providers")
+async def api_set_hub_providers(body: HubProvidersBody):
+    """Share exactly *provider_ids* with the hub; every other provider is
+    kept from it. Takes effect on the hub's next request and model listing."""
+    db = deps.get_db()
+    known = {p.id for p in await db.list_providers()}
+    unknown = sorted(set(body.provider_ids) - known)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown provider ids {unknown}")
+    await db.set_hub_shared_providers(body.provider_ids)
+    return JSONResponse({"providers": await _hub_provider_rows(db)})
+
+
 @router.get("/api/worker-link")
 async def api_worker_link_status():
     return JSONResponse(await deps.get_worker_link().status())
