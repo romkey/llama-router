@@ -107,7 +107,8 @@ async def test_route_does_no_database_work_once_built(
 
     for _ in range(50):
         r = await rt.route("big", "/api/chat", preferences=_prefs("latency"))
-        assert r.provider.id == p.id and r.resolved_model == "m"
+        assert r.provider.id == p.id
+        assert r.resolved_model == "m"
     assert calls == 0
 
 
@@ -132,7 +133,8 @@ async def test_database_change_rebuilds_before_next_route(
     assert await rt.route("new-model", "/v1/chat/completions") is None
     p = await _provider(db, "srv", ["new-model"])
     r = await rt.route("new-model", "/v1/chat/completions")
-    assert r is not None and r.provider.id == p.id
+    assert r is not None
+    assert r.provider.id == p.id
     await db.update_provider_status(p.id, ProviderStatus.OFFLINE)
     assert await rt.route("new-model", "/v1/chat/completions") is None
 
@@ -163,7 +165,8 @@ async def test_background_rebuild_coalesces_bursts(db: Database, pm: ProviderMan
                 if r is not None:
                     break
         r = rt.route_with(rt.table, "a3", "/v1/chat/completions")
-        assert r is not None and r.provider.id == p.id
+        assert r is not None
+        assert r.provider.id == p.id
         assert rt.table.version - start_version <= 3
     finally:
         await rt.stop()
@@ -320,7 +323,8 @@ async def test_chaos_uses_table(db: Database, pm: ProviderManager):
     p = await _provider(db, "srv", ["m1", "m2"])
     rt = Router(db, pm)
     r = await rt.route("anything", "/v1/chat/completions", preferences=_prefs("chaos"))
-    assert r.provider.id == p.id and r.resolved_model in {"m1", "m2"}
+    assert r.provider.id == p.id
+    assert r.resolved_model in {"m1", "m2"}
 
 
 async def test_dashboard_routing_table_endpoint(db: Database, pm: ProviderManager):
@@ -385,9 +389,12 @@ async def test_stream_logger_records_ttft_and_speed(db: Database, pm: ProviderMa
     s = pm.stats.model(p.id, "m")
     assert s is not None
     assert s.tokens_per_second.value == pytest.approx(20.0)
-    assert s.ttft_ms.value is not None and s.ttft_ms.value >= 0
+    assert s.ttft_ms.value is not None
+    assert s.ttft_ms.value >= 0
     logs = await db.get_request_logs(10, 0)
-    assert logs and logs[0].streamed and logs[0].status == "ok"
+    assert logs
+    assert logs[0].streamed
+    assert logs[0].status == "ok"
 
 
 async def test_client_errors_do_not_count_against_provider(
@@ -477,7 +484,8 @@ async def test_legacy_sha256_keys_still_work(db: Database):
     )
     await db.set_allow_unauthenticated(False)
     prefs = await routing_preferences_from_request(db, _key_request(key))
-    assert prefs.mode == "latency" and prefs.allow_fallback is False
+    assert prefs.mode == "latency"
+    assert prefs.allow_fallback is False
 
 
 async def test_dead_address_round_trips_are_ignored(db: Database, pm: ProviderManager):

@@ -65,7 +65,8 @@ async def serve(
     """Answer a decision request as *endpoint_path* would. The dashboard's
     try form calls this too, with no key preferences."""
     path = normalize_endpoint(endpoint_path)
-    assert path is not None
+    if path is None:
+        raise ValueError(f"not a decision endpoint: {endpoint_path!r}")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
     try:
@@ -87,7 +88,7 @@ async def serve(
                 detail=f"No available provider for model '{req.model}'",
             )
         provider = result.provider
-        assert provider.id is not None
+        provider_id = provider.require_id()
         start = time.monotonic()
         log: dict[str, Any] = dict(
             provider=provider,
@@ -105,7 +106,7 @@ async def serve(
                 pm, db, result, req, path, body, inputs.aliases if inputs else None
             )
         except d.NoLogprobs as exc:
-            pm.stats.record_logprobs(provider.id, ok=False)
+            pm.stats.record_logprobs(provider_id, ok=False)
             log_request_background(
                 db,
                 **log,

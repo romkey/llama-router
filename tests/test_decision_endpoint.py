@@ -7,21 +7,18 @@ import httpx
 import pytest
 
 from llama_router import decisions as d
-from llama_router import request_logger
 from llama_router.auto_benchmark import AutoBenchmarker
 from llama_router.background import drain
-from llama_router.dashboard import deps as dash_deps
-from llama_router.dashboard.decisions import router as dash_decisions_router
 from llama_router.database import Database
 from llama_router.endpoints import DECIDE, DECISION_PATHS, endpoint_class
-from llama_router.llamacpp_api import deps
 from llama_router.llamacpp_api.app import app as api_app
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 from llama_router.request_logger import _request_meta_summary
 from llama_router.router import Router
-from llama_router.routing_stats import NO_LOGPROBS_TTL_S, ProviderStats
+from llama_router.routing_stats import NO_LOGPROBS_TTL_S
 from llama_router.routing_table import TIER_MISSING, TIER_OK
+from tests.conftest import FakeClock
 
 MODEL = "m"
 QUESTIONS = {
@@ -49,14 +46,6 @@ BODY = {
     "state": "Every API request returns 500.",
     "questions": QUESTIONS,
 }
-
-
-class FakeClock:
-    def __init__(self) -> None:
-        self.t = 1000.0
-
-    def __call__(self) -> float:
-        return self.t
 
 
 def _top(*pairs: tuple[str, float]) -> list[dict]:
@@ -95,21 +84,6 @@ def _backend(with_logprobs: bool = True):
     return callback, seen
 
 
-@pytest.fixture
-def clock() -> FakeClock:
-    return FakeClock()
-
-
-@pytest.fixture
-async def pm(db: Database, clock: FakeClock):
-    manager = ProviderManager(db)
-    manager.stats = ProviderStats(clock=clock)
-    request_logger.attach_stats(manager.stats)
-    yield manager
-    request_logger.attach_stats(None)
-    await manager.stop()
-
-
 async def _provider(
     db: Database, pm: ProviderManager, name: str, url: str, caps: dict | None = None
 ):
@@ -133,14 +107,6 @@ async def _post(path: str, body: dict) -> httpx.Response:
     transport = httpx.ASGITransport(app=api_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://router") as c:
         return await c.post(path, json=body)
-
-
-@pytest.fixture
-async def router(db: Database, pm: ProviderManager):
-    await db.set_allow_unauthenticated(True)
-    rt = Router(db, pm)
-    deps.init(db, pm, rt)
-    return rt
 
 
 # --- Endpoint registry and routing ---
@@ -237,10 +203,12 @@ async def test_emulated_request_answers_every_question(
     (entry,) = [
         e for e in await db.get_request_logs(10, 0) if e.endpoint == "/v1/systemone"
     ]
-    assert entry.status == "ok" and entry.provider_id == p.id
+    assert entry.status == "ok"
+    assert entry.provider_id == p.id
     assert entry.request_meta.startswith("questions=3; department=technical")
     stats = pm.stats.model(p.id, MODEL, DECIDE)
-    assert stats is not None and stats.duration_ms.value is not None
+    assert stats is not None
+    assert stats.duration_ms.value is not None
 
 
 async def test_calibration_is_applied_by_model_and_question(
@@ -321,7 +289,8 @@ async def test_no_logprobs_reroutes_to_a_provider_that_has_them(
     )
     resp = await _post("/v1/systemone", BODY)
     assert resp.status_code == 200, resp.text
-    assert bad_seen and len(good_seen) == 3
+    assert bad_seen
+    assert len(good_seen) == 3
     assert pm.stats.lacks_logprobs(bad.id)
     assert not pm.stats.lacks_logprobs(good.id)
     pm.release(good.id)
@@ -402,23 +371,12 @@ async def test_calibration_upsert_and_delete(db: Database):
     await db.set_decision_calibration("m", "k", "noul", {"x": 1}, 2.0, {"true": 1.0})
     await db.set_decision_calibration("m", "k", "noul", {"x": 2}, 0.5, {"true": -1.0})
     (row,) = await db.list_decision_calibrations()
-    assert row["temperature"] == 0.5 and row["offsets"] == {"true": -1.0}
+    assert row["temperature"] == 0.5
+    assert row["offsets"] == {"true": -1.0}
     assert row["question"] == {"x": 2}
     assert await db.delete_decision_calibration(row["id"])
     assert not await db.delete_decision_calibration(row["id"])
     assert await db.list_decision_calibrations() == []
-
-
-@pytest.fixture
-async def dash(db: Database, pm: ProviderManager):
-    from fastapi import FastAPI
-
-    dash_deps.init(db, pm)
-    app = FastAPI()
-    app.include_router(dash_decisions_router)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://dash") as c:
-        yield c
 
 
 async def test_dashboard_sets_lists_and_deletes(dash, db: Database):
@@ -430,7 +388,8 @@ async def test_dashboard_sets_lists_and_deletes(dash, db: Database):
     assert r.status_code == 200, r.text
     assert r.json()["question_key"] == d.question_key(d.NoulQuestion.model_validate(q))
     (row,) = (await dash.get("/api/decisions/calibrations")).json()["calibrations"]
-    assert row["model_name"] == MODEL and row["temperature"] == 1.0
+    assert row["model_name"] == MODEL
+    assert row["temperature"] == 1.0
     assert (
         await dash.delete(f"/api/decisions/calibrations/{row['id']}")
     ).status_code == 200
@@ -507,7 +466,8 @@ async def test_benchmark_check_learns_logprobs_support(
     assert await ab.check_decisions(good.id, MODEL) == "ok"
     assert await ab.check_decisions(bad.id, MODEL) == "no_logprobs"
     assert await ab.check_decisions(native.id, MODEL) == "skipped"
-    assert pm.stats.lacks_logprobs(bad.id) and not pm.stats.lacks_logprobs(good.id)
+    assert pm.stats.lacks_logprobs(bad.id)
+    assert not pm.stats.lacks_logprobs(good.id)
     assert pm.stats.model(good.id, MODEL, DECIDE) is not None
     # The check is not traffic: it never touches the request counters.
     assert pm.idle_seconds(good.id, 10**9) > 0

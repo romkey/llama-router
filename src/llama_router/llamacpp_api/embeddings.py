@@ -40,11 +40,11 @@ async def embeddings(request: Request) -> JSONResponse:
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = get_v1_client(pm, provider.id)
+    client = get_v1_client(pm, provider_id)
     start = time.monotonic()
-    pm.acquire(provider.id)
+    pm.acquire(provider_id)
     try:
         resp = await client.embeddings(body)
         duration = (time.monotonic() - start) * 1000
@@ -111,4 +111,4 @@ async def embeddings(request: Request) -> JSONResponse:
         )
         raise
     finally:
-        pm.release(provider.id)
+        pm.release(provider_id)

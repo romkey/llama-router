@@ -12,7 +12,6 @@ from llama_router.models import (
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_table import alias_groups
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 CHAT = "/v1/chat/completions"
 

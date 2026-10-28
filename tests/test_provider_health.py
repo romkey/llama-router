@@ -84,7 +84,8 @@ async def test_failing_provider_does_not_block_others(db, httpx_mock) -> None:
     assert (await db.get_provider(locked.id)).status == ProviderStatus.OFFLINE
     assert all(a.is_live for a in await db.get_addresses(locked.id))
     detail = pm.status_detail(locked.id)
-    assert detail and "authentication required" in detail
+    assert detail
+    assert "authentication required" in detail
     info = await pm.get_provider_info(locked.id)
     assert info.status_detail == detail
     await pm.stop()

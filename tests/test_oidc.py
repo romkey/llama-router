@@ -17,7 +17,6 @@ from llama_router.config import settings
 from llama_router.dashboard import oidc
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 ISSUER = "https://idp.example"
 CLIENT_ID = "llama-router"
@@ -176,7 +175,7 @@ def _cfg(**kw) -> oidc.OIDCConfig:
 
 
 @pytest.mark.parametrize(
-    "groups,allowed_group,expected",
+    ("groups", "allowed_group", "expected"),
     [
         (["admins"], "", (True, True)),
         (["staff"], "", (True, False)),
@@ -213,7 +212,7 @@ def test_nested_and_dotted_group_claims() -> None:
 
 
 @pytest.mark.parametrize(
-    "claims,expected",
+    ("claims", "expected"),
     [
         ({"preferred_username": "Alice.Smith"}, "alice.smith"),
         ({"preferred_username": "x", "email": "Bob@Example.org"}, "bob"),
@@ -332,7 +331,8 @@ async def test_oidc_only_with_broken_config_keeps_password_login(
     r = await client.post(
         "/login", data={"username": "root", "password": "password123"}
     )
-    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
     assert AUTH_COOKIE in r.cookies
 
 
@@ -398,7 +398,8 @@ async def test_allowed_group_refuses_outsiders(dash_client, idp, monkeypatch) ->
     assert AUTH_COOKIE not in r.cookies
     assert await db.get_dashboard_user_by_oidc(ISSUER, "user-1") is None
     r = await _login(client, idp, groups=["router-users"])
-    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
 
 
 async def test_groups_from_userinfo_when_not_in_id_token(dash_client, idp) -> None:
@@ -426,7 +427,8 @@ async def test_username_collision_gets_suffix_not_takeover(dash_client, idp) -> 
     row = await db.get_dashboard_user_by_oidc(ISSUER, "user-1")
     assert row["username"] == "alice-2"
     local = await db.get_dashboard_user_by_username("alice")
-    assert local["auth_source"] == "local" and local["is_admin"]
+    assert local["auth_source"] == "local"
+    assert local["is_admin"]
 
 
 async def test_password_login_refused_for_sso_account(dash_client, idp) -> None:
@@ -541,7 +543,8 @@ async def test_multiple_audiences_with_matching_azp_accepted(dash_client, idp) -
     client, db = dash_client
     await _seed_local_admin(db)
     r = await _login(client, idp, aud=[CLIENT_ID, "other"], azp=CLIENT_ID)
-    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
 
 
 async def test_token_signed_by_unknown_key_is_rejected(dash_client, idp) -> None:
@@ -589,7 +592,8 @@ async def test_key_rotation_refetches_jwks(dash_client, idp) -> None:
     idp.signing_key = new_key
     client.cookies.clear()
     r = await _login(client, idp, groups=[])
-    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
     jwks_fetches = [req for req in idp.requests if req.url.path == "/jwks"]
     assert len(jwks_fetches) == 2
 

@@ -15,7 +15,6 @@ from llama_router.provider_secrets import (
     encrypt_api_key,
     normalize_header,
 )
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 KEY = "sk-test-0123456789"
 
@@ -38,7 +37,7 @@ def test_auth_headers_shapes() -> None:
     assert auth_headers(KEY, None) == {"Authorization": f"Bearer {KEY}"}
     assert auth_headers(KEY, "authorization") == {"Authorization": f"Bearer {KEY}"}
     assert auth_headers(KEY, "API-KEY") == {"API-KEY": KEY}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="header name may contain only"):
         normalize_header("Bad Header: x")
 
 
@@ -73,7 +72,8 @@ async def test_key_is_sent_upstream_and_brings_provider_online(db, httpx_mock) -
     await pm.update_provider(without.id, "locked", ProviderProtocol.OLLAMA, api_key=KEY)
     p = await db.get_provider(without.id)
     assert p.status == ProviderStatus.IDLE
-    assert p.has_api_key and KEY not in (p.api_key_enc or "")
+    assert p.has_api_key
+    assert KEY not in (p.api_key_enc or "")
     assert pm.status_detail(p.id) is None
     await pm.stop()
 
@@ -93,7 +93,7 @@ async def test_custom_header_sends_raw_key(db, httpx_mock) -> None:
 async def test_worker_provider_rejects_key(db) -> None:
     pm = ProviderManager(db)
     w = await pm.add_worker_provider("edge")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="worker providers use"):
         await pm._store_api_key(w, KEY, None)
     await pm.stop()
 
@@ -114,10 +114,12 @@ async def test_dashboard_keeps_replaces_and_clears_key(
     assert r.status_code == 303
     p = (await db.list_providers())[0]
     stored = p.api_key_enc
-    assert stored and KEY not in stored
+    assert stored
+    assert KEY not in stored
 
     page = await client.get(f"/providers/{p.id}")
-    assert KEY not in page.text and stored not in page.text
+    assert KEY not in page.text
+    assert stored not in page.text
     assert "Replace API key" in page.text
 
     form = {"name": "gpu", "protocol": "ollama"}
@@ -131,7 +133,7 @@ async def test_dashboard_keeps_replaces_and_clears_key(
 async def test_bad_header_rejects_edit_without_partial_write(db) -> None:
     pm = ProviderManager(db)
     p = await db.add_provider("gpu", ProviderProtocol.OLLAMA, machine_type="old box")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="header name may contain only"):
         await pm.update_provider(
             p.id,
             "renamed",

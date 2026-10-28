@@ -16,21 +16,14 @@ from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
-from tests.test_dashboard_auth import (
-    _session_cookie_header,
-    dash_client,  # noqa: F401  (fixture)
-)
-from tests.test_decision_endpoint import (  # noqa: F401  (fixtures)
+from tests.test_dashboard_auth import _session_cookie_header
+from tests.test_decision_endpoint import (
     MODEL,
     QUESTIONS,
     _caps,
     _completion,
     _provider,
     _top,
-    clock,
-    dash,
-    pm,
-    router,
 )
 
 FRUSTRATION = QUESTIONS["frustration"]
@@ -85,7 +78,8 @@ async def test_fit_stores_a_calibration_and_reports_held_out_scores(
     assert len(seen) == 12
     # Requests carry no calibration: they are the raw one-token prompts.
     assert all(b["max_tokens"] == 1 and b["logprobs"] for b in seen)
-    assert out["model"] == MODEL and out["provider"] == "chat"
+    assert out["model"] == MODEL
+    assert out["provider"] == "chat"
     assert out["examples"] == 12
     assert out["method"] == "leave-one-out"
     assert out["before"]["accuracy"] == pytest.approx(4 / 12, abs=1e-3)
@@ -245,7 +239,8 @@ async def test_try_answers_through_the_decision_endpoint(
     r = await dash.post("/api/decisions/try", json=body)
     assert r.status_code == 200, r.text
     (a,) = r.json()["answers"].values()
-    assert a["type"] == "score" and a["probabilities"]["1"] == pytest.approx(0.55)
+    assert a["type"] == "score"
+    assert a["probabilities"]["1"] == pytest.approx(0.55)
 
     # A stored calibration applies, as it does on /v1/systemone.
     fit = await dash.post(

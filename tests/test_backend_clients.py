@@ -378,7 +378,8 @@ async def test_openai_calls_and_streams() -> None:
     for stream in (c.chat_completions_stream, c.completions_stream, c.responses_stream):
         body = {}
         chunks = [x async for x in stream(body)]
-        assert body["stream"] is True and chunks
+        assert body["stream"] is True
+        assert chunks
     await c.close()
 
 
@@ -408,7 +409,8 @@ async def test_openai_benchmarks() -> None:
     )
     c = OpenAIClient("http://l", transport=rec.transport)
     chat = await c.benchmark_chat("m", "hi")
-    assert chat["tokens_per_second"] > 0 and chat["startup_time_ms"] is None
+    assert chat["tokens_per_second"] > 0
+    assert chat["startup_time_ms"] is None
     emb = await c.benchmark_embed("m", "hi")
     assert emb["tokens_per_second"] > 0
     await c.close()

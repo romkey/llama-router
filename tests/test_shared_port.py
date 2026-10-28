@@ -33,7 +33,7 @@ def _scope(method: str, path: str, kind: str = "http") -> dict:
 
 
 @pytest.mark.parametrize(
-    "method,path",
+    ("method", "path"),
     [
         ("POST", "/api/chat"),
         ("POST", "/api/generate"),
@@ -66,7 +66,7 @@ def test_worker_socket_goes_to_api() -> None:
 
 
 @pytest.mark.parametrize(
-    "method,path",
+    ("method", "path"),
     [
         ("GET", "/"),
         ("GET", "/health"),

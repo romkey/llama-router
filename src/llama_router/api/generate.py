@@ -46,10 +46,9 @@ async def generate(request: Request) -> Response:
     if route_result.resolved_model != model:
         body["model"] = route_result.resolved_model
 
-    assert provider.id is not None
-    provider_id = provider.id
+    provider_id = provider.require_id()
     body["model"] = route_result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     if hasattr(client, "validate"):
         try:
             client.validate("generate", body)

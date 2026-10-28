@@ -9,7 +9,6 @@ from pytest_httpx import HTTPXMock
 from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol
 from llama_router.provider_manager import ProviderManager, worker_protocol
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 
 def test_parse_accepts_old_name_and_rejects_both() -> None:
@@ -17,7 +16,7 @@ def test_parse_accepts_old_name_and_rejects_both() -> None:
     assert ProviderProtocol.parse("llamacpp") is ProviderProtocol.OPENAI
     assert ProviderProtocol.parse(" Ollama ") is ProviderProtocol.OLLAMA
     assert ProviderProtocol.parse(None) is ProviderProtocol.OLLAMA
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a valid ProviderProtocol"):
         ProviderProtocol.parse("both")
 
 

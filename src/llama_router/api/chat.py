@@ -45,10 +45,9 @@ async def chat(request: Request) -> Response:
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
-    provider_id = provider.id
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     stream = body.get("stream", True)
     start = time.monotonic()
 
