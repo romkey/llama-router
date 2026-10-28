@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-10-28
+
 ### Fixed
 
 - Releases no longer fail with "failed to reserve cache" when CI on main
