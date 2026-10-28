@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
+from pytest_httpx import HTTPXMock
 
 from llama_router.registry_cache import app as rc
 from llama_router.registry_cache.cache import BlobCache
@@ -22,7 +25,9 @@ UP = rc.UPSTREAM
 
 
 @pytest.fixture
-async def env(tmp_path, monkeypatch):
+async def env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[BlobCache, httpx.AsyncClient]]:
     cache = BlobCache(str(tmp_path / "cache"))
     upstream = httpx.AsyncClient(follow_redirects=True)
     monkeypatch.setattr(rc, "_cache", cache)
@@ -43,13 +48,13 @@ def _commit(cache: BlobCache, digest: str, data: bytes) -> None:
     cache.commit_blob(digest)
 
 
-def test_human_bytes_units():
+def test_human_bytes_units() -> None:
     assert rc._human_bytes(2048) == "2 KB"
     assert rc._human_bytes(5 << 20) == "5.0 MB"
     assert rc._human_bytes(3 << 30) == "3.0 GB"
 
 
-def test_extract_blob_sizes_ignores_garbage(monkeypatch):
+def test_extract_blob_sizes_ignores_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rc, "_blob_sizes", {})
     rc._extract_blob_sizes(b"not json")
     assert rc._blob_sizes == {}
@@ -57,7 +62,9 @@ def test_extract_blob_sizes_ignores_garbage(monkeypatch):
     assert rc._blob_sizes == {DIGEST: len(BLOB), CFG_DIGEST: 10}
 
 
-def test_init_cache_prewarms_sizes(tmp_path, monkeypatch):
+def test_init_cache_prewarms_sizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(rc, "_blob_sizes", {})
     cache = BlobCache(str(tmp_path / "c"))
     cache.save_manifest("library/m", "latest", MANIFEST)
@@ -65,14 +72,18 @@ def test_init_cache_prewarms_sizes(tmp_path, monkeypatch):
     assert rc._blob_sizes[DIGEST] == len(BLOB)
 
 
-async def test_v2_check_and_invalid_name(env):
+async def test_v2_check_and_invalid_name(
+    env: tuple[BlobCache, httpx.AsyncClient],
+) -> None:
     _, client = env
     assert (await client.get("/v2/")).json() == {}
     resp = await client.get("/v2/bad name/manifests/latest")
     assert resp.status_code == 400
 
 
-async def test_manifest_miss_then_hit(env, httpx_mock):
+async def test_manifest_miss_then_hit(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, client = env
     httpx_mock.add_response(url=f"{UP}/v2/library/m/manifests/latest", content=MANIFEST)
     first = await client.get("/v2/library/m/manifests/latest")
@@ -84,21 +95,30 @@ async def test_manifest_miss_then_hit(env, httpx_mock):
 
 
 @pytest.mark.parametrize(("up", "expected"), [(404, 404), (500, 502)])
-async def test_manifest_upstream_errors(env, httpx_mock, up, expected):
+async def test_manifest_upstream_errors(
+    env: tuple[BlobCache, httpx.AsyncClient],
+    httpx_mock: HTTPXMock,
+    up: int,
+    expected: int,
+) -> None:
     _, client = env
     httpx_mock.add_response(status_code=up)
     resp = await client.get("/v2/library/m/manifests/latest")
     assert resp.status_code == expected
 
 
-async def test_manifest_upstream_unreachable(env, httpx_mock):
+async def test_manifest_upstream_unreachable(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     _, client = env
     httpx_mock.add_exception(httpx.ConnectError("down"))
     resp = await client.get("/v2/library/m/manifests/latest")
     assert resp.status_code == 502
 
 
-async def test_head_blob_local_manifest_size_and_upstream(env, httpx_mock):
+async def test_head_blob_local_manifest_size_and_upstream(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, client = env
     _commit(cache, DIGEST, BLOB)
     resp = await client.head(f"/v2/library/m/blobs/{DIGEST}")
@@ -120,7 +140,9 @@ async def test_head_blob_local_manifest_size_and_upstream(env, httpx_mock):
     assert rc._blob_sizes[third] == 77
 
 
-async def test_head_blob_upstream_failures(env, httpx_mock):
+async def test_head_blob_upstream_failures(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     _, client = env
     d = "sha256:" + "33" * 32
     httpx_mock.add_response(method="HEAD", status_code=404)
@@ -131,7 +153,9 @@ async def test_head_blob_upstream_failures(env, httpx_mock):
     assert (await client.head(f"/v2/library/m/blobs/{d}")).status_code == 502
 
 
-async def test_get_blob_miss_streams_and_caches(env, httpx_mock):
+async def test_get_blob_miss_streams_and_caches(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, client = env
     httpx_mock.add_response(url=f"{UP}/v2/library/m/blobs/{DIGEST}", content=BLOB)
     resp = await client.get(f"/v2/library/m/blobs/{DIGEST}")
@@ -146,7 +170,9 @@ async def test_get_blob_miss_streams_and_caches(env, httpx_mock):
     assert cache.blob_hits == 1
 
 
-async def test_get_blob_upstream_failure_cleans_up(env, httpx_mock):
+async def test_get_blob_upstream_failure_cleans_up(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, client = env
     httpx_mock.add_response(status_code=500)
     with pytest.raises(httpx.HTTPStatusError):
@@ -155,7 +181,9 @@ async def test_get_blob_upstream_failure_cleans_up(env, httpx_mock):
     assert rc._active_downloads == {}
 
 
-async def test_get_blob_waits_for_active_download(env):
+async def test_get_blob_waits_for_active_download(
+    env: tuple[BlobCache, httpx.AsyncClient],
+) -> None:
     cache, client = env
     event = asyncio.Event()
     rc._active_downloads[DIGEST] = event
@@ -169,7 +197,9 @@ async def test_get_blob_waits_for_active_download(env):
     assert "location" in resp.headers
 
 
-async def test_get_blob_wait_finishes_without_blob(env):
+async def test_get_blob_wait_finishes_without_blob(
+    env: tuple[BlobCache, httpx.AsyncClient],
+) -> None:
     _, client = env
     event = asyncio.Event()
     event.set()
@@ -178,7 +208,7 @@ async def test_get_blob_wait_finishes_without_blob(env):
     assert resp.status_code == 502
 
 
-async def test_serve_cached_blob(env):
+async def test_serve_cached_blob(env: tuple[BlobCache, httpx.AsyncClient]) -> None:
     cache, client = env
     assert (await client.get(f"/cache/blobs/{DIGEST}")).status_code == 404
     _commit(cache, DIGEST, BLOB)
@@ -188,7 +218,9 @@ async def test_serve_cached_blob(env):
     assert ranged.status_code == 206 and ranged.content == BLOB[:10]
 
 
-async def test_precache_model_downloads_all_blobs(env, httpx_mock):
+async def test_precache_model_downloads_all_blobs(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, _ = env
     httpx_mock.add_response(
         url=f"{UP}/v2/library/llama3/manifests/latest", content=MANIFEST
@@ -211,14 +243,18 @@ async def test_precache_model_downloads_all_blobs(env, httpx_mock):
     assert any("already cached" in m for m in messages)
 
 
-async def test_precache_manifest_failure(env, httpx_mock):
+async def test_precache_manifest_failure(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, _ = env
     httpx_mock.add_response(status_code=404)
     with pytest.raises(RuntimeError, match="HTTP 404"):
         await rc.precache_model(cache, "org/model:7b")
 
 
-async def test_precache_blob_failure_removes_temp(env, httpx_mock):
+async def test_precache_blob_failure_removes_temp(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
     cache, _ = env
     httpx_mock.add_response(url=f"{UP}/v2/org/model/manifests/7b", content=MANIFEST)
     httpx_mock.add_response(url=f"{UP}/v2/org/model/blobs/{DIGEST}", status_code=500)
@@ -230,7 +266,7 @@ async def test_precache_blob_failure_removes_temp(env, httpx_mock):
     assert not cache.has_blob(DIGEST)
 
 
-async def test_lifespan_sets_and_clears_clients():
+async def test_lifespan_sets_and_clears_clients() -> None:
     async with rc._lifespan(rc.app):
         assert rc._upstream_client is not None
         assert rc._blob_semaphore is not None

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Mapping
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -15,8 +18,8 @@ from llama_router.v1_client import V1Client
 class Recorder:
     """Transport handler: canned responses by path, remembers requests."""
 
-    def __init__(self, routes: dict[str, httpx.Response | Exception]) -> None:
-        self.routes = routes
+    def __init__(self, routes: Mapping[str, httpx.Response | Exception]) -> None:
+        self.routes: dict[str, httpx.Response | Exception] = dict(routes)
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -31,14 +34,14 @@ class Recorder:
         return httpx.MockTransport(self)
 
 
-def _json(data, status=200) -> httpx.Response:
+def _json(data: Any, status: int = 200) -> httpx.Response:
     return httpx.Response(status, json=data)
 
 
 # --- Ollama ---------------------------------------------------------------
 
 
-async def test_ollama_discovery_endpoints():
+async def test_ollama_discovery_endpoints() -> None:
     rec = Recorder(
         {
             "/api/version": _json({"version": "0.5"}),
@@ -60,7 +63,9 @@ async def test_ollama_discovery_endpoints():
     await c.close()
 
 
-async def test_ollama_unreachable_and_http_errors_logged(caplog):
+async def test_ollama_unreachable_and_http_errors_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     rec = Recorder(
         {"/api/version": httpx.ConnectError("no"), "/api/tags": _json({}, 500)}
     )
@@ -76,7 +81,7 @@ async def test_ollama_unreachable_and_http_errors_logged(caplog):
     await c.close()
 
 
-async def test_ollama_non_stream_calls_force_stream_flag():
+async def test_ollama_non_stream_calls_force_stream_flag() -> None:
     ok = _json({"ok": True})
     rec = Recorder(
         dict.fromkeys(
@@ -114,7 +119,7 @@ async def test_ollama_non_stream_calls_force_stream_flag():
     await c.close()
 
 
-async def test_ollama_streams_and_binary_proxies():
+async def test_ollama_streams_and_binary_proxies() -> None:
     rec = Recorder(
         {
             "/api/chat": httpx.Response(200, content=b"a\nb\n"),
@@ -129,7 +134,7 @@ async def test_ollama_streams_and_binary_proxies():
     )
     c = OllamaClient("http://o", transport=rec.transport)
 
-    async def collect(gen):
+    async def collect(gen: AsyncIterator[bytes]) -> bytes:
         return b"".join([x async for x in gen])
 
     assert await collect(c.chat_stream({})) == b"a\nb\n"
@@ -157,7 +162,7 @@ async def test_ollama_streams_and_binary_proxies():
         "v1_audio_speech",
     ],
 )
-async def test_ollama_stream_errors_raise(method):
+async def test_ollama_stream_errors_raise(method: str) -> None:
     rec = Recorder({})  # every path 404s
     c = OllamaClient("http://o", transport=rec.transport)
     with pytest.raises(httpx.HTTPStatusError):
@@ -166,7 +171,7 @@ async def test_ollama_stream_errors_raise(method):
     await c.close()
 
 
-async def test_ollama_pull_rewrites_for_cache_and_reports_progress():
+async def test_ollama_pull_rewrites_for_cache_and_reports_progress() -> None:
     lines = [
         {"status": "pulling manifest"},
         {"status": "downloading", "total": 100, "completed": 50},
@@ -176,7 +181,7 @@ async def test_ollama_pull_rewrites_for_cache_and_reports_progress():
     payload = b"".join(json.dumps(x).encode() + b"\n" for x in lines) + b"junk\n\n"
     rec = Recorder({"/api/pull": httpx.Response(200, content=payload)})
     c = OllamaClient("http://o", transport=rec.transport)
-    seen: list[dict] = []
+    seen: list[dict[str, Any]] = []
     final = await c.pull_model("llama3", "http://cache:9000/", seen.append)
     assert final == {"status": "success"}
     sent = json.loads(rec.requests[0].content)
@@ -198,7 +203,7 @@ async def test_ollama_pull_rewrites_for_cache_and_reports_progress():
     await c.close()
 
 
-async def test_ollama_pull_error_in_stream_and_http_failure():
+async def test_ollama_pull_error_in_stream_and_http_failure() -> None:
     rec = Recorder(
         {"/api/pull": httpx.Response(200, content=b'{"error": "no such model"}\n')}
     )
@@ -211,7 +216,7 @@ async def test_ollama_pull_error_in_stream_and_http_failure():
     await c.close()
 
 
-async def test_ollama_blob_create_delete(tmp_path):
+async def test_ollama_blob_create_delete(tmp_path: Path) -> None:
     f = tmp_path / "w.gguf"
     f.write_bytes(b"z" * 100)
     rec = Recorder(
@@ -237,7 +242,7 @@ async def test_ollama_blob_create_delete(tmp_path):
     await c.close()
 
 
-async def test_ollama_benchmarks():
+async def test_ollama_benchmarks() -> None:
     rec = Recorder(
         {
             "/api/chat": _json(
@@ -270,7 +275,7 @@ async def test_ollama_benchmarks():
     await c.close()
 
 
-def test_human_bytes():
+def test_human_bytes() -> None:
     assert _human_bytes(1 << 10) == "1 KB"
     assert _human_bytes(1 << 20) == "1.0 MB"
     assert _human_bytes(1 << 30) == "1.0 GB"
@@ -279,7 +284,7 @@ def test_human_bytes():
 # --- OpenAI-style ----------------------------------------------------------
 
 
-def test_chat_metrics_prefers_server_timings():
+def test_chat_metrics_prefers_server_timings() -> None:
     timings = {"predicted_per_second": 42, "prompt_ms": 100, "predicted_ms": 900}
     cold = _chat_metrics({"timings": timings}, 5.0)
     assert cold == {"startup_time_ms": 4000.0, "tokens_per_second": 42.0}
@@ -290,7 +295,7 @@ def test_chat_metrics_prefers_server_timings():
     assert _chat_metrics({}, 0)["tokens_per_second"] == 0
 
 
-async def test_openai_reachability_and_models():
+async def test_openai_reachability_and_models() -> None:
     rec = Recorder(
         {
             "/health": httpx.Response(503),
@@ -324,7 +329,7 @@ async def test_openai_reachability_and_models():
     await c.close()
 
 
-async def test_openai_model_list_shapes():
+async def test_openai_model_list_shapes() -> None:
     rec = Recorder({"/v1/models": _json([{"id": "bare"}])})
     c = OpenAIClient("http://l", transport=rec.transport)
     assert [m.name for m in await c.get_models()] == ["bare"]
@@ -333,7 +338,7 @@ async def test_openai_model_list_shapes():
     await c.close()
 
 
-async def test_openai_api_base_prefix_is_mapped():
+async def test_openai_api_base_prefix_is_mapped() -> None:
     rec = Recorder({"/openai/v1/chat/completions": _json({"ok": 1})})
     c = OpenAIClient("http://cloud/openai/v1", transport=rec.transport)
     assert await c.chat_completions({}) == {"ok": 1}
@@ -342,7 +347,7 @@ async def test_openai_api_base_prefix_is_mapped():
     await c.close()
 
 
-async def test_openai_calls_and_streams():
+async def test_openai_calls_and_streams() -> None:
     ok = _json({"ok": True})
     rec = Recorder(
         {
@@ -386,7 +391,7 @@ async def test_openai_calls_and_streams():
         "audio_speech",
     ],
 )
-async def test_openai_stream_errors_raise(method):
+async def test_openai_stream_errors_raise(method: str) -> None:
     c = OpenAIClient("http://l", transport=Recorder({}).transport)
     with pytest.raises(httpx.HTTPStatusError):
         async for _ in getattr(c, method)({}):
@@ -394,7 +399,7 @@ async def test_openai_stream_errors_raise(method):
     await c.close()
 
 
-async def test_openai_benchmarks():
+async def test_openai_benchmarks() -> None:
     rec = Recorder(
         {
             "/v1/chat/completions": _json({"usage": {"completion_tokens": 10}}),
@@ -412,7 +417,7 @@ async def test_openai_benchmarks():
 # --- V1Client dispatch -------------------------------------------------------
 
 
-async def test_v1client_dispatches_to_openai_client_first():
+async def test_v1client_dispatches_to_openai_client_first() -> None:
     rec = Recorder({"/v1/chat/completions": _json({"via": "lcpp"})})
     lc = OpenAIClient("http://l", transport=rec.transport)
     oc = OllamaClient("http://o", transport=Recorder({}).transport)
@@ -423,7 +428,7 @@ async def test_v1client_dispatches_to_openai_client_first():
     await oc.close()
 
 
-async def test_v1client_falls_back_to_ollama():
+async def test_v1client_falls_back_to_ollama() -> None:
     ok = _json({"via": "ollama"})
     rec = Recorder(
         {
@@ -459,7 +464,7 @@ async def test_v1client_falls_back_to_ollama():
     await oc.close()
 
 
-async def test_v1client_llamacpp_paths():
+async def test_v1client_llamacpp_paths() -> None:
     ok = _json({"via": "lcpp"})
     rec = Recorder(
         dict.fromkeys(

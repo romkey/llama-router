@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from typing import Any
+
 import httpx
 import pytest
+from fastapi import FastAPI
+from pytest_httpx import HTTPXMock
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as ollama_app
@@ -11,7 +16,12 @@ from llama_router.background import drain
 from llama_router.database import Database
 from llama_router.llamacpp_api import deps as v1_deps
 from llama_router.llamacpp_api.app import app as v1_app
-from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
+from llama_router.models import (
+    Provider,
+    ProviderModel,
+    ProviderProtocol,
+    ProviderStatus,
+)
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 
@@ -20,27 +30,36 @@ BASE = "http://be.test:11434"
 
 
 @pytest.fixture
-async def pm(db: Database):
+async def pm(db: Database) -> AsyncIterator[ProviderManager]:
     manager = ProviderManager(db)
     yield manager
     await manager.stop()
 
 
 @pytest.fixture
-async def provider(db: Database, pm: ProviderManager):
+async def provider(db: Database, pm: ProviderManager) -> Provider:
     await db.set_allow_unauthenticated(True)
-    p = await db.add_provider("be", ProviderProtocol.OLLAMA)
-    await db.add_address(p.id, BASE, is_preferred=True)
-    await db.update_provider_status(p.id, ProviderStatus.IDLE)
-    await db.set_provider_models(p.id, [ProviderModel(provider_id=p.id, name=MODEL)])
-    await pm._rebuild_clients(await db.get_provider(p.id))
+    added = await db.add_provider("be", ProviderProtocol.OLLAMA)
+    pid = added.id
+    assert pid is not None
+    await db.add_address(pid, BASE, is_preferred=True)
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    await db.set_provider_models(pid, [ProviderModel(provider_id=pid, name=MODEL)])
+    p = await db.get_provider(pid)
+    assert p is not None
+    await pm._rebuild_clients(p)
     rt = Router(db, pm)
     api_deps.init(db, pm, rt)
     v1_deps.init(db, pm, rt)
-    return await db.get_provider(p.id)
+    return p
 
 
-def _client(app) -> httpx.AsyncClient:
+def _pid(p: Provider) -> int:
+    assert p.id is not None
+    return p.id
+
+
+def _client(app: FastAPI) -> httpx.AsyncClient:
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     return httpx.AsyncClient(transport=transport, base_url="http://router")
 
@@ -116,8 +135,15 @@ IDS = [r[1] for r in JSON_ROUTES]
 
 @pytest.mark.parametrize(("app", "path", "up", "body", "answer"), JSON_ROUTES, ids=IDS)
 async def test_json_route_proxies_and_logs(
-    provider, db, httpx_mock, app, path, up, body, answer
-):
+    provider: Provider,
+    db: Database,
+    httpx_mock: HTTPXMock,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+    answer: dict[str, Any],
+) -> None:
     httpx_mock.add_response(url=BASE + up, json=answer)
     async with _client(app) as c:
         resp = await c.post(path, json=body)
@@ -132,8 +158,15 @@ async def test_json_route_proxies_and_logs(
 
 @pytest.mark.parametrize(("app", "path", "up", "body", "answer"), JSON_ROUTES, ids=IDS)
 async def test_json_route_forwards_upstream_error(
-    provider, db, httpx_mock, app, path, up, body, answer
-):
+    provider: Provider,
+    db: Database,
+    httpx_mock: HTTPXMock,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+    answer: dict[str, Any],
+) -> None:
     httpx_mock.add_response(url=BASE + up, status_code=429, json={"error": "slow down"})
     async with _client(app) as c:
         resp = await c.post(path, json=body)
@@ -147,13 +180,21 @@ async def test_json_route_forwards_upstream_error(
 
 @pytest.mark.parametrize(("app", "path", "up", "body", "answer"), JSON_ROUTES, ids=IDS)
 async def test_json_route_connection_failure_is_logged_and_released(
-    provider, pm, db, httpx_mock, app, path, up, body, answer
-):
+    provider: Provider,
+    pm: ProviderManager,
+    db: Database,
+    httpx_mock: HTTPXMock,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+    answer: dict[str, Any],
+) -> None:
     httpx_mock.add_exception(httpx.ConnectError("refused"))
     async with _client(app) as c:
         resp = await c.post(path, json=body)
     assert resp.status_code == 500
-    assert pm.active_requests(provider.id) == 0
+    assert pm.active_requests(_pid(provider)) == 0
     await drain()
     (entry,) = [e for e in await db.get_request_logs(20, 0) if e.endpoint == path]
     assert entry.status == "error"
@@ -161,7 +202,14 @@ async def test_json_route_connection_failure_is_logged_and_released(
 
 
 @pytest.mark.parametrize(("app", "path", "up", "body", "answer"), JSON_ROUTES, ids=IDS)
-async def test_json_route_validates_model(provider, app, path, up, body, answer):
+async def test_json_route_validates_model(
+    provider: Provider,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+    answer: dict[str, Any],
+) -> None:
     async with _client(app) as c:
         missing = await c.post(
             path, json={k: v for k, v in body.items() if k != "model"}
@@ -200,14 +248,21 @@ STREAM_ROUTES = [
     ("app", "path", "up", "body"), STREAM_ROUTES, ids=[r[1] for r in STREAM_ROUTES]
 )
 async def test_stream_route_relays_chunks(
-    provider, pm, db, httpx_mock, app, path, up, body
-):
+    provider: Provider,
+    pm: ProviderManager,
+    db: Database,
+    httpx_mock: HTTPXMock,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+) -> None:
     httpx_mock.add_response(url=BASE + up, content=b"chunk-1\nchunk-2\n")
     async with _client(app) as c:
         resp = await c.post(path, json=body)
     assert resp.status_code == 200
     assert resp.content == b"chunk-1\nchunk-2\n"
-    assert pm.active_requests(provider.id) == 0
+    assert pm.active_requests(_pid(provider)) == 0
     await drain()
     assert any(
         e.endpoint == path and e.status == "ok"
@@ -215,7 +270,9 @@ async def test_stream_route_relays_chunks(
     )
 
 
-async def test_audio_speech_streams_with_format_media_type(provider, httpx_mock):
+async def test_audio_speech_streams_with_format_media_type(
+    provider: Provider, httpx_mock: HTTPXMock
+) -> None:
     httpx_mock.add_response(url=BASE + "/v1/audio/speech", content=b"RIFF")
     async with _client(v1_app) as c:
         resp = await c.post(
@@ -226,7 +283,7 @@ async def test_audio_speech_streams_with_format_media_type(provider, httpx_mock)
     assert resp.content == b"RIFF"
 
 
-async def test_audio_speech_requires_known_model(provider):
+async def test_audio_speech_requires_known_model(provider: Provider) -> None:
     async with _client(v1_app) as c:
         assert (await c.post("/v1/audio/speech", json={})).status_code == 400
         assert (
@@ -234,7 +291,9 @@ async def test_audio_speech_requires_known_model(provider):
         ).status_code == 404
 
 
-async def test_audio_transcriptions_proxy(provider, db, httpx_mock):
+async def test_audio_transcriptions_proxy(
+    provider: Provider, db: Database, httpx_mock: HTTPXMock
+) -> None:
     httpx_mock.add_response(
         url=BASE + "/v1/audio/transcriptions", json={"text": "hello"}
     )
@@ -255,7 +314,9 @@ async def test_audio_transcriptions_proxy(provider, db, httpx_mock):
     )
 
 
-async def test_audio_transcriptions_errors(provider, httpx_mock):
+async def test_audio_transcriptions_errors(
+    provider: Provider, httpx_mock: HTTPXMock
+) -> None:
     async with _client(v1_app) as c:
         no_model = await c.post(
             "/v1/audio/transcriptions", files={"file": ("a.wav", b"x", "audio/wav")}
@@ -271,7 +332,9 @@ async def test_audio_transcriptions_errors(provider, httpx_mock):
     assert down.status_code == 500
 
 
-async def test_audio_voices_aggregates_and_skips_failures(provider, httpx_mock):
+async def test_audio_voices_aggregates_and_skips_failures(
+    provider: Provider, httpx_mock: HTTPXMock
+) -> None:
     httpx_mock.add_response(
         url=BASE + "/v1/audio/voices",
         json={"voices": [{"voice_id": "a"}, {"id": "b"}, {"voice_id": "a"}, {}]},
@@ -284,14 +347,16 @@ async def test_audio_voices_aggregates_and_skips_failures(provider, httpx_mock):
     ]
 
 
-async def test_audio_voices_ignores_failing_provider(provider, httpx_mock):
+async def test_audio_voices_ignores_failing_provider(
+    provider: Provider, httpx_mock: HTTPXMock
+) -> None:
     httpx_mock.add_response(status_code=500)
     async with _client(v1_app) as c:
         resp = await c.get("/v1/audio/voices")
     assert resp.json() == {"voices": []}
 
 
-async def test_images_edits_proxy(provider, httpx_mock):
+async def test_images_edits_proxy(provider: Provider, httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(url=BASE + "/v1/images/edits", json={"data": []})
     async with _client(v1_app) as c:
         resp = await c.post(
@@ -303,7 +368,7 @@ async def test_images_edits_proxy(provider, httpx_mock):
     assert resp.json() == {"data": []}
 
 
-async def test_images_edits_requires_known_model(provider):
+async def test_images_edits_requires_known_model(provider: Provider) -> None:
     async with _client(v1_app) as c:
         assert (
             await c.post(
@@ -315,7 +380,7 @@ async def test_images_edits_requires_known_model(provider):
         ).status_code == 404
 
 
-async def test_ollama_misc_routes(provider, pm):
+async def test_ollama_misc_routes(provider: Provider, pm: ProviderManager) -> None:
     async with _client(ollama_app) as c:
         tags = (await c.get("/api/tags")).json()
         version = (await c.get("/api/version")).json()
@@ -323,16 +388,16 @@ async def test_ollama_misc_routes(provider, pm):
     assert [m["name"] for m in tags["models"]] == [MODEL]
     assert "version" in version
     assert ps == {"models": []}
-    pm.acquire(provider.id)
+    pm.acquire(_pid(provider))
     try:
         async with _client(ollama_app) as c:
             running = (await c.get("/api/ps")).json()
     finally:
-        pm.release(provider.id)
+        pm.release(_pid(provider))
     assert [m["name"] for m in running["models"]] == [MODEL]
 
 
-async def test_v1_models_and_health(provider):
+async def test_v1_models_and_health(provider: Provider) -> None:
     async with _client(v1_app) as c:
         listing = (await c.get("/v1/models")).json()
         one = await c.get(f"/v1/models/{MODEL}")
