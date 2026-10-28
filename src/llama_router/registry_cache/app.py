@@ -37,7 +37,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, MutableMapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -69,7 +69,7 @@ _active_downloads: dict[str, asyncio.Event] = {}
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _upstream_client, _blob_semaphore
     _upstream_client = httpx.AsyncClient(
         follow_redirects=True,
@@ -150,7 +150,7 @@ class _RequestLogMiddleware:
 
         status_code = 0
 
-        async def _send_wrapper(message: dict) -> None:
+        async def _send_wrapper(message: MutableMapping[str, Any]) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message.get("status", 0)
@@ -173,13 +173,13 @@ app.add_middleware(_RequestLogMiddleware)
 
 @app.get("/v2")
 @app.get("/v2/")
-async def v2_check():
+async def v2_check() -> JSONResponse:
     """OCI version check — Ollama calls this to verify the registry is reachable."""
     return JSONResponse({})
 
 
 @app.get("/v2/{name:path}/manifests/{reference}")
-async def get_manifest(name: str, reference: str):
+async def get_manifest(name: str, reference: str) -> Response:
     name = validate_name(name)
     reference = validate_reference(reference)
     cache = _get_cache()
@@ -230,7 +230,7 @@ async def get_manifest(name: str, reference: str):
 
 
 @app.head("/v2/{name:path}/blobs/{digest}")
-async def head_blob(name: str, digest: str):
+async def head_blob(name: str, digest: str) -> Response:
     """Return Content-Length for a blob.  Ollama calls this in Prepare()."""
     name = validate_name(name)
     digest = validate_digest(digest)
@@ -290,7 +290,7 @@ async def head_blob(name: str, digest: str):
 
 
 @app.get("/v2/{name:path}/blobs/{digest}")
-async def get_blob(name: str, digest: str, request: Request):
+async def get_blob(name: str, digest: str, request: Request) -> Response:
     """Serve blob downloads: hit → Location to local file; miss → stream-through."""
     name = validate_name(name)
     digest = validate_digest(digest)
@@ -362,7 +362,7 @@ async def get_blob(name: str, digest: str, request: Request):
 
 
 @app.get("/cache/blobs/{digest}")
-async def serve_cached_blob(digest: str):
+async def serve_cached_blob(digest: str) -> FileResponse:
     """Serve a cached blob.  Supports Range requests via FileResponse."""
     digest = validate_digest(digest)
     cache = _get_cache()
@@ -421,7 +421,7 @@ async def precache_model(
     precache_start = time.monotonic()
     total_downloaded: list[int] = [0]
 
-    async def _fetch_one_blob(i: int, layer: dict) -> None:
+    async def _fetch_one_blob(i: int, layer: dict[str, Any]) -> None:
         digest = layer.get("digest", "")
         size = layer.get("size", 0)
         if not digest:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -18,7 +20,7 @@ router = APIRouter()
 
 
 @router.post("/v1/audio/speech")
-async def audio_speech(request: Request):
+async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
     body = await request.json()
     model = body.get("model")
@@ -42,12 +44,13 @@ async def audio_speech(request: Request):
         body["model"] = result.resolved_model
 
     assert provider.id is not None
+    provider_id = provider.id
     body["model"] = result.backend_model
     client = get_v1_client(pm, provider.id)
     start = time.monotonic()
 
-    async def generate():
-        async with pm.acquire_provider(provider.id):
+    async def generate() -> AsyncIterator[bytes]:
+        async with pm.acquire_provider(provider_id):
             async for chunk in client.audio_speech(body):
                 yield chunk
 
@@ -128,7 +131,7 @@ async def audio_speech(request: Request):
 
 
 @router.post("/v1/audio/transcriptions")
-async def audio_transcriptions(request: Request):
+async def audio_transcriptions(request: Request) -> Response:
     """Speech-to-text: multipart audio file in, JSON transcript out."""
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
@@ -229,12 +232,12 @@ async def audio_transcriptions(request: Request):
 
 
 @router.get("/v1/audio/voices")
-async def audio_voices():
+async def audio_voices() -> JSONResponse:
     """List available voices — aggregated from all online providers."""
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
 
-    all_voices: list[dict] = []
+    all_voices: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     for info in infos:

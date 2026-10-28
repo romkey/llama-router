@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import TypeAdapter, ValidationError
 
 from .. import decision_service as svc
@@ -114,7 +114,7 @@ def calibration_from_body(
 
 
 @router.get("/decisions", response_class=HTMLResponse)
-async def decisions_page(request: Request):
+async def decisions_page(request: Request) -> Response:
     """Calibrate models for decision questions and try questions out."""
     models = [m["name"] for m in await deps.get_db().list_all_models()]
     return templates.TemplateResponse(
@@ -132,13 +132,13 @@ async def decisions_page(request: Request):
 
 
 @router.get("/api/decisions/calibrations")
-async def api_list_calibrations():
+async def api_list_calibrations() -> JSONResponse:
     rows = await deps.get_db().list_decision_calibrations()
     return JSONResponse({"calibrations": rows})
 
 
 @router.post("/api/decisions/calibrations")
-async def api_set_calibration(request: Request):
+async def api_set_calibration(request: Request) -> JSONResponse:
     """Store a calibration for ``model`` and ``question``.
 
     The body carries either ``temperature`` and ``offsets``, or
@@ -258,7 +258,7 @@ def _fit_and_score(
 
 
 @router.post("/api/decisions/calibrations/fit")
-async def api_fit_calibration(request: Request):
+async def api_fit_calibration(request: Request) -> JSONResponse:
     """Fit and store a calibration from labelled states.
 
     The body is ``{model, question, examples: [{state, answer}]}``. Each
@@ -342,7 +342,7 @@ async def api_fit_calibration(request: Request):
 
 
 @router.post("/api/decisions/try")
-async def api_try_decision(request: Request):
+async def api_try_decision(request: Request) -> Response:
     """Answer a decision request as ``/v1/systemone`` would."""
     try:
         body = await request.json()
@@ -352,7 +352,7 @@ async def api_try_decision(request: Request):
 
 
 @router.delete("/api/decisions/calibrations/{calibration_id}")
-async def api_delete_calibration(calibration_id: int):
+async def api_delete_calibration(calibration_id: int) -> JSONResponse:
     if not await deps.get_db().delete_decision_calibration(calibration_id):
         raise HTTPException(status_code=404, detail="calibration not found")
     return JSONResponse({"ok": True})
@@ -367,7 +367,7 @@ async def _require_key(db: Any, key_id: int) -> None:
 
 
 @router.get("/api/keys/{key_id}/decision-policy")
-async def api_get_key_policy(key_id: int):
+async def api_get_key_policy(key_id: int) -> JSONResponse:
     db = deps.get_db()
     await _require_key(db, key_id)
     return JSONResponse(
@@ -376,7 +376,7 @@ async def api_get_key_policy(key_id: int):
 
 
 @router.put("/api/keys/{key_id}/decision-policy")
-async def api_set_key_policy(key_id: int, request: Request):
+async def api_set_key_policy(key_id: int, request: Request) -> JSONResponse:
     """Set the key's policy: ``{"model", "tier"?, "gates"?}``.
 
     ``tier`` is ``{"question": <score question>, "targets": {level: model},
@@ -403,7 +403,7 @@ async def api_set_key_policy(key_id: int, request: Request):
 
 
 @router.delete("/api/keys/{key_id}/decision-policy")
-async def api_delete_key_policy(key_id: int):
+async def api_delete_key_policy(key_id: int) -> JSONResponse:
     db = deps.get_db()
     await _require_key(db, key_id)
     if not await db.delete_api_key_decision_policy(key_id):

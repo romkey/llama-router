@@ -6,6 +6,7 @@ import statistics
 import sys
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 import spike
@@ -36,17 +37,18 @@ QS = {
 }
 
 
-def call(body):
+def call(body: dict[str, Any]) -> dict[str, Any]:
     req = urllib.request.Request(  # noqa: S310  # --base is operator-supplied
         base + "/v1/chat/completions",
         json.dumps(body).encode(),
         {"content-type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310
-        return json.load(r)
+        out: dict[str, Any] = json.load(r)
+        return out
 
 
-hits = {k: [] for k in QS}
+hits: dict[str, list[bool]] = {k: [] for k in QS}
 masses = []
 for ticket, dept, urgent, frust in spike.DATA:
     truth = {

@@ -91,7 +91,7 @@ class _Job:
         self.body: list[bytes] = []
         self.body_size = 0
         self.body_done = asyncio.Event()
-        self.task: asyncio.Task | None = None
+        self.task: asyncio.Task[None] | None = None
 
 
 class _RejectedError(Exception):
@@ -122,7 +122,7 @@ class WorkerClient:
         self._allow_admin = allow_admin
         self._upstream_api_key = upstream_api_key.strip()
         self._http = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._jobs: dict[int, _Job] = {}
         self._slots = asyncio.Semaphore(self._max_concurrency)
         self._send_lock = asyncio.Lock()
@@ -308,9 +308,10 @@ class WorkerClient:
             self.jobs_total += 1
             job.task = asyncio.create_task(self._run_job(job))
         elif kind == "cancel":
-            job = self._jobs.get(msg.get("id"))
-            if job is not None and job.task is not None:
-                job.task.cancel()
+            cancel_id = msg.get("id")
+            target = self._jobs.get(cancel_id) if isinstance(cancel_id, int) else None
+            if target is not None and target.task is not None:
+                target.task.cancel()
         else:
             logger.debug("Worker ignoring hub frame %r", kind)
 
@@ -348,7 +349,7 @@ class WorkerClient:
         async with self._send_lock:
             await ws.send(data)
 
-    async def _reply_json(self, req_id: int, status: int, body: dict) -> None:
+    async def _reply_json(self, req_id: int, status: int, body: dict[str, Any]) -> None:
         data = json.dumps(body).encode()
         await self._send_text(
             {
@@ -418,7 +419,10 @@ class WorkerClient:
             headers.append(["API-KEY", self._upstream_api_key])
 
         request = self._http.build_request(
-            method, base + path, headers=headers, content=b"".join(job.body) or None
+            method,
+            base + path,
+            headers=[(k, v) for k, v in headers],
+            content=b"".join(job.body) or None,
         )
         try:
             response = await self._http.send(request, stream=True)

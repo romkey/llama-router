@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -32,17 +32,22 @@ class V1Client:
 
     # --- any JSON route ---
 
-    async def post_json(self, path: str, body: dict, *, op: str) -> dict:
+    async def post_json(
+        self, path: str, body: dict[str, Any], *, op: str
+    ) -> dict[str, Any]:
         """POST *body* to *path* upstream and return the JSON answer."""
         client = self._llamacpp or self._ollama
         assert client is not None
         resp = await client._post(path, op=op, json=body)
         resp.raise_for_status()
-        return resp.json()
+        out: dict[str, Any] = resp.json()
+        return out
 
     # --- chat/completions ---
 
-    async def chat_completions_stream(self, body: dict) -> AsyncIterator[bytes]:
+    async def chat_completions_stream(
+        self, body: dict[str, Any]
+    ) -> AsyncIterator[bytes]:
         if self._llamacpp:
             async for chunk in self._llamacpp.chat_completions_stream(body):
                 yield chunk
@@ -50,7 +55,7 @@ class V1Client:
             async for chunk in self._ollama.v1_chat_completions_stream(body):
                 yield chunk
 
-    async def chat_completions(self, body: dict) -> dict:
+    async def chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.chat_completions(body)
         assert self._ollama
@@ -58,7 +63,7 @@ class V1Client:
 
     # --- completions ---
 
-    async def completions_stream(self, body: dict) -> AsyncIterator[bytes]:
+    async def completions_stream(self, body: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._llamacpp:
             async for chunk in self._llamacpp.completions_stream(body):
                 yield chunk
@@ -66,7 +71,7 @@ class V1Client:
             async for chunk in self._ollama.v1_completions_stream(body):
                 yield chunk
 
-    async def completions(self, body: dict) -> dict:
+    async def completions(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.completions(body)
         assert self._ollama
@@ -74,7 +79,7 @@ class V1Client:
 
     # --- embeddings ---
 
-    async def embeddings(self, body: dict) -> dict:
+    async def embeddings(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.embeddings(body)
         assert self._ollama
@@ -82,7 +87,7 @@ class V1Client:
 
     # --- responses ---
 
-    async def responses_stream(self, body: dict) -> AsyncIterator[bytes]:
+    async def responses_stream(self, body: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._llamacpp:
             async for chunk in self._llamacpp.responses_stream(body):
                 yield chunk
@@ -90,7 +95,7 @@ class V1Client:
             async for chunk in self._ollama.v1_responses_stream(body):
                 yield chunk
 
-    async def responses(self, body: dict) -> dict:
+    async def responses(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.responses(body)
         assert self._ollama
@@ -98,7 +103,7 @@ class V1Client:
 
     # --- images ---
 
-    async def images_generations(self, body: dict) -> dict:
+    async def images_generations(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.images_generations(body)
         assert self._ollama
@@ -112,7 +117,7 @@ class V1Client:
 
     # --- audio ---
 
-    async def audio_speech(self, body: dict) -> AsyncIterator[bytes]:
+    async def audio_speech(self, body: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._llamacpp:
             async for chunk in self._llamacpp.audio_speech(body):
                 yield chunk
@@ -128,7 +133,7 @@ class V1Client:
         assert self._ollama
         return await self._ollama.v1_audio_transcriptions(data, content_type)
 
-    async def audio_voices(self) -> dict:
+    async def audio_voices(self) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.audio_voices()
         assert self._ollama

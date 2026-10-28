@@ -55,10 +55,9 @@ def upgrade() -> None:
                 batch.drop_column("wireguard_peer_id")
         else:
             for fk in insp.get_foreign_keys("providers"):
-                if fk.get("constrained_columns") == ["wireguard_peer_id"] and fk.get(
-                    "name"
-                ):
-                    op.drop_constraint(fk["name"], "providers", type_="foreignkey")
+                fk_name = fk.get("name")
+                if fk.get("constrained_columns") == ["wireguard_peer_id"] and fk_name:
+                    op.drop_constraint(fk_name, "providers", type_="foreignkey")
             op.drop_column("providers", "wireguard_peer_id")
 
     if "wireguard_peers" in tables:

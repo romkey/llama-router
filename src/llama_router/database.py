@@ -5,10 +5,10 @@ import contextlib
 import functools
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Concatenate
 
 from sqlalchemy import text
 from sqlalchemy.engine.url import URL
@@ -69,16 +69,23 @@ def _tristate(value) -> bool | None:
     return None if value is None else bool(value)
 
 
-def _notifies(reason: str):
+def _notifies[**P, R](
+    reason: str,
+) -> Callable[
+    [Callable[Concatenate[Database, P], Awaitable[R]]],
+    Callable[Concatenate[Database, P], Awaitable[R]],
+]:
     """Tell change listeners about *reason* after the wrapped write succeeds."""
 
-    def wrap(fn):
-        @functools.wraps(fn)
-        async def inner(self: Database, *args: Any, **kwargs: Any):
+    def wrap(
+        fn: Callable[Concatenate[Database, P], Awaitable[R]],
+    ) -> Callable[Concatenate[Database, P], Awaitable[R]]:
+        async def inner(self: Database, *args: P.args, **kwargs: P.kwargs) -> R:
             result = await fn(self, *args, **kwargs)
             self._changed(reason)
             return result
 
+        functools.update_wrapper(inner, fn)
         return inner
 
     return wrap

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from llama_router.migrate_sqlite_to_postgres import (
@@ -10,7 +12,7 @@ from llama_router.migrate_sqlite_to_postgres import (
 )
 
 
-def test_sqlite_url_is_absolute_file_path(tmp_path) -> None:
+def test_sqlite_url_is_absolute_file_path(tmp_path: Path) -> None:
     p = tmp_path / "a.db"
     p.write_bytes(b"")
     u = _sqlite_url(p)

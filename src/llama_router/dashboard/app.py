@@ -19,7 +19,9 @@ app.add_middleware(DashboardAuthMiddleware)
 
 
 @app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
     if exc.status_code in (400, 401, 403, 404):
         with contextlib.suppress(Exception):
             db = deps.get_db()

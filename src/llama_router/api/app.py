@@ -32,12 +32,12 @@ app.add_middleware(RequestTimingMiddleware)
 
 
 @app.get("/health")
-async def health():
+async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "version": __version__})
 
 
 @app.websocket(WS_PATH)
-async def worker_socket(websocket: WebSocket):
+async def worker_socket(websocket: WebSocket) -> None:
     """Hub endpoint: member routers dial in here with their worker token."""
     if not settings.worker_hub_enabled:
         await websocket.close(code=1008)
@@ -47,7 +47,9 @@ async def worker_socket(websocket: WebSocket):
 
 
 @app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
     if exc.status_code in (400, 401, 403, 404):
         with contextlib.suppress(Exception):
             db = deps.get_db()

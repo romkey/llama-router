@@ -138,6 +138,7 @@ def session_key(
     if not isinstance(model, str) or not model:
         return None
     explicit = _explicit_id(headers, body)
+    digest: str | None
     if explicit is not None:
         digest = hashlib.blake2b(
             b"id\x00" + explicit.encode("utf-8", "surrogatepass"), digest_size=16
