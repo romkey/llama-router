@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-10-28
+
 ### Added
 
 - `GET /metrics` on the dashboard port: Prometheus metrics for providers,
