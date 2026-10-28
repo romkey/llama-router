@@ -125,6 +125,29 @@ async def test_hub_lists_a_group_only_through_shared_providers(
     assert tags == []
 
 
+async def test_a_group_hides_a_model_of_its_name_even_when_unusable(
+    setup: tuple[Router, Provider, Provider], db: Database
+) -> None:
+    rt, fast, _ = setup
+    # A provider starts serving a model named like the empty group: routing
+    # sends that name to the group, so listings must not offer the model.
+    fid = fast.require_id()
+    await db.set_provider_models(
+        fid,
+        [
+            ProviderModel(provider_id=fid, name="small-coder"),
+            ProviderModel(provider_id=fid, name="nothing"),
+        ],
+    )
+    await rt.rebuild()
+    assert await rt.route("nothing", "/v1/chat/completions") is None
+    async with _client(v1_app) as c:
+        listing = (await c.get("/v1/models")).json()["data"]
+        one = await c.get("/v1/models/nothing")
+    assert "nothing" not in [m["id"] for m in listing]
+    assert one.status_code == 404
+
+
 async def test_group_request_runs_the_member_and_logs_both_names(
     setup: tuple[Router, Provider, Provider], db: Database, httpx_mock: HTTPXMock
 ) -> None:
