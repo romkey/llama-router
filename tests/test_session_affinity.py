@@ -271,7 +271,7 @@ async def test_explain_reports_binding_without_creating_one(db, pm, clock):
 
 
 async def test_removed_provider_bindings_are_dropped(db, pm, clock):
-    a, b, rt = await _two_equal(db, pm, clock)
+    _a, _b, rt = await _two_equal(db, pm, clock)
     session = rt.session_for({}, _chat(), None)
     bound = (await rt.route(MODEL, CHAT, session=session)).provider.id
     await db.remove_provider(bound)

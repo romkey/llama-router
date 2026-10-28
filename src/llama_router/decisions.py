@@ -36,7 +36,7 @@ import math
 import string
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -62,7 +62,7 @@ class DecisionError(ValueError):
     """A question could not be answered from the backend's response."""
 
 
-class NoLogprobs(DecisionError):
+class NoLogprobsError(DecisionError):
     """The backend answered without logprobs, so it cannot serve decisions."""
 
 
@@ -123,7 +123,7 @@ class ScoreQuestion(BaseModel):
 Question = Annotated[
     NoulQuestion | ChoiceQuestion | ScoreQuestion, Field(discriminator="type")
 ]
-State = Union[str, dict[str, Any], list[str]]
+State = str | dict[str, Any] | list[str]
 
 
 class DecisionRequest(BaseModel):
@@ -218,9 +218,11 @@ def build_prompt(
             letters = string.ascii_uppercase[: len(keys)]
             opts = "\n".join(
                 f"{letter}) {k}: {question.criteria[k]}"
-                for letter, k in zip(letters, keys)
+                for letter, k in zip(letters, keys, strict=False)
             )
-            labels = {letter.lower(): k for letter, k in zip(letters, keys)}
+            labels = {
+                letter.lower(): k for letter, k in zip(letters, keys, strict=False)
+            }
             tail = "Answer with the option letter only."
         body = f"Question: {question.instructions}\nOptions:\n{opts}\n{tail}"
     elif isinstance(question, ScoreQuestion):
@@ -270,7 +272,7 @@ def top_logprobs_from_response(resp: Mapping[str, Any]) -> list[dict[str, Any]]:
         content = resp["choices"][0]["logprobs"]["content"]
         return list(content[0]["top_logprobs"])
     except KeyError, IndexError, TypeError:
-        raise NoLogprobs("backend response has no first-token logprobs") from None
+        raise NoLogprobsError("backend response has no first-token logprobs") from None
 
 
 def distribution(
@@ -366,8 +368,8 @@ def fit_calibration(
     n, scale, w = len(examples), 1.0, [0.0] * len(keys)
     for _ in range(iterations):
         g_scale, g_w = 0.0, [0.0] * len(keys)
-        for row, y in zip(logs, truth):
-            z = [scale * x + wk for x, wk in zip(row, w)]
+        for row, y in zip(logs, truth, strict=False):
+            z = [scale * x + wk for x, wk in zip(row, w, strict=False)]
             m = max(z)
             e = [math.exp(v - m) for v in z]
             s = sum(e)
@@ -375,11 +377,13 @@ def fit_calibration(
                 err = ek / s - (1.0 if k == y else 0.0)
                 g_w[k] += err
                 g_scale += err * row[k]
-        w = [wk - learning_rate * gk / n for wk, gk in zip(w, g_w)]
+        w = [wk - learning_rate * gk / n for wk, gk in zip(w, g_w, strict=False)]
         if fit_temperature:
             scale = max(0.01, scale - learning_rate * g_scale / n)
     mean = sum(w) / len(w)  # offsets are only defined up to a constant
-    return Calibration(1.0 / scale, {k: wk - mean for k, wk in zip(keys, w)})
+    return Calibration(
+        1.0 / scale, {k: wk - mean for k, wk in zip(keys, w, strict=False)}
+    )
 
 
 def held_out(
@@ -410,13 +414,17 @@ def scores(
     *ordinal* (score questions, keys ``"0"``, ``"1"``...) also the mean
     absolute error of the expected level."""
     n = len(truth)
-    acc = sum(max(p, key=p.__getitem__) == y for p, y in zip(predictions, truth))
-    loss = -sum(math.log(max(p[y], 1e-6)) for p, y in zip(predictions, truth))
+    acc = sum(
+        max(p, key=p.__getitem__) == y for p, y in zip(predictions, truth, strict=False)
+    )
+    loss = -sum(
+        math.log(max(p[y], 1e-6)) for p, y in zip(predictions, truth, strict=False)
+    )
     out = {"accuracy": _r(acc / n), "log_loss": _r(loss / n)}
     if ordinal:
         err = sum(
             abs(sum(int(k) * pk for k, pk in p.items()) - int(y))
-            for p, y in zip(predictions, truth)
+            for p, y in zip(predictions, truth, strict=False)
         )
         out["mae"] = _r(err / n)
     return out
@@ -465,7 +473,7 @@ def answer(
             "type": "score",
             "score": _r(sum(i * probs[k] for i, k in enumerate(levels))),
             "confidence": _r(confidence(probs)),
-            "legend": dict(zip(levels, question.criteria)),
+            "legend": dict(zip(levels, question.criteria, strict=False)),
             "probabilities": {k: _r(probs[k]) for k in levels},
         }
     raise TypeError(f"not a decision question: {question!r}")

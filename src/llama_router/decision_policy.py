@@ -199,7 +199,7 @@ def request_text(body: Any) -> str | list[str] | None:
 # --- The request path ---
 
 
-class _Failed(Exception):
+class _FailedError(Exception):
     """The decision could not be made; the request goes on without it."""
 
 
@@ -217,24 +217,26 @@ async def _decide(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Answer *req* on a routed provider: the answers and the log fields.
 
-    Failures are logged here and raised as :class:`_Failed`.
+    Failures are logged here and raised as :class:`_FailedError`.
     """
     for attempt in range(2):
         result = await rt.route(req.model, DECISION_PATH, prefs)
         if not result:
-            raise _Failed(f"no available provider for decision model {req.model!r}")
+            raise _FailedError(
+                f"no available provider for decision model {req.model!r}"
+            )
         provider = result.provider
         provider_id = provider.require_id()
         start = time.monotonic()
-        log: dict[str, Any] = dict(
-            provider=provider,
-            protocol="v1",
-            endpoint=DECISION_PATH,
-            request=request,
-            model=req.model,
-            routed_model=result.model_key,
-            request_body=req.model_dump(exclude_none=True),
-        )
+        log: dict[str, Any] = {
+            "provider": provider,
+            "protocol": "v1",
+            "endpoint": DECISION_PATH,
+            "request": request,
+            "model": req.model,
+            "routed_model": result.model_key,
+            "request_body": req.model_dump(exclude_none=True),
+        }
 
         def failed(
             detail: str,
@@ -243,7 +245,7 @@ async def _decide(
             start: float = start,
             provider_name: str = provider.name,
             **extra: Any,
-        ) -> _Failed:
+        ) -> _FailedError:
             log_request_background(
                 db,
                 **log,
@@ -252,7 +254,7 @@ async def _decide(
                 error_detail=f"decision policy: {detail}"[:500],
                 **extra,
             )
-            return _Failed(f"{detail} (provider {provider_name})")
+            return _FailedError(f"{detail} (provider {provider_name})")
 
         try:
             inputs = rt.inputs
@@ -265,7 +267,7 @@ async def _decide(
                 req.model_dump(exclude_none=True),
                 inputs.aliases if inputs else None,
             )
-        except d.NoLogprobs as e:
+        except d.NoLogprobsError as e:
             pm.stats.record_logprobs(provider_id, ok=False)
             failure = failed("backend returned no logprobs", sample=False)
             if attempt == 0:
@@ -293,7 +295,7 @@ def _noul(answers: dict[str, Any], qid: str) -> float:
     a = answers.get(qid)
     p = a.get("noul") if isinstance(a, dict) else None
     if not isinstance(p, (int, float)):
-        raise _Failed(f"no probability for {qid!r}")
+        raise _FailedError(f"no probability for {qid!r}")
     return float(p)
 
 
@@ -301,14 +303,14 @@ def _level(answers: dict[str, Any]) -> str:
     """The most probable level of the tier question."""
     a = answers.get(TIER_ID)
     if not isinstance(a, dict):
-        raise _Failed("no answer for the tier question")
+        raise _FailedError("no answer for the tier question")
     probs = a.get("probabilities")
     if isinstance(probs, dict) and probs:
         return str(max(probs, key=lambda k: float(probs[k])))
     score = a.get("score")
     if isinstance(score, (int, float)):
         return str(round(score))
-    raise _Failed("no level for the tier question")
+    raise _FailedError("no level for the tier question")
 
 
 async def apply_decision_policy(
@@ -364,7 +366,7 @@ async def apply_decision_policy(
                 error_detail=f"decision policy: {reason}",
                 sample=False,
             )
-        elif isinstance(exc, _Failed):
+        elif isinstance(exc, _FailedError):
             reason = str(exc)
         else:
             logger.exception("Decision policy failed")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -18,12 +19,10 @@ def describe_httpx_error(exc: BaseException) -> str:
         url = str(req.url) if req is not None else "?"
         method = req.method if req is not None else "?"
         snippet = ""
-        try:
+        with contextlib.suppress(Exception):
             text = exc.response.text
             if text:
                 snippet = f"; response_body={text[:200]!r}"
-        except Exception:
-            pass
         return (
             f"{type(exc).__name__} {exc.response.status_code} "
             f"{exc.response.reason_phrase} for {method} {url}{snippet}"

@@ -7,7 +7,7 @@ import logging
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,7 +35,7 @@ from .ollama_client import OllamaClient
 from .probe import merge_results, probe_url
 from .provider_secrets import (
     DEFAULT_HEADER,
-    ApiKeyUnavailable,
+    ApiKeyUnavailableError,
     auth_headers,
     decrypt_api_key,
     encrypt_api_key,
@@ -279,7 +279,7 @@ class ProviderManager:
                         if provider.api_key_enc
                         else None
                     )
-                except ApiKeyUnavailable:
+                except ApiKeyUnavailableError:
                     current = None
                 if current != key:
                     await self._store_api_key(
@@ -318,17 +318,13 @@ class ProviderManager:
     async def stop(self) -> None:
         if self._health_task:
             self._health_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._health_task
-            except asyncio.CancelledError:
-                pass
         for task in list(self._probing.values()):
             task.cancel()
         for task in list(self._probing.values()):
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await task
-            except asyncio.CancelledError, Exception:
-                pass
         self._probing.clear()
         for client in self._ollama_clients.values():
             await client.close()
@@ -365,7 +361,7 @@ class ProviderManager:
         if provider.api_key_enc:
             try:
                 key = decrypt_api_key(provider.api_key_enc)
-            except ApiKeyUnavailable as exc:
+            except ApiKeyUnavailableError as exc:
                 logger.warning("Provider %s: %s", provider.name, exc)
             else:
                 headers.update(auth_headers(key, provider.api_key_header))
@@ -729,7 +725,8 @@ class ProviderManager:
         current = self._active_requests[provider_id]
         if current <= 0:
             logger.warning(
-                "release() called on provider %d but active_requests=%d — possible double-release",
+                "release() called on provider %d but active_requests=%d "
+                "— possible double-release",
                 provider_id,
                 current,
             )
@@ -999,7 +996,7 @@ class ProviderManager:
         )
         # Write liveness before rebuilding clients: the rebuild re-reads
         # addresses and ranks them by is_live.
-        for addr, reachable in zip(addresses, results):
+        for addr, reachable in zip(addresses, results, strict=False):
             addr_id = addr.require_id()
             if addr.is_live != reachable:
                 await self._db.set_address_live(addr_id, reachable)
@@ -1267,7 +1264,7 @@ class ProviderManager:
         display_name: str,
         provider_id: int,
     ) -> dict[str, float]:
-        """Try chat benchmark first, fall back to embed only for non-transient chat errors.
+        """Try chat benchmark first; fall back to embed only for non-transient errors.
 
         LLMs that do not implement embeddings often return HTTP 501 on embed. If chat
         failed for a timeout or 5xx while the model was loading, falling back to embed
@@ -1296,18 +1293,21 @@ class ProviderManager:
         try:
             return await client.benchmark_embed(backend_name, settings.benchmark_prompt)
         except Exception as embed_err:
-            if chat_err is not None and isinstance(embed_err, httpx.HTTPStatusError):
-                if embed_err.response.status_code == 501:
-                    ce = (
-                        describe_httpx_error(chat_err)
-                        if isinstance(chat_err, httpx.HTTPError)
-                        else str(chat_err)
-                    )
-                    raise RuntimeError(
-                        f"Chat benchmark failed ({ce}); this model does not support "
-                        f"embeddings, so there is no fallback. If chat failed while the "
-                        f"model was loading or the GPU was busy, retry the benchmark."
-                    ) from embed_err
+            if (
+                chat_err is not None
+                and isinstance(embed_err, httpx.HTTPStatusError)
+                and embed_err.response.status_code == 501
+            ):
+                ce = (
+                    describe_httpx_error(chat_err)
+                    if isinstance(chat_err, httpx.HTTPError)
+                    else str(chat_err)
+                )
+                raise RuntimeError(
+                    f"Chat benchmark failed ({ce}); this model does not support "
+                    f"embeddings, so there is no fallback. If chat failed while the "
+                    f"model was loading or the GPU was busy, retry the benchmark."
+                ) from embed_err
             raise embed_err from chat_err
 
     async def _format_provider_urls(self, provider_id: int) -> str:
@@ -1676,9 +1676,7 @@ class ProviderManager:
         if ollama is not None and await ollama.is_reachable(timeout=_PROBE_TIMEOUT):
             return True
         lcpp = self._llamacpp_clients.get(provider_id)
-        if lcpp is not None and await lcpp.is_reachable(timeout=_PROBE_TIMEOUT):
-            return True
-        return False
+        return lcpp is not None and await lcpp.is_reachable(timeout=_PROBE_TIMEOUT)
 
     async def add_worker_provider(self, name: str) -> Provider:
         """Create the provider record a worker attaches to when it dials in."""

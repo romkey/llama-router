@@ -7,6 +7,7 @@ backend type.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
@@ -149,12 +150,8 @@ def get_v1_client(pm: ProviderManager, provider_id: int) -> V1Client:
     """Build a V1Client for the given provider, preferring llama.cpp if available."""
     ollama = None
     llamacpp = None
-    try:
+    with contextlib.suppress(KeyError, Exception):
         llamacpp = pm.get_llamacpp_client(provider_id)
-    except KeyError, Exception:
-        pass
-    try:
+    with contextlib.suppress(KeyError, Exception):
         ollama = pm.get_ollama_client(provider_id)
-    except KeyError, Exception:
-        pass
     return V1Client(ollama=ollama, llamacpp=llamacpp)

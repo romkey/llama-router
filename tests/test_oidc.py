@@ -20,7 +20,7 @@ from llama_router.dashboard.middleware import invalidate_dashboard_user_count_ca
 
 ISSUER = "https://idp.example"
 CLIENT_ID = "llama-router"
-CLIENT_SECRET = "s3cret"
+CLIENT_SECRET = "s3cret"  # noqa: S105  # test fixture value
 
 
 class FakeIdP:
@@ -156,20 +156,20 @@ async def _seed_local_admin(db) -> int:
 
 
 def _cfg(**kw) -> oidc.OIDCConfig:
-    base = dict(
-        issuer=ISSUER,
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        scopes="openid profile email groups",
-        groups_claim="groups",
-        admin_group="admins",
-        allowed_group="",
-        redirect_base_url="",
-        display_name="SSO",
-        only=False,
-        logout_at_idp=False,
-        allow_insecure=False,
-    )
+    base = {
+        "issuer": ISSUER,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "scopes": "openid profile email groups",
+        "groups_claim": "groups",
+        "admin_group": "admins",
+        "allowed_group": "",
+        "redirect_base_url": "",
+        "display_name": "SSO",
+        "only": False,
+        "logout_at_idp": False,
+        "allow_insecure": False,
+    }
     base.update(kw)
     return oidc.OIDCConfig(**base)
 
@@ -486,7 +486,7 @@ async def test_first_login_must_be_admin_when_group_configured(
 async def test_wrong_state_is_rejected(dash_client, idp) -> None:
     client, db = dash_client
     await _seed_local_admin(db)
-    _, q = await _start(client)
+    _, _q = await _start(client)
     r = await client.get(oidc.CALLBACK_PATH, params={"code": "code-1", "state": "x"})
     assert r.headers["location"] == "/login?error=oidc_state"
     assert not [req for req in idp.requests if req.url.path == "/token"]
@@ -697,7 +697,7 @@ async def test_users_page_marks_sso_accounts(dash_client, idp) -> None:
 
 
 async def test_users_page_reports_broken_config(dash_client, idp, monkeypatch) -> None:
-    client, db = dash_client
+    client, _db = dash_client
     monkeypatch.setattr(settings, "oidc_client_secret", "")
     monkeypatch.setattr(settings, "oidc_only", True)
     r = await client.get("/users")

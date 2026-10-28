@@ -173,7 +173,7 @@ class Asker:
     ) -> tuple[d.Distribution, dict[str, Any]]:
         """The question's uncalibrated distribution and the raw response.
 
-        Raises :class:`decisions.NoLogprobs` when the backend refuses or
+        Raises :class:`decisions.NoLogprobsError` when the backend refuses or
         omits logprobs, and :class:`decisions.DecisionError` for an answer
         that names no label.
         """
@@ -189,7 +189,7 @@ class Asker:
                     self._accepts_without_logprobs(body)
                 )
             if await self._probe:
-                raise d.NoLogprobs(
+                raise d.NoLogprobsError(
                     f"backend rejected logprobs (HTTP {exc.response.status_code})"
                 ) from exc
             raise
@@ -209,7 +209,7 @@ async def emulate(
     """Answer every question of *request* on one provider.
 
     Returns Jev's response shape without ``model``. Raises
-    :class:`decisions.NoLogprobs` when the backend returns no logprobs, and
+    :class:`decisions.NoLogprobsError` when the backend returns no logprobs, and
     :class:`decisions.DecisionError` for an answer that names no label.
     *acquire* false skips the provider's request accounting, for checks
     that must not count as traffic (the auto-benchmarker).
@@ -220,7 +220,7 @@ async def emulate(
     async def one(qid: str, q: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
             dist, resp = await asker.ask(request.state, q)
-        except d.NoLogprobs:
+        except d.NoLogprobsError:
             raise
         except d.DecisionError as exc:
             raise d.DecisionError(f"question {qid!r}: {exc}") from None
@@ -233,10 +233,10 @@ async def emulate(
     errors = [r for r in results if isinstance(r, BaseException)]
     if errors:
         # A missing-logprobs answer is about the provider, not one question.
-        raise next((e for e in errors if isinstance(e, d.NoLogprobs)), errors[0])
+        raise next((e for e in errors if isinstance(e, d.NoLogprobsError)), errors[0])
     done: list[tuple[dict[str, Any], dict[str, Any]]] = results  # type: ignore[assignment]
     return {
-        "answers": {qid: a for (qid, _q), (a, _r) in zip(items, done)},
+        "answers": {qid: a for (qid, _q), (a, _r) in zip(items, done, strict=False)},
         "usage": d.usage_from_responses([r for _a, r in done]),
     }
 

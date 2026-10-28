@@ -198,17 +198,17 @@ async def test_fit_unknown_model_is_404(dash, router: Router):
         {
             "model": MODEL,
             "question": FRUSTRATION,
-            "examples": _labelled() + [{"state": "x", "answer": "3"}],
+            "examples": [*_labelled(), {"state": "x", "answer": "3"}],
         },
         {
             "model": MODEL,
             "question": FRUSTRATION,
-            "examples": _labelled() + [{"answer": "1"}],
+            "examples": [*_labelled(), {"answer": "1"}],
         },
         {
             "model": MODEL,
             "question": FRUSTRATION,
-            "examples": _labelled() + [{"state": 42, "answer": "1"}],
+            "examples": [*_labelled(), {"state": 42, "answer": "1"}],
         },
         {
             "model": MODEL,

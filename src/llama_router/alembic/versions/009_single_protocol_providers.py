@@ -103,7 +103,8 @@ def _split(bind: sa.Connection, row: sa.RowMapping) -> None:
         url = (a["llamacpp_url"] or "").strip() or a["url"]
         bind.execute(
             sa.text(
-                "INSERT INTO provider_addresses (provider_id, url, is_preferred, is_live) "
+                "INSERT INTO provider_addresses "
+                "(provider_id, url, is_preferred, is_live) "
                 "VALUES (:pid, :url, :pref, 0)"
             ),
             {"pid": new_id, "url": url.rstrip("/"), "pref": a["is_preferred"]},

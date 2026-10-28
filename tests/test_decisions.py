@@ -416,6 +416,6 @@ def test_answer_keys_per_type():
 
 
 def test_missing_logprobs_is_its_own_error():
-    with pytest.raises(d.NoLogprobs):
+    with pytest.raises(d.NoLogprobsError):
         d.top_logprobs_from_response({"choices": [{"message": {}}]})
-    assert issubclass(d.NoLogprobs, d.DecisionError)
+    assert issubclass(d.NoLogprobsError, d.DecisionError)

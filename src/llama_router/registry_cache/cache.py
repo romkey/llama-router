@@ -24,13 +24,13 @@ _TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
-class InvalidCacheKey(ValueError):
+class InvalidCacheKeyError(ValueError):
     """A repository name, tag or digest that is not a valid OCI identifier."""
 
 
 def validate_name(name: str) -> str:
     if not name or len(name) > 255 or not _NAME_RE.fullmatch(name):
-        raise InvalidCacheKey(f"invalid repository name: {name!r}")
+        raise InvalidCacheKeyError(f"invalid repository name: {name!r}")
     return name
 
 
@@ -38,19 +38,19 @@ def validate_reference(reference: str) -> str:
     if not reference or not (
         _TAG_RE.fullmatch(reference) or _DIGEST_RE.fullmatch(reference)
     ):
-        raise InvalidCacheKey(f"invalid reference: {reference!r}")
+        raise InvalidCacheKeyError(f"invalid reference: {reference!r}")
     return reference
 
 
 def validate_digest(digest: str) -> str:
     if not digest or not _DIGEST_RE.fullmatch(digest):
-        raise InvalidCacheKey(f"invalid digest: {digest!r}")
+        raise InvalidCacheKeyError(f"invalid digest: {digest!r}")
     return digest
 
 
 class BlobCache:
     def __init__(self, cache_dir: str, manifest_ttl_hours: int = 240):
-        self._root = Path(os.path.abspath(cache_dir))
+        self._root = Path(os.path.normpath(Path(cache_dir).absolute()))
         self._blobs_dir = self._root / "blobs" / "sha256"
         self._manifests_dir = self._root / "manifests"
         self._manifest_ttl_seconds = manifest_ttl_hours * 3600
@@ -68,10 +68,10 @@ class BlobCache:
         Callers validate their inputs first; this is the last line of defence
         against path traversal and the check CodeQL recognises as a barrier.
         """
-        root = os.path.abspath(str(base))
-        candidate = os.path.normpath(os.path.join(root, *parts))
+        root = os.path.normpath(base.absolute())
+        candidate = os.path.normpath(Path(root).joinpath(*parts))
         if candidate != root and not candidate.startswith(root + os.sep):
-            raise InvalidCacheKey("path escapes cache directory")
+            raise InvalidCacheKeyError("path escapes cache directory")
         return Path(candidate)
 
     def _blob_path(self, digest: str) -> Path:
@@ -95,13 +95,13 @@ class BlobCache:
         """
         try:
             return self._blob_path(digest).is_file()
-        except InvalidCacheKey:
+        except InvalidCacheKeyError:
             return False
 
     def blob_size(self, digest: str) -> int:
         try:
             p = self._blob_path(digest)
-        except InvalidCacheKey:
+        except InvalidCacheKeyError:
             return 0
         return p.stat().st_size if p.is_file() else 0
 
@@ -130,7 +130,7 @@ class BlobCache:
         """True if a non-expired manifest is cached under a valid name and tag."""
         try:
             p = self._manifest_path(name, reference)
-        except InvalidCacheKey:
+        except InvalidCacheKeyError:
             return False
         if not p.is_file():
             return False
@@ -242,6 +242,7 @@ class BlobCache:
                 try:
                     manifest = json.loads(manifest_data)
                 except Exception:
+                    logger.debug("skipping unparseable manifest %s", f, exc_info=True)
                     continue
                 blobs: list[dict[str, Any]] = []
                 all_cached = True

@@ -322,7 +322,7 @@ class OpenAIClient:
     async def audio_transcriptions(
         self, data: bytes, content_type: str
     ) -> httpx.Response:
-        """Proxy a multipart audio/transcriptions request, returning the raw response."""
+        """Proxy a multipart audio/transcriptions request; return the raw response."""
         resp = await self._post(
             "/v1/audio/transcriptions",
             op="llama.cpp audio transcription (/v1/audio/transcriptions)",
@@ -361,7 +361,7 @@ class OpenAIClient:
         return _chat_metrics(data, elapsed_s)
 
     async def benchmark_embed(self, model: str, prompt: str) -> dict[str, float]:
-        """Run an embedding benchmark returning startup_time_ms and tokens_per_second."""
+        """Run an embedding benchmark; return startup_time_ms and tokens_per_second."""
         body = {"model": model, "input": prompt}
         start = time.monotonic()
         resp = await self._post(

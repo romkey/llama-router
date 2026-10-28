@@ -100,7 +100,7 @@ def test_sync_url_keeps_the_password(
     monkeypatch.setattr(config.settings, "database_url", async_url)
     sync_url = config.settings.sync_database_url_for_alembic()
     assert "***" not in sync_url
-    assert make_url(sync_url).password == "s3cr@t"
+    assert make_url(sync_url).password == "s3cr@t"  # noqa: S105  # test fixture value
 
 
 def test_upgrade_handles_percent_in_url(

@@ -21,6 +21,7 @@ the routing table picks them up through the database change notification.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import deque
@@ -197,10 +198,8 @@ class AutoBenchmarker:
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         self._cancel_all()
         runs = list(self._runs.values())
         for t in runs:
@@ -217,10 +216,8 @@ class AutoBenchmarker:
                 await self.run_once()
             except Exception:
                 logger.exception("Auto-benchmark check failed")
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=self._check_seconds)
-            except TimeoutError:
-                pass
             self._wake.clear()
 
     # --- Planning ---
@@ -376,7 +373,7 @@ class AutoBenchmarker:
             await decision_service.emulate(
                 self._pm, provider_id, backend or model, DECISION_CHECK, acquire=False
             )
-        except d.NoLogprobs:
+        except d.NoLogprobsError:
             stats.record_logprobs(provider_id, ok=False)
             return "no_logprobs"
         except asyncio.CancelledError:

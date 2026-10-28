@@ -20,12 +20,12 @@ branch_labels = None
 depends_on = None
 
 _NEW_COLUMNS = (
-    ("auth_source", sa.String(16), dict(nullable=False, server_default="local")),
-    ("oidc_issuer", sa.Text(), dict(nullable=True)),
-    ("oidc_subject", sa.Text(), dict(nullable=True)),
-    ("email", sa.Text(), dict(nullable=True)),
-    ("display_name", sa.Text(), dict(nullable=True)),
-    ("last_login_at", sa.TIMESTAMP(), dict(nullable=True)),
+    ("auth_source", sa.String(16), {"nullable": False, "server_default": "local"}),
+    ("oidc_issuer", sa.Text(), {"nullable": True}),
+    ("oidc_subject", sa.Text(), {"nullable": True}),
+    ("email", sa.Text(), {"nullable": True}),
+    ("display_name", sa.Text(), {"nullable": True}),
+    ("last_login_at", sa.TIMESTAMP(), {"nullable": True}),
 )
 _OIDC_INDEX = "uq_dashboard_users_oidc"
 

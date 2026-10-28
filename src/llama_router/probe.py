@@ -427,9 +427,12 @@ def _detect(
         result.version = result.version or str(health["version"])
 
     liveliness = responses.get(("GET", "/health/liveliness"))
-    if liveliness is not None and liveliness.status_code == 200:
-        if "alive" in liveliness.text.lower():
-            servers.append("litellm")
+    if (
+        liveliness is not None
+        and liveliness.status_code == 200
+        and "alive" in liveliness.text.lower()
+    ):
+        servers.append("litellm")
 
     models_json = get("/v1/models") or get("/models")
     if isinstance(models_json, dict) and isinstance(models_json.get("data"), list):

@@ -38,12 +38,12 @@ QS = {
 
 
 def call(body: dict[str, Any]) -> dict[str, Any]:
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310  # --base is operator-supplied
         base + "/v1/chat/completions",
         json.dumps(body).encode(),
         {"content-type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310
         out: dict[str, Any] = json.load(r)
         return out
 

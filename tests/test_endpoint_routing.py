@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llama_router.database import Database
-from llama_router.endpoints import ENDPOINTS, UnknownEndpoint, endpoint_class
+from llama_router.endpoints import ENDPOINTS, UnknownEndpointError, endpoint_class
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
@@ -69,7 +69,7 @@ def _mode(mode: str) -> RoutingPreferences:
 async def test_unknown_endpoint_is_rejected(db: Database, pm: ProviderManager):
     await _provider(db, "a", ["m"])
     rt = Router(db, pm)
-    with pytest.raises(UnknownEndpoint):
+    with pytest.raises(UnknownEndpointError):
         await rt.route("m", "/api/tags")
 
 
