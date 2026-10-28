@@ -46,8 +46,12 @@ def listed_price(model: ProviderModel) -> Price | None:
     if not isinstance(pricing, Mapping):
         return None
     try:
-        prompt = float(pricing.get("prompt"))
-        completion = float(pricing.get("completion"))
+        raw_prompt = pricing.get("prompt")
+        raw_completion = pricing.get("completion")
+        if raw_prompt is None or raw_completion is None:
+            return None
+        prompt = float(raw_prompt)
+        completion = float(raw_completion)
     except TypeError, ValueError:
         return None
     if prompt < 0 or completion < 0:  # OpenRouter uses -1 for "varies"

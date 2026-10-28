@@ -23,7 +23,7 @@ pytestmark = pytest.mark.httpx_mock(
 
 
 @pytest.mark.parametrize(
-    "url,root,api",
+    ("url", "root", "api"),
     [
         ("http://gpu:8080", "http://gpu:8080", "/v1"),
         ("http://gpu:8080/", "http://gpu:8080", "/v1"),
@@ -89,7 +89,7 @@ def test_several_key_headers() -> None:
         "Authorization": "Bearer k",
         "x-api-key": "k",
     }
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="header name may contain only"):
         normalize_header("Authorization, bad header")
 
 
@@ -107,7 +107,8 @@ def test_endpoint_state_counts_bare_openai_routes() -> None:
         },
     )
     assert p.endpoint_state("/v1/chat/completions") == "supported"
-    assert p.lacks("/props") and not p.lacks("/api/pull")
+    assert p.lacks("/props")
+    assert not p.lacks("/api/pull")
     assert p.liveness_path == "/models"
 
 
@@ -139,13 +140,14 @@ async def test_cloud_host_gets_preset_and_short_catalog() -> None:
 async def test_key_rejected_everywhere() -> None:
     transport, _ = _mock({}, default=httpx.Response(401, json={"error": "bad key"}))
     r = await probe_url("http://gpu:8000", api_key="nope", transport=transport)
-    assert r.key_rejected and r.auth_required
+    assert r.key_rejected
+    assert r.auth_required
     r = await probe_url("http://gpu:8000", transport=transport)
     assert not r.key_rejected
 
 
 @pytest.mark.parametrize(
-    "routes,flavor",
+    ("routes", "flavor"),
     [
         (
             {
@@ -235,7 +237,8 @@ async def test_health_check_uses_probed_liveness(db, httpx_mock) -> None:
     assert status == ProviderStatus.IDLE
     assert [m.name for m in await db.get_provider_models(p.id)] == ["gpt-x"]
     # The probed GET was the health check, and no /props was asked for.
-    assert "/props" not in paths and "/health" not in paths
+    assert "/props" not in paths
+    assert "/health" not in paths
     assert paths.count("/v1/models") >= 2
 
 

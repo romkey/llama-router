@@ -13,6 +13,11 @@ described in their git tags and GitHub Releases.
   Workers tab lists them as Local, Cloud and Remotes with all/none quick
   picks; the hub's jobs route only to the ticked providers and it lists
   only their models. See `docs/workers.md`.
+
+## [0.21.1] - 2026-10-28
+
+### Added
+
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
   database work, used by the production compose health check.
 - `llama-router --version`.

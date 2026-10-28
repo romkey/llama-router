@@ -24,7 +24,6 @@ from llama_router.models import (
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RouteResult, RoutingPreferences
 from llama_router.worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 CHAT = "/v1/chat/completions"
 VIA = {HUB_HEADER: HUB_HEADER_VALUE}
@@ -43,31 +42,26 @@ async def _provider(
     startup: float = 100.0,
     **settings_: Any,
 ) -> Provider:
-    p = await db.add_provider(name, ProviderProtocol.OPENAI)
+    pid = (await db.add_provider(name, ProviderProtocol.OPENAI)).require_id()
     if settings_:
-        await db.update_provider_settings(p.id, **settings_)
-    await db.update_provider_status(p.id, ProviderStatus.IDLE)
+        await db.update_provider_settings(pid, **settings_)
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
     await db.set_provider_models(
-        p.id, [ProviderModel(provider_id=p.id, name=m) for m in models]
+        pid, [ProviderModel(provider_id=pid, name=m) for m in models]
     )
     for m in models:
         await db.save_benchmark(
             BenchmarkResult(
-                provider_id=p.id,
+                provider_id=pid,
                 model_name=m,
                 protocol="openai",
                 startup_time_ms=startup,
                 tokens_per_second=50.0,
             )
         )
-    got = await db.get_provider(p.id)
+    got = await db.get_provider(pid)
     assert got is not None
     return got
-
-
-def _id(p: Provider) -> int:
-    assert p.id is not None
-    return p.id
 
 
 def _pid(result: RouteResult | None) -> int | None:
@@ -84,11 +78,14 @@ async def test_providers_are_shared_by_default_and_set_as_a_whole(
 ) -> None:
     a = await _provider(db, "a")
     b = await _provider(db, "b", models=("m", "only-b"))
-    assert a.hub_shared and b.hub_shared
+    assert a.hub_shared
+    assert b.hub_shared
 
-    await db.set_hub_shared_providers([_id(a)])
-    a2, b2 = await db.get_provider(_id(a)), await db.get_provider(_id(b))
-    assert a2 is not None and b2 is not None
+    await db.set_hub_shared_providers([a.require_id()])
+    a2 = await db.get_provider(a.require_id())
+    b2 = await db.get_provider(b.require_id())
+    assert a2 is not None
+    assert b2 is not None
     assert (a2.hub_shared, b2.hub_shared) == (True, False)
     names = {m["name"] for m in await db.list_all_models(hub_only=True)}
     assert names == {"m"}
@@ -97,8 +94,9 @@ async def test_providers_are_shared_by_default_and_set_as_a_whole(
 
     await db.set_hub_shared_providers([])
     assert await db.list_all_models(hub_only=True) == []
-    a3 = await db.get_provider(_id(a))
-    assert a3 is not None and not a3.hub_shared
+    a3 = await db.get_provider(a.require_id())
+    assert a3 is not None
+    assert not a3.hub_shared
 
 
 async def test_hub_requests_route_only_to_shared_providers(
@@ -118,7 +116,8 @@ async def test_hub_requests_route_only_to_shared_providers(
     assert rows["slow"]["excluded"] is None
 
     # A pin to a provider kept from the hub is ignored, like a wrong locality.
-    pinned = RoutingPreferences(hub_only=True, pinned_providers={"m": _id(fast)})
+    pins = {"m": fast.require_id()}
+    pinned = RoutingPreferences(hub_only=True, pinned_providers=pins)
     assert _pid(await rt.route("m", CHAT, pinned)) == slow.id
     # Chaos mode draws from the shared providers only.
     chaos = RoutingPreferences(mode="chaos", hub_only=True)
@@ -150,7 +149,8 @@ async def test_via_header_sets_hub_scope(db: Database) -> None:
     assert not from_hub(_request({HUB_HEADER: "client"}))
     assert not from_hub(_request({}))
     prefs = await routing_preferences_from_request(db, _request(VIA))
-    assert prefs is not None and prefs.hub_only
+    assert prefs is not None
+    assert prefs.hub_only
     assert await routing_preferences_from_request(db, _request({})) is None
 
 
@@ -202,7 +202,8 @@ async def test_dashboard_hub_provider_api(dash_client: Any) -> None:
     for pid in (cloud.id, remote.id):
         assert pid is not None
         row = await db.get_provider(pid)
-        assert row is not None and not row.hub_shared
+        assert row is not None
+        assert not row.hub_shared
 
     resp = await client.post("/api/hub-providers", json={"provider_ids": [9999]})
     assert resp.status_code == 400

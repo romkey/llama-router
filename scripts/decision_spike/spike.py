@@ -219,13 +219,13 @@ def chat(base: str, model: str, prompt: str, top: int = 20) -> tuple[list[dict],
             {"role": "user", "content": prompt},
         ],
     }
-    req = urllib.request.Request(
+    req = urllib.request.Request(  # noqa: S310  # --base is operator-supplied
         base + "/v1/chat/completions",
         json.dumps(body).encode(),
         {"content-type": "application/json"},
     )
     t = time.monotonic()
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310
         data = json.load(r)
     ms = (time.monotonic() - t) * 1000
     return data["choices"][0]["logprobs"]["content"][0]["top_logprobs"], ms
@@ -255,8 +255,10 @@ def state_block(ticket: str) -> str:
 def q_choice(ticket: str, scheme: str, order: list[str]):
     if scheme == "letters":
         labs = "ABCDEFG"[: len(order)]
-        opts = "\n".join(f"{l}) {DEPTS[k]}" for l, k in zip(labs, order))
-        labels = {l.lower(): k for l, k in zip(labs, order)}
+        opts = "\n".join(
+            f"{lt}) {DEPTS[k]}" for lt, k in zip(labs, order, strict=False)
+        )
+        labels = {lt.lower(): k for lt, k in zip(labs, order, strict=False)}
         tail = "Answer with the option letter only."
     else:
         opts = "\n".join(f"{k}: {DEPTS[k]}" for k in order)
@@ -322,7 +324,7 @@ def main():
     )
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
-    rng = random.Random(a.seed)
+    rng = random.Random(a.seed)  # noqa: S311  # seeded, reproducible shuffles
 
     res = {"choice": [], "noul": [], "score": []}
     single_ms, batch_ms, masses = [], [], []

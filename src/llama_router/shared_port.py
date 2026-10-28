@@ -45,7 +45,7 @@ def routes_to_api(scope: Scope, routes: list[BaseRoute]) -> bool:
 
 
 class SharedPortApp:
-    """ASGI app for the dashboard port: API requests to ``api``, the rest to ``dashboard``."""
+    """ASGI app for the dashboard port: API requests to ``api``, rest to dashboard."""
 
     def __init__(self, dashboard: ASGIApp, api: FastAPI) -> None:
         self.dashboard = dashboard

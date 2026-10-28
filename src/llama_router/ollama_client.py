@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -462,11 +462,11 @@ class OllamaClient:
         progress_callback: Any | None = None,
     ) -> None:
         """Upload a local file as a blob (``POST /api/blobs/<digest>``)."""
-        total = os.path.getsize(path)
+        total = Path(path).stat().st_size
 
         async def body():
             sent = 0
-            with open(path, "rb") as fh:
+            with Path(path).open("rb") as fh:
                 while True:
                     chunk = await asyncio.to_thread(fh.read, 4 * 1024 * 1024)
                     if not chunk:

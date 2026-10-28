@@ -194,7 +194,9 @@ async def test_session_sticks_even_when_its_provider_is_busier(db, pm, clock):
     # Without a session the idle provider wins, as before.
     assert (await rt.route(MODEL, CHAT)).provider.id == other
     stats = rt.affinity.stats()
-    assert stats["hits"] == 5 and stats["misses"] == 1 and stats["sessions"] == 1
+    assert stats["hits"] == 5
+    assert stats["misses"] == 1
+    assert stats["sessions"] == 1
 
 
 async def test_session_moves_when_its_provider_goes_offline(db, pm, clock):
@@ -241,7 +243,8 @@ async def test_per_key_override_beats_router_default(db, pm, clock):
     assert rt_off.session_for({}, _chat(), None) is None
     on = RoutingPreferences(session_affinity=True, key_id=7)
     session = rt_off.session_for({}, _chat(), on)
-    assert session is not None and session.startswith("7:")
+    assert session is not None
+    assert session.startswith("7:")
     await rt_off.route(MODEL, CHAT, on, session=session)
     assert len(rt_off.affinity) == 1
 
@@ -262,12 +265,13 @@ async def test_explain_reports_binding_without_creating_one(db, pm, clock):
     assert out["chosen"]["provider_id"] == bound
     assert "for this session" in out["summary"]
     rows = {c["provider_id"]: c for c in out["steps"][0]["candidates"]}
-    assert rows[bound]["session_bound"] and not rows[other]["session_bound"]
+    assert rows[bound]["session_bound"]
+    assert not rows[other]["session_bound"]
     assert rt.affinity.hits == 0  # explaining is not routing
 
 
 async def test_removed_provider_bindings_are_dropped(db, pm, clock):
-    a, b, rt = await _two_equal(db, pm, clock)
+    _a, _b, rt = await _two_equal(db, pm, clock)
     session = rt.session_for({}, _chat(), None)
     bound = (await rt.route(MODEL, CHAT, session=session)).provider.id
     await db.remove_provider(bound)

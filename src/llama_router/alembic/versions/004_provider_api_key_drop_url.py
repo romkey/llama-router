@@ -101,7 +101,8 @@ def downgrade() -> None:
     )
     bind.execute(
         sa.text(
-            "UPDATE providers SET url = COALESCE((SELECT a.url FROM provider_addresses a "
+            "UPDATE providers SET url = COALESCE("
+            "(SELECT a.url FROM provider_addresses a "
             "WHERE a.provider_id = providers.id ORDER BY a.is_preferred DESC, a.id "
             "LIMIT 1), '') WHERE worker_name IS NULL"
         )

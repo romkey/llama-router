@@ -147,14 +147,14 @@ def env_summary() -> list[dict[str, str | bool]]:
 
 
 def models_root() -> Path:
-    root = Path(os.path.abspath(settings.hf_models_dir))
+    root = Path(os.path.normpath(Path(settings.hf_models_dir).absolute()))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def _path_under(base: Path, *parts: str) -> Path:
-    root = os.path.abspath(str(base))
-    candidate = os.path.normpath(os.path.join(root, *parts))
+    root = os.path.normpath(base.absolute())
+    candidate = os.path.normpath(Path(root).joinpath(*parts))
     if candidate != root and not candidate.startswith(root + os.sep):
         raise ValueError("path escapes the models directory")
     return Path(candidate)
@@ -199,13 +199,15 @@ async def _run(
         stderr=asyncio.subprocess.PIPE,
         env={**os.environ, "HF_HUB_DISABLE_UPDATE_CHECK": "1", "NO_COLOR": "1"},
     )
-    assert proc.stdout is not None and proc.stderr is not None
+    if proc.stdout is None or proc.stderr is None:
+        raise RuntimeError("hf subprocess started without its pipes")
+    stderr = proc.stderr
     err_tail: list[str] = []
 
     async def read_stderr() -> None:
         buf = b""
         while True:
-            chunk = await proc.stderr.read(4096)
+            chunk = await stderr.read(4096)
             if not chunk:
                 break
             buf += chunk
@@ -236,7 +238,7 @@ def _error_from(stderr: str) -> str:
     return "hf exited with an error"
 
 
-async def plan(repo: str, pattern: str, revision: str | None) -> list[dict]:
+async def plan(repo: str, pattern: str, revision: str | None) -> list[dict[str, Any]]:
     """Files *pattern* selects in *repo*, from ``hf download --dry-run --json``."""
     args = ["download", repo, "--include", pattern, "--dry-run", "--json"]
     if revision:
@@ -248,7 +250,7 @@ async def plan(repo: str, pattern: str, revision: str | None) -> list[dict]:
     return _parse_plan(out)
 
 
-def _parse_plan(out: str) -> list[dict]:
+def _parse_plan(out: str) -> list[dict[str, Any]]:
     """File list from ``--dry-run --json`` output, tolerant of its shape.
 
     Accepts the whole output or its last line as JSON, a list or an object
@@ -341,7 +343,7 @@ async def download(
 async def sha256_file(path: Path) -> str:
     def _hash() -> str:
         h = hashlib.sha256()
-        with open(path, "rb") as fh:
+        with Path(path).open("rb") as fh:
             for chunk in iter(lambda: fh.read(8 * 1024 * 1024), b""):
                 h.update(chunk)
         return "sha256:" + h.hexdigest()

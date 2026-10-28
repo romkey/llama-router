@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import pytest
+from alembic.config import Config
 from sqlalchemy.engine import make_url
 
 from llama_router import config
 
 
 def test_effective_database_url_uses_sqlite_when_path_only(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     dbfile = tmp_path / "custom.db"
     monkeypatch.setattr(config.settings, "database_url", "")
@@ -29,7 +33,7 @@ def test_effective_database_url_prefers_explicit_url(
 
 
 def test_sync_url_strips_aiosqlite_driver(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(config.settings, "database_url", "")
     monkeypatch.setattr(config.settings, "database_path", str(tmp_path / "x.db"))
@@ -96,7 +100,7 @@ def test_sync_url_keeps_the_password(
     monkeypatch.setattr(config.settings, "database_url", async_url)
     sync_url = config.settings.sync_database_url_for_alembic()
     assert "***" not in sync_url
-    assert make_url(sync_url).password == "s3cr@t"
+    assert make_url(sync_url).password == "s3cr@t"  # noqa: S105  # test fixture value
 
 
 def test_upgrade_handles_percent_in_url(
@@ -121,9 +125,9 @@ def test_alembic_config_round_trips_encoded_password(
 
     from llama_router import db_migrate
 
-    seen = {}
+    seen: dict[str, Any] = {}
 
-    def fake_upgrade(cfg, rev):
+    def fake_upgrade(cfg: Config, rev: str) -> None:
         seen["main"] = cfg.get_main_option("sqlalchemy.url")
         seen["section"] = cfg.get_section(cfg.config_ini_section)["sqlalchemy.url"]
 

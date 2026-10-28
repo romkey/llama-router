@@ -32,16 +32,16 @@ def q_score_anchored(t):
 
 def collect(qfn):
     out = []
-    for t, d, u, f in spike.DATA:
-        p, l = qfn(t)
-        dist, _ = spike.distribution(spike.chat(base, model, p)[0], l)
+    for t, _d, _u, _f in spike.DATA:
+        p, labels = qfn(t)
+        dist, _ = spike.distribution(spike.chat(base, model, p)[0], labels)
         out.append(dist)
     return out
 
 
 def auc(scores, labels):
-    pos = [s for s, y in zip(scores, labels) if y]
-    neg = [s for s, y in zip(scores, labels) if not y]
+    pos = [s for s, y in zip(scores, labels, strict=False) if y]
+    neg = [s for s, y in zip(scores, labels, strict=False) if not y]
     return statistics.mean((p > n) + 0.5 * (p == n) for p in pos for n in neg)
 
 
@@ -54,7 +54,7 @@ def platt_fit(xs, ys, iters=3000, lr=0.05):
     a, b = 1.0, 0.0
     for _ in range(iters):
         ga = gb = 0.0
-        for x, y in zip(xs, ys):
+        for x, y in zip(xs, ys, strict=False):
             p = 1 / (1 + math.exp(-(a * x + b)))
             ga += (p - y) * x
             gb += p - y
@@ -66,15 +66,15 @@ def platt_fit(xs, ys, iters=3000, lr=0.05):
 def eval_noul(name, dists):
     ys = [u for _, _, u, _ in spike.DATA]
     ps = [d[1] for d in dists]
-    raw_acc = statistics.mean((p > 0.5) == y for p, y in zip(ps, ys))
-    raw_brier = statistics.mean((p - y) ** 2 for p, y in zip(ps, ys))
+    raw_acc = statistics.mean((p > 0.5) == y for p, y in zip(ps, ys, strict=False))
+    raw_brier = statistics.mean((p - y) ** 2 for p, y in zip(ps, ys, strict=False))
     xs = [logit(p) for p in ps]
     cal = []
     for i in range(len(xs)):  # leave-one-out Platt scaling
         a, b = platt_fit(xs[:i] + xs[i + 1 :], ys[:i] + ys[i + 1 :])
         cal.append(1 / (1 + math.exp(-(a * xs[i] + b))))
-    c_acc = statistics.mean((p > 0.5) == y for p, y in zip(cal, ys))
-    c_brier = statistics.mean((p - y) ** 2 for p, y in zip(cal, ys))
+    c_acc = statistics.mean((p > 0.5) == y for p, y in zip(cal, ys, strict=False))
+    c_brier = statistics.mean((p - y) ** 2 for p, y in zip(cal, ys, strict=False))
     print(
         f"noul {name:9s} AUC={auc(ps, ys):.2f} raw acc={raw_acc:.2f} brier={raw_brier:.3f} | "
         f"LOO-Platt acc={c_acc:.2f} brier={c_brier:.3f}"
@@ -86,14 +86,14 @@ def bias_fit(dists, ys, k=3, iters=2000, lr=0.1):
     w = [0.0] * k
     for _ in range(iters):
         g = [0.0] * k
-        for d, y in zip(dists, ys):
+        for d, y in zip(dists, ys, strict=False):
             z = [math.log(max(d[j], 1e-9)) + w[j] for j in range(k)]
             m = max(z)
             e = [math.exp(v - m) for v in z]
             s = sum(e)
             for j in range(k):
                 g[j] += e[j] / s - (1 if j == y else 0)
-        w = [wj - lr * gj / len(dists) for wj, gj in zip(w, g)]
+        w = [wj - lr * gj / len(dists) for wj, gj in zip(w, g, strict=False)]
     return w
 
 
@@ -109,9 +109,12 @@ def eval_score(name, dists):
     ys = [f for _, _, _, f in spike.DATA]
 
     def stats(ds):
-        acc = statistics.mean(int(max(d, key=d.get)) == y for d, y in zip(ds, ys))
+        acc = statistics.mean(
+            int(max(d, key=d.get)) == y for d, y in zip(ds, ys, strict=False)
+        )
         mae = statistics.mean(
-            abs(sum(int(i) * p for i, p in d.items()) - y) for d, y in zip(ds, ys)
+            abs(sum(int(i) * p for i, p in d.items()) - y)
+            for d, y in zip(ds, ys, strict=False)
         )
         return acc, mae
 

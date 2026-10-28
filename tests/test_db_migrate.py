@@ -43,7 +43,7 @@ def test_run_upgrade_sync_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path) 
 def test_run_upgrade_sync_after_dropped_alembic_version_table(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """Schema present but no revision (e.g. lost alembic_version) must not loop on CREATE."""
+    """Schema present but no revision (e.g. lost alembic_version) must not re-CREATE."""
     dbfile = tmp_path / "legacy_no_revision.db"
     monkeypatch.setattr(config.settings, "database_url", "")
     monkeypatch.setattr(config.settings, "database_path", str(dbfile))
@@ -296,7 +296,8 @@ def test_upgrade_009_splits_both_providers(
             ],
         )
         con.executemany(
-            "INSERT INTO benchmarks (provider_id, model_name, protocol) VALUES (?, ?, ?)",
+            "INSERT INTO benchmarks (provider_id, model_name, protocol) "
+            "VALUES (?, ?, ?)",
             [(1, "a", "ollama"), (1, "b", "llamacpp"), (2, "e", "llamacpp")],
         )
         con.execute(
@@ -316,7 +317,8 @@ def test_upgrade_009_splits_both_providers(
     con = sqlite3.connect(dbfile)
     try:
         cols = {r[1] for r in con.execute("PRAGMA table_info(providers)")}
-        assert "provider_type" not in cols and "protocol" in cols
+        assert "provider_type" not in cols
+        assert "protocol" in cols
         addr_cols = {r[1] for r in con.execute("PRAGMA table_info(provider_addresses)")}
         assert "llamacpp_url" not in addr_cols
 

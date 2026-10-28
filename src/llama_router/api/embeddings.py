@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _handle_embedding(request: Request, endpoint: str, method: str):
+async def _handle_embedding(
+    request: Request, endpoint: str, method: str
+) -> JSONResponse:
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -38,11 +40,11 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     start = time.monotonic()
-    pm.acquire(provider.id)
+    pm.acquire(provider_id)
     try:
         result = await getattr(client, method)(body)
         duration = (time.monotonic() - start) * 1000
@@ -111,14 +113,14 @@ async def _handle_embedding(request: Request, endpoint: str, method: str):
         )
         raise
     finally:
-        pm.release(provider.id)
+        pm.release(provider_id)
 
 
 @router.post("/api/embeddings")
-async def embeddings(request: Request):
+async def embeddings(request: Request) -> JSONResponse:
     return await _handle_embedding(request, "/api/embeddings", "embeddings")
 
 
 @router.post("/api/embed")
-async def embed(request: Request):
+async def embed(request: Request) -> JSONResponse:
     return await _handle_embedding(request, "/api/embed", "embed")

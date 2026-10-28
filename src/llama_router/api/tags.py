@@ -10,7 +10,7 @@ router = APIRouter()
 
 
 @router.get("/api/tags")
-async def list_tags(request: Request):
+async def list_tags(request: Request) -> JSONResponse:
     """Aggregate models from all online providers (a hub sees only the
     providers shared with it)."""
     db = deps.get_db()
@@ -19,14 +19,14 @@ async def list_tags(request: Request):
 
 
 @router.get("/api/version")
-async def version():
+async def version() -> JSONResponse:
     from .. import __version__
 
     return JSONResponse(content={"version": __version__})
 
 
 @router.get("/api/ps")
-async def ps():
+async def ps() -> JSONResponse:
     """Show which models are being served across providers."""
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()

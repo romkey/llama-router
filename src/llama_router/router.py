@@ -17,6 +17,7 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -26,16 +27,19 @@ from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
     ENDPOINT_PROTOCOLS,
     ENDPOINTS,
-    UnknownEndpoint,
+    UnknownEndpointError,
     normalize_endpoint,
     protocol_for_endpoint,
     resolve_endpoint,
 )
 from .models import Provider, ProviderStatus
+from .pricing import Price
 from .provider_manager import ProviderManager
 
 if TYPE_CHECKING:
     from .decision_policy import DecisionPolicy
+import contextlib
+
 from .routing_table import (
     DEFAULT_MODE,
     MODES,
@@ -129,7 +133,7 @@ class Router:
         self._version = 0
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self.affinity = affinity or SessionAffinity(
             settings.session_affinity_ttl_seconds,
             settings.session_affinity_max_sessions,
@@ -186,12 +190,12 @@ class Router:
             self._need_rescore = False
             started = time.perf_counter()
             try:
-                if reload:
-                    self._inputs = await load_inputs(self._db)
-                assert self._inputs is not None
+                inputs = self._inputs
+                if reload or inputs is None:
+                    inputs = self._inputs = await load_inputs(self._db)
                 self._version += 1
                 table = build_table(
-                    self._inputs,
+                    inputs,
                     hot_models=self._pm.hot_model_names,
                     stats=self._pm.stats,
                     version=self._version,
@@ -205,7 +209,7 @@ class Router:
             self._table = table
             if reload:
                 gone = self.affinity.forget_providers_not_in(
-                    {p.id for p in self._inputs.providers if p.id is not None}
+                    {p.id for p in inputs.providers if p.id is not None}
                 )
                 if gone:
                     logger.debug("Dropped %d sessions bound to removed providers", gone)
@@ -230,10 +234,8 @@ class Router:
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         self._db.remove_change_listener(self._on_db_change)
 
     async def _run(self) -> None:
@@ -265,7 +267,7 @@ class Router:
 
     def session_for(
         self,
-        headers,
+        headers: Mapping[str, str],
         body: dict[str, Any],
         preferences: RoutingPreferences | None,
     ) -> str | None:
@@ -289,7 +291,7 @@ class Router:
         ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
         return ready or ranked
 
-    def price_for(self, provider_id: int, model: str):
+    def price_for(self, provider_id: int, model: str) -> Price | None:
         """The model's price on the provider from the current table, or None."""
         table = self._table
         if table is None or table.prices is None:
@@ -325,7 +327,7 @@ class Router:
         normal choice is made and the session is bound to it. Pins and chaos
         mode take precedence.
 
-        Raises :class:`UnknownEndpoint` for a path the router does not proxy.
+        Raises :class:`UnknownEndpointError` for a path the router does not proxy.
         """
         table = await self._current_table()
         return self.route_with(
@@ -580,7 +582,7 @@ class Router:
         protocol: str | None,
         mode: str,
         pins: dict[str, int],
-        active,
+        active: Callable[[int], int],
         chosen_id: int | None = None,
         bound: int | None = None,
         locality: str | None = None,
@@ -753,7 +755,7 @@ class Router:
             if p.status == ProviderStatus.OFFLINE:
                 reason = "provider is offline"
             elif not reaches(p, protocol):
-                api = _API_NAMES.get(protocol, protocol)
+                api = _API_NAMES.get(protocol or "", protocol or "")
                 reason = f"provider does not serve the {api} API"
             else:
                 continue
@@ -804,9 +806,9 @@ class Router:
         ]
         if not entries:
             return None
-        provider, eligible = random.choice(entries)
-        resolved_model = random.choice(eligible)
-        assert provider.id is not None
+        provider, eligible = random.choice(entries)  # noqa: S311  # chaos mode
+        resolved_model = random.choice(eligible)  # noqa: S311  # chaos mode
+        provider_id = provider.require_id()
         logger.info(
             "Chaos routing requested=%s protocol=%s -> provider=%s model=%s",
             requested_model,
@@ -815,7 +817,7 @@ class Router:
             resolved_model,
         )
         return RouteResult(
-            provider, resolved_model, table.backend_name(provider.id, resolved_model)
+            provider, resolved_model, table.backend_name(provider_id, resolved_model)
         )
 
 
@@ -850,7 +852,9 @@ def _summary(out: dict[str, Any], requested: str) -> str:
     return f"Routes to {chosen['provider']}{via}: {last.get('outcome', '')}."
 
 
-def _pick(ranked: tuple[Candidate, ...], mode: str, active) -> Candidate:
+def _pick(
+    ranked: tuple[Candidate, ...], mode: str, active: Callable[[int], int]
+) -> Candidate:
     """Lowest static score plus queue cost; *ranked* is sorted by static score."""
     first = ranked[0]
     if len(ranked) == 1:

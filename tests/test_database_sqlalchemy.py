@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy.engine.url import URL
 
 from llama_router.database import Database, _bind_params
+from llama_router.models import ProviderModel, ProviderStatus, RequestLog
 
 
 def _script_heads() -> list[str]:
@@ -30,9 +31,6 @@ def test_migrations_have_a_single_head() -> None:
     """Two branches each adding a migration off the same parent must be chained."""
     heads = _script_heads()
     assert len(heads) == 1, f"Alembic has several heads: {heads}"
-
-
-from llama_router.models import ProviderModel, ProviderStatus, RequestLog
 
 
 def test_bind_params_flattens_single_tuple() -> None:
@@ -273,7 +271,7 @@ async def test_list_all_models_excludes_offline_providers(db: Database) -> None:
 
 
 @pytest.mark.parametrize(
-    "dialect,expected",
+    ("dialect", "expected"),
     [
         ("sqlite", "TEXT"),
         ("postgresql", "TEXT"),

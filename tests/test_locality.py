@@ -21,7 +21,6 @@ from llama_router.provider_manager import ProviderManager
 from llama_router.request_logger import log_request
 from llama_router.router import Router, RoutingPreferences
 from llama_router.upstream_url import guess_locality
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 CHAT = "/v1/chat/completions"
 
@@ -52,7 +51,7 @@ async def _provider(db, name: str, locality: str, models=("m",), startup=100.0):
 
 
 @pytest.mark.parametrize(
-    "url,expected",
+    ("url", "expected"),
     [
         ("http://192.168.1.5:11434", "local"),
         ("http://gpu:8080", "local"),
@@ -205,7 +204,8 @@ async def test_dashboard_key_locality(dash_client) -> None:
     r = await client.post(
         "/api/keys/generate", json={"routing_mode": "balanced", "locality": "local"}
     )
-    assert r.status_code == 200 and r.json()["locality"] == "local"
+    assert r.status_code == 200
+    assert r.json()["locality"] == "local"
     (k,) = await db.list_api_keys()
     assert k["locality"] == "local"
     r = await client.post(f"/api/keys/{k['id']}/locality", json={"locality": "any"})
