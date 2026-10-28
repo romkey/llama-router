@@ -13,11 +13,17 @@ from urllib.parse import quote, urlparse
 import httpx
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .. import __version__, hf_download
+from .. import metrics as metrics_mod
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
 from ..background import spawn
@@ -412,6 +418,28 @@ def _same_origin_referer_path(request: Request, fallback: str) -> str:
 async def healthz() -> JSONResponse:
     """Liveness for container health checks: no auth, no database, no backends."""
     return JSONResponse({"status": "ok"})
+
+
+@router.get("/metrics")
+async def metrics() -> PlainTextResponse:
+    """Prometheus metrics (see docs/metrics.md).
+
+    Reached with ``Authorization: Bearer <LLAMA_ROUTER_METRICS_TOKEN>`` or a
+    dashboard sign-in; ``LLAMA_ROUTER_METRICS_ENABLED=false`` turns it off.
+    """
+    if not settings.metrics_enabled:
+        raise HTTPException(status_code=404, detail="Metrics are disabled")
+    pm = deps.get_pm()
+    families = metrics_mod.collect(
+        await pm.list_provider_infos(),
+        pm.stats,
+        router=pm.router,
+        worker_link=await deps.get_worker_link().status(),
+        auto_benchmark=deps.auto_benchmark_if_running(),
+    )
+    return PlainTextResponse(
+        metrics_mod.render(families), media_type=metrics_mod.CONTENT_TYPE
+    )
 
 
 @router.get("/health")

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import secrets
 import time
 
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from ..config import settings
 from . import deps
 from .auth_core import (
     AUTH_COOKIE,
@@ -49,6 +51,17 @@ async def _user_count(db) -> int:
     return n
 
 
+def _metrics_token_ok(request: Request) -> bool:
+    """A scraper's ``Authorization: Bearer`` matches LLAMA_ROUTER_METRICS_TOKEN."""
+    token = settings.metrics_token.strip()
+    if not token:
+        return False
+    raw = (request.headers.get("authorization") or "").strip()
+    if not raw.lower().startswith("bearer "):
+        return False
+    return secrets.compare_digest(raw[7:].strip(), token)
+
+
 def _forbidden(request: Request):
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
@@ -60,6 +73,9 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         if path in ("/health", "/healthz"):
+            return await call_next(request)
+
+        if path == "/metrics" and _metrics_token_ok(request):
             return await call_next(request)
 
         if path == "/login" or path.startswith("/login"):

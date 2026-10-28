@@ -139,6 +139,9 @@ class ModelStats:
     duration_ms: Ewma = field(default_factory=Ewma)
     failures: DecayingRate = field(default_factory=DecayingRate)
     last_ok: float = 0.0
+    # Plain counters since start-up, for the metrics endpoint.
+    requests: int = 0
+    errors: int = 0
 
 
 @dataclass(slots=True, frozen=True)
@@ -294,6 +297,9 @@ class ProviderStats:
         if s is None:
             s = self._models[key] = ModelStats()
         now = self._clock()
+        s.requests += 1
+        if not ok:
+            s.errors += 1
         s.failures.add(not ok, now)
         self._requests.setdefault(provider_id, DecayingRate()).add(not ok, now)
         if ok:
@@ -311,6 +317,10 @@ class ProviderStats:
         self, provider_id: int, model: str, endpoint_class: str = GENERATE
     ) -> ModelStats | None:
         return self._models.get((provider_id, model, endpoint_class))
+
+    def model_entries(self) -> list[tuple[int, str, str, ModelStats]]:
+        """Every (provider id, model, endpoint class, stats) with samples."""
+        return [(pid, model, cls, s) for (pid, model, cls), s in self._models.items()]
 
     def is_warm(self, provider_id: int, model: str, now: float | None = None) -> bool:
         """The model served any request recently, so it is likely loaded."""

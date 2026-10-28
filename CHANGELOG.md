@@ -9,6 +9,10 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- `GET /metrics` on the dashboard port: Prometheus metrics for providers,
+  addresses, benchmarks, live request outcomes, workers and the routing
+  table. Scrapers authenticate with `LLAMA_ROUTER_METRICS_TOKEN`; see
+  `docs/metrics.md`.
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
   database work, used by the production compose health check.
 - `llama-router --version`.

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0
+    # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
+    # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
+    # needs a dashboard sign-in like the rest of the dashboard.
+    metrics_enabled: bool = True
+    metrics_token: str = ""
     cache_enabled: bool = True
     cache_dir: str = "./model_cache"
     cache_host: str = "0.0.0.0"
