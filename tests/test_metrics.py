@@ -102,6 +102,10 @@ async def test_collect_reports_providers_benchmarks_and_requests(
     assert got["llama_router_models"] == "1"
     assert got[f"llama_router_provider_up{{{gpu}}}"] == "1"
     assert got[f"llama_router_provider_active_requests{{{gpu}}}"] == "1"
+    # One failure in two requests, no failed probes: the request rate is
+    # request-only, not the combined health figure.
+    assert 0 < float(got[f"llama_router_provider_request_failure_rate{{{gpu}}}"]) < 1
+    assert got[f"llama_router_provider_probe_failure_rate{{{gpu}}}"] == "0.0"
     assert got[f'llama_router_address_up{{{gpu},url="http://10.0.0.2:8080"}}'] == "1"
     bench = f'{gpu},model="m",benchmark_protocol="openai"'
     assert got[f"llama_router_benchmark_tokens_per_second{{{bench}}}"] == "42.5"

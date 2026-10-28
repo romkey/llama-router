@@ -141,6 +141,11 @@ def collect(
         "gauge",
         "Share of recent requests that failed for provider-wide reasons (0..1).",
     )
+    probe_failure = Family(
+        "provider_probe_failure_rate",
+        "gauge",
+        "Share of recent health checks the provider failed (0..1).",
+    )
     circuit = Family(
         "provider_circuit_open",
         "gauge",
@@ -199,7 +204,8 @@ def collect(
         model_count.add(len(info.models), **labels)
         h = stats.provider_health(p.id)
         health.add(h.score, **labels)
-        failure.add(h.failure_rate, **labels)
+        failure.add(h.request_failure_rate, **labels)
+        probe_failure.add(h.probe_failure_rate, **labels)
         circuit.add(h.circuit_open, **labels)
         busy.add(stats.busy_for(p.id), **labels)
         for a in info.addresses:
@@ -267,6 +273,7 @@ def collect(
         model_count,
         health,
         failure,
+        probe_failure,
         circuit,
         busy,
         addr_up,

@@ -38,6 +38,7 @@ All names start with `llama_router_`. Provider metrics carry the labels
 | `provider_models` | gauge | provider | Models the provider offers |
 | `provider_health_score` | gauge | provider | 0 (failing everything) to 100 (healthy) |
 | `provider_request_failure_rate` | gauge | provider | Share of recent requests failing for provider-wide reasons (0..1) |
+| `provider_probe_failure_rate` | gauge | provider | Share of recent health checks the provider failed (0..1) |
 | `provider_circuit_open` | gauge | provider | 1 while the provider is skipped for failing too often |
 | `provider_rate_limited_seconds` | gauge | provider | Seconds left of a cooldown after HTTP 429 |
 | `address_up` | gauge | provider, `url` | 1 when the address answered its last health check |
