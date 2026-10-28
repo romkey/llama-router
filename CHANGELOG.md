@@ -7,6 +7,12 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Releases no longer fail with "failed to reserve cache" when CI on main
+  builds the image at the same time. The release build writes its own
+  layer cache, and a cache error no longer fails a release or CI.
+
 ## [0.21.2] - 2026-10-28
 
 ### Added
