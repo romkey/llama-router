@@ -238,6 +238,26 @@ class ProviderModel(BaseModel):
         return self.raw_name or self.name
 
 
+class ModelGroupMember(BaseModel):
+    """One entry in a model group: a model anywhere, or a model on one
+    provider when *provider_id* is set."""
+
+    id: int | None = None
+    group_id: int | None = None
+    model_name: str
+    provider_id: int | None = None
+    position: int = 0
+
+
+class ModelGroup(BaseModel):
+    """A name clients can ask for that routes to the best of its members."""
+
+    id: int | None = None
+    name: str
+    description: str | None = None
+    members: list[ModelGroupMember] = Field(default_factory=list)
+
+
 class BenchmarkResult(BaseModel):
     id: int | None = None
     provider_id: int
