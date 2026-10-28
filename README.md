@@ -51,6 +51,7 @@ Everything lives in the `llama_router` package under `src/`:
 - **Decision Models** — A [Jev](https://en.wikipedia.org/wiki/Jev_(AI_model))-compatible `/v1/systemone` API that answers yes/no, choice and score questions with probabilities, from any local chat model or an upstream that serves it natively
 - **Precomputed Routing** — Routing tables are rebuilt in the background from models, liveness, benchmarks, measured round trips and live request outcomes, so picking a backend costs microseconds and no database work
 - **Session Affinity** — Each coding-agent conversation stays on the backend that served it, so the backend's prompt cache stays warm
+- **Model Groups** — Names such as `coding` or `vision` that clients ask for like a model; each request goes to the best member model available now
 - **Model Fallbacks** — Configure cascading fallback models so requests are transparently rerouted when a model is unavailable
 - **API Key Routing Policies** — Per-key balanced/latency/throughput/chaos routing, fallback control, and optional model-to-provider pinning
 - **Hub and Worker Links** — Member routers dial out to a hub over one WebSocket and serve its jobs, with no inbound ports or VPN
@@ -86,7 +87,7 @@ The router identifies a conversation by the first of these it finds:
 2. `prompt_cache_key`, `metadata.session_id`, `user` or `metadata.user_id` in the request body.
 3. A fingerprint of how the conversation starts. For chat, that is the system prompt and the first user message. For `/v1/responses`, it is the instructions and the first input item. For `/v1/completions` and `/api/generate`, it is the system prompt and the first 2 KB of a prompt at least that long. Shorter prompts, such as autocomplete requests, get no session.
 
-Sessions are kept separately per API key and per requested model. Affinity applies to chat, completions, generate and responses. Embeddings, images and audio are routed per request.
+Sessions are kept separately per API key and per requested model. A conversation that asks for a [model group](#model-groups) is bound to the member model as well as the provider, so it keeps running the same model. Affinity applies to chat, completions, generate and responses. Embeddings, images and audio are routed per request.
 
 Bindings live in memory only. Nothing is written to the database per request, and a restart forgets every binding. A session is forgotten after `SESSION_AFFINITY_TTL_SECONDS` without a request, or right after a request in it fails upstream.
 
@@ -362,6 +363,56 @@ curl -X POST http://localhost/api/model-aliases \
 ```
 
 Aliases combine with API key locality: a local-only key asking for `vendor/model` reaches a local provider that serves `model`.
+
+## Model Groups
+
+A model group is a name that clients ask for as if it were a model. `vision` might hold `llava:13b`, `qwen2.5-vl` and `gpt-4o`. `coding` might hold `qwen2.5-coder:32b` on your GPU box and `deepseek-coder` anywhere. A request for `"model": "coding"` goes to the best member that can serve it right now, scored by the key's routing mode just as a model's providers are. In latency mode, a loaded small model beats a cold large one. In cheapest mode, the cheaper member wins.
+
+Each member is one of these:
+
+- **A model name**, served by any provider that has it, including under an [alias](#model-aliases).
+- **A model on one provider**, such as `qwen2.5-coder:32b` only on `gpu-box`.
+
+| | Meaning |
+|---|---|
+| Alias | The same model under another name |
+| Fallback | Try this other model when mine is unavailable |
+| Group | Any of these models will do; pick the best now |
+
+Groups cost nothing extra per request. The routing table holds a ranked candidate list for each group, built in the background from its members' candidates, so routing a group name is the same lookup as routing a model name. A conversation stays on the member model and provider it started on (see [session affinity](#session-affinity)).
+
+Groups combine with the other routing features:
+
+- A model can fall back to a group, and a group can fall back to a model.
+- A pin on a group name pins the provider. The best member that provider serves is used.
+- API key locality and hub sharing limit which members can be used.
+- A decision policy can send requests to a group.
+
+Groups appear in `/api/tags` and `/v1/models` while at least one member can be served, with `"family": "group"` and the members in `details`. The request log shows the member that ran under the group name, and `/metrics` counts routes per group and member.
+
+A group cannot have the name of a model a provider serves, an alias or another group, and groups do not contain other groups. If a provider later starts serving a model with the group's name, the group wins and the dashboard's routing table reports it.
+
+Manage groups in **Model Groups** on the Models tab, or with the API:
+
+```bash
+# Create a group with two members, one of them only on provider 3
+curl -X POST http://localhost/api/model-groups \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "coding", "description": "Good at code",
+       "members": [{"model_name": "qwen2.5-coder:32b", "provider_id": 3},
+                   {"model_name": "deepseek-coder"}]}'
+
+# List groups, their members and where each routing mode sends them now
+curl http://localhost/api/model-groups
+
+# Add or remove a member, rename or delete a group (by id)
+curl -X POST http://localhost/api/model-groups/1/members \
+  -H 'Content-Type: application/json' -d '{"model_name": "codestral"}'
+curl -X DELETE http://localhost/api/model-groups/1/members/2
+curl -X PATCH http://localhost/api/model-groups/1 \
+  -H 'Content-Type: application/json' -d '{"name": "code"}'
+curl -X DELETE http://localhost/api/model-groups/1
+```
 
 ## API Key Model Pinning
 
