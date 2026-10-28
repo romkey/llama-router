@@ -8,6 +8,7 @@ from starlette.requests import Request
 
 from llama_router.affinity import (
     PROMPT_PREFIX_CHARS,
+    Binding,
     SessionAffinity,
     session_key,
 )
@@ -162,7 +163,7 @@ def test_store_expires_and_caps(clock):
     store.bind("b", 2)
     store.bind("c", 3)
     assert store.get("a") is None  # evicted, least recently used
-    assert store.get("c") == 3
+    assert store.get("c") == Binding(3)
     clock.t += 61
     assert store.peek("c") is None
     assert store.get("c") is None
@@ -225,7 +226,7 @@ async def test_pin_and_chaos_override_affinity(db, pm, clock):
     pinned = RoutingPreferences(pinned_providers={MODEL: other})
     assert (await rt.route(MODEL, CHAT, pinned, session=session)).provider.id == other
     # The pin did not move the binding.
-    assert rt.affinity.peek(session) == bound
+    assert rt.affinity.peek(session) == Binding(bound, MODEL)
 
     assert rt.session_for({}, _chat(), RoutingPreferences(mode="chaos")) is None
 

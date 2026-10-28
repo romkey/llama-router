@@ -17,8 +17,11 @@ A conversation is identified by, in order:
    ``/v1/responses``, or the system prompt and the first 2 KB of a long
    completion prompt.
 
-Keys are scoped by API key and requested model. Everything here is in
-memory; nothing touches the database, and bindings are lost on restart.
+Keys are scoped by API key and requested model. A binding holds the
+provider and the model it served, so a conversation that asked for a model
+group stays on the same member model as well as the same provider.
+Everything here is in memory; nothing touches the database, and bindings
+are lost on restart.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import hashlib
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 SESSION_HEADERS = ("x-session-id", "session-id", "session_id")
 # Roles that make up the stable preamble of a chat conversation.
@@ -164,8 +167,22 @@ def short_key(key: str | None) -> str | None:
     return f"{scope}:{digest[:12]}"
 
 
+class Binding(NamedTuple):
+    """Where a session was last served: the provider, and the model it ran
+    there (None matches any model on the provider)."""
+
+    provider_id: int
+    model: str | None = None
+
+    def matches(self, provider_id: int, model: str) -> bool:
+        return self.provider_id == provider_id and (
+            self.model is None or self.model == model
+        )
+
+
 class SessionAffinity:
-    """Session key -> provider id, an LRU with an idle timeout.
+    """Session key -> binding (provider and model), an LRU with an idle
+    timeout.
 
     Synchronous and in memory. Entries are kept in least-recently-used order,
     so expired entries collect at the front and are swept a few at a time as
@@ -181,7 +198,7 @@ class SessionAffinity:
         self.ttl_s = float(ttl_s)
         self.max_sessions = max(1, int(max_sessions))
         self._clock = clock
-        self._entries: OrderedDict[str, tuple[int, float]] = OrderedDict()
+        self._entries: OrderedDict[str, tuple[Binding, float]] = OrderedDict()
         self.hits = 0  # request went to its bound provider
         self.misses = 0  # new session, bound to the normal choice
         self.rebinds = 0  # bound provider was not eligible; moved
@@ -189,7 +206,7 @@ class SessionAffinity:
     def __len__(self) -> int:
         return len(self._entries)
 
-    def peek(self, key: str | None) -> int | None:
+    def peek(self, key: str | None) -> Binding | None:
         """The live binding for *key*, without touching or counting it."""
         if not key:
             return None
@@ -200,7 +217,7 @@ class SessionAffinity:
             return None
         return entry[0]
 
-    def get(self, key: str | None) -> int | None:
+    def get(self, key: str | None) -> Binding | None:
         """The live binding for *key*; drops it if it has expired."""
         if not key:
             return None
@@ -212,8 +229,14 @@ class SessionAffinity:
             return None
         return entry[0]
 
-    def bind(self, key: str, provider_id: int, previous: int | None = None) -> None:
-        """Record that *key* was routed to *provider_id*.
+    def bind(
+        self,
+        key: str,
+        provider_id: int,
+        previous: Binding | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Record that *key* was routed to *model* on *provider_id*.
 
         *previous* is what :meth:`get` returned for this request, used only
         for the hit, miss and rebind counters.
@@ -221,12 +244,12 @@ class SessionAffinity:
         now = self._clock()
         if previous is None:
             self.misses += 1
-        elif previous == provider_id:
+        elif previous.provider_id == provider_id and previous.model in (None, model):
             self.hits += 1
         else:
             self.rebinds += 1
         entries = self._entries
-        entries[key] = (provider_id, now)
+        entries[key] = (Binding(provider_id, model), now)
         entries.move_to_end(key)
         for _ in range(_SWEEP_BATCH):
             first = next(iter(entries.items()), None)
@@ -242,7 +265,11 @@ class SessionAffinity:
 
     def forget_providers_not_in(self, provider_ids: set[int]) -> int:
         """Drop bindings to providers that no longer exist. Returns the count."""
-        stale = [k for k, (pid, _) in self._entries.items() if pid not in provider_ids]
+        stale = [
+            k
+            for k, (b, _) in self._entries.items()
+            if b.provider_id not in provider_ids
+        ]
         for k in stale:
             del self._entries[k]
         return len(stale)
@@ -254,9 +281,9 @@ class SessionAffinity:
         now = self._clock()
         live = sum(1 for _, seen in self._entries.values() if now - seen < self.ttl_s)
         per_provider: dict[int, int] = {}
-        for pid, seen in self._entries.values():
+        for b, seen in self._entries.values():
             if now - seen < self.ttl_s:
-                per_provider[pid] = per_provider.get(pid, 0) + 1
+                per_provider[b.provider_id] = per_provider.get(b.provider_id, 0) + 1
         return {
             "sessions": live,
             "per_provider": per_provider,

@@ -24,6 +24,8 @@ from .db_migrate import run_upgrade_sync
 from .db_sql import cursor_rowcount, qmark, result_first, result_mappings
 from .models import (
     BenchmarkResult,
+    ModelGroup,
+    ModelGroupMember,
     Provider,
     ProviderAddress,
     ProviderModel,
@@ -43,6 +45,7 @@ CHANGE_MODELS = "models"
 CHANGE_BENCHMARKS = "benchmarks"
 CHANGE_FALLBACKS = "fallbacks"
 CHANGE_ALIASES = "aliases"
+CHANGE_GROUPS = "groups"
 CHANGE_PRICES = "prices"
 CHANGE_CAPABILITIES = "capabilities"
 CHANGE_API_KEYS = "api_keys"
@@ -57,6 +60,7 @@ ROUTING_CHANGES = frozenset(
         CHANGE_BENCHMARKS,
         CHANGE_FALLBACKS,
         CHANGE_ALIASES,
+        CHANGE_GROUPS,
         CHANGE_PRICES,
         CHANGE_CAPABILITIES,
     }
@@ -924,6 +928,107 @@ class Database:
         )
         return {r["alias"]: r["canonical"] for r in rows}
 
+    # ── Model groups ──────────────────────────────────────────────────
+
+    async def list_model_groups(self) -> list[ModelGroup]:
+        """Every group with its members, in name then position order."""
+        groups = await self._select_all(
+            "SELECT id, name, description FROM model_groups ORDER BY name"
+        )
+        members = await self._select_all(
+            "SELECT id, group_id, model_name, provider_id, position "
+            "FROM model_group_members ORDER BY group_id, position, id"
+        )
+        by_group: dict[int, list[ModelGroupMember]] = {}
+        for m in members:
+            by_group.setdefault(int(m["group_id"]), []).append(_row_to_member(m))
+        return [
+            ModelGroup(
+                id=int(g["id"]),
+                name=g["name"],
+                description=g["description"],
+                members=by_group.get(int(g["id"]), []),
+            )
+            for g in groups
+        ]
+
+    async def get_model_group(self, name: str) -> ModelGroup | None:
+        for g in await self.list_model_groups():
+            if g.name == name:
+                return g
+        return None
+
+    @_notifies(CHANGE_GROUPS)
+    async def create_model_group(
+        self, name: str, description: str | None = None
+    ) -> ModelGroup:
+        gid = await self._insert_get_id(
+            "INSERT INTO model_groups (name, description) VALUES (?, ?)",
+            (name, description),
+        )
+        return ModelGroup(id=gid, name=name, description=description)
+
+    @_notifies(CHANGE_GROUPS)
+    async def update_model_group(
+        self, name: str, *, description: str | None = None, new_name: str | None = None
+    ) -> bool:
+        n = await self._execute_rowcount(
+            "UPDATE model_groups SET description = ?, name = ? WHERE name = ?",
+            (description, new_name or name, name),
+        )
+        return n > 0
+
+    @_notifies(CHANGE_GROUPS)
+    async def delete_model_group(self, name: str) -> bool:
+        row = await self._select_one(
+            "SELECT id FROM model_groups WHERE name = ?", (name,)
+        )
+        if row is None:
+            return False
+        # Explicit, so MySQL without enforced foreign keys and SQLite with
+        # them off end up the same.
+        await self._execute(
+            "DELETE FROM model_group_members WHERE group_id = ?", (row["id"],)
+        )
+        await self._execute("DELETE FROM model_groups WHERE id = ?", (row["id"],))
+        return True
+
+    @_notifies(CHANGE_GROUPS)
+    async def add_model_group_member(
+        self, group_id: int, model_name: str, provider_id: int | None = None
+    ) -> ModelGroupMember:
+        """Add a member, or return the existing one with the same model and
+        provider."""
+        rows = await self._select_all(
+            "SELECT id, group_id, model_name, provider_id, position "
+            "FROM model_group_members WHERE group_id = ?",
+            (group_id,),
+        )
+        for r in rows:
+            if r["model_name"] == model_name and r["provider_id"] == provider_id:
+                return _row_to_member(r)
+        position = max((int(r["position"]) for r in rows), default=-1) + 1
+        mid = await self._insert_get_id(
+            "INSERT INTO model_group_members "
+            "(group_id, model_name, provider_id, position) VALUES (?, ?, ?, ?)",
+            (group_id, model_name, provider_id, position),
+        )
+        return ModelGroupMember(
+            id=mid,
+            group_id=group_id,
+            model_name=model_name,
+            provider_id=provider_id,
+            position=position,
+        )
+
+    @_notifies(CHANGE_GROUPS)
+    async def remove_model_group_member(self, group_id: int, member_id: int) -> bool:
+        n = await self._execute_rowcount(
+            "DELETE FROM model_group_members WHERE id = ? AND group_id = ?",
+            (member_id, group_id),
+        )
+        return n > 0
+
     # --- Workers (hub side) ---
 
     async def create_worker(
@@ -1478,6 +1583,17 @@ def _row_to_model(row: Mapping[str, Any]) -> ProviderModel:
         digest=row["digest"],
         modified_at=row["modified_at"],
         details=json.loads(row["details"]) if row["details"] else None,
+    )
+
+
+def _row_to_member(row: Mapping[str, Any]) -> ModelGroupMember:
+    pid = row["provider_id"]
+    return ModelGroupMember(
+        id=int(row["id"]),
+        group_id=int(row["group_id"]),
+        model_name=row["model_name"],
+        provider_id=None if pid is None else int(pid),
+        position=int(row["position"]),
     )
 
 

@@ -29,6 +29,7 @@ from .models import (
     ENDPOINT_SUPPORTED,
     ENDPOINT_UNKNOWN,
     BenchmarkResult,
+    ModelGroup,
     Provider,
     ProviderAddress,
     ProviderModel,
@@ -127,6 +128,7 @@ class Candidate:
         return {
             "provider_id": self.provider.id,
             "provider": self.provider.name,
+            "model": self.model,
             "backend_model": self.backend_model,
             "upstream": self.upstream,
             "hot": self.is_hot,
@@ -171,6 +173,7 @@ class RoutingInputs:
     aliases: dict[str, str] = field(default_factory=dict)
     # Rows of model_prices.
     prices: list[dict[str, Any]] = field(default_factory=list)
+    groups: list[ModelGroup] = field(default_factory=list)
 
 
 def alias_groups(aliases: dict[str, str]) -> dict[str, frozenset[str]]:
@@ -212,8 +215,9 @@ async def load_inputs(db: Database) -> RoutingInputs:
     fallbacks = await db.get_all_model_fallbacks()
     aliases = await db.get_model_aliases()
     prices = await db.list_model_prices()
+    groups = await db.list_model_groups()
     return RoutingInputs(
-        providers, models, addresses, benchmarks, fallbacks, aliases, prices
+        providers, models, addresses, benchmarks, fallbacks, aliases, prices, groups
     )
 
 
@@ -528,6 +532,24 @@ class RoutingTable:
     backend_names: dict[tuple[int, str], str] = field(default_factory=dict)
     health: dict[int, ProviderHealth] = field(default_factory=dict)
     prices: PriceBook | None = None
+    # Model group name -> its members as written ("model" or "model@provider").
+    groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Group name -> (served by any online provider, served by one shared
+    # with the hub), for model listings.
+    group_reach: dict[str, tuple[bool, bool]] = field(default_factory=dict)
+    # Problems found while building, such as a group shadowing a model.
+    warnings: tuple[str, ...] = ()
+
+    def is_group(self, name: str) -> bool:
+        return name in self.groups
+
+    def listed_groups(self, hub_only: bool = False) -> list[str]:
+        """Groups a client should see: at least one member can be served."""
+        return sorted(
+            g
+            for g, (any_p, shared) in self.group_reach.items()
+            if (shared if hub_only else any_p)
+        )
 
     def chain(self, model: str) -> tuple[str, ...]:
         return self.chains.get(model) or (model,)
@@ -579,6 +601,8 @@ class RoutingTable:
             "build_ms": round(self.build_ms, 3),
             "reasons": list(self.reasons),
             "fallback_chains": {k: list(v) for k, v in self.chains.items()},
+            "groups": {k: list(v) for k, v in self.groups.items()},
+            "warnings": list(self.warnings),
             "provider_health": {str(k): v.to_dict() for k, v in self.health.items()},
             "models": models,
         }
@@ -696,6 +720,8 @@ def build_table(
                     if all(x.provider.id != pid for x in bucket):
                         bucket.append(c)
 
+    warnings = _add_groups(table, grouped, inputs)
+
     def _score_by(mode: str) -> Callable[[Candidate], float]:
         return lambda c: c.scores[mode]
 
@@ -733,6 +759,71 @@ def build_table(
 
     table.chains = fallback_chains(inputs.fallbacks)
     table.backend_names = backend_names
+    table.warnings = tuple(warnings)
     table.built_at = time.time()
     table.build_ms = (time.perf_counter() - started) * 1000
     return table
+
+
+def member_label(model: str, provider: str | None) -> str:
+    return model if provider is None else f"{model}@{provider}"
+
+
+def _add_groups(
+    table: RoutingTable,
+    grouped: dict[tuple[str, str], list[Candidate]],
+    inputs: RoutingInputs,
+) -> list[str]:
+    """Add a candidate bucket per (group, endpoint) to *grouped*.
+
+    A group's candidates are its members' candidates, already scored, so
+    ranking a group is the same as ranking a model and a request for a
+    group name costs one lookup. A provider can serve several members, so
+    candidates are told apart by provider and model.
+    """
+    warnings: list[str] = []
+    if not inputs.groups:
+        return warnings
+    names = {p.id: p.name for p in inputs.providers}
+    group_names = {g.name for g in inputs.groups}
+    model_buckets: dict[str, list[str]] = {}
+    for model, path in grouped:
+        model_buckets.setdefault(model, []).append(path)
+    for g in inputs.groups:
+        table.groups[g.name] = tuple(
+            member_label(
+                m.model_name,
+                None if m.provider_id is None else names.get(m.provider_id, "?"),
+            )
+            for m in g.members
+        )
+        if g.name in model_buckets:
+            warnings.append(
+                f"model group {g.name} hides a model of the same name; "
+                "requests for that name go to the group"
+            )
+            for path in model_buckets[g.name]:
+                del grouped[(g.name, path)]
+        merged: dict[str, list[Candidate]] = {}
+        for m in g.members:
+            if m.model_name in group_names:
+                continue  # groups do not nest
+            for path in model_buckets.get(m.model_name, ()):
+                bucket = merged.setdefault(path, [])
+                for c in grouped.get((m.model_name, path), ()):
+                    if m.provider_id is not None and c.provider_id != m.provider_id:
+                        continue
+                    if any(
+                        x.provider_id == c.provider_id and x.model == c.model
+                        for x in bucket
+                    ):
+                        continue
+                    bucket.append(c)
+        any_provider = shared = False
+        for path, bucket in merged.items():
+            if bucket:
+                grouped[(g.name, path)] = bucket
+                any_provider = True
+                shared = shared or any(c.provider.hub_shared for c in bucket)
+        table.group_reach[g.name] = (any_provider, shared)
+    return warnings

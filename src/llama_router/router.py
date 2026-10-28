@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .affinity import SessionAffinity, session_key, short_key
+from .affinity import Binding, SessionAffinity, session_key, short_key
 from .config import settings
 from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
@@ -70,7 +70,7 @@ _MAX_REASONS = 20
 class RouteResult:
     """Wraps a routing decision, including which model was actually resolved."""
 
-    __slots__ = ("backend_model", "model_key", "provider", "resolved_model")
+    __slots__ = ("backend_model", "group", "model_key", "provider", "resolved_model")
 
     def __init__(
         self,
@@ -78,9 +78,13 @@ class RouteResult:
         resolved_model: str,
         backend_model: str | None = None,
         model_key: str | None = None,
+        group: str | None = None,
     ):
         self.provider = provider
         self.resolved_model = resolved_model
+        # The model group the request named, when it named one; the member
+        # chosen is model_key.
+        self.group = group
         # The name the chosen backend knows the model by.
         self.backend_model = backend_model or resolved_model
         # The model's discovered name, which live stats are keyed by. Differs
@@ -373,7 +377,7 @@ class Router:
             if pins:
                 pid = pins.get(candidate_model)
                 if pid is not None:
-                    pinned = self._pinned(table, candidate_model, path, pid)
+                    pinned = self._pinned(table, candidate_model, path, pid, mode)
                     if pinned is not None and not _eligible(
                         pinned.provider, locality, hub_only
                     ):
@@ -403,6 +407,7 @@ class Router:
                             candidate_model,
                             pinned.backend_model,
                             pinned.model,
+                            _group_of(table, candidate_model),
                         )
             ranked = table.ranked_for(candidate_model, path, mode, locality, hub_only)
             if not ranked:
@@ -415,19 +420,23 @@ class Router:
                 sticky = affinity.get(session) if record else affinity.peek(session)
                 if sticky is not None:
                     for c in ranked:
-                        if c.provider_id == sticky:
+                        if sticky.matches(c.provider_id, c.model):
                             chosen = c
                             break
             if chosen is None:
                 chosen = _pick(ranked, mode, active)
             if session is not None and record:
-                self.affinity.bind(session, chosen.provider_id, sticky)
-                if sticky is not None and sticky != chosen.provider_id:
+                self.affinity.bind(session, chosen.provider_id, sticky, chosen.model)
+                if sticky is not None and not sticky.matches(
+                    chosen.provider_id, chosen.model
+                ):
                     logger.info(
-                        "Session %s moved from provider %d to %s: bound "
-                        "provider is not eligible for %s",
+                        "Session %s moved from %s on provider %d to %s on %s: "
+                        "bound provider is not eligible for %s",
                         short_key(session),
-                        sticky,
+                        sticky.model or "its model",
+                        sticky.provider_id,
+                        chosen.model,
                         chosen.provider.name,
                         candidate_model,
                     )
@@ -438,14 +447,19 @@ class Router:
                     candidate_model,
                 )
             logger.debug(
-                "Routing model %s (%s, %s) to provider %s",
+                "Routing model %s (%s, %s) to %s on provider %s",
                 candidate_model,
                 path,
                 mode,
+                chosen.model,
                 chosen.provider.name,
             )
             return RouteResult(
-                chosen.provider, candidate_model, chosen.backend_model, chosen.model
+                chosen.provider,
+                candidate_model,
+                chosen.backend_model,
+                chosen.model,
+                _group_of(table, candidate_model),
             )
         return None
 
@@ -555,6 +569,11 @@ class Router:
                 if decision is not None and decision.resolved_model == candidate_model
                 else None
             )
+            chosen_model = (
+                decision.model_key
+                if decision is not None and chosen_id is not None
+                else None
+            )
             step = self._explain_step(
                 table,
                 candidate_model,
@@ -567,6 +586,7 @@ class Router:
                 bound,
                 locality,
                 hub_only,
+                chosen_model,
             )
             out["steps"].append(step)
             if decision is not None and decision.resolved_model == candidate_model:
@@ -584,11 +604,14 @@ class Router:
         pins: dict[str, int],
         active: Callable[[int], int],
         chosen_id: int | None = None,
-        bound: int | None = None,
+        bound: Binding | None = None,
         locality: str | None = None,
         hub_only: bool = False,
+        chosen_model: str | None = None,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
+        if table.is_group(model):
+            step["group"] = {"name": model, "members": list(table.groups[model])}
         rows: list[dict[str, Any]] = []
         all_cands = table.all_candidates.get((model, path), ())
         ranked = table.ranked_for(model, path, mode, locality, hub_only)
@@ -600,7 +623,8 @@ class Router:
         pinned = None
         if pid is not None:
             step["pinned_provider_id"] = pid
-            pinned = next((c for c in all_cands if c.provider_id == pid), None)
+            here = [c for c in all_cands if c.provider_id == pid]
+            pinned = min(here, key=lambda c: (c.tier, c.scores[mode])) if here else None
             if pinned is not None and not _eligible(
                 pinned.provider, locality, hub_only
             ):
@@ -621,7 +645,8 @@ class Router:
                     "total_score": round(c.scores[mode] + q * c.queue_weight[mode], 2),
                     "excluded": None,
                     "warnings": [],
-                    "session_bound": bound is not None and c.provider_id == bound,
+                    "session_bound": bound is not None
+                    and bound.matches(c.provider_id, c.model),
                 }
             )
             if not _eligible(c.provider, locality, hub_only):
@@ -662,13 +687,37 @@ class Router:
         )
         eligible = [r for r in rows if r["excluded"] is None]
         # The real decision ranks first, so ties read the same way it broke them.
-        eligible.sort(key=lambda r: (r["provider_id"] != chosen_id, r["total_score"]))
+        eligible.sort(
+            key=lambda r: (
+                not (
+                    r["provider_id"] == chosen_id
+                    and r.get("model") in (None, chosen_model)
+                ),
+                r["total_score"],
+            )
+        )
+        is_group = table.is_group(model)
+
+        def where(provider: str, member: str | None) -> str:
+            return f"{member} on {provider}" if is_group and member else provider
+
         if pinned is not None:
-            step["outcome"] = f"pinned to {pinned.provider.name}"
-        elif eligible and bound is not None and chosen_id == bound:
-            step["outcome"] = f"kept on {eligible[0]['provider']} for this session"
+            step["outcome"] = f"pinned to {where(pinned.provider.name, pinned.model)}"
+        elif (
+            eligible
+            and bound is not None
+            and chosen_id is not None
+            and bound.matches(chosen_id, chosen_model or "")
+        ):
+            step["outcome"] = (
+                f"kept on {where(eligible[0]['provider'], eligible[0].get('model'))} "
+                "for this session"
+            )
         elif eligible:
-            step["outcome"] = f"lowest {mode} score: {eligible[0]['provider']}"
+            step["outcome"] = (
+                f"lowest {mode} score: "
+                f"{where(eligible[0]['provider'], eligible[0].get('model'))}"
+            )
             if best_tier != TIER_OK:
                 step["outcome"] += (
                     " (every provider has a problem; using the least bad)"
@@ -689,7 +738,7 @@ class Router:
     def _explain_session(
         self,
         session: str,
-        bound: int | None,
+        bound: Binding | None,
         decision: RouteResult | None,
         mode: str,
         enabled: bool,
@@ -697,8 +746,9 @@ class Router:
     ) -> dict[str, Any]:
         info: dict[str, Any] = {
             "key": short_key(session),
-            "bound_provider_id": bound,
-            "bound_provider": self._provider_name(bound),
+            "bound_provider_id": bound.provider_id if bound else None,
+            "bound_provider": self._provider_name(bound.provider_id if bound else None),
+            "bound_model": bound.model if bound else None,
             "honored": False,
         }
         if not enabled:
@@ -712,7 +762,11 @@ class Router:
                 "no live binding; the first request binds the session "
                 "to the normal choice"
             )
-        elif decision is not None and decision.provider.id == bound:
+        elif (
+            decision is not None
+            and decision.provider.id is not None
+            and bound.matches(decision.provider.id, decision.model_key)
+        ):
             info["honored"] = True
             info["reason"] = "the session stays on the provider that served it"
         else:
@@ -771,17 +825,30 @@ class Router:
 
     @staticmethod
     def _pinned(
-        table: RoutingTable, model: str, path: str, provider_id: int
+        table: RoutingTable,
+        model: str,
+        path: str,
+        provider_id: int,
+        mode: str = DEFAULT_MODE,
     ) -> Candidate | None:
-        for c in table.all_candidates.get((model, path), ()):
-            if c.provider.id == provider_id:
-                logger.debug(
-                    "Pinned routing model %s (%s) -> provider %s",
-                    model,
-                    path,
-                    c.provider.name,
-                )
-                return c
+        """The pinned provider's candidate; for a model group, where the
+        provider serves several members, the best scored in *mode*."""
+        here = [
+            c
+            for c in table.all_candidates.get((model, path), ())
+            if c.provider.id == provider_id
+        ]
+        if here:
+            mode = mode if mode in MODES else DEFAULT_MODE
+            best = min(here, key=lambda c: (c.tier, c.scores[mode]))
+            logger.debug(
+                "Pinned routing model %s (%s) -> %s on provider %s",
+                model,
+                path,
+                best.model,
+                best.provider.name,
+            )
+            return best
         logger.warning(
             "Pinned route unavailable for model %s (%s) provider_id=%d",
             model,
@@ -819,6 +886,10 @@ class Router:
         return RouteResult(
             provider, resolved_model, table.backend_name(provider_id, resolved_model)
         )
+
+
+def _group_of(table: RoutingTable, name: str) -> str | None:
+    return name if table.is_group(name) else None
 
 
 def _locality_ok(provider: Provider, locality: str | None) -> bool:
