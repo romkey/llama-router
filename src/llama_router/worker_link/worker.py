@@ -416,7 +416,11 @@ class WorkerClient:
             return
 
         headers = p.filter_headers(meta.get("headers") or [])
+        headers = [h for h in headers if h[0].lower() != p.HUB_HEADER.lower()]
         headers.append(["accept-encoding", "identity"])
+        # Tells this router (the usual upstream) to use only the providers
+        # shared with the hub; any other upstream ignores it.
+        headers.append([p.HUB_HEADER, p.HUB_HEADER_VALUE])
         if self._upstream_api_key:
             headers.append(["API-KEY", self._upstream_api_key])
 

@@ -9,6 +9,10 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- A worker can choose which of its providers its hub may use. The
+  Workers tab lists them as Local, Cloud and Remotes with all/none quick
+  picks; the hub's jobs route only to the ticked providers and it lists
+  only their models. See `docs/workers.md`.
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
   database work, used by the production compose health check.
 - `llama-router --version`.

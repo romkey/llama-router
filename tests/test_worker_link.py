@@ -121,6 +121,7 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
         "v1_chat_bodies": [],
         "systemone_bodies": [],
         "serve_systemone": True,
+        "via": [],
     }
 
     @app.get("/api/version")
@@ -129,7 +130,8 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
         return {"version": "0.0-test"}
 
     @app.get("/api/tags")
-    async def tags():
+    async def tags(request: Request):
+        seen["via"].append(request.headers.get("x-llama-router-via"))
         return {"models": [{"name": "tiny:1b", "size": 123, "digest": "sha256:abc"}]}
 
     @app.get("/api/ps")
@@ -361,6 +363,13 @@ async def test_admin_paths_are_refused_by_default(link) -> None:
     with pytest.raises(httpx.HTTPStatusError) as exc:
         await client.delete_model("tiny:1b")
     assert exc.value.response.status_code == 403
+
+
+async def test_worker_marks_relayed_jobs_as_from_the_hub(link) -> None:
+    """Every relayed job carries X-Llama-Router-Via: hub, so the worker's own
+    router limits it to the providers shared with the hub."""
+    await _connected_worker(link)
+    assert link["seen"]["via"] and link["seen"]["via"][-1] == "hub"
 
 
 async def test_upstream_api_key_is_added_by_worker(link) -> None:

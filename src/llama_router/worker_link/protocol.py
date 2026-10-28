@@ -124,3 +124,11 @@ def filter_headers(pairs: Any) -> list[list[str]]:
 def chunks(data: bytes, size: int = MAX_CHUNK):
     for i in range(0, len(data), size):
         yield data[i : i + size]
+
+
+# Sent by a worker on every job it relays to its upstream. When the upstream
+# is the worker's own router, it limits the job to the providers shared with
+# the hub (Provider.hub_shared). Any other upstream ignores it. A client can
+# only narrow its own routing by sending it, so it is not a credential.
+HUB_HEADER = "X-Llama-Router-Via"
+HUB_HEADER_VALUE = "hub"

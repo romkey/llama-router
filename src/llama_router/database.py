@@ -4,7 +4,7 @@ import asyncio
 import functools
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -306,6 +306,7 @@ class Database:
         "model_filter": False,
         "read_timeout_s": False,
         "auto_benchmark": False,
+        "hub_shared": False,
     }
 
     @_notifies(CHANGE_PROVIDERS)
@@ -331,6 +332,18 @@ class Database:
             "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             tuple(params),
         )
+
+    @_notifies(CHANGE_PROVIDERS)
+    async def set_hub_shared_providers(self, provider_ids: Iterable[int]) -> None:
+        """Share exactly *provider_ids* with the hub this router works for."""
+        ids = sorted({int(i) for i in provider_ids})
+        await self._execute("UPDATE providers SET hub_shared = 0")
+        if ids:
+            marks = ", ".join("?" for _ in ids)
+            await self._execute(
+                f"UPDATE providers SET hub_shared = 1 WHERE id IN ({marks})",  # noqa: S608 - placeholders only; values are bound
+                tuple(ids),
+            )
 
     async def set_provider_api_key(
         self, provider_id: int, api_key_enc: str | None, header: str | None
@@ -508,8 +521,14 @@ class Database:
         )
         return [_row_to_address(r) for r in rows]
 
-    async def list_all_models(self) -> list[dict]:
-        q = text("""
+    async def list_all_models(self, *, hub_only: bool = False) -> list[dict]:
+        """Models of online providers, one row per name.
+
+        With *hub_only*, only providers shared with the hub (see
+        ``Provider.hub_shared``): what a hub sees through the worker link.
+        """
+        shared = "AND p.hub_shared != 0" if hub_only else ""
+        q = text(f"""
             SELECT name, size, digest, modified_at, details FROM (
                 SELECT pm.name, pm.size, pm.digest, pm.modified_at, pm.details,
                     ROW_NUMBER() OVER (
@@ -517,11 +536,11 @@ class Database:
                     ) AS rn
                 FROM provider_models pm
                 INNER JOIN providers p ON p.id = pm.provider_id
-                WHERE p.status != 'offline'
+                WHERE p.status != 'offline' {shared}
             ) ranked
             WHERE rn = 1
             ORDER BY name
-            """)
+            """)  # noqa: S608 - the only interpolation is a fixed clause
         sf = self._require_session_factory()
         async with sf() as session:
             r = await session.execute(q)
@@ -1410,6 +1429,7 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         model_filter=row["model_filter"],
         read_timeout_s=row["read_timeout_s"],
         auto_benchmark=_tristate(row["auto_benchmark"]),
+        hub_shared=row["hub_shared"] is None or bool(row["hub_shared"]),
     )
 
 

@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..auth import from_hub
 from . import deps
 
 router = APIRouter()
 
 
 @router.get("/api/tags")
-async def list_tags():
-    """Aggregate models from all online providers."""
+async def list_tags(request: Request):
+    """Aggregate models from all online providers (a hub sees only the
+    providers shared with it)."""
     db = deps.get_db()
-    models = await db.list_all_models()
+    models = await db.list_all_models(hub_only=from_hub(request))
     return JSONResponse(content={"models": models})
 
 
