@@ -163,7 +163,7 @@ def test_policy_validation():
         {"model": JUDGE, "tier": TIER, "extra": 1},
     ]
     for policy in bad:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="validation error"):
             parse_policy(policy)
 
 
@@ -180,7 +180,7 @@ def test_questions_follow_the_tier_models():
 
 
 @pytest.mark.parametrize(
-    "body,text",
+    ("body", "text"),
     [
         (
             {
@@ -254,7 +254,8 @@ async def test_no_policy_means_no_decision_call(router, backend, key, monkeypatc
     monkeypatch.setattr(svc, "emulate", lambda *a, **k: calls.append(a))
     resp = await _post("/v1/chat/completions", dict(CHAT), key[1])
     assert resp.status_code == 200, resp.text
-    assert calls == [] and backend.decisions == []
+    assert calls == []
+    assert backend.decisions == []
     assert [g["model"] for g in backend.generations] == ["asked"]
 
 
@@ -271,14 +272,15 @@ async def test_tier_rewrites_the_model(db, router, backend, key):
     logs = await db.get_request_logs(10, 0)
     (decision,) = [e for e in logs if e.endpoint == "/v1/decisions"]
     (chat,) = [e for e in logs if e.endpoint == "/v1/chat/completions"]
-    assert decision.model == JUDGE and decision.status == "ok"
+    assert decision.model == JUDGE
+    assert decision.status == "ok"
     assert chat.model == "big"
     assert chat.request_meta.startswith("policy ")
     assert "tier=2 asked->big" in chat.request_meta
 
 
 @pytest.mark.parametrize(
-    "path,body",
+    ("path", "body"),
     [
         ("/v1/completions", {"model": "asked", "prompt": "Prove it."}),
         ("/v1/responses", {"model": "asked", "input": "Prove it."}),
@@ -355,7 +357,8 @@ async def test_decision_error_falls_back(db, router, key, httpx_mock):
     (decision,) = [
         e for e in await db.get_request_logs(10, 0) if e.endpoint == "/v1/decisions"
     ]
-    assert decision.status == "error" and "HTTP 500" in decision.error_detail
+    assert decision.status == "error"
+    assert "HTTP 500" in decision.error_detail
 
 
 async def test_decision_timeout_falls_back(db, router, backend, key, monkeypatch):

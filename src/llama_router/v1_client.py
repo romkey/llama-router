@@ -30,6 +30,11 @@ class V1Client:
         self._ollama = ollama
         self._llamacpp = llamacpp
 
+    def _require_ollama(self) -> OllamaClient:
+        if self._ollama is None:
+            raise RuntimeError("this route needs an Ollama upstream")
+        return self._ollama
+
     # --- any JSON route ---
 
     async def post_json(
@@ -37,7 +42,8 @@ class V1Client:
     ) -> dict[str, Any]:
         """POST *body* to *path* upstream and return the JSON answer."""
         client = self._llamacpp or self._ollama
-        assert client is not None
+        if client is None:
+            raise RuntimeError("V1Client has no upstream client")
         resp = await client._post(path, op=op, json=body)
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
@@ -58,8 +64,8 @@ class V1Client:
     async def chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.chat_completions(body)
-        assert self._ollama
-        return await self._ollama.v1_chat_completions(body)
+        ollama = self._require_ollama()
+        return await ollama.v1_chat_completions(body)
 
     # --- completions ---
 
@@ -74,16 +80,16 @@ class V1Client:
     async def completions(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.completions(body)
-        assert self._ollama
-        return await self._ollama.v1_completions(body)
+        ollama = self._require_ollama()
+        return await ollama.v1_completions(body)
 
     # --- embeddings ---
 
     async def embeddings(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.embeddings(body)
-        assert self._ollama
-        return await self._ollama.v1_embeddings(body)
+        ollama = self._require_ollama()
+        return await ollama.v1_embeddings(body)
 
     # --- responses ---
 
@@ -98,22 +104,22 @@ class V1Client:
     async def responses(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.responses(body)
-        assert self._ollama
-        return await self._ollama.v1_responses(body)
+        ollama = self._require_ollama()
+        return await ollama.v1_responses(body)
 
     # --- images ---
 
     async def images_generations(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.images_generations(body)
-        assert self._ollama
-        return await self._ollama.v1_images_generations(body)
+        ollama = self._require_ollama()
+        return await ollama.v1_images_generations(body)
 
     async def images_edits(self, data: bytes, content_type: str) -> httpx.Response:
         if self._llamacpp:
             return await self._llamacpp.images_edits(data, content_type)
-        assert self._ollama
-        return await self._ollama.v1_images_edits(data, content_type)
+        ollama = self._require_ollama()
+        return await ollama.v1_images_edits(data, content_type)
 
     # --- audio ---
 
@@ -130,14 +136,14 @@ class V1Client:
     ) -> httpx.Response:
         if self._llamacpp:
             return await self._llamacpp.audio_transcriptions(data, content_type)
-        assert self._ollama
-        return await self._ollama.v1_audio_transcriptions(data, content_type)
+        ollama = self._require_ollama()
+        return await ollama.v1_audio_transcriptions(data, content_type)
 
     async def audio_voices(self) -> dict[str, Any]:
         if self._llamacpp:
             return await self._llamacpp.audio_voices()
-        assert self._ollama
-        return await self._ollama.v1_audio_voices()
+        ollama = self._require_ollama()
+        return await ollama.v1_audio_voices()
 
 
 def get_v1_client(pm: ProviderManager, provider_id: int) -> V1Client:

@@ -144,7 +144,8 @@ async def test_explains_fallback_and_pins(db: Database, pm: ProviderManager):
     out = await rt.explain("big", "/v1/chat/completions")
     assert out["fallback_chain"] == ["big", "small"]
     assert out["steps"][0]["outcome"] == "no provider can serve this model"
-    assert out["chosen"]["model"] == "small" and out["chosen"]["fell_back"]
+    assert out["chosen"]["model"] == "small"
+    assert out["chosen"]["fell_back"]
     assert "falling back" in out["summary"]
 
     no_fb = await rt.explain(
@@ -152,7 +153,8 @@ async def test_explains_fallback_and_pins(db: Database, pm: ProviderManager):
         "/v1/chat/completions",
         preferences=RoutingPreferences(allow_fallback=False),
     )
-    assert no_fb["chosen"] is None and len(no_fb["steps"]) == 1
+    assert no_fb["chosen"] is None
+    assert len(no_fb["steps"]) == 1
 
     pinned = await rt.explain(
         "small",
@@ -172,7 +174,8 @@ async def test_explains_chaos(db: Database, pm: ProviderManager):
         "anything", "/v1/chat/completions", preferences=RoutingPreferences(mode="chaos")
     )
     assert out["chaos_pool"][0]["models"] == ["m1", "m2"]
-    assert "random" in out["summary"] and "this time: a" in out["summary"]
+    assert "random" in out["summary"]
+    assert "this time: a" in out["summary"]
 
 
 async def test_explains_empty_chaos_pool(db: Database, pm: ProviderManager):
@@ -181,7 +184,8 @@ async def test_explains_empty_chaos_pool(db: Database, pm: ProviderManager):
     out = await rt.explain(
         "m", "/v1/chat/completions", preferences=RoutingPreferences(mode="chaos")
     )
-    assert out["chosen"] is None and out["chaos_pool"] == []
+    assert out["chosen"] is None
+    assert out["chaos_pool"] == []
     assert out["summary"].startswith("No provider can serve this request")
 
 
@@ -248,4 +252,5 @@ async def test_explain_api_validation(client):
 async def test_dashboard_renders_explorer(db: Database, pm: ProviderManager, client):
     await _provider(db, "a", ["m"])
     page = client.get("/").text
-    assert "Route Explorer" in page and 'id="rx-models"' in page
+    assert "Route Explorer" in page
+    assert 'id="rx-models"' in page

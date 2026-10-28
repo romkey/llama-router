@@ -328,7 +328,8 @@ async def test_audio_transcriptions_errors(
         down = await c.post("/v1/audio/transcriptions", data={"model": MODEL})
     assert no_model.status_code == 400
     assert unknown.status_code == 404
-    assert upstream.status_code == 500 and upstream.json() == {"error": "bad"}
+    assert upstream.status_code == 500
+    assert upstream.json() == {"error": "bad"}
     assert down.status_code == 500
 
 

@@ -212,6 +212,12 @@ class Provider(BaseModel):
         multipliers = {"TB": 1 << 40, "GB": 1 << 30, "MB": 1 << 20}
         return int(val * multipliers[unit])
 
+    def require_id(self) -> int:
+        """The database id; raises for a provider that was never saved."""
+        if self.id is None:
+            raise ValueError(f"provider {self.name!r} has no id")
+        return self.id
+
 
 class ProviderModel(BaseModel):
     id: int | None = None
@@ -263,6 +269,12 @@ class ProviderAddress(BaseModel):
     is_preferred: bool = False
     is_live: bool = False
     created_at: datetime | None = None
+
+    def require_id(self) -> int:
+        """The database id; raises for an address that was never saved."""
+        if self.id is None:
+            raise ValueError(f"address {self.url!r} has no id")
+        return self.id
 
 
 class RequestLog(BaseModel):

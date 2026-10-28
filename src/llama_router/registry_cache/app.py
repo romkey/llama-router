@@ -104,12 +104,14 @@ def init_cache(cache: BlobCache) -> None:
 
 
 def _get_cache() -> BlobCache:
-    assert _cache is not None, "Registry cache not initialized"
+    if _cache is None:
+        raise RuntimeError("Registry cache not initialized")
     return _cache
 
 
 def _upstream() -> httpx.AsyncClient:
-    assert _upstream_client is not None, "upstream client not initialized"
+    if _upstream_client is None:
+        raise RuntimeError("upstream client not initialized")
     return _upstream_client
 
 
@@ -417,7 +419,8 @@ async def precache_model(
 
     total = len(layers)
     sem = _blob_semaphore
-    assert sem is not None, "blob semaphore not initialized"
+    if sem is None:
+        raise RuntimeError("blob semaphore not initialized")
     precache_start = time.monotonic()
     total_downloaded: list[int] = [0]
 

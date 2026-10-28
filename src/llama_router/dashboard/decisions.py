@@ -284,7 +284,7 @@ async def api_fit_calibration(request: Request) -> JSONResponse:
             status_code=404, detail=f"No available provider for model '{model}'"
         )
     provider = result.provider
-    assert provider.id is not None
+    provider_id = provider.require_id()
     # A provider that answers decisions itself never applies a calibration.
     if decides_natively(provider, "/v1/systemone"):
         raise HTTPException(
@@ -296,7 +296,7 @@ async def api_fit_calibration(request: Request) -> JSONResponse:
         )
     try:
         dists = await _distributions(
-            provider.id, result.backend_model, question, [s for s, _y in labelled]
+            provider_id, result.backend_model, question, [s for s, _y in labelled]
         )
     except d.NoLogprobsError as exc:
         raise HTTPException(

@@ -87,7 +87,8 @@ async def test_manifest_miss_then_hit(
     cache, client = env
     httpx_mock.add_response(url=f"{UP}/v2/library/m/manifests/latest", content=MANIFEST)
     first = await client.get("/v2/library/m/manifests/latest")
-    assert first.status_code == 200 and first.content == MANIFEST
+    assert first.status_code == 200
+    assert first.content == MANIFEST
     assert cache.manifest_misses == 1
     second = await client.get("/v2/library/m/manifests/latest")
     assert second.content == MANIFEST
@@ -165,7 +166,8 @@ async def test_get_blob_miss_streams_and_caches(
     assert rc._active_downloads == {}
 
     hit = await client.get(f"/v2/library/m/blobs/{DIGEST}")
-    assert hit.status_code == 200 and hit.content == b""
+    assert hit.status_code == 200
+    assert hit.content == b""
     assert hit.headers["location"] == f"http://cache/cache/blobs/{DIGEST}"
     assert cache.blob_hits == 1
 
@@ -215,7 +217,8 @@ async def test_serve_cached_blob(env: tuple[BlobCache, httpx.AsyncClient]) -> No
     resp = await client.get(f"/cache/blobs/{DIGEST}")
     assert resp.content == BLOB
     ranged = await client.get(f"/cache/blobs/{DIGEST}", headers={"Range": "bytes=0-9"})
-    assert ranged.status_code == 206 and ranged.content == BLOB[:10]
+    assert ranged.status_code == 206
+    assert ranged.content == BLOB[:10]
 
 
 async def test_precache_model_downloads_all_blobs(
@@ -231,7 +234,8 @@ async def test_precache_model_downloads_all_blobs(
     )
     messages: list[str] = []
     await rc.precache_model(cache, "llama3", messages.append)
-    assert cache.has_blob(DIGEST) and cache.has_blob(CFG_DIGEST)
+    assert cache.has_blob(DIGEST)
+    assert cache.has_blob(CFG_DIGEST)
     assert any("cached llama3" in m for m in messages)
 
     # Second run: manifest refetched but blobs already cached.

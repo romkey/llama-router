@@ -226,7 +226,7 @@ async def _decide(
                 f"no available provider for decision model {req.model!r}"
             )
         provider = result.provider
-        assert provider.id is not None
+        provider_id = provider.require_id()
         start = time.monotonic()
         log: dict[str, Any] = {
             "provider": provider,
@@ -268,7 +268,7 @@ async def _decide(
                 inputs.aliases if inputs else None,
             )
         except d.NoLogprobsError as e:
-            pm.stats.record_logprobs(provider.id, ok=False)
+            pm.stats.record_logprobs(provider_id, ok=False)
             failure = failed("backend returned no logprobs", sample=False)
             if attempt == 0:
                 await rt.rebuild()
@@ -384,8 +384,7 @@ async def apply_decision_policy(
     ms = (time.monotonic() - start) * 1000
     parts = [f"policy {ms:.0f}ms"]
     target = model
-    if level is not None:
-        assert policy.tier is not None
+    if level is not None and policy.tier is not None:
         target = policy.tier.targets.get(level, "").strip() or model
         parts.append(f"tier={level} {model}->{target}")
     parts += [f"{name}={p:.2f}" for name, p in gates.items()]

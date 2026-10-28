@@ -260,12 +260,12 @@ class ProviderManager:
                 provider = await self._db.add_provider(
                     name, ProviderProtocol(preset.protocol)
                 )
-                assert provider.id is not None
+                provider_id = provider.require_id()
                 await self._db.update_provider_settings(
-                    provider.id, **preset_settings(preset)
+                    provider_id, **preset_settings(preset)
                 )
-                await self._db.add_address(provider.id, url, is_preferred=True)
-                provider = await self._db.get_provider(provider.id) or provider
+                await self._db.add_address(provider_id, url, is_preferred=True)
+                provider = await self._db.get_provider(provider_id) or provider
                 await self._store_api_key(
                     provider, key, normalize_header(preset.api_key_header)
                 )
@@ -302,12 +302,12 @@ class ProviderManager:
         providers = await self._db.list_providers()
         http_providers: list[Provider] = []
         for p in providers:
-            assert p.id is not None
+            p_id = p.require_id()
             await self._rebuild_clients(p)
             if p.is_worker:
                 # Workers come online when they dial in, not at startup.
-                if not self.worker_hub.is_connected(p.id):
-                    await self._mark_worker_offline(p.id)
+                if not self.worker_hub.is_connected(p_id):
+                    await self._mark_worker_offline(p_id)
                 continue
             http_providers.append(p)
         # Probe and discover now so the dashboard shows real state immediately
@@ -369,27 +369,27 @@ class ProviderManager:
 
     async def _rebuild_clients(self, provider: Provider) -> None:
         """Close existing clients and create new ones from the best live address."""
-        assert provider.id is not None
-        await self._close_clients(provider.id)
-        addresses = await self._db.get_addresses(provider.id)
+        provider_id = provider.require_id()
+        await self._close_clients(provider_id)
+        addresses = await self._db.get_addresses(provider_id)
         addr = self._best_address(addresses)
         if not addr:
-            self._active_urls.pop(provider.id, None)
+            self._active_urls.pop(provider_id, None)
             return
-        kw: dict[str, Any] = {"on_response": self._response_hook(provider.id)}
+        kw: dict[str, Any] = {"on_response": self._response_hook(provider_id)}
         if provider.read_timeout_s:
             kw["timeout"] = httpx.Timeout(10.0, read=provider.read_timeout_s)
         if provider.is_worker:
             kw["transport"] = self.worker_hub.transport(
-                provider.id, provider.worker_target
+                provider_id, provider.worker_target
             )
         else:
             kw["headers"] = self._upstream_headers(provider)
         if provider.is_ollama:
-            self._ollama_clients[provider.id] = OllamaClient(addr.url, **kw)
+            self._ollama_clients[provider_id] = OllamaClient(addr.url, **kw)
         else:
-            self._llamacpp_clients[provider.id] = LlamaCppClient(addr.url, **kw)
-        self._active_urls[provider.id] = self._address_url_sig(addr)
+            self._llamacpp_clients[provider_id] = LlamaCppClient(addr.url, **kw)
+        self._active_urls[provider_id] = self._address_url_sig(addr)
 
     def _response_hook(
         self, provider_id: int
@@ -447,8 +447,7 @@ class ProviderManager:
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
         )
-        assert provider.id is not None
-        provider_id = provider.id
+        provider_id = provider.require_id()
         if provider_settings:
             await self._db.update_provider_settings(provider_id, **provider_settings)
             provider = await self._db.get_provider(provider_id) or provider
@@ -523,7 +522,7 @@ class ProviderManager:
     async def _store_api_key(
         self, provider: Provider, api_key: str, header: str | None
     ) -> None:
-        assert provider.id is not None
+        provider_id = provider.require_id()
         if provider.is_worker:
             raise ValueError(
                 "worker providers use the worker's own upstream key "
@@ -531,7 +530,7 @@ class ProviderManager:
             )
         enc = encrypt_api_key(api_key.strip())
         stored_header = None if header in (None, DEFAULT_HEADER) else header
-        await self._db.set_provider_api_key(provider.id, enc, stored_header)
+        await self._db.set_provider_api_key(provider_id, enc, stored_header)
         provider.api_key_enc = enc
         provider.api_key_header = stored_header
 
@@ -664,20 +663,20 @@ class ProviderManager:
         providers = await self._db.list_providers()
         infos = []
         for p in providers:
-            assert p.id is not None
-            models = await self._db.get_provider_models(p.id)
-            benchmarks = await self._db.get_benchmarks_for_provider(p.id)
-            addresses = await self._db.get_addresses(p.id)
+            p_id = p.require_id()
+            models = await self._db.get_provider_models(p_id)
+            benchmarks = await self._db.get_benchmarks_for_provider(p_id)
+            addresses = await self._db.get_addresses(p_id)
             infos.append(
                 ProviderInfo(
                     provider=p,
                     models=models,
                     benchmarks=benchmarks,
                     addresses=addresses,
-                    active_requests=self._active_requests.get(p.id, 0),
-                    hot_models=self._hot_models.get(p.id, []),
+                    active_requests=self._active_requests.get(p_id, 0),
+                    hot_models=self._hot_models.get(p_id, []),
                     worker=self.worker_summary(p),
-                    status_detail=self._status_detail.get(p.id),
+                    status_detail=self._status_detail.get(p_id),
                 )
             )
         return infos
@@ -786,11 +785,11 @@ class ProviderManager:
         await self._refresh_ollama_hot(provider)
 
     async def _refresh_llamacpp_loaded(self, provider: Provider) -> None:
-        assert provider.id is not None
-        client = self._llamacpp_clients.get(provider.id)
+        provider_id = provider.require_id()
+        client = self._llamacpp_clients.get(provider_id)
         if not provider.is_openai or client is None or provider.lacks("/props"):
             # Only llama.cpp-style servers report their loaded model in /props.
-            self._set_llamacpp_loaded(provider.id, set())
+            self._set_llamacpp_loaded(provider_id, set())
             return
         try:
             current = self._extract_llamacpp_current_model(await client.get_props())
@@ -800,16 +799,16 @@ class ProviderManager:
             )
             current = None
         self._set_llamacpp_loaded(
-            provider.id, {self._strip_cache_prefix(current)} if current else set()
+            provider_id, {self._strip_cache_prefix(current)} if current else set()
         )
 
     async def _refresh_ollama_hot(self, provider: Provider) -> None:
-        assert provider.id is not None
-        if not provider.is_ollama or provider.id not in self._ollama_clients:
-            self._set_hot_models(provider.id, [])
+        provider_id = provider.require_id()
+        if not provider.is_ollama or provider_id not in self._ollama_clients:
+            self._set_hot_models(provider_id, [])
             return
         try:
-            raw = await self._ollama_clients[provider.id].get_ps()
+            raw = await self._ollama_clients[provider_id].get_ps()
             hot: list[HotModel] = []
             for m in raw:
                 name = self._strip_cache_prefix(m.get("name", ""))
@@ -821,7 +820,7 @@ class ProviderManager:
                 if m.get("expires_at"):
                     entry["expires_at"] = m["expires_at"]
                 hot.append(entry)
-            self._set_hot_models(provider.id, hot)
+            self._set_hot_models(provider_id, hot)
         except Exception as exc:
             if isinstance(exc, httpx.HTTPError):
                 logger.warning(
@@ -863,7 +862,7 @@ class ProviderManager:
         try:
             await self._db.save_request_log(
                 RequestLog(
-                    provider_id=provider.id,
+                    provider_id=provider.require_id(),
                     provider_name=provider.name,
                     protocol="system",
                     endpoint=endpoint,
@@ -901,7 +900,7 @@ class ProviderManager:
         always write a Log entry; automatic checks write one only when the
         status or the failure reason changes, so the Log is not flooded.
         """
-        assert provider.id is not None
+        provider.require_id()  # a provider that was never saved cannot be checked
         if provider.is_worker:
             return await self._check_worker(provider, rediscover, source)
         return await self._check_provider_impl(provider, rediscover, source)
@@ -917,8 +916,7 @@ class ProviderManager:
         steps aside while a handler holds the lock, and the whole check is
         capped so a hung upstream cannot keep the lock for long.
         """
-        pid = provider.id
-        assert pid is not None
+        pid = provider.require_id()
         lock = self._worker_lock(pid)
         if source == "health" and lock.locked():
             return provider.status
@@ -983,8 +981,7 @@ class ProviderManager:
         *,
         still_current: Callable[[], bool] | None = None,
     ) -> ProviderStatus:
-        pid = provider.id
-        assert pid is not None
+        pid = provider.require_id()
         started = time.monotonic()
         if not provider.is_worker:
             # The cycle's provider list can be seconds old by now.
@@ -1000,9 +997,9 @@ class ProviderManager:
         # Write liveness before rebuilding clients: the rebuild re-reads
         # addresses and ranks them by is_live.
         for addr, reachable in zip(addresses, results, strict=False):
-            assert addr.id is not None
+            addr_id = addr.require_id()
             if addr.is_live != reachable:
-                await self._db.set_address_live(addr.id, reachable)
+                await self._db.set_address_live(addr_id, reachable)
             addr.is_live = reachable
         live = [a for a in addresses if a.is_live]
         if addresses:
@@ -1078,8 +1075,7 @@ class ProviderManager:
         source: str,
         started: float,
     ) -> ProviderStatus:
-        pid = provider.id
-        assert pid is not None
+        pid = provider.require_id()
         prev_detail = self._logged_detail.get(pid)
 
         if detail and status == ProviderStatus.OFFLINE and live:
@@ -1131,8 +1127,7 @@ class ProviderManager:
         self, provider: Provider, addresses: list[ProviderAddress]
     ) -> None:
         """Point clients at the best live address unless requests are in flight."""
-        pid = provider.id
-        assert pid is not None
+        pid = provider.require_id()
         best = self._best_address(addresses)
         if best is None:
             return
@@ -1359,8 +1354,7 @@ class ProviderManager:
         return name
 
     async def _discover_provider(self, provider: Provider) -> None:
-        assert provider.id is not None
-        provider_id = provider.id
+        provider_id = provider.require_id()
         models_by_name: dict[str, ProviderModel] = {}
         cache_prefixed = 0
 
@@ -1509,7 +1503,7 @@ class ProviderManager:
             if name not in models_by_name:
                 _upsert_model(clean_name=name, raw_name=None, details={"_manual": True})
         all_models = list(models_by_name.values())
-        await self._db.set_provider_models(provider.id, all_models)
+        await self._db.set_provider_models(provider_id, all_models)
         if cache_prefixed:
             logger.info(
                 "Discovered %d models on provider %s (%d with cache prefix)",
@@ -1671,17 +1665,17 @@ class ProviderManager:
 
     async def _probe_worker(self, provider: Provider) -> bool:
         """A worker is live when its socket is up and its upstream answers."""
-        assert provider.id is not None
-        if not self.worker_hub.is_connected(provider.id):
+        provider_id = provider.require_id()
+        if not self.worker_hub.is_connected(provider_id):
             return False
-        if provider.id not in self._ollama_clients and (
-            provider.id not in self._llamacpp_clients
+        if provider_id not in self._ollama_clients and (
+            provider_id not in self._llamacpp_clients
         ):
             await self._rebuild_clients(provider)
-        ollama = self._ollama_clients.get(provider.id)
+        ollama = self._ollama_clients.get(provider_id)
         if ollama is not None and await ollama.is_reachable(timeout=_PROBE_TIMEOUT):
             return True
-        lcpp = self._llamacpp_clients.get(provider.id)
+        lcpp = self._llamacpp_clients.get(provider_id)
         return lcpp is not None and await lcpp.is_reachable(timeout=_PROBE_TIMEOUT)
 
     async def add_worker_provider(self, name: str) -> Provider:
@@ -1689,10 +1683,10 @@ class ProviderManager:
         provider = await self._db.add_provider(
             name, ProviderProtocol.OLLAMA, worker_name=name
         )
-        assert provider.id is not None
+        provider_id = provider.require_id()
         url = f"{WORKER_URL_SCHEME}{name}"
-        await self._db.add_address(provider.id, url, is_preferred=True)
-        await self._db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
+        await self._db.add_address(provider_id, url, is_preferred=True)
+        await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
         provider.status = ProviderStatus.OFFLINE
         return provider
 

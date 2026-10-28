@@ -40,11 +40,11 @@ async def _handle_embedding(
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     start = time.monotonic()
-    pm.acquire(provider.id)
+    pm.acquire(provider_id)
     try:
         result = await getattr(client, method)(body)
         duration = (time.monotonic() - start) * 1000
@@ -113,7 +113,7 @@ async def _handle_embedding(
         )
         raise
     finally:
-        pm.release(provider.id)
+        pm.release(provider_id)
 
 
 @router.post("/api/embeddings")

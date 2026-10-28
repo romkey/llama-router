@@ -31,8 +31,6 @@ don't grow them.
   `mypy --strict` yet (42 modules, down from 86: the clients, `database.py`,
   `dashboard/routes.py`, `migrate_sqlite_to_postgres.py`, `scripts/` and most
   test files). Remove a module once it does.
-- `[tool.ruff.lint] ignore` lists rule codes with existing findings (the
-  tests-only ones: `S101`, `PT006`, `PT011`, `PT018`, `F811`).
 
 ## Project notes
 

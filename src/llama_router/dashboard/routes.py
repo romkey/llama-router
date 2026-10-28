@@ -2784,13 +2784,13 @@ async def delete_model_all_providers(model: str = Form(...)):
     ]
 
     async def _delete_one(info):
-        assert info.provider.id is not None
+        provider_id = info.provider.require_id()
         try:
-            await pm.delete_remote_model(info.provider.id, model)
+            await pm.delete_remote_model(provider_id, model)
         except Exception:
             logger.debug(
                 "delete_remote_model failed for provider %d model %s",
-                info.provider.id,
+                provider_id,
                 model,
             )
 
@@ -2883,10 +2883,12 @@ async def api_create_worker(request: Request, body: WorkerCreateBody):
             status_code=409, detail=f"A provider named {name!r} already exists"
         )
     provider = await pm.add_worker_provider(name)
-    assert provider.id is not None
     token = generate_worker_token()
     worker_id = await db.create_worker(
-        name, worker_token_hash(token), worker_token_prefix(token), provider.id
+        name,
+        worker_token_hash(token),
+        worker_token_prefix(token),
+        provider.require_id(),
     )
     hub_url = _hub_url_hint(request)
     return JSONResponse(

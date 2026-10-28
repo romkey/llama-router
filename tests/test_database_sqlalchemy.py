@@ -271,7 +271,7 @@ async def test_list_all_models_excludes_offline_providers(db: Database) -> None:
 
 
 @pytest.mark.parametrize(
-    "dialect,expected",
+    ("dialect", "expected"),
     [
         ("sqlite", "TEXT"),
         ("postgresql", "TEXT"),

@@ -16,7 +16,6 @@ from llama_router.models import ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 from llama_router.provider_secrets import decrypt_api_key, parse_extra_headers
 from llama_router.upstream_url import split_api_base
-from tests.test_dashboard_auth import dash_client  # noqa: F401  (fixture)
 
 pytestmark = pytest.mark.httpx_mock(
     assert_all_responses_were_requested=False,
@@ -32,7 +31,9 @@ def test_table_is_sane() -> None:
     for p in PRESETS:
         assert p.base_url.startswith("https://")
         assert p.protocol in ("openai", "ollama")
-        assert p.hosts and p.docs_url and p.key_url
+        assert p.hosts
+        assert p.docs_url
+        assert p.key_url
         if p.protocol == "openai" and not p.url_params:
             # Every OpenAI preset URL is an API base, not a server root.
             assert split_api_base(p.base_url)[1] != "/v1" or p.base_url.endswith(
@@ -51,9 +52,9 @@ def test_preset_for_url_by_hostname() -> None:
 def test_url_params() -> None:
     azure = get_preset("azure-openai")
     assert azure.url(resource="my-res") == "https://my-res.openai.azure.com/openai/v1"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is required"):
         azure.url(resource="bad/host")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="is required"):
         azure.url()
 
 
@@ -76,7 +77,10 @@ def test_parse_extra_headers() -> None:
         "X-Title": "me",
     }
     for bad in ("no colon", "Authorization: Bearer x", "x-api-key: k", "bad name: v"):
-        with pytest.raises(ValueError):
+        with pytest.raises(
+            ValueError,
+            match=r"extra header|bad header name|cannot be an extra|bad value",
+        ):
             parse_extra_headers(bad)
 
 
@@ -179,7 +183,8 @@ async def test_dashboard_add_from_preset(dash_client, httpx_mock) -> None:
     )
     assert r.status_code == 303
     (p,) = await db.list_providers()
-    assert p.preset == "perplexity" and p.protocol == ProviderProtocol.OPENAI
+    assert p.preset == "perplexity"
+    assert p.protocol == ProviderProtocol.OPENAI
     assert p.manual_models == [
         "sonar",
         "sonar-pro",
@@ -246,4 +251,5 @@ async def test_dashboard_edit_extra_headers_and_models(
         data={**form, "extra_headers": "", "manual_models": ""},
     )
     p = await db.get_provider(p.id)
-    assert p.extra_headers is None and p.manual_models is None
+    assert p.extra_headers is None
+    assert p.manual_models is None
