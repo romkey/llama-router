@@ -710,6 +710,75 @@
                 <div id="alias-suggestions" class="mt-2"></div>
             </div>
         </div>
+        <div class="card mt-4" id="model-groups-card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-collection me-2"></i>Model Groups</h5>
+            </div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">A name clients ask for like a model, such as <code>coding</code> or <code>vision</code>. Each request goes to the best member that can serve it now, scored the way a model's providers are. A member is a model on any provider, or a model on one provider. A conversation stays on the member model and provider it started on.</p>
+                <datalist id="group-member-models">
+                    {% for m in models %}<option value="{{ m.name }}"></option>{% endfor %}
+                </datalist>
+                <form class="row g-2 align-items-end mb-3" onsubmit="addModelGroup(event)">
+                    <div class="col-sm-4">
+                        <label for="group-name" class="form-label small text-muted mb-1">Group name</label>
+                        <input id="group-name" class="form-control form-control-sm font-monospace" placeholder="coding" required maxlength="255">
+                    </div>
+                    <div class="col-sm-6">
+                        <label for="group-description" class="form-label small text-muted mb-1">Description (optional)</label>
+                        <input id="group-description" class="form-control form-control-sm" placeholder="Models that are good at code" maxlength="1000">
+                    </div>
+                    <div class="col-sm-2">
+                        <button class="btn btn-sm btn-outline-primary w-100" type="submit"><i class="bi bi-plus-lg me-1"></i>Create</button>
+                    </div>
+                </form>
+                {% for g in model_groups %}
+                <div class="border rounded p-2 mb-2" data-group-id="{{ g.id }}">
+                    <div class="d-flex align-items-start gap-2">
+                        <div class="flex-grow-1">
+                            <code class="fw-semibold">{{ g.name }}</code>
+                            {% if g.description %}<span class="small text-muted ms-2">{{ g.description }}</span>{% endif %}
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger" data-remove-group="{{ g.id }}" data-group-name="{{ g.name }}" title="Delete group"><i class="bi bi-trash"></i></button>
+                    </div>
+                    <div class="mt-2 d-flex flex-wrap gap-1">
+                        {% for m in g.members %}
+                        <span class="badge rounded-pill {% if m.available %}text-bg-light border{% else %}text-bg-secondary opacity-50{% endif %} font-monospace" title="{% if m.available %}Served now{% else %}Nothing serves this member now{% endif %}">
+                            {{ m.label }}
+                            <button type="button" class="btn-close btn-close-sm ms-1 align-middle" style="font-size:.5rem" aria-label="Remove {{ m.label }}" data-remove-member="{{ m.id }}" data-group-id="{{ g.id }}"></button>
+                        </span>
+                        {% else %}
+                        <span class="small text-muted">No members yet.</span>
+                        {% endfor %}
+                    </div>
+                    <form class="row g-2 align-items-end mt-1" data-add-member="{{ g.id }}">
+                        <div class="col-sm-5">
+                            <input class="form-control form-control-sm font-monospace" name="model_name" list="group-member-models" placeholder="model name" required maxlength="255" aria-label="Member model">
+                        </div>
+                        <div class="col-sm-5">
+                            <select class="form-select form-select-sm" name="provider_id" aria-label="Member provider">
+                                <option value="">On any provider</option>
+                                {% for info in providers %}<option value="{{ info.provider.id }}">Only on {{ info.provider.name }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-sm-2">
+                            <button class="btn btn-sm btn-outline-secondary w-100" type="submit">Add member</button>
+                        </div>
+                    </form>
+                    <div class="small text-muted mt-2">
+                        {% if g.choices %}
+                        Now routes <code>{{ g.endpoint }}</code> to:
+                        {% for mode, where in g.choices.items() %}<span class="me-2">{{ mode }}: <strong>{{ where }}</strong></span>{% endfor %}
+                        {% else %}
+                        No member can be served right now, so requests for <code>{{ g.name }}</code> fail or use its fallback.
+                        {% endif %}
+                    </div>
+                </div>
+                {% else %}
+                <div class="small text-muted">No model groups yet.</div>
+                {% endfor %}
+            </div>
+        </div>
         {% endif %}
     </div>
 
@@ -996,11 +1065,13 @@
                             if (c.health_score != null && c.health_score < 100) facts.push("health " + c.health_score);
                             if (c.active_requests) facts.push(c.active_requests + " in flight");
                             if (c.failure_rate) facts.push(Math.round(c.failure_rate * 100) + "% failing");
-                            return "<tr><td>" + esc(c.provider) + '</td><td class="text-end">' +
+                            var who = s.group && c.model ? "<code>" + esc(c.model) + "</code> on " + esc(c.provider) : esc(c.provider);
+                            return "<tr><td>" + who + '</td><td class="text-end">' +
                                 (c.total_score == null ? "—" : num(c.total_score, 0)) + "</td><td>" + why +
                                 '<div class="text-muted">' + esc(facts.join(" · ")) + "</div></td></tr>";
                         }).join("");
                         return '<div class="fw-semibold mt-2"><code>' + esc(s.model) + "</code> — " + esc(s.outcome) + "</div>" +
+                            (s.group ? '<div class="text-muted">Model group: ' + s.group.members.map(function (m) { return "<code>" + esc(m) + "</code>"; }).join(", ") + "</div>" : "") +
                             (s.locality ? '<div class="text-muted">' + esc(s.locality) + "</div>" : "") +
                             (s.pin_ignored ? '<div class="text-warning">Pin ignored: ' + esc(s.pin_ignored) + "</div>" : "") +
                             (rows ? '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Provider</th><th class="text-end">Score</th><th>Result</th></tr></thead><tbody>' + rows + "</tbody></table></div>" : "");
@@ -1031,7 +1102,7 @@
                             }
                             if (data.session) {
                                 html += '<div class="text-muted">Session <code>' + esc(data.session.key) + "</code>: " + esc(data.session.reason) +
-                                    (data.session.bound_provider ? " (bound to " + esc(data.session.bound_provider) + ")" : "") + ".</div>";
+                                    (data.session.bound_provider ? " (bound to " + (data.session.bound_model ? esc(data.session.bound_model) + " on " : "") + esc(data.session.bound_provider) + ")" : "") + ".</div>";
                             }
                             if (data.chaos_pool) {
                                 html += '<ul class="mb-0 ps-3">' + data.chaos_pool.map(function (p) { return "<li>" + esc(p.provider) + ' <span class="text-muted">(' + p.models.length + " models)</span></li>"; }).join("") + "</ul>";
@@ -3471,6 +3542,56 @@ document.addEventListener('click', function(ev) {
     if (!confirm('Remove alias ' + alias + '?')) return;
     fetch('/api/model-aliases/' + encodeURIComponent(alias), {method: 'DELETE'})
         .then(function() { location.reload(); });
+});
+
+function groupFetch(url, method, body) {
+    return fetch(url, {
+        method: method,
+        headers: {'Content-Type': 'application/json'},
+        body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Error'); });
+        return r.json();
+    });
+}
+
+function addModelGroup(ev) {
+    ev.preventDefault();
+    if (!dashRequireWrite()) return;
+    groupFetch('/api/model-groups', 'POST', {
+        name: document.getElementById('group-name').value.trim(),
+        description: document.getElementById('group-description').value.trim()
+    }).then(function() { location.reload(); })
+      .catch(function(err) { alert(err.message); });
+}
+
+document.addEventListener('submit', function(ev) {
+    const form = ev.target.closest('form[data-add-member]');
+    if (!form) return;
+    ev.preventDefault();
+    if (!dashRequireWrite()) return;
+    groupFetch('/api/model-groups/' + form.dataset.addMember + '/members', 'POST', {
+        model_name: form.elements.model_name.value.trim(),
+        provider_id: form.elements.provider_id.value || null
+    }).then(function() { location.reload(); })
+      .catch(function(err) { alert(err.message); });
+});
+
+document.addEventListener('click', function(ev) {
+    const member = ev.target.closest('[data-remove-member]');
+    if (member) {
+        if (!dashRequireWrite()) return;
+        groupFetch('/api/model-groups/' + member.dataset.groupId + '/members/' + member.dataset.removeMember, 'DELETE')
+            .then(function() { location.reload(); })
+            .catch(function(err) { alert(err.message); });
+        return;
+    }
+    const group = ev.target.closest('[data-remove-group]');
+    if (!group || !dashRequireWrite()) return;
+    if (!confirm('Delete model group ' + group.dataset.groupName + '?')) return;
+    groupFetch('/api/model-groups/' + group.dataset.removeGroup, 'DELETE')
+        .then(function() { location.reload(); })
+        .catch(function(err) { alert(err.message); });
 });
 
 function loadAliasSuggestions() {

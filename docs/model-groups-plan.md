@@ -1,5 +1,11 @@
 # Plan: model groups
 
+Status: implemented in three PRs (storage and routing; listings, request
+log and metrics; dashboard, API and docs). Deviations from the plan:
+the request log gained a `routed_model` column, group endpoints take the
+group's id rather than its name, and the registry cache needed nothing
+because it never consults routing.
+
 ## What a model group is
 
 A named set of models that clients can ask for as if it were one model.

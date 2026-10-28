@@ -7,6 +7,29 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Model groups.** A group is a name such as `coding` or `vision` that
+  clients ask for like a model. Each request goes to the best member
+  model that can serve it now, scored by the key's routing mode. A member
+  is a model on any provider, or a model on one provider. Manage groups
+  under Model Groups on the Models tab or at `/api/model-groups`; see
+  "Model Groups" in the README.
+- Groups are precomputed in the routing table, so routing a group costs
+  the same as routing a model.
+- Session affinity binds a conversation to the member model as well as
+  the provider, so a group conversation keeps running the same model.
+- `/api/tags` and `/v1/models` list groups that have a servable member.
+- The request log records the model that actually ran when it differs
+  from the one asked for: a group's member, an alias or a fallback.
+- Metrics `llama_router_model_group_routes_total` and
+  `llama_router_model_group_available`.
+
+### Fixed
+
+- `migrate-sqlite-to-postgres` no longer fails on a SQLite file that
+  predates a column; the column keeps its default on PostgreSQL.
+
 ## [0.21.3] - 2026-10-28
 
 ### Fixed

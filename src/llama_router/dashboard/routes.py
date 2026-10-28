@@ -58,6 +58,7 @@ from .auth_core import (
     verify_password,
 )
 from .middleware import invalidate_dashboard_user_count_cache
+from .model_groups import group_rows
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +740,12 @@ async def dashboard(request: Request):
     model_request_counts = await db.get_model_request_counts()
     model_fallbacks = await db.get_all_model_fallbacks()
     model_aliases = await db.get_model_aliases()
+    group_router = deps.get_pm().router
+    model_groups = group_rows(
+        await db.list_model_groups(),
+        group_router.table if group_router is not None else None,
+        {i.provider.id: i.provider.name for i in infos if i.provider.id is not None},
+    )
 
     if read_only:
         api_keys: list[Any] = []
@@ -886,6 +893,7 @@ async def dashboard(request: Request):
                 "model_request_counts": model_request_counts,
                 "model_fallbacks": model_fallbacks,
                 "model_aliases": model_aliases,
+                "model_groups": model_groups,
                 "api_keys": api_keys,
                 "session_affinity_default": (
                     deps.get_pm().router.session_affinity_default
