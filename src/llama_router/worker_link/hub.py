@@ -361,6 +361,7 @@ class WorkerTransport(httpx.AsyncBaseTransport):
         conn = self._hub.get(self._provider_id)
         if conn is None or conn.closed:
             raise httpx.ConnectError("worker is not connected", request=request)
+        self._hub.count_job(self._provider_id)
         return await conn.open(self._target, request)
 
 
@@ -378,6 +379,9 @@ class WorkerHub:
         self._on_connect: ConnectCallback | None = None
         self._on_disconnect: DisconnectCallback | None = None
         self._bg: set[asyncio.Task[None]] = set()
+        # Jobs dispatched per provider since start-up, counted as they are
+        # sent so the total never dips while a socket is being replaced.
+        self._jobs: dict[int, int] = {}
 
     def set_callbacks(
         self,
@@ -396,6 +400,13 @@ class WorkerHub:
     def is_connected(self, provider_id: int) -> bool:
         conn = self._conns.get(provider_id)
         return conn is not None and not conn.closed
+
+    def count_job(self, provider_id: int) -> None:
+        self._jobs[provider_id] = self._jobs.get(provider_id, 0) + 1
+
+    def jobs_total(self, provider_id: int) -> int:
+        """Requests sent to the worker since start-up, across reconnects."""
+        return self._jobs.get(provider_id, 0)
 
     def connections(self) -> list[WorkerConnection]:
         return list(self._conns.values())

@@ -54,6 +54,11 @@ def get_auto_benchmark() -> AutoBenchmarker:
     return _auto_benchmark
 
 
+def auto_benchmark_if_running() -> AutoBenchmarker | None:
+    """The auto-benchmarker the process started, or None (tests, not started)."""
+    return _auto_benchmark
+
+
 def get_worker_link() -> WorkerLinkManager:
     """Return the worker link manager, creating an idle one for tests."""
     global _worker_link

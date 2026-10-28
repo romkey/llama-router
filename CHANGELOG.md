@@ -9,6 +9,10 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- `GET /metrics` on the dashboard port: Prometheus metrics for providers,
+  addresses, benchmarks, live request outcomes, workers and the routing
+  table. Scrapers authenticate with `LLAMA_ROUTER_METRICS_TOKEN`; see
+  `docs/metrics.md`.
 - The Add Provider dialog has a "Benchmark automatically" choice, so a
   provider that charges per token can be excluded from the idle
   auto-benchmarker before its first benchmark runs. It was already on the
