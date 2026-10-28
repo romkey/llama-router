@@ -33,7 +33,6 @@ don't grow them.
   test files). Remove a module once it does.
 - `[tool.ruff.lint] ignore` lists rule codes with existing findings (the
   tests-only ones: `S101`, `PT006`, `PT011`, `PT018`, `F811`).
-- Coverage floor is 74%, below the rules' 80%.
 
 ## Project notes
 
