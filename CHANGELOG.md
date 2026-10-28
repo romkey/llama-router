@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-28
+
 ### Added
 
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
