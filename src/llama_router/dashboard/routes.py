@@ -1473,6 +1473,7 @@ async def add_provider(
     manual_models: str | None = Form(None),
     locality: str | None = Form(None),
     model_filter: str | None = Form(None),
+    auto_benchmark: str | None = Form(None),
 ):
     """Create a provider; *url* becomes its first address. It is probed in the
     background, so the stored endpoint list does not wait on the dialog.
@@ -1504,6 +1505,8 @@ async def add_provider(
             settings_["locality"] = _parse_locality(locality)
         if model_filter is not None and model_filter.strip():
             settings_["model_filter"] = _model_filter(model_filter)
+        if _tristate(auto_benchmark) is not None:
+            settings_["auto_benchmark"] = _tristate(auto_benchmark)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
