@@ -981,7 +981,7 @@ class Database:
         self,
         name: str,
         *,
-        description: str | None | _Keep = _KEEP,
+        description: str | _Keep | None = _KEEP,
         new_name: str | None = None,
     ) -> bool:
         """Rename the group and/or set its description. A field left out is
