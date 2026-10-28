@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ..auth import routing_preferences_from_request
 from ..decision_policy import apply_decision_policy
@@ -18,7 +19,7 @@ router = APIRouter()
 
 
 @router.post("/api/chat")
-async def chat(request: Request):
+async def chat(request: Request) -> Response:
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -44,17 +45,17 @@ async def chat(request: Request):
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = pm.ollama_api_client(provider.id)
+    client = pm.ollama_api_client(provider_id)
     stream = body.get("stream", True)
     start = time.monotonic()
 
     if stream:
 
-        async def generate():
+        async def generate() -> AsyncIterator[bytes]:
             try:
-                async with pm.acquire_provider(provider.id):
+                async with pm.acquire_provider(provider_id):
                     async for chunk in client.chat_stream(body):
                         yield chunk
             except Exception:
@@ -76,8 +77,8 @@ async def chat(request: Request):
         return StreamingResponse(logged, media_type="application/x-ndjson")
 
     try:
-        async with pm.acquire_provider(provider.id):
-            result = await client.chat(body)
+        async with pm.acquire_provider(provider_id):
+            reply = await client.chat(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(
                 db,
@@ -88,10 +89,10 @@ async def chat(request: Request):
                 model=model,
                 routed_model=routed,
                 request_body=body,
-                response_body=result,
+                response_body=reply,
                 duration_ms=duration,
             )
-            return JSONResponse(content=result)
+            return JSONResponse(content=reply)
     except httpx.HTTPStatusError as exc:
         rt.forget_session(session)
         duration = (time.monotonic() - start) * 1000

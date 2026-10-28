@@ -28,9 +28,9 @@ These were grandfathered when the rules were first applied. Shrink them;
 don't grow them.
 
 - `[tool.mypy.overrides]` in `pyproject.toml` lists modules that don't pass
-  `mypy --strict` yet. Remove a module once it does.
-- `[tool.ruff.lint] ignore` lists rule codes with existing findings.
-- Coverage floor is 74%, below the rules' 80%.
+  `mypy --strict` yet (42 modules, down from 86: the clients, `database.py`,
+  `dashboard/routes.py`, `migrate_sqlite_to_postgres.py`, `scripts/` and most
+  test files). Remove a module once it does.
 
 ## Project notes
 

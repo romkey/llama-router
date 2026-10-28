@@ -30,6 +30,7 @@ from joserfc.errors import InvalidKeyIdError, JoseError
 from joserfc.jwk import KeySet
 
 from ..config import Settings, settings
+from ..database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +202,7 @@ async def provider_metadata(cfg: OIDCConfig) -> dict[str, Any]:
     return meta
 
 
-async def _key_set(cfg: OIDCConfig, meta: dict[str, Any], refresh: bool) -> KeySet:
+async def _key_set(cfg: OIDCConfig, meta: Mapping[str, Any], refresh: bool) -> KeySet:
     cached = _providers.get(cfg.issuer)
     now = time.monotonic()
     if (
@@ -368,7 +369,10 @@ async def _exchange_code(
     try:
         async with _client() as client:
             resp = await client.post(
-                url, data=data, auth=auth, headers={"Accept": "application/json"}
+                url,
+                data=data,
+                auth=auth or httpx.USE_CLIENT_DEFAULT,
+                headers={"Accept": "application/json"},
             )
     except httpx.HTTPError as exc:
         raise OIDCError("provider", f"POST {url}: {exc!r}") from exc
@@ -511,7 +515,15 @@ def email_of(claims: Mapping[str, Any]) -> str | None:
     return v.strip()[:320] if isinstance(v, str) and v.strip() else None
 
 
-async def sign_in(db, cfg: OIDCConfig, claims: Mapping[str, Any]) -> dict:
+def _existing(user: dict[str, Any] | None) -> dict[str, Any]:
+    if user is None:
+        raise OIDCError("token", "account vanished during sign-in")
+    return user
+
+
+async def sign_in(
+    db: Database, cfg: OIDCConfig, claims: Mapping[str, Any]
+) -> dict[str, Any]:
     """Create or refresh the account for *claims*. Returns the user row.
 
     Accounts are matched only by ``(iss, sub)``; an email address from the
@@ -538,7 +550,7 @@ async def sign_in(db, cfg: OIDCConfig, claims: Mapping[str, Any]) -> dict:
         await db.update_oidc_dashboard_user(
             row["id"], email=email, display_name=display, is_admin=is_admin
         )
-        return await db.get_dashboard_user_by_id(row["id"])
+        return _existing(await db.get_dashboard_user_by_id(row["id"]))
 
     if await db.count_dashboard_users() == 0:
         if not cfg.admin_group:
@@ -574,7 +586,7 @@ async def sign_in(db, cfg: OIDCConfig, claims: Mapping[str, Any]) -> dict:
             name,
             " (administrator)" if is_admin else "",
         )
-        return await db.get_dashboard_user_by_id(uid)
+        return _existing(await db.get_dashboard_user_by_id(uid))
     raise OIDCError("token", "could not choose a free username")
 
 

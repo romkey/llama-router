@@ -96,7 +96,7 @@ async def _pull_one_ollama(
     log_endpoint: str = "/api/pull/provider",
     request_meta: str | None = None,
 ) -> None:
-    """Pull *model* on a single Ollama provider; updates *pull_entry* under *progress_lock*."""
+    """Pull *model* on one Ollama provider; updates *pull_entry* under the lock."""
     provider = await db.get_provider(pid)
     pname = provider.name if provider else str(pid)
     prefix = f"[{idx + 1}/{total}] {pname}" if total > 1 else pname
@@ -290,7 +290,7 @@ def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> 
             "%Y-%m-%dT%H:%M:%S.%f",
         ):
             try:
-                value = datetime.strptime(value, pattern)
+                value = datetime.strptime(value, pattern).replace(tzinfo=UTC)
                 break
             except ValueError:
                 continue
@@ -356,7 +356,7 @@ def merge_dash_template_ctx(request: Request, ctx: dict[str, Any]) -> dict[str, 
 
 
 def _safe_next_url(next_raw: str | None) -> str:
-    """Reject absolute URLs and scheme-relative paths; allow same-site relative paths only."""
+    """Reject absolute and scheme-relative URLs; allow same-site relative paths only."""
     n = (next_raw or "/").strip()
     if not n or "\n" in n or "\r" in n:
         return "/"
@@ -2812,13 +2812,13 @@ async def delete_model_all_providers(model: str = Form(...)):
     ]
 
     async def _delete_one(info):
-        assert info.provider.id is not None
+        provider_id = info.provider.require_id()
         try:
-            await pm.delete_remote_model(info.provider.id, model)
+            await pm.delete_remote_model(provider_id, model)
         except Exception:
             logger.debug(
                 "delete_remote_model failed for provider %d model %s",
-                info.provider.id,
+                provider_id,
                 model,
             )
 
@@ -2902,17 +2902,21 @@ async def api_create_worker(request: Request, body: WorkerCreateBody):
     if not _WORKER_NAME_RE.match(name):
         raise HTTPException(
             status_code=400,
-            detail="Worker name must be 2-64 characters: letters, digits, '.', '_', '-'",
+            detail=(
+                "Worker name must be 2-64 characters: letters, digits, '.', '_', '-'"
+            ),
         )
     if await db.get_provider_by_name(name) is not None:
         raise HTTPException(
             status_code=409, detail=f"A provider named {name!r} already exists"
         )
     provider = await pm.add_worker_provider(name)
-    assert provider.id is not None
     token = generate_worker_token()
     worker_id = await db.create_worker(
-        name, worker_token_hash(token), worker_token_prefix(token), provider.id
+        name,
+        worker_token_hash(token),
+        worker_token_prefix(token),
+        provider.require_id(),
     )
     hub_url = _hub_url_hint(request)
     return JSONResponse(

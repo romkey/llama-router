@@ -65,7 +65,8 @@ class DecayingRate:
     def current(self, now: float) -> float:
         if self.value <= 0.0:
             return 0.0
-        return self.value * 0.5 ** (max(0.0, now - self.at) / FAILURE_HALF_LIFE_S)
+        decay: float = 0.5 ** (max(0.0, now - self.at) / FAILURE_HALF_LIFE_S)
+        return self.value * decay
 
     def add(self, failed: bool, now: float) -> None:
         v = self.current(now)
@@ -79,7 +80,7 @@ class LatencyTally:
     """Running tally of one address's health-check round trips."""
 
     ewma: Ewma = field(default_factory=Ewma)
-    recent: deque = field(default_factory=lambda: deque(maxlen=TALLY_WINDOW))
+    recent: deque[float] = field(default_factory=lambda: deque(maxlen=TALLY_WINDOW))
     checks: int = 0
     failures: int = 0
     consecutive_failures: int = 0
@@ -401,8 +402,8 @@ class ProviderStats:
         self._no_logprobs.pop(provider_id, None)
         for key in [k for k in self._models if k[0] == provider_id]:
             del self._models[key]
-        for key in [k for k in self._last_ok if k[0] == provider_id]:
-            del self._last_ok[key]
+        for ok_key in [k for k in self._last_ok if k[0] == provider_id]:
+            del self._last_ok[ok_key]
 
 
 def _r(v: float | None) -> float | None:

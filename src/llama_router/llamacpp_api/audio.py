@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -18,7 +20,7 @@ router = APIRouter()
 
 
 @router.post("/v1/audio/speech")
-async def audio_speech(request: Request):
+async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
     body = await request.json()
     model = body.get("model")
@@ -41,13 +43,13 @@ async def audio_speech(request: Request):
     if result.resolved_model != model:
         body["model"] = result.resolved_model
 
-    assert provider.id is not None
+    provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = get_v1_client(pm, provider.id)
+    client = get_v1_client(pm, provider_id)
     start = time.monotonic()
 
-    async def generate():
-        async with pm.acquire_provider(provider.id):
+    async def generate() -> AsyncIterator[bytes]:
+        async with pm.acquire_provider(provider_id):
             async for chunk in client.audio_speech(body):
                 yield chunk
 
@@ -128,7 +130,7 @@ async def audio_speech(request: Request):
 
 
 @router.post("/v1/audio/transcriptions")
-async def audio_transcriptions(request: Request):
+async def audio_transcriptions(request: Request) -> Response:
     """Speech-to-text: multipart audio file in, JSON transcript out."""
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
@@ -152,11 +154,11 @@ async def audio_transcriptions(request: Request):
 
     provider = result.provider
     routed = result.model_key
-    assert provider.id is not None
-    client = get_v1_client(pm, provider.id)
+    provider_id = provider.require_id()
+    client = get_v1_client(pm, provider_id)
     start = time.monotonic()
     try:
-        async with pm.acquire_provider(provider.id):
+        async with pm.acquire_provider(provider_id):
             resp = await client.audio_transcriptions(raw_body, content_type)
             duration = (time.monotonic() - start) * 1000
             log_request_background(
@@ -205,7 +207,8 @@ async def audio_transcriptions(request: Request):
         if isinstance(exc, httpx.HTTPError):
             err_detail = describe_httpx_error(exc)[:500]
             logger.error(
-                "Upstream failure on /v1/audio/transcriptions (model=%r, provider=%s): %s",
+                "Upstream failure on /v1/audio/transcriptions "
+                "(model=%r, provider=%s): %s",
                 model,
                 provider.name,
                 describe_httpx_error(exc),
@@ -228,12 +231,12 @@ async def audio_transcriptions(request: Request):
 
 
 @router.get("/v1/audio/voices")
-async def audio_voices():
+async def audio_voices() -> JSONResponse:
     """List available voices — aggregated from all online providers."""
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
 
-    all_voices: list[dict] = []
+    all_voices: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     for info in infos:
@@ -242,6 +245,9 @@ async def audio_voices():
         try:
             client = get_v1_client(pm, info.provider.id)
         except Exception:
+            logger.debug(
+                "no v1 client for provider %s", info.provider.id, exc_info=True
+            )
             continue
         try:
             data = await client.audio_voices()
@@ -251,6 +257,9 @@ async def audio_voices():
                     seen.add(vid)
                     all_voices.append(v)
         except Exception:
+            logger.debug(
+                "audio_voices failed for provider %s", info.provider.id, exc_info=True
+            )
             continue
 
     return JSONResponse(content={"voices": all_voices})

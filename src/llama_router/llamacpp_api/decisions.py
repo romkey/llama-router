@@ -3,9 +3,9 @@
 ``POST /v1/systemone`` (Jev's route) and ``POST /v1/decisions`` take a state
 and typed questions and answer each with a probability distribution; see
 :mod:`llama_router.decisions`. An upstream that serves either route gets the
-request as it came, on the route it serves (the bodies are the same). Any other provider that serves chat completions
-answers it from first-token logprobs, with the stored calibration for the
-model and question applied.
+request as it came, on the route it serves (the bodies are the same). Any other
+provider that serves chat completions answers it from first-token logprobs,
+with the stored calibration for the model and question applied.
 
 A provider that answers without logprobs is marked in the routing stats, so
 the routing table stops offering it for decisions, and the request is routed
@@ -47,7 +47,7 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
 @router.post("/systemone")
 @router.post("/v1/decisions")
 @router.post("/decisions")
-async def decide(request: Request):
+async def decide(request: Request) -> Response:
     try:
         body = await request.json()
     except ValueError as exc:
@@ -65,7 +65,8 @@ async def serve(
     """Answer a decision request as *endpoint_path* would. The dashboard's
     try form calls this too, with no key preferences."""
     path = normalize_endpoint(endpoint_path)
-    assert path is not None
+    if path is None:
+        raise ValueError(f"not a decision endpoint: {endpoint_path!r}")
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
     try:
@@ -87,25 +88,25 @@ async def serve(
                 detail=f"No available provider for model '{req.model}'",
             )
         provider = result.provider
-        assert provider.id is not None
+        provider_id = provider.require_id()
         start = time.monotonic()
-        log = dict(
-            provider=provider,
-            protocol="v1",
-            endpoint=endpoint_path,
-            request=request,
-            model=req.model,
-            routed_model=result.model_key,
-            request_body=body,
-        )
+        log: dict[str, Any] = {
+            "provider": provider,
+            "protocol": "v1",
+            "endpoint": endpoint_path,
+            "request": request,
+            "model": req.model,
+            "routed_model": result.model_key,
+            "request_body": body,
+        }
         calibrated = 0
         try:
             inputs = rt.inputs
             out, calibrated = await svc.answer_routed(
                 pm, db, result, req, path, body, inputs.aliases if inputs else None
             )
-        except d.NoLogprobs as exc:
-            pm.stats.record_logprobs(provider.id, ok=False)
+        except d.NoLogprobsError as exc:
+            pm.stats.record_logprobs(provider_id, ok=False)
             log_request_background(
                 db,
                 **log,

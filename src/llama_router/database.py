@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Concatenate
 
 from sqlalchemy import text
 from sqlalchemy.engine.url import URL
@@ -68,16 +69,23 @@ def _tristate(value) -> bool | None:
     return None if value is None else bool(value)
 
 
-def _notifies(reason: str):
+def _notifies[**P, R](
+    reason: str,
+) -> Callable[
+    [Callable[Concatenate[Database, P], Awaitable[R]]],
+    Callable[Concatenate[Database, P], Awaitable[R]],
+]:
     """Tell change listeners about *reason* after the wrapped write succeeds."""
 
-    def wrap(fn):
-        @functools.wraps(fn)
-        async def inner(self: Database, *args: Any, **kwargs: Any):
+    def wrap(
+        fn: Callable[Concatenate[Database, P], Awaitable[R]],
+    ) -> Callable[Concatenate[Database, P], Awaitable[R]]:
+        async def inner(self: Database, *args: P.args, **kwargs: P.kwargs) -> R:
             result = await fn(self, *args, **kwargs)
             self._changed(reason)
             return result
 
+        functools.update_wrapper(inner, fn)
         return inner
 
     return wrap
@@ -114,10 +122,8 @@ class Database:
         self._listeners.append(fn)
 
     def remove_change_listener(self, fn: Callable[[str], None]) -> None:
-        try:
+        with contextlib.suppress(ValueError):
             self._listeners.remove(fn)
-        except ValueError:
-            pass
 
     def _changed(self, reason: str) -> None:
         for fn in list(self._listeners):
@@ -149,7 +155,8 @@ class Database:
         self._session_factory = None
 
     def _require_session_factory(self) -> async_sessionmaker[AsyncSession]:
-        assert self._session_factory is not None, "Database not connected"
+        if self._session_factory is None:
+            raise RuntimeError("Database not connected")
         return self._session_factory
 
     async def _select_all(self, sql: str, *args: Any) -> list[Mapping[str, Any]]:
@@ -180,15 +187,14 @@ class Database:
             return cursor_rowcount(r)
 
     async def _insert_get_id(self, insert_sql: str, *args: Any) -> int:
-        """Run INSERT and return primary key ``id`` (portable across SQLite / PG / MySQL)."""
+        """Run INSERT and return primary key ``id`` (portable across dialects)."""
         sf = self._require_session_factory()
         async with sf() as session, session.begin():
             if self._dialect_name in ("mysql", "mariadb"):
                 st, bd = qmark(insert_sql, *_bind_params(*args))
                 await session.execute(st, bd)
                 r = await session.execute(text("SELECT LAST_INSERT_ID() AS id"))
-                row = r.mappings().first()
-                assert row is not None
+                row = r.mappings().one()
                 return int(row["id"])
             st, bd = qmark(insert_sql + " RETURNING id", *_bind_params(*args))
             r = await session.execute(st, bd)
@@ -298,7 +304,7 @@ class Database:
         )
 
     # Columns update_provider_settings may write, and whether each holds JSON.
-    _PROVIDER_SETTINGS = {
+    _PROVIDER_SETTINGS: ClassVar[dict[str, bool]] = {
         "preset": False,
         "extra_headers": True,
         "manual_models": True,
@@ -767,13 +773,15 @@ class Database:
     async def set_model_fallback(self, model_name: str, fallback_model: str) -> None:
         if self._dialect_name in ("mysql", "mariadb"):
             await self._execute(
-                "INSERT INTO model_fallbacks (model_name, fallback_model) VALUES (?, ?) "
+                "INSERT INTO model_fallbacks (model_name, fallback_model) "
+                "VALUES (?, ?) "
                 "ON DUPLICATE KEY UPDATE fallback_model = VALUES(fallback_model)",
                 (model_name, fallback_model),
             )
         else:
             await self._execute(
-                "INSERT INTO model_fallbacks (model_name, fallback_model) VALUES (?, ?) "
+                "INSERT INTO model_fallbacks (model_name, fallback_model) "
+                "VALUES (?, ?) "
                 "ON CONFLICT (model_name) DO UPDATE SET fallback_model = ?",
                 (model_name, fallback_model, fallback_model),
             )
@@ -1191,19 +1199,22 @@ class Database:
         val = "true" if allow else "false"
         if self._dialect_name in ("mysql", "mariadb"):
             await self._execute(
-                "INSERT INTO app_settings (`key`, value) VALUES ('allow_unauthenticated', ?) "
+                "INSERT INTO app_settings (`key`, value) "
+                "VALUES ('allow_unauthenticated', ?) "
                 "ON DUPLICATE KEY UPDATE value = VALUES(value)",
                 (val,),
             )
         elif self._dialect_name == "postgresql":
             await self._execute(
-                "INSERT INTO app_settings (\"key\", value) VALUES ('allow_unauthenticated', ?) "
+                'INSERT INTO app_settings ("key", value) '
+                "VALUES ('allow_unauthenticated', ?) "
                 'ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value',
                 (val,),
             )
         else:
             await self._execute(
-                "INSERT INTO app_settings (\"key\", value) VALUES ('allow_unauthenticated', ?) "
+                'INSERT INTO app_settings ("key", value) '
+                "VALUES ('allow_unauthenticated', ?) "
                 'ON CONFLICT ("key") DO UPDATE SET value = excluded.value',
                 (val,),
             )

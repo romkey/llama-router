@@ -13,17 +13,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_tasks: set[asyncio.Task] = set()
+_tasks: set[asyncio.Task[Any]] = set()
 
 
-def spawn(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task:
+def spawn(
+    coro: Coroutine[Any, Any, Any], *, name: str | None = None
+) -> asyncio.Task[Any]:
     task = asyncio.get_running_loop().create_task(coro, name=name)
     _tasks.add(task)
     task.add_done_callback(_done)
     return task
 
 
-def _done(task: asyncio.Task) -> None:
+def _done(task: asyncio.Task[Any]) -> None:
     _tasks.discard(task)
     if task.cancelled():
         return

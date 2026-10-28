@@ -56,15 +56,15 @@ def test_chat_request_translation() -> None:
         "image_url": {"url": "data:image/png;base64,iVBORw0KGgo"},
     }
     call = msgs[2]["tool_calls"][0]
-    assert call["type"] == "function" and json.loads(call["function"]["arguments"]) == {
-        "q": 1
-    }
+    assert call["type"] == "function"
+    assert json.loads(call["function"]["arguments"]) == {"q": 1}
     assert msgs[2]["content"] is None
     assert msgs[3]["tool_call_id"] == call["id"]
     assert out["tools"][0]["function"]["name"] == "look"
     assert out["response_format"]["type"] == "json_schema"
     assert (out["temperature"], out["max_tokens"]) == (0.2, 64)
-    assert "top_k" not in out and "keep_alive" not in out
+    assert "top_k" not in out
+    assert "keep_alive" not in out
 
 
 def test_generate_request_translation() -> None:
@@ -169,7 +169,8 @@ async def test_api_chat_non_streamed(api) -> None:
     assert r.status_code == 200
     data = r.json()
     assert data["message"] == {"role": "assistant", "content": "Hello"}
-    assert data["done"] and data["eval_count"] == 2
+    assert data["done"]
+    assert data["eval_count"] == 2
     assert seen[-1]["path"] == "/v1/chat/completions"
     assert seen[-1]["body"]["messages"] == [{"role": "user", "content": "hi"}]
     await drain()
@@ -190,7 +191,8 @@ async def test_api_chat_streamed(api) -> None:
     text = "".join(line["message"]["content"] for line in lines if not line["done"])
     assert text == "Hello"
     final = lines[-1]
-    assert final["done"] and final["done_reason"] == "stop"
+    assert final["done"]
+    assert final["done_reason"] == "stop"
     assert (final["prompt_eval_count"], final["eval_count"]) == (5, 2)
     assert seen[-1]["body"]["stream_options"] == {"include_usage": True}
 
@@ -206,7 +208,8 @@ async def test_api_generate(api) -> None:
     assert "".join(x["response"] for x in lines) == "Hello"
     calls = len(seen)
     r = await c.post("/api/generate", json={"model": "m", "stream": False})
-    assert r.json()["done_reason"] == "load" and len(seen) == calls
+    assert r.json()["done_reason"] == "load"
+    assert len(seen) == calls
     r = await c.post("/api/generate", json={"model": "m", "prompt": "a", "suffix": "b"})
     assert r.status_code == 400
 
@@ -215,7 +218,8 @@ async def test_api_embed_and_embeddings(api) -> None:
     c, seen, _ = api
     r = await c.post("/api/embed", json={"model": "m", "input": ["a", "b"]})
     data = r.json()
-    assert len(data["embeddings"]) == 2 and data["prompt_eval_count"] == 3
+    assert len(data["embeddings"]) == 2
+    assert data["prompt_eval_count"] == 3
     r = await c.post("/api/embeddings", json={"model": "m", "prompt": "a"})
     assert r.json() == {"embedding": [0.0, 0.2]}
     assert seen[-1]["path"] == "/v1/embeddings"
@@ -263,4 +267,5 @@ def test_stream_split_anywhere_and_tool_calls() -> None:
     assert calls[0]["message"]["tool_calls"] == [
         {"function": {"name": "get", "arguments": {"city": "Oslo"}}}
     ]
-    assert lines[-1]["done"] and lines[-1]["done_reason"] == "stop"
+    assert lines[-1]["done"]
+    assert lines[-1]["done_reason"] == "stop"

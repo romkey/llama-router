@@ -13,6 +13,11 @@ described in their git tags and GitHub Releases.
   addresses, benchmarks, live request outcomes, workers and the routing
   table. Scrapers authenticate with `LLAMA_ROUTER_METRICS_TOKEN`; see
   `docs/metrics.md`.
+
+## [0.21.1] - 2026-10-28
+
+### Added
+
 - `GET /healthz` on the dashboard port: liveness with no sign-in or
   database work, used by the production compose health check.
 - `llama-router --version`.

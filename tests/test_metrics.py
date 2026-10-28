@@ -18,7 +18,7 @@ from llama_router.models import (
     ProviderStatus,
 )
 from llama_router.routing_stats import ProviderStats
-from tests.test_dashboard_auth import _session_cookie_header, dash_client  # noqa: F401
+from tests.test_dashboard_auth import _session_cookie_header
 
 CHAT = "/v1/chat/completions"
 
@@ -83,7 +83,7 @@ async def seeded(dash_client: Any) -> tuple[Any, Any, int, int]:
 async def test_collect_reports_providers_benchmarks_and_requests(
     seeded: tuple[Any, Any, int, int],
 ) -> None:
-    client, db, pid, cloud_id = seeded
+    _client, _db, pid, cloud_id = seeded
     from llama_router.dashboard import deps
 
     pm = deps.get_pm()
@@ -123,7 +123,7 @@ async def test_collect_reports_providers_benchmarks_and_requests(
 async def test_metrics_endpoint_open_before_first_user(
     seeded: tuple[Any, Any, int, int],
 ) -> None:
-    client, db, pid, _cloud = seeded
+    client, _db, _pid, _cloud = seeded
     resp = await client.get("/metrics")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/plain; version=0.0.4")
@@ -134,7 +134,7 @@ async def test_metrics_endpoint_open_before_first_user(
 async def test_metrics_endpoint_needs_token_or_session(
     seeded: tuple[Any, Any, int, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, db, pid, _cloud = seeded
+    client, db, _pid, _cloud = seeded
     uid = await db.create_dashboard_user("admin", hash_password("pw"), True)
     invalidate_dashboard_user_count_cache()
 
@@ -155,6 +155,6 @@ async def test_metrics_endpoint_needs_token_or_session(
 async def test_metrics_endpoint_can_be_disabled(
     seeded: tuple[Any, Any, int, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, db, pid, _cloud = seeded
+    client, _db, _pid, _cloud = seeded
     monkeypatch.setattr(settings, "metrics_enabled", False)
     assert (await client.get("/metrics")).status_code == 404

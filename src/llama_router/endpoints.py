@@ -44,7 +44,7 @@ DECISION_PATHS = tuple(p for p, (_proto, cls) in ENDPOINTS.items() if cls == DEC
 ENDPOINT_PROTOCOLS: dict[str, str | None] = {p: v[0] for p, v in ENDPOINTS.items()}
 
 
-class UnknownEndpoint(ValueError):
+class UnknownEndpointError(ValueError):
     pass
 
 
@@ -61,7 +61,7 @@ def resolve_endpoint(path: str) -> str:
     """Normalise *path* and check it is a proxied endpoint."""
     norm = normalize_endpoint(path)
     if norm not in ENDPOINTS:
-        raise UnknownEndpoint(f"not a routed endpoint: {path!r}")
+        raise UnknownEndpointError(f"not a routed endpoint: {path!r}")
     return norm
 
 

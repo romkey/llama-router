@@ -142,15 +142,18 @@ async def test_address_crud(db: Database):
 
     await db.set_address_live(addr1.id, True)
     a = await db.get_address(addr1.id)
-    assert a is not None and a.is_live is True
+    assert a is not None
+    assert a.is_live is True
 
     await db.set_address_preferred(addr2.id, True)
     a2 = await db.get_address(addr2.id)
-    assert a2 is not None and a2.is_preferred is True
+    assert a2 is not None
+    assert a2.is_preferred is True
 
     await db.update_address(addr2.id, "http://new-backup:11434", is_preferred=False)
     a2 = await db.get_address(addr2.id)
-    assert a2 is not None and a2.url == "http://new-backup:11434"
+    assert a2 is not None
+    assert a2.url == "http://new-backup:11434"
     assert a2.is_preferred is False
 
     await db.remove_address(addr2.id)

@@ -45,7 +45,8 @@ async def test_middleware_stamps_arrival_time():
 
     before = time.monotonic()
     await RequestTimingMiddleware(app)({"type": "http"}, None, None)
-    assert seen["at"] is not None and seen["at"] >= before
+    assert seen["at"] is not None
+    assert seen["at"] >= before
     # Non-HTTP scopes pass through untouched.
     scope = {"type": "lifespan"}
     await RequestTimingMiddleware(app)(scope, None, None)
@@ -107,7 +108,8 @@ async def test_stream_logs_first_byte_and_overhead(db: Database):
     entry = (await db.get_request_logs(1, 0))[0]
     assert entry.streamed
     assert entry.router_ms == pytest.approx(10.0, abs=0.5)
-    assert entry.ttfb_ms is not None and entry.ttfb_ms >= 0
+    assert entry.ttfb_ms is not None
+    assert entry.ttfb_ms >= 0
 
 
 async def test_proxied_request_records_latency_end_to_end(db: Database, httpx_mock):
@@ -137,6 +139,8 @@ async def test_proxied_request_records_latency_end_to_end(db: Database, httpx_mo
         e for e in await db.get_request_logs(10, 0) if e.endpoint == "/api/chat"
     )
     assert entry.provider_id == p.id
-    assert entry.ttfb_ms is not None and entry.ttfb_ms >= 0
-    assert entry.router_ms is not None and 0 <= entry.router_ms < 1000
+    assert entry.ttfb_ms is not None
+    assert entry.ttfb_ms >= 0
+    assert entry.router_ms is not None
+    assert 0 <= entry.router_ms < 1000
     await pm.stop()

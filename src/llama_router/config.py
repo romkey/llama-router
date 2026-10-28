@@ -7,15 +7,15 @@ from sqlalchemy.engine.url import URL
 
 class Settings(BaseSettings):
     database_path: str = "llama_router.db"
-    """Used when ``database_url`` is empty: SQLite file path for the default async URL."""
+    """Used when ``database_url`` is empty: SQLite file path for the default URL."""
 
     database_url: str = ""
     """Async SQLAlchemy URL, e.g. ``sqlite+aiosqlite:///...``, ``postgresql+asyncpg://...``."""
-    dashboard_host: str = "0.0.0.0"
+    dashboard_host: str = "0.0.0.0"  # noqa: S104  # containers bind all interfaces
     dashboard_port: int = 80
-    api_host: str = "0.0.0.0"
+    api_host: str = "0.0.0.0"  # noqa: S104  # containers bind all interfaces
     api_port: int = 11434
-    llamacpp_host: str = "0.0.0.0"
+    llamacpp_host: str = "0.0.0.0"  # noqa: S104  # containers bind all interfaces
     llamacpp_port: int = 8080
     # Also serve the Ollama and OpenAI APIs and the worker socket on the
     # dashboard port. Their own ports keep listening either way.
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     metrics_token: str = ""
     cache_enabled: bool = True
     cache_dir: str = "./model_cache"
-    cache_host: str = "0.0.0.0"
+    cache_host: str = "0.0.0.0"  # noqa: S104  # containers bind all interfaces
     cache_port: int = 9200
     cache_external_host: str = ""
     cache_manifest_ttl_hours: int = 240
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     # Where Hugging Face downloads are stored. Mount the same directory into a
     # llama.cpp server's --models-dir to share models without pushing them.
     hf_models_dir: str = "./hf_models"
-    # If set, used to sign dashboard session cookies; otherwise persisted in app_settings.
+    # If set, signs dashboard session cookies; otherwise persisted in app_settings.
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
 
     def effective_database_url(self) -> str:
-        """URL used by the app’s async SQLAlchemy engine."""
+        """URL used by the app's async SQLAlchemy engine."""
         u = (self.database_url or "").strip()
         if u:
             return u

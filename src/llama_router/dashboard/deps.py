@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from typing import TYPE_CHECKING
 
 from ..config import settings
 from ..database import Database
@@ -10,11 +11,14 @@ from ..provider_manager import ProviderManager
 from ..registry_cache.cache import BlobCache
 from ..worker_link.worker import WorkerLinkManager
 
+if TYPE_CHECKING:
+    from ..auto_benchmark import AutoBenchmarker
+
 _db: Database | None = None
 _pm: ProviderManager | None = None
 _blob_cache: BlobCache | None = None
 _worker_link: WorkerLinkManager | None = None
-_auto_benchmark = None
+_auto_benchmark: AutoBenchmarker | None = None
 _dashboard_session_secret_cache: str | None = None
 
 
@@ -34,12 +38,12 @@ def init_worker_link(manager: WorkerLinkManager) -> None:
     _worker_link = manager
 
 
-def init_auto_benchmark(manager) -> None:
+def init_auto_benchmark(manager: AutoBenchmarker) -> None:
     global _auto_benchmark
     _auto_benchmark = manager
 
 
-def get_auto_benchmark():
+def get_auto_benchmark() -> AutoBenchmarker:
     """The auto-benchmarker, creating an idle (not started) one for tests."""
     global _auto_benchmark
     from ..auto_benchmark import AutoBenchmarker
@@ -50,7 +54,7 @@ def get_auto_benchmark():
     return _auto_benchmark
 
 
-def auto_benchmark_if_running():
+def auto_benchmark_if_running() -> AutoBenchmarker | None:
     """The auto-benchmarker the process started, or None (tests, not started)."""
     return _auto_benchmark
 
@@ -65,12 +69,14 @@ def get_worker_link() -> WorkerLinkManager:
 
 
 def get_db() -> Database:
-    assert _db is not None
+    if _db is None:
+        raise RuntimeError("db is not initialised; call init() first")
     return _db
 
 
 def get_pm() -> ProviderManager:
-    assert _pm is not None
+    if _pm is None:
+        raise RuntimeError("pm is not initialised; call init() first")
     return _pm
 
 
