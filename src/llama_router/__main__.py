@@ -31,6 +31,31 @@ from .worker_link.worker import WorkerLinkManager
 
 logger = logging.getLogger("llama_router")
 
+# Requests a health checker polls: liveness on the dashboard port and the
+# provider summary on every API port.
+_HEALTH_PATHS = frozenset({"/health", "/healthz"})
+
+
+class QuietHealthChecks(logging.Filter):
+    """Drops uvicorn access-log lines for health checks that succeeded.
+
+    uvicorn logs each request as ``%s - "%s %s HTTP/%s" %d`` with the client,
+    method, path, HTTP version and status as arguments. A ``GET`` of a health
+    path that answered 2xx is dropped; anything else, including a failing
+    health check, is logged as usual.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _client, method, path, _version, status = args
+        if method != "GET" or not isinstance(status, int):
+            return True
+        if str(path).partition("?")[0] not in _HEALTH_PATHS:
+            return True
+        return not 200 <= status < 300
+
 
 class _Server(uvicorn.Server):
     """A uvicorn server that leaves signal handling to ``run``.
@@ -171,6 +196,10 @@ async def run() -> None:
             "Ollama API, OpenAI API and worker links also served on dashboard port :%d",
             settings.dashboard_port,
         )
+
+    if settings.quiet_health_checks:
+        # After the uvicorn configs: each one reconfigures uvicorn's loggers.
+        logging.getLogger("uvicorn.access").addFilter(QuietHealthChecks())
 
     def stop(sig: signal.Signals) -> None:
         logger.info("Received %s, shutting down", sig.name)

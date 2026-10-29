@@ -568,6 +568,8 @@ for a mirror; see `.env.example` for the full list of variables the CLI reads.
 
 The dashboard port answers `GET /healthz` with `{"status": "ok"}` whenever the process is up, with no sign-in and no database work. The production compose file's health check uses it.
 
+A health check polling every few seconds fills the access log. Set `LLAMA_ROUTER_QUIET_HEALTH_CHECKS=true` to leave successful `GET /healthz` and `GET /health` requests out of it; failed ones are still logged.
+
 The dashboard port also answers `GET /metrics` with Prometheus metrics (providers, addresses, benchmarks, live request outcomes, workers, routing table). Scrapers send `Authorization: Bearer $LLAMA_ROUTER_METRICS_TOKEN`; see [docs/metrics.md](docs/metrics.md).
 
 All three API ports also expose `GET /health`, which returns JSON:
