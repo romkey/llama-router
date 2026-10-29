@@ -7,6 +7,12 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- `LLAMA_ROUTER_QUIET_HEALTH_CHECKS=true` leaves successful `GET /healthz`
+  and `GET /health` requests out of the access log. Failed ones are still
+  logged.
+
 ## [0.22.0] - 2026-10-28
 
 ### Added

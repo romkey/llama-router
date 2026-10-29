@@ -58,6 +58,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between provider health checks |
+| `QUIET_HEALTH_CHECKS` | `false` | Leave successful `GET /healthz` and `GET /health` requests out of the access log. Failed ones are still logged |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
 | `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |

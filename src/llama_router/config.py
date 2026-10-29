@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # dashboard port. Their own ports keep listening either way.
     api_on_dashboard_port: bool = False
     health_check_interval_seconds: int = 30
+    # Leave successful GET /healthz and GET /health requests out of the access
+    # log, so a container or load-balancer health check polling every few
+    # seconds does not fill it. Failures are still logged.
+    quiet_health_checks: bool = False
     # Re-probe a provider's endpoints when the last probe is older than this
     # (0 turns periodic re-probing off; probes on add, edit and recovery stay).
     probe_max_age_hours: float = 24.0
