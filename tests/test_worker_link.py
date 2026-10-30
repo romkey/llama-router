@@ -1054,13 +1054,14 @@ async def test_providers_shared_individually_appear_on_the_hub(
 
     await _wait_for(api_offline)
     assert not pm.worker_hub.is_connected(api.id)
+    # It steps aside from its name, keeping its history.
     infos = {i.provider.name: i for i in await pm.list_provider_infos()}
-    assert infos["alice-gpu/api"].status_detail == "no longer shared by the worker"
+    assert infos["alice-gpu/api#8"].status_detail == "no longer shared by the worker"
     # A health check keeps that reason rather than blaming the socket.
     api_now = await db.get_provider(api.id)
     assert await pm.check_provider(api_now) == ProviderStatus.OFFLINE
     infos = {i.provider.name: i for i in await pm.list_provider_infos()}
-    assert infos["alice-gpu/api"].status_detail == "no longer shared by the worker"
+    assert infos["alice-gpu/api#8"].status_detail == "no longer shared by the worker"
 
     # Renamed on the worker, renamed here; shared again, online again.
     catalog[0]["name"] = "big-gpu"
@@ -1192,6 +1193,41 @@ async def test_catalog_names_that_clash(link, monkeypatch) -> None:
     await pm._on_worker_catalog(conn)
     by_rid = {c.worker_remote_id: c.name for c in (await _children(link)).values()}
     assert by_rid == {7: "alice-gpu/gpu2", 8: "alice-gpu/other"}
+
+
+async def test_unshared_providers_give_up_their_names(link, monkeypatch) -> None:
+    pm, pid = link["pm"], link["provider_id"]
+    link["seen"]["provider_models"][9] = ["nine:1b"]
+    await _individual_worker(
+        link, monkeypatch, [{"id": 7, "name": "gpu", "locality": "local"}]
+    )
+
+    async def one():
+        return "alice-gpu/gpu" in await _children(link)
+
+    await _wait_for(one)
+    conn = pm.worker_hub.get(pid)
+
+    def by_rid(kids):
+        return {c.worker_remote_id: c.name for c in kids.values()}
+
+    # The worker replaces provider 7 with 9 under the same name.
+    conn.catalog = [{"id": 9, "name": "gpu", "locality": "local"}]
+    await pm._on_worker_catalog(conn)
+    assert by_rid(await _children(link)) == {
+        7: "alice-gpu/gpu#7",
+        9: "alice-gpu/gpu",
+    }
+    # It stays that way on later catalogs, and 7 gets its name back when it
+    # is shared again in 9's place.
+    await pm._on_worker_catalog(conn)
+    assert by_rid(await _children(link))[9] == "alice-gpu/gpu"
+    conn.catalog = [{"id": 7, "name": "gpu", "locality": "local"}]
+    await pm._on_worker_catalog(conn)
+    assert by_rid(await _children(link)) == {
+        7: "alice-gpu/gpu",
+        9: "alice-gpu/gpu#9",
+    }
 
 
 async def test_overlapping_catalogs_end_on_the_latest(link, monkeypatch) -> None:

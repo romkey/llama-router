@@ -1873,6 +1873,15 @@ class ProviderManager:
                 c.worker_remote_id: c
                 for c in await self._db.list_worker_children(parent_id)
             }
+            # Providers the worker no longer shares give up their names first,
+            # so one shared in their place can have <worker>/<provider>.
+            shared = {int(e["id"]) for e in conn.catalog}
+            for rid, old in existing.items():
+                if rid in shared or old.name.endswith(f"#{rid}"):
+                    continue
+                aside = f"{old.name}#{rid}"
+                if await self._name_free(aside, old.id):
+                    await self._rename(old, aside)
             wanted: list[Provider] = []
             # Children that could not take their name yet (another provider
             # had it, maybe a sibling renamed later in this same catalog).
