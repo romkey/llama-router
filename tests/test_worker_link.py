@@ -862,3 +862,103 @@ async def test_worker_is_probed_when_it_connects_with_a_new_version(
     monkeypatch.setattr(worker_mod, "__version__", "99.0.0")
     await reconnect()
     assert probes == ["worker connected", "worker connected"]
+
+
+# --- router IDs and loops ---
+
+HUB_RID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+WORKER_RID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+
+@pytest.fixture
+def two_routers(monkeypatch):
+    """The hub and worker share this process, so the hub gets its own ID."""
+    from types import SimpleNamespace
+
+    from llama_router import router_identity as ri
+    from llama_router.worker_link import hub as hub_mod
+
+    monkeypatch.setattr(ri, "_router_id", WORKER_RID)
+    monkeypatch.setattr(ri, "_hub_id", None)
+    monkeypatch.setattr(ri, "_hub_listeners", [])
+    fake = SimpleNamespace(router_id=lambda: HUB_RID, parse_id=ri.parse_id)
+    monkeypatch.setattr(hub_mod, "router_identity", fake)
+    return fake
+
+
+async def test_hub_and_worker_swap_router_ids(link, two_routers) -> None:
+    from llama_router import router_identity as ri
+
+    w = await _connected_worker(link)
+    conn = link["pm"].worker_hub.get(link["provider_id"])
+    assert conn.router_id == WORKER_RID
+    assert conn.summary()["router_id"] == WORKER_RID
+    assert w.hub_router_id == HUB_RID
+    assert w.status()["hub_router_id"] == HUB_RID
+    assert ri.hub_id() == HUB_RID
+
+
+async def test_hub_refuses_a_worker_that_is_itself(link, two_routers) -> None:
+    two_routers.router_id = lambda: WORKER_RID
+    w = link["make_worker"]()
+    link["workers"].append(w)
+    w.start()
+    await _wait_for(lambda: w.state == "rejected")
+    assert "same router ID" in (w.last_error or "")
+    assert w.next_retry_at - time.time() > 200
+    assert not link["pm"].worker_hub.is_connected(link["provider_id"])
+
+
+async def test_worker_refuses_a_hub_that_is_itself(link, monkeypatch) -> None:
+    from llama_router import router_identity as ri
+
+    # Both sides read the same ID. The hub's own check is blinded, as on a hub
+    # that does not check, so the worker's check is the one that refuses.
+    monkeypatch.setattr(ri, "_router_id", WORKER_RID)
+    monkeypatch.setattr(ri, "_hub_id", None)
+    real_parse = ri.parse_id
+    calls = {"n": 0}
+
+    def parse_once_blind(value):
+        calls["n"] += 1
+        # The hub reads the hello first.
+        return None if calls["n"] == 1 else real_parse(value)
+
+    monkeypatch.setattr(ri, "parse_id", parse_once_blind)
+    w = link["make_worker"]()
+    link["workers"].append(w)
+    w.start()
+    await _wait_for(lambda: w.state == "rejected")
+    assert "same router ID" in (w.last_error or "")
+    assert ri.hub_id() is None
+
+
+async def test_remotes_from_our_hub_are_not_shared_back(link, two_routers) -> None:
+    """This router serves hub WORKER_RID while alice-gpu, from that same
+    router, dials in: alice-gpu must not appear in what the hub sees."""
+    from llama_router import router_identity as ri
+    from llama_router.model_listing import listed_models
+
+    await _connected_worker(link)
+    pm, rt, db, pid = link["pm"], link["rt"], link["db"], link["provider_id"]
+    assert pm.hub_loopback_ids() == set()
+    assert [m["name"] for m in await listed_models(db, rt, hub_only=True)] == [
+        "tiny:1b"
+    ]
+
+    ri.set_hub_id(WORKER_RID)
+    assert pm.hub_loopback_ids() == {pid}
+    provider = await db.get_provider(pid)
+    assert not pm.shares_with_hub(provider)
+    assert await listed_models(db, rt, hub_only=True) == []
+    assert [m["name"] for m in await listed_models(db, rt)] == ["tiny:1b"]
+
+    await rt.rebuild()
+    assert rt.table.ranked_for("tiny:1b", "/api/chat", "balanced", hub_only=True) == ()
+    assert rt.table.ranked_for("tiny:1b", "/api/chat", "balanced")
+
+    async with httpx.AsyncClient(base_url=link["hub_url"]) as c:
+        tags = await c.get("/api/tags", headers={p.HUB_HEADER: p.HUB_HEADER_VALUE})
+        ps = await c.get("/api/ps", headers={p.HUB_HEADER: p.HUB_HEADER_VALUE})
+    assert tags.json()["models"] == []
+    assert ps.status_code == 200

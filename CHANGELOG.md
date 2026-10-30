@@ -7,6 +7,19 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Router IDs and loop protection.** Each router now has a random ID,
+  shown on the **Workers** tab (with a *New ID* button for a router started
+  from a copy of another's data). A hub refuses a worker that is itself, and
+  a worker leaves out its remotes that dial in from the hub it serves, so two
+  routers that are each other's hub no longer offer the hub its own models.
+  Requests a router relays to a local provider carry the routers they have
+  passed through in `X-Llama-Router-Path`. A router that finds its own ID
+  there, or a path of eight routers, answers `508 Loop Detected` instead of
+  routing the request round again. See "Router IDs and loops" in
+  docs/workers.md.
+
 ## [0.24.0] - 2026-10-30
 
 ### Added

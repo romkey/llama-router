@@ -29,6 +29,7 @@ class OllamaClient:
         timeout: httpx.Timeout | None = None,
         headers: dict[str, str] | None = None,
         on_response: Callable[[httpx.Response], Awaitable[None]] | None = None,
+        on_request: Callable[[httpx.Request], Awaitable[None]] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._http = httpx.AsyncClient(
@@ -36,7 +37,10 @@ class OllamaClient:
             timeout=timeout or _TIMEOUT,
             transport=transport,
             headers=headers,
-            event_hooks={"response": [on_response]} if on_response else None,
+            event_hooks={
+                "request": [on_request] if on_request else [],
+                "response": [on_response] if on_response else [],
+            },
         )
 
     def _upstream_url(self, path: str) -> str:

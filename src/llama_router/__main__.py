@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import uvicorn
 
-from . import __version__
+from . import __version__, router_identity
 from .api import deps as api_deps
 from .api.app import app as api_app
 from .auto_benchmark import AutoBenchmarker
@@ -105,6 +105,9 @@ async def run() -> None:
 
     db = Database()
     await db.connect()
+    # Before any provider is contacted: relayed requests carry the ID.
+    rid = await router_identity.load(db)
+    logger.info("Router ID %s", rid)
 
     pm = ProviderManager(db)
     await pm.start()

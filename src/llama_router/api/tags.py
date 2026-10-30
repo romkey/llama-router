@@ -36,7 +36,7 @@ async def ps(request: Request) -> JSONResponse:
     hub = from_hub(request)
     running = []
     for info in infos:
-        if hub and not info.provider.hub_shared:
+        if hub and not pm.shares_with_hub(info.provider):
             continue
         if info.active_requests > 0:
             for m in info.models:

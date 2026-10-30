@@ -18,6 +18,7 @@ optionally Sentry and an OpenID Connect provider.
 - `src/llama_router/metrics.py`: Prometheus text format for `GET /metrics`.
 - `src/llama_router/registry_cache/`: pull-through cache for Ollama pulls.
 - `src/llama_router/worker_link/`: hub and worker links.
+- `src/llama_router/router_identity.py`: router ID, loop guard (`X-Llama-Router-Path`).
 - `src/llama_router/provider_manager.py`, `probe.py`: discovery, probing, health.
 - `src/llama_router/router.py`, `routing_table.py`, `routing_stats.py`, `affinity.py`: routing.
 - `src/llama_router/model_listing.py`, `dashboard/model_groups.py`: model groups in listings and their API.

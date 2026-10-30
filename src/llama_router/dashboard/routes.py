@@ -22,7 +22,7 @@ from fastapi.responses import (
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .. import __version__, hf_download
+from .. import __version__, hf_download, router_identity
 from .. import metrics as metrics_mod
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
@@ -3062,6 +3062,20 @@ async def api_set_hub_providers(body: HubProvidersBody):
 @router.get("/api/worker-link")
 async def api_worker_link_status():
     return JSONResponse(await deps.get_worker_link().status())
+
+
+@router.post("/api/worker-link/router-id")
+async def api_new_router_id():
+    """Give this router a new ID (for a copy of another router's data).
+
+    Both links reconnect so the other side learns it: the one to this
+    router's hub, and every worker of this router, which reconnects on its own.
+    """
+    link = deps.get_worker_link()
+    await router_identity.regenerate(deps.get_db())
+    await link.reload()
+    await deps.get_pm().worker_hub.close_all()
+    return JSONResponse(await link.status())
 
 
 @router.post("/api/worker-link")

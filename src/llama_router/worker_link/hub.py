@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from .. import router_identity
 from . import protocol as p
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class WorkerConnection:
         max_concurrency: int,
         software_version: str | None,
         remote_addr: str | None,
+        router_id: str | None = None,
     ) -> None:
         self._ws = websocket
         self.worker_id = worker_id
@@ -93,6 +95,8 @@ class WorkerConnection:
         self.max_concurrency = max_concurrency
         self.software_version = software_version
         self.remote_addr = remote_addr
+        # The worker's router ID; None from workers older than router IDs.
+        self.router_id = router_id
         self.connected_at = time.time()
         self.jobs_total = 0
         self._pending: dict[int, _Pending] = {}
@@ -121,6 +125,7 @@ class WorkerConnection:
             "in_flight": self.in_flight,
             "jobs_total": self.jobs_total,
             "software_version": self.software_version,
+            "router_id": self.router_id,
         }
 
     # --- sending ---
@@ -455,10 +460,24 @@ class WorkerHub:
             if not protocols:
                 raise ValueError("hello must list at least one protocol")
             max_c = max(1, min(int(hello.get("max_concurrency") or 4), 64))
+            worker_rid = router_identity.parse_id(hello.get("router_id"))
         except (TimeoutError, ValueError, TypeError, WebSocketDisconnect) as exc:
             logger.warning("Worker %s handshake failed: %s", row.get("name"), exc)
             if websocket.application_state == WebSocketState.CONNECTED:
                 await websocket.close(code=p.CLOSE_PROTOCOL, reason=str(exc)[:120])
+            return
+
+        own_rid = router_identity.router_id()
+        if worker_rid is not None and worker_rid == own_rid:
+            logger.warning(
+                "Refused worker %s from %s: it is this router (router ID %s)",
+                row.get("name"),
+                remote,
+                own_rid,
+            )
+            await websocket.close(
+                code=p.CLOSE_LOOP, reason="worker and hub are the same router"
+            )
             return
 
         provider_id = int(row["provider_id"])
@@ -472,6 +491,7 @@ class WorkerHub:
             max_concurrency=max_c,
             software_version=str(hello.get("software_version") or "") or None,
             remote_addr=remote,
+            router_id=worker_rid,
         )
 
         previous = self._conns.get(provider_id)
@@ -488,6 +508,7 @@ class WorkerHub:
                         "version": p.PROTOCOL_VERSION,
                         "worker_name": name,
                         "provider_id": provider_id,
+                        "router_id": own_rid,
                     }
                 )
             )

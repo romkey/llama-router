@@ -242,7 +242,7 @@ async def audio_voices(request: Request) -> JSONResponse:
     seen: set[str] = set()
 
     for info in infos:
-        if info.provider.id is None or (hub and not info.provider.hub_shared):
+        if info.provider.id is None or (hub and not pm.shares_with_hub(info.provider)):
             continue
         try:
             client = get_v1_client(pm, info.provider.id)

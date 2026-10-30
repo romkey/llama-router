@@ -573,6 +573,39 @@ async def test_worker_link_save_and_clear(dash_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_router_id(dash_client, monkeypatch) -> None:
+    from llama_router import router_identity
+
+    monkeypatch.setattr(settings, "worker_hub_url", "")
+    monkeypatch.setattr(settings, "worker_token", "")
+    monkeypatch.setattr(router_identity, "_router_id", None)
+    client, db = dash_client
+    first = await router_identity.load(db)
+    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    viewer = await db.create_dashboard_user("v", hash_password("password-12345"), False)
+    invalidate_dashboard_user_count_cache()
+
+    assert (
+        await client.get("/api/worker-link", headers=_session_cookie_header(uid))
+    ).json()["router_id"] == first
+    page = await client.get("/", headers=_session_cookie_header(uid))
+    assert first in page.text
+
+    r = await client.post(
+        "/api/worker-link/router-id", headers=_session_cookie_header(viewer)
+    )
+    assert r.status_code == 403
+    r = await client.post(
+        "/api/worker-link/router-id", headers=_session_cookie_header(uid)
+    )
+    assert r.status_code == 200, r.text
+    new = r.json()["router_id"]
+    assert new != first
+    assert await db.get_app_setting(router_identity.DB_KEY) == new
+    await dash_deps.get_worker_link().stop()
+
+
+@pytest.mark.asyncio
 async def test_worker_link_locked_when_set_by_env(dash_client, monkeypatch) -> None:
     monkeypatch.setattr(settings, "worker_hub_url", "https://hub.example")
     monkeypatch.setattr(settings, "worker_token", "lrw_env")

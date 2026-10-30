@@ -18,9 +18,10 @@ import logging
 import random
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from . import router_identity
 from .affinity import Binding, SessionAffinity, session_key, short_key
 from .config import settings
 from .database import ROUTING_CHANGES, Database
@@ -164,6 +165,10 @@ class Router:
         """The database inputs the current table was built from."""
         return self._inputs
 
+    def hub_loopback_ids(self) -> set[int]:
+        """Providers never shared with the hub; see ProviderManager."""
+        return self._pm.hub_loopback_ids()
+
     def mark_dirty(self, reason: str, *, reload: bool = True) -> None:
         """Schedule a rebuild. *reload* re-reads the database first.
 
@@ -201,7 +206,7 @@ class Router:
                     inputs = self._inputs = await load_inputs(self._db)
                 self._version += 1
                 table = build_table(
-                    inputs,
+                    _hide_from_hub(inputs, self._pm.hub_loopback_ids()),
                     hot_models=self._pm.hot_model_names,
                     stats=self._pm.stats,
                     version=self._version,
@@ -230,8 +235,12 @@ class Router:
             )
             return table
 
+    def _on_hub_change(self) -> None:
+        self.mark_dirty("hub router ID", reload=False)
+
     async def start(self) -> None:
         """Build the first table and keep it current in the background."""
+        router_identity.on_hub_change(self._on_hub_change)
         await self.rebuild()
         if self._task is None:
             self._task = asyncio.create_task(self._run())
@@ -243,6 +252,7 @@ class Router:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._db.remove_change_listener(self._on_db_change)
+        router_identity.remove_hub_listener(self._on_hub_change)
 
     async def _run(self) -> None:
         while True:
@@ -897,6 +907,21 @@ class Router:
         return RouteResult(
             provider, resolved_model, table.backend_name(provider_id, resolved_model)
         )
+
+
+def _hide_from_hub(inputs: RoutingInputs, hidden: set[int]) -> RoutingInputs:
+    """*inputs* with the providers in *hidden* not shared with the hub."""
+    if not hidden:
+        return inputs
+    return replace(
+        inputs,
+        providers=[
+            p.model_copy(update={"hub_shared": False})
+            if p.id in hidden and p.hub_shared
+            else p
+            for p in inputs.providers
+        ],
+    )
 
 
 def _group_of(table: RoutingTable, name: str) -> str | None:
