@@ -79,7 +79,7 @@
     const $ = (id) => document.getElementById(id);
     // *view* changes whenever another chat is shown, so a reply that arrives
     // after the user moved on is not put in the wrong transcript.
-    const state = { providers: [], convId: null, image: null, busy: false, view: 0 };
+    const state = { providers: [], convId: null, image: null, busy: false, view: 0, nav: 0 };
 
     async function api(method, url, body) {
         const opts = { method, headers: {} };
@@ -191,6 +191,7 @@
     }
 
     function newChat() {
+        state.nav += 1;
         state.convId = null;
         clearLog();
         loadConversations();
@@ -198,7 +199,10 @@
     }
 
     async function openConversation(id) {
+        // Only the latest click (or New chat) wins when fetches overlap.
+        const nav = ++state.nav;
         const conv = await api("GET", `/api/chat/conversations/${id}`);
+        if (nav !== state.nav) return;
         state.convId = conv.id;
         clearLog();
         for (const m of conv.messages) addMessage(m);
