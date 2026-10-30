@@ -350,6 +350,8 @@ The request log records each request's tokens in and out, the API key that made 
 
 **Daily spend caps.** An API key can have a cap in USD per UTC day. Once its logged spend reaches the cap, the key is limited to local providers until the next day; a cloud-only key is refused with HTTP 429. The key list shows each key's spend today.
 
+**Usage by key and provider.** The Keys tab shows, for the last 24 hours, 7 days, 30 days or all time, how many requests each API key sent to each provider, how many failed, the tokens in and out, the cost and when the last one was. Requests without a key appear as *no key*. When a worker shares its providers one by one (see docs/workers.md), each of them shows up separately. Scripts can read the same report from `GET /api/keys/usage?period=7d` (`24h`, `7d`, `30d` or `all`; add `key_id=` for one key) with a dashboard sign-in or a management key with `keys:read`.
+
 ## Model Aliases
 
 The same model often has different names at different providers: `claude-sonnet-4-5` at Anthropic, `anthropic/claude-sonnet-4-5` at OpenRouter, `llama3.2:latest` and `llama3.2` across Ollama and llama.cpp. An alias joins them. A request for any name in the group can go to any provider that serves one of them, and each provider is sent its own name for the model. Aliases chain, so `a → b → c` is one group.
@@ -443,7 +445,7 @@ once.
 
 | Privilege | Allows |
 |-----------|--------|
-| `keys:read` | `GET /api/keys` and the keys' pins and decision policies |
+| `keys:read` | `GET /api/keys`, usage by key and provider (`GET /api/keys/usage`), and the keys' pins and decision policies |
 | `keys:write` | Issue, configure and revoke API keys (`/api/keys/...`) |
 | `models:read` | Read model aliases, fallbacks, groups, the routing table and `/api/routing/explain` (explaining by `key_id` also needs `keys:read`) |
 | `models:write` | Change model aliases, fallbacks and groups; rebuild the routing table |

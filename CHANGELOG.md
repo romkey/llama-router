@@ -9,6 +9,13 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Usage by key and provider.** The Keys tab has a table of requests,
+  errors, tokens and cost per API key and provider for the last 24 hours,
+  7 days, 30 days or all time, read from the request log.
+  `GET /api/keys/usage` returns the same data for scripts (`keys:read`).
+
+### Added
+
 - **Router IDs and loop protection.** Each router now has a random ID,
   shown on the **Workers** tab (with a *New ID* button for a router started
   from a copy of another's data). A hub refuses a worker that is itself, and

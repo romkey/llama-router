@@ -5,7 +5,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -1232,6 +1232,39 @@ async def api_list_keys():
     """API keys with their settings; never the keys themselves."""
     keys = await deps.get_db().list_api_keys()
     return JSONResponse(jsonable_encoder({"keys": keys}))
+
+
+# Periods the usage report covers; None is everything in the request log.
+_USAGE_PERIODS: dict[str, timedelta | None] = {
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+    "all": None,
+}
+
+
+@router.get("/api/keys/usage")
+async def api_key_usage(period: str = "7d", key_id: int | None = None):
+    """Requests, tokens and cost per API key and provider over *period*
+    (24h, 7d, 30d or all), from the request log."""
+    if period not in _USAGE_PERIODS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"period must be one of {', '.join(_USAGE_PERIODS)}",
+        )
+    span = _USAGE_PERIODS[period]
+    since = datetime.now(UTC).replace(tzinfo=None) - span if span else None
+    rows = await deps.get_db().usage_by_key_and_provider(since, key_id)
+    for row in rows:
+        row["last_request_at"] = _iso(row["last_request_at"])
+    return JSONResponse(
+        {
+            "period": period,
+            "since": _iso(since),
+            "key_id": key_id,
+            "rows": rows,
+        }
+    )
 
 
 @router.post("/api/keys/generate")
