@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-30
+
 ### Added
 
 - **Management keys.** Administrators can issue management keys
