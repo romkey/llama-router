@@ -19,7 +19,10 @@ async def listed_models(
     model of the same name, usable or not, because routing sends that
     name to the group.
     """
-    models = await db.list_all_models(hub_only=hub_only)
+    models = await db.list_all_models(
+        hub_only=hub_only,
+        exclude_ids=router.hub_loopback_ids() if hub_only and router else None,
+    )
     table = router.table if router is not None else None
     if table is None or not table.groups:
         return models

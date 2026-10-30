@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from . import router_identity
 from .config import settings
 from .database import Database
 from .httpx_errors import describe_httpx_error
@@ -377,6 +378,10 @@ class ProviderManager:
             self._active_urls.pop(provider_id, None)
             return
         kw: dict[str, Any] = {"on_response": self._response_hook(provider_id)}
+        if not provider.is_cloud:
+            # Any local provider may be another llama-router; a cloud
+            # service never is, so it is not told this router's ID.
+            kw["on_request"] = router_identity.add_path_header
         if provider.read_timeout_s:
             kw["timeout"] = httpx.Timeout(10.0, read=provider.read_timeout_s)
         if provider.is_worker:
@@ -649,6 +654,24 @@ class ProviderManager:
             worker=self.worker_summary(provider),
             status_detail=self._status_detail.get(provider_id),
         )
+
+    def hub_loopback_ids(self) -> set[int]:
+        """Remotes dialing in from the hub this router serves as a worker.
+
+        Sharing them back would send the hub's own jobs to itself, so the hub
+        never sees them, whatever ``hub_shared`` says.
+        """
+        hub = router_identity.hub_id()
+        if hub is None:
+            return set()
+        return {
+            c.provider_id
+            for c in self.worker_hub.connections()
+            if not c.closed and c.router_id == hub
+        }
+
+    def shares_with_hub(self, provider: Provider) -> bool:
+        return provider.hub_shared and provider.id not in self.hub_loopback_ids()
 
     def worker_summary(self, provider: Provider) -> dict[str, Any] | None:
         """Live socket details for a worker provider; None for HTTP providers."""

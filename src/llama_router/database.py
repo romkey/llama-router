@@ -542,13 +542,20 @@ class Database:
         )
         return [_row_to_address(r) for r in rows]
 
-    async def list_all_models(self, *, hub_only: bool = False) -> list[dict]:
+    async def list_all_models(
+        self, *, hub_only: bool = False, exclude_ids: Iterable[int] | None = None
+    ) -> list[dict]:
         """Models of online providers, one row per name.
 
         With *hub_only*, only providers shared with the hub (see
         ``Provider.hub_shared``): what a hub sees through the worker link.
+        Providers in *exclude_ids* are left out.
         """
         shared = "AND p.hub_shared != 0" if hub_only else ""
+        # Integers only, so they can go in the text.
+        skip = sorted({int(i) for i in exclude_ids or ()})
+        if skip:
+            shared += f" AND p.id NOT IN ({', '.join(str(i) for i in skip)})"
         q = text(f"""
             SELECT name, size, digest, modified_at, details FROM (
                 SELECT pm.name, pm.size, pm.digest, pm.modified_at, pm.details,

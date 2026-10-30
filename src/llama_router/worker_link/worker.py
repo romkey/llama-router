@@ -23,7 +23,7 @@ import httpx
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
-from .. import __version__
+from .. import __version__, router_identity
 from . import protocol as p
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,8 @@ class WorkerClient:
         self.last_error: str | None = None
         self.connected_since: float | None = None
         self.worker_name: str | None = None
+        # The hub's router ID; None until welcomed or from an older hub.
+        self.hub_router_id: str | None = None
         self.jobs_total = 0
         self.next_retry_at: float | None = None
 
@@ -152,6 +154,7 @@ class WorkerClient:
             "jobs_total": self.jobs_total,
             "protocols": self.protocols,
             "next_retry_at": self.next_retry_at,
+            "hub_router_id": self.hub_router_id,
         }
 
     def start(self) -> None:
@@ -223,6 +226,13 @@ class WorkerClient:
                         "each machine needs its own token"
                     )
                     delay = _REPLACED_RETRY
+                elif rcvd is not None and rcvd.code == p.CLOSE_LOOP:
+                    self.state = "rejected"
+                    self.last_error = (
+                        "the hub is this router (same router ID); a router cannot "
+                        "be its own worker"
+                    )
+                    delay = _REJECTED_RETRY
                 elif rcvd is not None and rcvd.code == p.CLOSE_PROTOCOL:
                     self.last_error = f"protocol error: {rcvd.reason}"
                     delay = _REJECTED_RETRY
@@ -269,6 +279,7 @@ class WorkerClient:
                     "protocols": self.protocols,
                     "max_concurrency": self._max_concurrency,
                     "software_version": __version__,
+                    "router_id": router_identity.router_id(),
                 }
             )
         )
@@ -279,6 +290,18 @@ class WorkerClient:
         if welcome.get("type") != "welcome":
             raise _RejectedError(f"unexpected handshake reply {welcome.get('type')!r}")
         self.worker_name = str(welcome.get("worker_name") or "") or None
+        hub_rid = router_identity.parse_id(welcome.get("router_id"))
+        if hub_rid is not None and hub_rid == router_identity.router_id():
+            await ws.close(
+                code=p.CLOSE_LOOP, reason="worker and hub are the same router"
+            )
+            raise _RejectedError(
+                "the hub is this router (same router ID); a router cannot "
+                "be its own worker"
+            )
+        self.hub_router_id = hub_rid
+        # This router leaves out its remotes that lead back to the hub.
+        router_identity.set_hub_id(hub_rid)
         self.state = "connected"
         self.last_error = None
         self.connected_since = time.time()
@@ -513,6 +536,7 @@ class WorkerLinkManager:
             if self._client is not None:
                 await self._client.stop()
                 self._client = None
+                router_identity.set_hub_id(None)
             url, token, source = await self.resolved_config()
             self.source = source
             if source == "none":
@@ -553,6 +577,7 @@ class WorkerLinkManager:
             "hub_url": url,
             "token_set": bool(token),
             "state": "disabled",
+            "router_id": router_identity.router_id(),
         }
         if self._client is not None:
             live = self._client.status()
@@ -565,6 +590,7 @@ class WorkerLinkManager:
             if self._client is not None:
                 await self._client.stop()
                 self._client = None
+                router_identity.set_hub_id(None)
 
 
 def normalize_hub_url(raw: str) -> str:

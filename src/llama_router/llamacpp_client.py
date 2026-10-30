@@ -70,6 +70,7 @@ class OpenAIClient:
         timeout: httpx.Timeout | None = None,
         headers: dict[str, str] | None = None,
         on_response: Callable[[httpx.Response], Awaitable[None]] | None = None,
+        on_request: Callable[[httpx.Request], Awaitable[None]] | None = None,
     ):
         self._base_url = base_url.rstrip("/")
         root, api_path = split_api_base(self._base_url)
@@ -82,7 +83,7 @@ class OpenAIClient:
             transport=transport,
             headers=headers,
             event_hooks={
-                "request": [self._to_api_base],
+                "request": [self._to_api_base, *([on_request] if on_request else [])],
                 "response": [on_response] if on_response else [],
             },
         )

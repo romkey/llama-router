@@ -43,6 +43,38 @@ A client sending the header to a router narrows only its own routing, so
 the header is not a credential. The choice is saved per provider, so a new
 provider is shared until it is unticked.
 
+## Router IDs and loops
+
+Every router makes a random ID (a UUID) on first start and keeps it in its
+database. The **Workers** tab shows it. A router started from a copy of
+another's data volume has the same ID, so give it a new one with *New ID*:
+the link to its hub and every link from its workers reconnect so the other
+side learns it.
+
+Routers that link to each other can send a request round in a circle, for
+example two routers that are each other's hub. Three things stop that:
+
+1. **Handshake.** The worker sends its ID in `hello` and the hub sends its
+   own in `welcome`. Either side closes the link with 4508 if the other has
+   its own ID, and the worker waits five minutes before trying again.
+2. **Remotes that lead back.** A router remembers the ID of each worker that
+   dials in. When it serves a hub as a worker, it never offers that hub a
+   worker whose ID is the hub's: routing and model listings for the hub
+   leave it out, whatever its *share with hub* box says. Two routers that
+   are each other's hub therefore see only each other's own providers.
+3. **Path header.** Each request a router sends to a local provider (any
+   provider that is not cloud, since it may be another llama-router)
+   carries `X-Llama-Router-Path`: the IDs of the routers it has passed
+   through, this one last. A worker relays the header unchanged. A router
+   that receives a request whose path holds its own ID, or eight IDs or
+   more, answers `508 Loop Detected` without routing it. The caller sees
+   the 508 as an upstream error from that provider. This catches loops
+   through three or more routers and loops through plain HTTP providers that
+   point at another router.
+
+Older routers neither send IDs nor add to the path, so the checks only work
+between routers of this version or later. Mixed versions still connect.
+
 ## Wire protocol (version 1)
 
 Endpoint: `GET /worker/ws` on the hub's Ollama API port, upgraded to a
@@ -56,8 +88,8 @@ id, then payload. Request ids let many exchanges share the socket.
 
 | Direction | Frame | Fields |
 |-----------|-------|--------|
-| worker → hub | `hello` | `version`, `protocols` (`ollama`, `llamacpp`), `max_concurrency`, `software_version` |
-| hub → worker | `welcome` | `version`, `worker_name`, `provider_id` |
+| worker → hub | `hello` | `version`, `protocols` (`ollama`, `llamacpp`), `max_concurrency`, `software_version`, `router_id` |
+| hub → worker | `welcome` | `version`, `worker_name`, `provider_id`, `router_id` |
 | hub → worker | `request` | `id`, `target`, `method`, `path` (with query), `headers` |
 | hub → worker | binary 1 / 2 | request body chunk / request body end |
 | worker → hub | `response` | `id`, `status`, `headers` |
@@ -81,6 +113,7 @@ Close codes:
 | 4403 | Token revoked, rotated, or worker disabled | Retry after five minutes |
 | 4409 | Replaced by a newer connection with the same token | Retry after 30 seconds |
 | 4400 | Protocol error | Retry after five minutes |
+| 4508 | Hub and worker are the same router (same router ID) | Retry after five minutes |
 
 Anything else is a transient failure, retried with exponential backoff from one
 second up to one minute, with jitter. Both sides send WebSocket pings every 20

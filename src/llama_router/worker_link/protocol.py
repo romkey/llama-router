@@ -5,13 +5,13 @@ in binary frames: one byte of kind, a 4-byte big-endian request id, then the
 payload. Many requests are multiplexed over one socket by request id.
 
 Hub -> worker
-    ``welcome``   {worker_name, provider_id, version}
+    ``welcome``   {worker_name, provider_id, version, router_id}
     ``request``   {id, target, method, path, headers}
                   followed by zero or more REQ_BODY frames and one REQ_END
     ``cancel``    {id}
 
 Worker -> hub
-    ``hello``     {version, protocols, max_concurrency, software_version}
+    ``hello``     {version, protocols, max_concurrency, software_version, router_id}
     ``response``  {id, status, headers}
                   followed by zero or more RESP_BODY frames and one RESP_END
     ``error``     {id, kind, message}  (instead of, or after, a response)
@@ -59,6 +59,8 @@ CLOSE_UNAUTHORIZED = 4401
 CLOSE_REPLACED = 4409
 CLOSE_PROTOCOL = 4400
 CLOSE_REVOKED = 4403
+# The worker and the hub are the same router (same router ID).
+CLOSE_LOOP = 4508
 
 # Hop-by-hop or transport headers that must not be relayed in either direction.
 _DROP_HEADERS = frozenset(
