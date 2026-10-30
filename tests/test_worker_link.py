@@ -1056,6 +1056,11 @@ async def test_providers_shared_individually_appear_on_the_hub(
     assert not pm.worker_hub.is_connected(api.id)
     infos = {i.provider.name: i for i in await pm.list_provider_infos()}
     assert infos["alice-gpu/api"].status_detail == "no longer shared by the worker"
+    # A health check keeps that reason rather than blaming the socket.
+    api_now = await db.get_provider(api.id)
+    assert await pm.check_provider(api_now) == ProviderStatus.OFFLINE
+    infos = {i.provider.name: i for i in await pm.list_provider_infos()}
+    assert infos["alice-gpu/api"].status_detail == "no longer shared by the worker"
 
     # Renamed on the worker, renamed here; shared again, online again.
     catalog[0]["name"] = "big-gpu"
@@ -1151,3 +1156,89 @@ async def test_catalog_frames_are_checked(link) -> None:
     conn.expose = p.EXPOSE_COMBINED
     conn._on_text({"type": "catalog", "providers": []})
     assert len(got) == 1
+
+
+async def test_catalog_names_that_clash(link, monkeypatch) -> None:
+    db, pm, pid = link["db"], link["pm"], link["provider_id"]
+    # A provider on the hub already has the name the first entry wants.
+    await db.add_provider("alice-gpu/gpu")
+    await _individual_worker(
+        link,
+        monkeypatch,
+        [
+            {"id": 7, "name": "gpu", "locality": "local"},
+            {"id": 8, "name": "other", "locality": "local"},
+        ],
+    )
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    kids = await _children(link)
+    assert set(kids) == {"alice-gpu/gpu#7", "alice-gpu/other"}
+
+    # Two providers swap names in one catalog: both end up right.
+    conn = pm.worker_hub.get(pid)
+    conn.catalog = [
+        {"id": 7, "name": "other", "locality": "local"},
+        {"id": 8, "name": "gpu2", "locality": "local"},
+    ]
+    await pm._on_worker_catalog(conn)
+    conn.catalog = [
+        {"id": 7, "name": "gpu2", "locality": "local"},
+        {"id": 8, "name": "other", "locality": "local"},
+    ]
+    await pm._on_worker_catalog(conn)
+    by_rid = {c.worker_remote_id: c.name for c in (await _children(link)).values()}
+    assert by_rid == {7: "alice-gpu/gpu2", 8: "alice-gpu/other"}
+
+
+async def test_overlapping_catalogs_end_on_the_latest(link, monkeypatch) -> None:
+    """A newer catalog that arrives while an older one is taking providers
+    offline wins: nothing it shares is left offline."""
+    pm, pid = link["pm"], link["provider_id"]
+    every = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+        {"id": 9, "name": "npu", "locality": "local"},
+    ]
+    link["seen"]["provider_models"][9] = ["nine:1b"]
+    await _individual_worker(link, monkeypatch, list(every))
+
+    async def all_idle():
+        kids = await _children(link)
+        return len(kids) == 3 and all(
+            c.status == ProviderStatus.IDLE for c in kids.values()
+        )
+
+    await _wait_for(all_idle)
+    conn = pm.worker_hub.get(pid)
+    original = pm._take_child_offline
+    newer: list[asyncio.Task] = []
+
+    async def offline_with_a_newer_catalog_arriving(child, detail):
+        if not newer:
+            # The older sync is part way through its teardown.
+            conn.catalog = list(every)
+            newer.append(asyncio.create_task(pm._on_worker_catalog(conn)))
+            for _ in range(50):
+                await asyncio.sleep(0)
+        await original(child, detail)
+
+    monkeypatch.setattr(
+        pm, "_take_child_offline", offline_with_a_newer_catalog_arriving
+    )
+    conn.catalog = every[:1]
+    await pm._on_worker_catalog(conn)
+    await newer[0]
+
+    kids = await _children(link)
+    for name in ("alice-gpu/api", "alice-gpu/npu"):
+        assert pm.worker_hub.is_connected(kids[name].id), name
+
+    async def back():
+        kids = await _children(link)
+        return all(c.status == ProviderStatus.IDLE for c in kids.values())
+
+    await _wait_for(back)
