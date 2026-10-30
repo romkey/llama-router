@@ -77,7 +77,9 @@
 <script>
 (() => {
     const $ = (id) => document.getElementById(id);
-    const state = { providers: [], convId: null, image: null, busy: false };
+    // *view* changes whenever another chat is shown, so a reply that arrives
+    // after the user moved on is not put in the wrong transcript.
+    const state = { providers: [], convId: null, image: null, busy: false, view: 0 };
 
     async function api(method, url, body) {
         const opts = { method, headers: {} };
@@ -179,6 +181,7 @@
     }
 
     function clearLog() {
+        state.view += 1;
         const log = $("chat-log");
         log.innerHTML = "";
         const empty = el("div", "text-muted text-center my-auto");
@@ -279,6 +282,7 @@
         if (state.image) body.image = state.image;
         // Show the message now; the server's copy replaces it.
         const pending = addMessage({ role: "user", content, image: state.image });
+        const view = state.view;
         $("chat-input").value = "";
         setAttachment(null);
         state.busy = true;
@@ -288,14 +292,19 @@
         const timer = setInterval(() => setStatus(`Waiting… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
         try {
             const data = await api("POST", "/api/chat/send", body);
+            setStatus("");
+            if (view !== state.view) {
+                // The reply is saved with its chat; just refresh the list.
+                loadConversations();
+                return;
+            }
             pending.remove();
             const firstMessage = state.convId === null;
             state.convId = data.conversation.id;
             for (const m of data.messages) addMessage(m);
-            setStatus("");
             if (firstMessage) loadConversations();
         } catch (err) {
-            addMessage({ role: "error", content: err.message });
+            if (view === state.view) addMessage({ role: "error", content: err.message });
             setStatus("");
         } finally {
             clearInterval(timer);
