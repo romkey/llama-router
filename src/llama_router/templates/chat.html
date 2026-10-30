@@ -77,15 +77,12 @@
 <script>
 (() => {
     const $ = (id) => document.getElementById(id);
-    // *nav* counts the user's moves between chats (opening one, New chat);
-    // *convId* is the chat they moved to last, even while it loads, and
-    // *rendered* is the move whose chat (*shownId*) is on screen. A reply that arrives
-    // after a move only goes into the transcript of its own chat; *late*
-    // keeps it for a chat that is still loading.
-    const state = {
-        providers: [], convId: null, image: null, busy: false,
-        nav: 0, rendered: 0, shownId: null, late: {},
-    };
+    // *convId* is the chat on screen. While a reply is on its way (*busy*)
+    // the user stays in that chat, so the reply always belongs on screen.
+    // *nav* counts moves between chats and *rendered* is the move whose
+    // chat is on screen: when loads overlap only the latest one is drawn,
+    // and nothing is sent until it is.
+    const state = { providers: [], convId: null, image: null, busy: false, nav: 0, rendered: 0 };
 
     async function api(method, url, body) {
         const opts = { method, headers: {} };
@@ -175,6 +172,7 @@
             del.appendChild(el("i", "bi bi-trash"));
             del.addEventListener("click", async (ev) => {
                 ev.stopPropagation();
+                if (state.busy) { setStatus("Wait for the reply first."); return; }
                 if (!confirm(`Delete "${c.title}"?`)) return;
                 await api("DELETE", `/api/chat/conversations/${c.id}`);
                 if (state.convId === c.id) newChat();
@@ -196,39 +194,36 @@
     }
 
     function newChat() {
+        if (state.busy) { setStatus("Wait for the reply first."); return; }
         state.nav += 1;
         state.rendered = state.nav;
         state.convId = null;
-        state.shownId = null;
+        setStatus("");
         clearLog();
         loadConversations();
         $("chat-input").focus();
     }
 
     async function openConversation(id) {
-        // Only the latest move wins when fetches overlap.
+        if (state.busy) { setStatus("Wait for the reply first."); return; }
         const nav = ++state.nav;
-        state.convId = id;
         let conv;
         try {
             conv = await api("GET", `/api/chat/conversations/${id}`);
         } catch (err) {
+            // The chat on screen stays; sending to it is fine again.
             if (nav === state.nav) {
-                // Stay on the chat that is still on screen.
-                state.convId = state.shownId;
                 state.rendered = nav;
                 setStatus(err.message);
-                loadConversations();
             }
             return;
         }
         if (nav !== state.nav) return;
-        state.shownId = id;
+        state.convId = conv.id;
+        state.rendered = nav;
+        setStatus("");
         clearLog();
         for (const m of conv.messages) addMessage(m);
-        for (const m of state.late[id] || []) showOnce(m);
-        delete state.late[id];
-        state.rendered = nav;
         pick(conv.provider_id, conv.model_name);
         loadConversations();
     }
@@ -237,16 +232,11 @@
 
     // ── Messages ──
 
-    function showOnce(m) {
-        if (!document.querySelector(`#chat-log [data-msg-id="${m.id}"]`)) addMessage(m);
-    }
-
     function addMessage(m) {
         const empty = $("chat-empty");
         if (empty) empty.remove();
         const mine = m.role === "user";
         const wrap = el("div", "d-flex flex-column " + (mine ? "align-items-end" : "align-items-start"));
-        if (m.id != null) wrap.dataset.msgId = String(m.id);
         const cls = mine ? "text-bg-primary" : m.role === "error" ? "text-bg-danger" : "bg-body-tertiary";
         const bubble = el("div", `chat-msg rounded px-3 py-2 ${cls}`);
         if (m.image) {
@@ -300,8 +290,7 @@
 
     async function send() {
         if (state.busy) return;
-        // A reply sent now would be drawn on the old transcript and then
-        // replaced when the chat being opened arrives.
+        // The chat being opened would replace the transcript under the reply.
         if (state.rendered !== state.nav) { setStatus("Loading the chat…"); return; }
         const content = $("chat-input").value.trim();
         if (!content && !state.image) return;
@@ -317,44 +306,35 @@
         if (state.image) body.image = state.image;
         // Show the message now; the server's copy replaces it.
         const pending = addMessage({ role: "user", content, image: state.image });
-        const nav = state.nav;
         $("chat-input").value = "";
         setAttachment(null);
-        state.busy = true;
-        $("chat-send").disabled = true;
+        setBusy(true);
         setStatus(body.mode === "image" ? "Generating image…" : "Waiting for the model…");
         const started = Date.now();
         const timer = setInterval(() => setStatus(`Waiting… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
         try {
             const data = await api("POST", "/api/chat/send", body);
-            setStatus("");
-            if (nav !== state.nav) {
-                // The user moved meanwhile. The reply is saved with its chat;
-                // show it only if that chat is (or is loading) on screen.
-                const id = data.conversation.id;
-                if (state.convId === id) {
-                    if (state.rendered === state.nav) data.messages.forEach(showOnce);
-                    else state.late[id] = data.messages;
-                }
-                loadConversations();
-                return;
-            }
             pending.remove();
             const firstMessage = state.convId === null;
-            state.convId = state.shownId = data.conversation.id;
+            state.convId = data.conversation.id;
             for (const m of data.messages) addMessage(m);
+            setStatus("");
             if (firstMessage) loadConversations();
         } catch (err) {
-            const sameChat = nav === state.nav || (
-                body.conversation_id !== null && state.convId === body.conversation_id && state.rendered === state.nav);
-            if (sameChat) addMessage({ role: "error", content: err.message });
+            addMessage({ role: "error", content: err.message });
             setStatus("");
         } finally {
             clearInterval(timer);
-            state.busy = false;
-            $("chat-send").disabled = false;
+            setBusy(false);
             $("chat-input").focus();
         }
+    }
+
+    function setBusy(busy) {
+        state.busy = busy;
+        $("chat-send").disabled = busy;
+        $("chat-new").disabled = busy;
+        $("chat-convs").classList.toggle("opacity-50", busy);
     }
 
     $("chat-form").addEventListener("submit", (ev) => { ev.preventDefault(); send(); });
