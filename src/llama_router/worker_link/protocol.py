@@ -135,3 +135,14 @@ def chunks(data: bytes, size: int = MAX_CHUNK) -> Iterator[bytes]:
 # only narrow its own routing by sending it, so it is not a credential.
 HUB_HEADER = "X-Llama-Router-Via"
 HUB_HEADER_VALUE = "hub"
+
+# Sent by a worker that shares its providers individually, with the id of the
+# one provider (on the worker's router) a relayed job is for. The worker's
+# router reads it only alongside HUB_HEADER and only ever narrows routing.
+PROVIDER_HEADER = "X-Llama-Router-Provider"
+
+# How a worker shares its providers: as one provider on the hub, or each as
+# its own (``catalog`` frames list them).
+EXPOSE_COMBINED = "combined"
+EXPOSE_INDIVIDUAL = "individual"
+EXPOSE_MODES = (EXPOSE_COMBINED, EXPOSE_INDIVIDUAL)

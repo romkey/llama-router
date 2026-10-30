@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ..auth import from_hub
+from ..auth import from_hub, hub_provider
 from ..model_listing import listed_models
 from . import deps
 
@@ -17,7 +17,10 @@ async def list_models(request: Request) -> JSONResponse:
     """Aggregate models from all online providers, plus model groups (OpenAI
     format). A hub sees only the providers shared with it."""
     models = await listed_models(
-        deps.get_db(), deps.get_router(), hub_only=from_hub(request)
+        deps.get_db(),
+        deps.get_router(),
+        hub_only=from_hub(request),
+        provider_id=hub_provider(request),
     )
     return JSONResponse(
         content={
@@ -39,7 +42,10 @@ async def list_models(request: Request) -> JSONResponse:
 async def get_model(model_name: str, request: Request) -> JSONResponse:
     """Return a single model or model group in OpenAI format."""
     models = await listed_models(
-        deps.get_db(), deps.get_router(), hub_only=from_hub(request)
+        deps.get_db(),
+        deps.get_router(),
+        hub_only=from_hub(request),
+        provider_id=hub_provider(request),
     )
     for m in models:
         if m["name"] == model_name:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ..auth import from_hub
+from ..auth import from_hub, hub_provider
 from ..model_listing import listed_models
 from . import deps
 
@@ -15,7 +15,10 @@ async def list_tags(request: Request) -> JSONResponse:
     """Aggregate models from all online providers, plus model groups (a hub
     sees only the providers shared with it)."""
     models = await listed_models(
-        deps.get_db(), deps.get_router(), hub_only=from_hub(request)
+        deps.get_db(),
+        deps.get_router(),
+        hub_only=from_hub(request),
+        provider_id=hub_provider(request),
     )
     return JSONResponse(content={"models": models})
 
@@ -34,9 +37,12 @@ async def ps(request: Request) -> JSONResponse:
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
     hub = from_hub(request)
+    only = hub_provider(request)
     running = []
     for info in infos:
         if hub and not pm.shares_with_hub(info.provider):
+            continue
+        if only is not None and info.provider.id != only:
             continue
         if info.active_requests > 0:
             for m in info.models:

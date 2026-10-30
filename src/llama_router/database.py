@@ -224,11 +224,14 @@ class Database:
         gpu_type: str | None = None,
         gpu_ram: str | None = None,
         worker_name: str | None = None,
+        worker_parent_id: int | None = None,
+        worker_remote_id: int | None = None,
     ) -> Provider:
         """Create a provider. Addresses are added separately with add_address."""
         pid = await self._insert_get_id(
             "INSERT INTO providers (name, protocol, machine_type, gpu_type, "
-            "gpu_ram, worker_name) VALUES (?, ?, ?, ?, ?, ?)",
+            "gpu_ram, worker_name, worker_parent_id, worker_remote_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 protocol.value,
@@ -236,6 +239,8 @@ class Database:
                 gpu_type,
                 gpu_ram,
                 worker_name,
+                worker_parent_id,
+                worker_remote_id,
             ),
         )
         return Provider(
@@ -246,7 +251,17 @@ class Database:
             gpu_type=gpu_type,
             gpu_ram=gpu_ram,
             worker_name=worker_name,
+            worker_parent_id=worker_parent_id,
+            worker_remote_id=worker_remote_id,
         )
+
+    async def list_worker_children(self, parent_id: int) -> list[Provider]:
+        """Providers a worker shares individually, by its own provider id."""
+        rows = await self._select_all(
+            "SELECT * FROM providers WHERE worker_parent_id = ? ORDER BY id",
+            (parent_id,),
+        )
+        return [_row_to_provider(r) for r in rows]
 
     @_notifies(CHANGE_PROVIDERS)
     async def remove_provider(self, provider_id: int) -> None:
@@ -543,19 +558,26 @@ class Database:
         return [_row_to_address(r) for r in rows]
 
     async def list_all_models(
-        self, *, hub_only: bool = False, exclude_ids: Iterable[int] | None = None
+        self,
+        *,
+        hub_only: bool = False,
+        exclude_ids: Iterable[int] | None = None,
+        only_id: int | None = None,
     ) -> list[dict]:
         """Models of online providers, one row per name.
 
         With *hub_only*, only providers shared with the hub (see
         ``Provider.hub_shared``): what a hub sees through the worker link.
-        Providers in *exclude_ids* are left out.
+        Providers in *exclude_ids* are left out; with *only_id*, only that
+        provider's models are listed.
         """
         shared = "AND p.hub_shared != 0" if hub_only else ""
         # Integers only, so they can go in the text.
         skip = sorted({int(i) for i in exclude_ids or ()})
         if skip:
             shared += f" AND p.id NOT IN ({', '.join(str(i) for i in skip)})"
+        if only_id is not None:
+            shared += f" AND p.id = {int(only_id)}"
         q = text(f"""
             SELECT name, size, digest, modified_at, details FROM (
                 SELECT pm.name, pm.size, pm.digest, pm.modified_at, pm.details,
@@ -1764,6 +1786,8 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         read_timeout_s=row["read_timeout_s"],
         auto_benchmark=_tristate(row["auto_benchmark"]),
         hub_shared=row["hub_shared"] is None or bool(row["hub_shared"]),
+        worker_parent_id=row["worker_parent_id"],
+        worker_remote_id=row["worker_remote_id"],
     )
 
 

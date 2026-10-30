@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from ..auth import from_hub, routing_preferences_from_request
+from ..auth import from_hub, hub_provider, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import StreamLogger, log_request_background
 from ..v1_client import get_v1_client
@@ -237,12 +237,15 @@ async def audio_voices(request: Request) -> JSONResponse:
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
     hub = from_hub(request)
+    only = hub_provider(request)
 
     all_voices: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     for info in infos:
         if info.provider.id is None or (hub and not pm.shares_with_hub(info.provider)):
+            continue
+        if only is not None and info.provider.id != only:
             continue
         try:
             client = get_v1_client(pm, info.provider.id)
