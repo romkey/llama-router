@@ -17,6 +17,7 @@ import json
 import logging
 import random
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -68,6 +69,10 @@ _BACKOFF_MAX = 60.0
 _REJECTED_RETRY = 300.0
 _REPLACED_RETRY = 30.0
 _STABLE_SESSION = 30.0
+# How often a worker that shares providers individually checks for changes.
+_CATALOG_INTERVAL = 15.0
+
+CatalogSource = Callable[[], Awaitable[list[dict[str, Any]]]]
 
 
 def path_allowed(method: str, raw_path: str, allow_admin: bool) -> bool:
@@ -111,6 +116,7 @@ class WorkerClient:
         max_concurrency: int = 4,
         allow_admin: bool = False,
         upstream_api_key: str = "",
+        catalog: CatalogSource | None = None,
     ) -> None:
         self.hub_url = hub_url
         self._token = token
@@ -121,6 +127,9 @@ class WorkerClient:
         self._max_concurrency = max(1, max_concurrency)
         self._allow_admin = allow_admin
         self._upstream_api_key = upstream_api_key.strip()
+        # Set when this worker shares its providers individually.
+        self._catalog = catalog
+        self._sent_catalog: list[dict[str, Any]] | None = None
         self._http = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
         self._task: asyncio.Task[None] | None = None
         self._jobs: dict[int, _Job] = {}
@@ -143,6 +152,10 @@ class WorkerClient:
     def protocols(self) -> list[str]:
         return [t for t in p.TARGETS if self._upstreams.get(t)]
 
+    @property
+    def expose(self) -> str:
+        return p.EXPOSE_INDIVIDUAL if self._catalog else p.EXPOSE_COMBINED
+
     def status(self) -> dict[str, Any]:
         return {
             "state": self.state,
@@ -155,6 +168,10 @@ class WorkerClient:
             "protocols": self.protocols,
             "next_retry_at": self.next_retry_at,
             "hub_router_id": self.hub_router_id,
+            "expose": self.expose,
+            "shared_providers": (
+                len(self._sent_catalog) if self._sent_catalog is not None else None
+            ),
         }
 
     def start(self) -> None:
@@ -280,6 +297,7 @@ class WorkerClient:
                     "max_concurrency": self._max_concurrency,
                     "software_version": __version__,
                     "router_id": router_identity.router_id(),
+                    "expose": self.expose,
                 }
             )
         )
@@ -312,11 +330,39 @@ class WorkerClient:
             ",".join(self.protocols),
         )
 
-        async for message in ws:
-            if isinstance(message, str):
-                self._on_text(p.decode_json(message))
-            else:
-                self._on_bytes(message)
+        self._sent_catalog = None
+        catalog_task = (
+            asyncio.create_task(
+                self._catalog_loop(self._catalog), name="worker-catalog"
+            )
+            if self._catalog is not None
+            else None
+        )
+        try:
+            async for message in ws:
+                if isinstance(message, str):
+                    self._on_text(p.decode_json(message))
+                else:
+                    self._on_bytes(message)
+        finally:
+            if catalog_task is not None:
+                catalog_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await catalog_task
+
+    async def _catalog_loop(self, catalog: CatalogSource) -> None:
+        """Send the providers this worker shares, and again whenever they change."""
+        while True:
+            try:
+                entries = await catalog()
+                if entries != self._sent_catalog:
+                    await self._send_text({"type": "catalog", "providers": entries})
+                    self._sent_catalog = entries
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Could not send the provider list to the hub: %s", exc)
+            await asyncio.sleep(_CATALOG_INTERVAL)
 
     # --- inbound frames ---
 
@@ -437,11 +483,16 @@ class WorkerClient:
             return
 
         headers = p.filter_headers(meta.get("headers") or [])
-        headers = [h for h in headers if h[0].lower() != p.HUB_HEADER.lower()]
+        ours = {p.HUB_HEADER.lower(), p.PROVIDER_HEADER.lower()}
+        headers = [h for h in headers if h[0].lower() not in ours]
         headers.append(["accept-encoding", "identity"])
         # Tells this router (the usual upstream) to use only the providers
         # shared with the hub; any other upstream ignores it.
         headers.append([p.HUB_HEADER, p.HUB_HEADER_VALUE])
+        provider = meta.get("provider")
+        if self._catalog is not None and isinstance(provider, int):
+            # A job for one of the providers shared individually.
+            headers.append([p.PROVIDER_HEADER, str(provider)])
         if self._upstream_api_key:
             headers.append(["API-KEY", self._upstream_api_key])
 
@@ -501,9 +552,12 @@ class WorkerLinkManager:
 
     DB_HUB_URL = "worker_hub_url"
     DB_TOKEN = "worker_token"  # noqa: S105  # settings key name, not a secret
+    DB_EXPOSE = "worker_expose"
 
-    def __init__(self, db: Any) -> None:
+    def __init__(self, db: Any, pm: Any = None) -> None:
         self._db = db
+        # The provider manager, for which providers the hub may use.
+        self._pm = pm
         self._client: WorkerClient | None = None
         self._lock = asyncio.Lock()
         self.source: str = "none"
@@ -528,6 +582,45 @@ class WorkerLinkManager:
         if url and token:
             return url, token, "dashboard"
         return url, token, "none"
+
+    @staticmethod
+    def expose_env_locked() -> bool:
+        from ..config import settings
+
+        return settings.worker_expose.strip().lower() in p.EXPOSE_MODES
+
+    async def resolved_expose(self) -> str:
+        """How the hub sees this router's providers: one, or each on its own."""
+        from ..config import settings
+
+        if self.expose_env_locked():
+            return settings.worker_expose.strip().lower()
+        saved = (await self._db.get_app_setting(self.DB_EXPOSE) or "").strip()
+        return saved if saved in p.EXPOSE_MODES else p.EXPOSE_COMBINED
+
+    async def save_expose(self, mode: str) -> None:
+        if mode not in p.EXPOSE_MODES:
+            raise ValueError(f"expose must be one of {', '.join(p.EXPOSE_MODES)}")
+        await self._db.set_app_setting(self.DB_EXPOSE, mode)
+        await self.reload()
+
+    async def hub_catalog(self) -> list[dict[str, Any]]:
+        """The providers the hub may use, as a ``catalog`` frame lists them."""
+        out: list[dict[str, Any]] = []
+        for prov in await self._db.list_providers():
+            if self._pm is None:
+                shared = prov.hub_shared
+            else:
+                # A remote that shares its own providers one by one has no
+                # models of its own; those providers are listed instead.
+                shared = self._pm.shares_with_hub(
+                    prov
+                ) and not self._pm.shares_individually(prov)
+            if shared and prov.id is not None:
+                out.append(
+                    {"id": prov.id, "name": prov.name, "locality": prov.locality}
+                )
+        return out
 
     async def reload(self) -> None:
         from ..config import settings
@@ -559,6 +652,11 @@ class WorkerLinkManager:
                 max_concurrency=settings.worker_max_concurrency,
                 allow_admin=settings.worker_allow_admin,
                 upstream_api_key=settings.worker_upstream_api_key,
+                catalog=(
+                    self.hub_catalog
+                    if await self.resolved_expose() == p.EXPOSE_INDIVIDUAL
+                    else None
+                ),
             )
             self._client.start()
 
@@ -578,6 +676,8 @@ class WorkerLinkManager:
             "token_set": bool(token),
             "state": "disabled",
             "router_id": router_identity.router_id(),
+            "expose": await self.resolved_expose(),
+            "expose_env_locked": self.expose_env_locked(),
         }
         if self._client is not None:
             live = self._client.status()

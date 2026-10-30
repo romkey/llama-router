@@ -108,6 +108,7 @@ together pins the link and locks the dashboard form.
 | `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
+| `WORKER_EXPOSE` | *(dashboard; `combined`)* | `combined`: the hub sees this worker as one provider. `individual`: each shared provider on its own |
 
 ## Cloud providers
 

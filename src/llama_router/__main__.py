@@ -112,7 +112,7 @@ async def run() -> None:
     pm = ProviderManager(db)
     await pm.start()
 
-    worker_link = WorkerLinkManager(db)
+    worker_link = WorkerLinkManager(db, pm)
     await worker_link.reload()
 
     rt = Router(db, pm)

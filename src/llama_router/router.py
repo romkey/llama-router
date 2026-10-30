@@ -113,6 +113,9 @@ class RoutingPreferences:
     # The request came from a hub this router works for (over the worker
     # link): only providers shared with the hub may serve it.
     hub_only: bool = False
+    # The hub asked for this one provider (the worker shares providers
+    # individually): only it may serve the request, with no fallback to others.
+    hub_provider: int | None = None
 
 
 class Router:
@@ -376,6 +379,16 @@ class Router:
         mode = preferences.mode if preferences else DEFAULT_MODE
         locality = preferences.locality if preferences else None
         hub_only = bool(preferences and preferences.hub_only)
+        if preferences is not None and preferences.hub_provider is not None:
+            return self._route_hub_provider(
+                table,
+                model_name,
+                path,
+                preferences.hub_provider,
+                preferences.allow_fallback,
+                mode,
+                locality,
+            )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
                 table, model_name, ENDPOINTS[path][0], locality, hub_only
@@ -843,6 +856,31 @@ class Router:
                 }
             )
         return rows
+
+    def _route_hub_provider(
+        self,
+        table: RoutingTable,
+        model_name: str,
+        path: str,
+        pid: int,
+        allow_fallback: bool,
+        mode: str,
+        locality: str | None,
+    ) -> RouteResult | None:
+        """Route to the one provider the hub asked for, or nowhere."""
+        chain = table.chain(model_name) if allow_fallback else (model_name,)
+        for candidate_model in chain:
+            c = self._pinned(table, candidate_model, path, pid, mode)
+            if c is None or not _eligible(c.provider, locality, hub_only=True):
+                continue
+            return RouteResult(
+                c.provider,
+                candidate_model,
+                c.backend_model,
+                c.model,
+                _group_of(table, candidate_model),
+            )
+        return None
 
     @staticmethod
     def _pinned(
