@@ -638,7 +638,7 @@ API requests on the dashboard port are checked by API key, not by dashboard logi
 
 Use the bundled CLI after creating an empty PostgreSQL database and granting a user DDL rights (Alembic will create tables).
 
-1. Install the Postgres extra: `pip install 'llama-router[postgres]'` (provides `psycopg` for this tool and optional runtime use).
+1. The Docker image already has the PostgreSQL drivers, so run the tool there with `docker compose exec llama-router llama-router-migrate-sqlite-pg …`. Elsewhere, install the Postgres extra first: `pip install 'llama-router[postgres]'`.
 2. Run:
 
 ```bash
@@ -710,7 +710,7 @@ pip install git+https://github.com/romkey/llama-router
 llama-router
 ```
 
-Add `[postgres]` or `[mysql]` for those databases, e.g. `pip install 'llama-router[postgres] @ git+https://github.com/romkey/llama-router'`. pip ignores `uv.lock`, so it may install newer dependency versions than the ones tested; uv (below) installs exactly the tested ones. Without Docker, the database, cache and downloads go in the current directory unless configured otherwise.
+Add `[postgres]` or `[mysql]` for those databases (the Docker image already includes both), e.g. `pip install 'llama-router[postgres] @ git+https://github.com/romkey/llama-router'`. pip ignores `uv.lock`, so it may install newer dependency versions than the ones tested; uv (below) installs exactly the tested ones. Without Docker, the database, cache and downloads go in the current directory unless configured otherwise.
 
 ### Dashboard login lockout (forgot password)
 

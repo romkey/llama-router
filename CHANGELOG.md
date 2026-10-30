@@ -20,6 +20,13 @@ described in their git tags and GitHub Releases.
   routing the request round again. See "Router IDs and loops" in
   docs/workers.md.
 
+### Fixed
+
+- **PostgreSQL and MySQL in Docker.** The Docker image now includes the
+  PostgreSQL and MySQL drivers, so `LLAMA_ROUTER_DATABASE_URL` and
+  `llama-router-migrate-sqlite-pg` work with the released image without
+  rebuilding it.
+
 ## [0.24.0] - 2026-10-30
 
 ### Added
