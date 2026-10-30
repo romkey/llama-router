@@ -89,11 +89,12 @@ async def _dispatch_management_key(
             content={"detail": f"Management key lacks the {needed} privilege"},
         )
     request.state.management_key = key
-    # Routes check is_admin; the privilege check above is what limits a key.
+    # Not an admin: routes that show admins more (the status payload, API
+    # key details in routing explanations) must not show it to a key.
     request.state.dashboard_user = DashboardUser(
         id=0,
         username=f"key:{key.name}",
-        is_admin=True,
+        is_admin=False,
         auth_source=management_keys.AUTH_SOURCE,
     )
     if request.method not in ("GET", "HEAD"):

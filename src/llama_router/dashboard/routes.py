@@ -1124,6 +1124,13 @@ def _is_admin(request: Request) -> bool:
     return bool(user and user.is_admin)
 
 
+def _management_key_may_read_keys(request: Request) -> bool:
+    key = getattr(request.state, "management_key", None)
+    return key is not None and management_keys.has_privilege(
+        key.privileges, "keys:read"
+    )
+
+
 @router.get("/api/routing/explain")
 async def api_explain_routing(request: Request):
     """How a request would be routed right now, and why.
@@ -1156,7 +1163,7 @@ async def api_explain_routing(request: Request):
     key_id = None
     raw_key_id = (q.get("key_id") or "").strip()
     if raw_key_id:
-        if not _is_admin(request):
+        if not (_is_admin(request) or _management_key_may_read_keys(request)):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
             key_id = int(raw_key_id)

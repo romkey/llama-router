@@ -445,9 +445,9 @@ once.
 |-----------|--------|
 | `keys:read` | `GET /api/keys` and the keys' pins and decision policies |
 | `keys:write` | Issue, configure and revoke API keys (`/api/keys/...`) |
-| `models:read` | Read model aliases, fallbacks, groups, the routing table and `/api/routing/explain` |
+| `models:read` | Read model aliases, fallbacks, groups, the routing table and `/api/routing/explain` (explaining by `key_id` also needs `keys:read`) |
 | `models:write` | Change model aliases, fallbacks and groups; rebuild the routing table |
-| `status:read` | `GET /api/status` |
+| `status:read` | `GET /api/status`, as a dashboard viewer sees it |
 
 A `write` privilege includes the matching `read` one. Send the key to the
 dashboard port:

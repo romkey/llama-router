@@ -239,3 +239,25 @@ async def test_other_bearer_tokens_use_the_session(dash_client: DashClient) -> N
     r = await client.get("/api/keys", headers=_bearer("something-else"))
     assert r.status_code == 401
     assert r.json()["detail"] == "Not authenticated"
+
+
+async def test_status_key_gets_the_viewer_payload(dash_client: DashClient) -> None:
+    client, db = dash_client
+    admin = await _admin(db)
+    auth = _bearer(await _issue(client, admin, ["status:read"]))
+    body = (await client.get("/api/status", headers=auth)).json()
+    assert "workers" not in body
+    assert "worker_link" not in body
+    assert "cache" not in body
+    assert body["log_total"] == 0
+
+
+async def test_explain_by_key_needs_keys_read(dash_client: DashClient) -> None:
+    client, db = dash_client
+    admin = await _admin(db)
+    models_only = _bearer(await _issue(client, admin, ["models:read"]))
+    both = _bearer(await _issue(client, admin, ["models:read", "keys:read"]))
+    url = "/api/routing/explain?model=m&key_id=1"
+    assert (await client.get(url, headers=models_only)).status_code == 403
+    # Past the privilege check: no such key.
+    assert (await client.get(url, headers=both)).status_code == 404
