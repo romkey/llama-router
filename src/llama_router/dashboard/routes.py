@@ -46,7 +46,7 @@ from ..worker_link.hub import (
     worker_token_hash,
     worker_token_prefix,
 )
-from ..worker_link.protocol import CLOSE_REVOKED
+from ..worker_link.protocol import CLOSE_REVOKED, EXPOSE_INDIVIDUAL
 from ..worker_link.worker import normalize_hub_url
 from . import deps, management_keys, oidc
 from .auth_core import (
@@ -2915,6 +2915,7 @@ async def _worker_rows(db: Any, pm: Any) -> list[dict[str, Any]]:
         conn = pm.worker_hub.get(pid) if pid is not None else None
         live = conn.summary() if conn is not None and not conn.closed else None
         models = await db.get_provider_models(pid) if pid is not None else []
+        individual = live is not None and live.get("expose") == EXPOSE_INDIVIDUAL
         out.append(
             {
                 "id": w["id"],
@@ -2928,6 +2929,11 @@ async def _worker_rows(db: Any, pm: Any) -> list[dict[str, Any]]:
                 "connected": live is not None,
                 "live": live,
                 "model_count": len(models),
+                "models_label": (
+                    f"{live['shared_providers'] or 0} providers"
+                    if individual and live is not None
+                    else str(len(models))
+                ),
             }
         )
     return out
@@ -2949,6 +2955,10 @@ class WorkerCreateBody(BaseModel):
 
 class WorkerEnabledBody(BaseModel):
     enabled: bool
+
+
+class WorkerExposeBody(BaseModel):
+    expose: str
 
 
 class WorkerLinkBody(BaseModel):
@@ -3108,6 +3118,23 @@ async def api_new_router_id():
     await router_identity.regenerate(deps.get_db())
     await link.reload()
     await deps.get_pm().worker_hub.close_all()
+    return JSONResponse(await link.status())
+
+
+@router.post("/api/worker-link/expose")
+async def api_worker_link_expose(body: WorkerExposeBody):
+    """Share this router's providers with the hub as one provider or each on
+    its own. The link reconnects so the hub sees the change."""
+    link = deps.get_worker_link()
+    if link.expose_env_locked():
+        raise HTTPException(
+            status_code=409,
+            detail="How providers are shared is set by LLAMA_ROUTER_WORKER_EXPOSE",
+        )
+    try:
+        await link.save_expose(body.expose.strip().lower())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(await link.status())
 
 

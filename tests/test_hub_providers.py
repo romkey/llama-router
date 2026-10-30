@@ -222,3 +222,59 @@ async def test_dashboard_hub_provider_api(dash_client: Any) -> None:
 
     page = await client.get("/?tab=workers")
     assert "Providers the hub may use" in page.text
+
+
+async def test_provider_header_narrows_hub_jobs_to_one_provider(
+    db: Database, pm: ProviderManager
+) -> None:
+    """A worker that shares providers individually names the one a job is for."""
+    from llama_router.auth import hub_provider
+    from llama_router.worker_link.protocol import PROVIDER_HEADER
+
+    await db.set_allow_unauthenticated(True)
+    fast = await _provider(db, "fast", models=("m", "only-fast"), startup=100.0)
+    slow = await _provider(db, "slow", startup=5000.0)
+    kept = await _provider(db, "kept", models=("m", "secret"), hub_shared=False)
+    rt = Router(db, pm)
+    api_deps.init(db, pm, rt)
+    v1_deps.init(db, pm, rt)
+
+    to_slow = {**VIA, PROVIDER_HEADER: str(slow.require_id())}
+    assert hub_provider(_request(to_slow)) == slow.id
+    # Without the Via header, or with junk, it means nothing.
+    assert hub_provider(_request({PROVIDER_HEADER: str(slow.id)})) is None
+    assert hub_provider(_request({**VIA, PROVIDER_HEADER: "x"})) is None
+
+    prefs = await routing_preferences_from_request(db, _request(to_slow))
+    assert prefs is not None
+    assert prefs.hub_provider == slow.id
+    assert _pid(await rt.route("m", CHAT, prefs)) == slow.id
+    # No falling back to another provider for a model it lacks.
+    assert await rt.route("only-fast", CHAT, prefs) is None
+    # A provider kept from the hub stays kept, even when named.
+    to_kept = RoutingPreferences(hub_only=True, hub_provider=kept.require_id())
+    assert await rt.route("m", CHAT, to_kept) is None
+    to_fast = RoutingPreferences(hub_only=True, hub_provider=fast.require_id())
+    assert _pid(await rt.route("only-fast", CHAT, to_fast)) == fast.id
+
+    async def get(app: Any, path: str, headers: dict[str, str]) -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://r") as c:
+            return await c.get(path, headers=headers)
+
+    tags = (await get(api_app, "/api/tags", to_slow)).json()["models"]
+    assert {m["name"] for m in tags} == {"m"}
+    to_fast_h = {**VIA, PROVIDER_HEADER: str(fast.id)}
+    models = (await get(v1_app, "/v1/models", to_fast_h)).json()["data"]
+    assert {m["id"] for m in models} == {"m", "only-fast"}
+    to_kept_h = {**VIA, PROVIDER_HEADER: str(kept.id)}
+    assert (await get(api_app, "/api/tags", to_kept_h)).json()["models"] == []
+
+    for p in await db.list_providers():
+        pm.acquire(p.require_id())
+    try:
+        ps = (await get(api_app, "/api/ps", to_slow)).json()["models"]
+        assert {m["name"] for m in ps} == {"m"}
+    finally:
+        for p in await db.list_providers():
+            pm.release(p.require_id())

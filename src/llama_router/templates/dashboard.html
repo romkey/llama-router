@@ -1358,7 +1358,7 @@
                                     {% else %}<span class="badge bg-danger">offline</span>{% endif %}
                                 </td>
                                 <td class="small" data-worker-jobs>{% if w.live %}{{ w.live.in_flight }} / {{ w.live.max_concurrency }}{% else %}&mdash;{% endif %}</td>
-                                <td class="small" data-worker-models>{{ w.model_count }}</td>
+                                <td class="small" data-worker-models>{{ w.models_label }}</td>
                                 <td class="small text-muted" data-worker-seen>{% if w.last_connected_at %}{{ w.last_connected_at | localtime }}{% if w.last_remote_addr %} from {{ w.last_remote_addr }}{% endif %}{% else %}never{% endif %}</td>
                                 <td><code class="small">{{ w.token_prefix }}</code></td>
                                 <td class="text-end text-nowrap">
@@ -1405,6 +1405,21 @@
                 </div>
                 <div class="small text-muted mt-3" id="worker-link-detail"></div>
                 <div id="worker-link-banner" class="alert d-none mt-3" role="alert"></div>
+                <hr>
+                <div class="row g-2 align-items-center mb-1">
+                    <div class="col-auto"><label class="form-label mb-0" for="worker-link-expose"><strong>The hub sees</strong></label></div>
+                    <div class="col-auto">
+                        {% set ex = worker_link.expose if worker_link and worker_link.expose else 'combined' %}
+                        <select class="form-select form-select-sm" id="worker-link-expose" {% if worker_link and worker_link.expose_env_locked %}disabled{% endif %}>
+                            <option value="combined" {% if ex == 'combined' %}selected{% endif %}>this router as one provider</option>
+                            <option value="individual" {% if ex == 'individual' %}selected{% endif %}>each provider ticked below on its own</option>
+                        </select>
+                    </div>
+                </div>
+                <p class="small text-muted">
+                    On its own, each provider appears on the hub as <code>&lt;worker&gt;/&lt;provider&gt;</code> with its own models, status and usage, so the hub can route to and report on each one.
+                    {% if worker_link and worker_link.expose_env_locked %}Set by <code>LLAMA_ROUTER_WORKER_EXPOSE</code> on this host.{% endif %}
+                </p>
                 <hr>
                 <div id="hub-providers">
                     <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -3820,7 +3835,7 @@ function renderWorkers(workers, link) {
         var jobs = row.querySelector('[data-worker-jobs]');
         if (jobs) jobs.textContent = w.live ? (w.live.in_flight + ' / ' + w.live.max_concurrency) : '—';
         var models = row.querySelector('[data-worker-models]');
-        if (models) models.textContent = String(w.model_count);
+        if (models) models.textContent = w.models_label || String(w.model_count);
     });
 
     if (link) {
@@ -3996,6 +4011,19 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 workerBanner('worker-link-banner', 'success', 'Saved. Connecting to the hub…');
             }
+            renderWorkers([], res);
+        }).catch(function(e) { workerBanner('worker-link-banner', 'danger', e.message); });
+    });
+
+    var ex = document.getElementById('worker-link-expose');
+    if (ex) ex.addEventListener('change', function() {
+        if (!dashRequireWrite()) return;
+        workerFetchJson('/api/worker-link/expose', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({expose: ex.value})
+        }).then(function(res) {
+            workerBanner('worker-link-banner', 'success', 'Saved. The link to the hub reconnects.');
             renderWorkers([], res);
         }).catch(function(e) { workerBanner('worker-link-banner', 'danger', e.message); });
     });

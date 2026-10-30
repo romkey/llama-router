@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     worker_max_concurrency: int = 4
     # Allow the hub to pull and delete models on this worker.
     worker_allow_admin: bool = False
+    # How the hub sees this worker's providers: "combined" (one provider) or
+    # "individual" (each shared provider on its own). Empty: the dashboard's
+    # choice, combined until set.
+    worker_expose: str = ""
     # Where Hugging Face downloads are stored. Mount the same directory into a
     # llama.cpp server's --models-dir to share models without pushing them.
     hf_models_dir: str = "./hf_models"

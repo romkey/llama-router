@@ -45,6 +45,7 @@ from .provider_secrets import (
 from .routing_stats import ProviderStats, retry_after_seconds
 from .upstream_url import guess_locality, split_api_base
 from .worker_link.hub import WorkerConnection, WorkerHub
+from .worker_link.protocol import EXPOSE_INDIVIDUAL
 
 if TYPE_CHECKING:
     from .cloud_presets import CloudPreset
@@ -131,7 +132,9 @@ class ProviderManager:
         self.worker_hub = hub if hub is not None else WorkerHub()
         self._worker_locks: dict[int, asyncio.Lock] = {}
         self.worker_hub.set_callbacks(
-            self._on_worker_connected, self._on_worker_disconnected
+            self._on_worker_connected,
+            self._on_worker_disconnected,
+            self._on_worker_catalog,
         )
         self._ollama_clients: dict[int, OllamaClient] = {}
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
@@ -160,6 +163,12 @@ class ProviderManager:
         # Software version each worker last connected with, so a worker that
         # comes back upgraded (with new routes to relay) is probed again.
         self._worker_versions: dict[int, str | None] = {}
+        # Why a provider a worker shared individually is offline while its
+        # worker is still connected, so health checks keep saying so.
+        self._child_reasons: dict[int, str] = {}
+        # One catalog sync at a time per worker, so an older one cannot undo
+        # a newer one.
+        self._catalog_locks: dict[int, asyncio.Lock] = {}
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -304,6 +313,8 @@ class ProviderManager:
         http_providers: list[Provider] = []
         for p in providers:
             p_id = p.require_id()
+            if p.is_worker_child:
+                self._alias_child(p)
             await self._rebuild_clients(p)
             if p.is_worker:
                 # Workers come online when they dial in, not at startup.
@@ -390,10 +401,13 @@ class ProviderManager:
             )
         else:
             kw["headers"] = self._upstream_headers(provider)
+        # A worker's address only names it; the transport picks the socket,
+        # and a path in it (worker://<name>/<id>) must not reach the worker.
+        base = "http://worker" if provider.is_worker else addr.url
         if provider.is_ollama:
-            self._ollama_clients[provider_id] = OllamaClient(addr.url, **kw)
+            self._ollama_clients[provider_id] = OllamaClient(base, **kw)
         else:
-            self._llamacpp_clients[provider_id] = LlamaCppClient(addr.url, **kw)
+            self._llamacpp_clients[provider_id] = LlamaCppClient(base, **kw)
         self._active_urls[provider_id] = self._address_url_sig(addr)
 
     def _response_hook(
@@ -568,6 +582,10 @@ class ProviderManager:
             )
 
     async def remove_provider(self, provider_id: int) -> None:
+        self.worker_hub.remove_child(provider_id)
+        for child in await self._db.list_worker_children(provider_id):
+            # A worker's individually shared providers go with it.
+            await self.remove_provider(child.require_id())
         worker = await self._db.get_worker_by_provider(provider_id)
         if worker is not None:
             from .worker_link.protocol import CLOSE_REVOKED
@@ -583,6 +601,8 @@ class ProviderManager:
         self._llamacpp_loaded.pop(provider_id, None)
         self._status_detail.pop(provider_id, None)
         self._logged_detail.pop(provider_id, None)
+        self._child_reasons.pop(provider_id, None)
+        self._catalog_locks.pop(provider_id, None)
         self.stats.forget_provider(provider_id)
         await self._db.remove_provider(provider_id)
 
@@ -664,14 +684,45 @@ class ProviderManager:
         hub = router_identity.hub_id()
         if hub is None:
             return set()
-        return {
+        parents = {
             c.provider_id
             for c in self.worker_hub.connections()
             if not c.closed and c.router_id == hub
         }
+        return parents | {
+            child for parent in parents for child in self.worker_hub.children_of(parent)
+        }
 
     def shares_with_hub(self, provider: Provider) -> bool:
         return provider.hub_shared and provider.id not in self.hub_loopback_ids()
+
+    def hub_offers(self, providers: list[Provider]) -> list[Provider]:
+        """Which of *providers* to list for a hub that sees them one by one.
+
+        A remote that shares its own providers one by one is replaced by
+        them. Those rows are offered only while that remote serves them: one
+        that went back to sharing as one provider, or is not connected,
+        leaves rows behind that nothing can reach.
+        """
+        has_children = {p.worker_parent_id for p in providers if p.is_worker_child}
+        out: list[Provider] = []
+        for prov in providers:
+            if prov.id is None or not self.shares_with_hub(prov):
+                continue
+            if prov.is_worker_child:
+                if not self.worker_hub.is_connected(prov.id):
+                    continue
+            elif prov.is_worker:
+                if self.shares_individually(prov):
+                    continue
+                if prov.id in has_children and not self.worker_hub.is_connected(
+                    prov.id
+                ):
+                    # Unknown until it reconnects whether it will share as
+                    # one provider or as these; it serves neither meanwhile.
+                    continue
+            out.append(prov)
+        return out
 
     def worker_summary(self, provider: Provider) -> dict[str, Any] | None:
         """Live socket details for a worker provider; None for HTTP providers."""
@@ -1032,7 +1083,7 @@ class ProviderManager:
         if not live:
             status = ProviderStatus.OFFLINE
             if provider.is_worker and not self.worker_hub.is_connected(pid):
-                detail = "worker is not connected"
+                detail = self._child_reasons.get(pid, "worker is not connected")
             else:
                 urls = ", ".join(a.url for a in addresses) or "no addresses"
                 detail = f"no address responded ({urls})"
@@ -1101,7 +1152,13 @@ class ProviderManager:
         pid = provider.require_id()
         prev_detail = self._logged_detail.get(pid)
 
-        if detail and status == ProviderStatus.OFFLINE and live:
+        # A provider its worker stopped sharing keeps saying why, though it
+        # has no live address.
+        if (
+            detail
+            and status == ProviderStatus.OFFLINE
+            and (live or pid in self._child_reasons)
+        ):
             self._status_detail[pid] = detail
         else:
             self._status_detail.pop(pid, None)
@@ -1378,6 +1435,11 @@ class ProviderManager:
 
     async def _discover_provider(self, provider: Provider) -> None:
         provider_id = provider.require_id()
+        if self.shares_individually(provider):
+            # Its models belong to its providers; the worker row has none.
+            await self._db.set_provider_models(provider_id, [])
+            self._hot_models.pop(provider_id, None)
+            return
         models_by_name: dict[str, ProviderModel] = {}
         cache_prefixed = 0
 
@@ -1722,6 +1784,19 @@ class ProviderManager:
     def _is_current_worker(self, conn: WorkerConnection) -> bool:
         return self.worker_hub.get(conn.provider_id) is conn and not conn.closed
 
+    def shares_individually(self, provider: Provider) -> bool:
+        """A worker's own row while it shares its providers one by one."""
+        if not provider.is_worker or provider.is_worker_child or provider.id is None:
+            return False
+        conn = self.worker_hub.get(provider.id)
+        return conn is not None and conn.expose == EXPOSE_INDIVIDUAL
+
+    def _alias_child(self, child: Provider) -> None:
+        if child.worker_parent_id is not None and child.worker_remote_id is not None:
+            self.worker_hub.add_child(
+                child.require_id(), child.worker_parent_id, child.worker_remote_id
+            )
+
     async def _on_worker_connected(self, conn: WorkerConnection) -> None:
         """Bring a freshly connected worker online.
 
@@ -1736,56 +1811,220 @@ class ProviderManager:
             provider = await self._db.get_provider(provider_id)
             if provider is None or not provider.is_worker:
                 return
-            protocol = worker_protocol(conn.protocols)
-            if protocol is not provider.protocol:
-                await self._db.update_provider(
-                    provider_id,
-                    provider.name,
-                    protocol,
-                    machine_type=provider.machine_type,
-                    gpu_type=provider.gpu_type,
-                    gpu_ram=provider.gpu_ram,
-                )
-                provider.protocol = protocol
-            await self._rebuild_clients(provider)
-            detail: str | None = None
-            try:
-                await self._discover_provider(provider)
-                ok = True
-            except Exception as exc:
-                ok = False
-                detail = _failure_reason(exc)
-                if self._is_current_worker(conn):
-                    logger.warning(
-                        "Worker %s connected but model discovery failed: %s",
-                        provider.name,
-                        detail,
-                    )
-            # Liveness means the same as in check_provider: the socket is up and
-            # the worker's upstream answers, whether or not discovery worked.
-            reachable = ok or await self._probe_worker(provider)
-            if not self._is_current_worker(conn):
-                return
-            if detail is not None and reachable:
-                self._status_detail[provider_id] = detail
-            else:
-                self._status_detail.pop(provider_id, None)
-                if ok:
-                    self._logged_detail.pop(provider_id, None)
-            await self._set_worker_addresses_live(provider_id, reachable)
-            await self._db.update_provider_status(
-                provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
+            await self._bring_worker_online(conn, provider)
+        if conn.expose != EXPOSE_INDIVIDUAL:
+            # Shared as one provider now: its individual ones are unreachable.
+            for child in await self._db.list_worker_children(provider_id):
+                await self._take_child_offline(child, "worker shares as one provider")
+
+    async def _bring_worker_online(
+        self, conn: WorkerConnection, provider: Provider
+    ) -> None:
+        """Discover *provider* (the worker, or one it shares) through *conn*.
+
+        The caller holds the provider's worker lock.
+        """
+        provider_id = provider.require_id()
+        self._child_reasons.pop(provider_id, None)
+        protocol = worker_protocol(conn.protocols)
+        if protocol is not provider.protocol:
+            await self._db.update_provider(
+                provider_id,
+                provider.name,
+                protocol,
+                machine_type=provider.machine_type,
+                gpu_type=provider.gpu_type,
+                gpu_ram=provider.gpu_ram,
             )
-            known = provider_id in self._worker_versions
-            previous = self._worker_versions.get(provider_id)
-            self._worker_versions[provider_id] = conn.software_version
-            if reachable and (
-                not known
-                or previous != conn.software_version
-                or provider.probed_at is None
-            ):
-                # What the worker relays depends on its version and upstream.
-                self.schedule_probe(provider_id, "worker connected")
+            provider.protocol = protocol
+        await self._rebuild_clients(provider)
+        detail: str | None = None
+        try:
+            await self._discover_provider(provider)
+            ok = True
+        except Exception as exc:
+            ok = False
+            detail = _failure_reason(exc)
+            if self._is_current_worker(conn):
+                logger.warning(
+                    "Worker %s connected but model discovery failed: %s",
+                    provider.name,
+                    detail,
+                )
+        # Liveness means the same as in check_provider: the socket is up and
+        # the worker's upstream answers, whether or not discovery worked.
+        reachable = ok or await self._probe_worker(provider)
+        if not self._is_current_worker(conn):
+            return
+        if detail is not None and reachable:
+            self._status_detail[provider_id] = detail
+        else:
+            self._status_detail.pop(provider_id, None)
+            if ok:
+                self._logged_detail.pop(provider_id, None)
+        await self._set_worker_addresses_live(provider_id, reachable)
+        await self._db.update_provider_status(
+            provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
+        )
+        if self.shares_individually(provider):
+            # Nothing to probe: jobs go to the providers it shares.
+            return
+        known = provider_id in self._worker_versions
+        previous = self._worker_versions.get(provider_id)
+        self._worker_versions[provider_id] = conn.software_version
+        if reachable and (
+            not known or previous != conn.software_version or provider.probed_at is None
+        ):
+            # What the worker relays depends on its version and upstream.
+            self.schedule_probe(provider_id, "worker connected")
+
+    async def _on_worker_catalog(self, conn: WorkerConnection) -> None:
+        """Match the providers on the hub to the ones the worker shares.
+
+        Syncs for one worker run one at a time, each from the latest catalog,
+        so a slow older sync can never undo what a newer one did.
+        """
+        parent_id = conn.provider_id
+        lock = self._catalog_locks.setdefault(parent_id, asyncio.Lock())
+        async with lock:
+            await self._sync_catalog(conn)
+
+    async def _sync_catalog(self, conn: WorkerConnection) -> None:
+        parent_id = conn.provider_id
+        async with self._worker_lock(parent_id):
+            if not self._is_current_worker(conn) or conn.catalog is None:
+                return
+            parent = await self._db.get_provider(parent_id)
+            if parent is None or not parent.is_worker or parent.worker_name is None:
+                return
+            existing = {
+                c.worker_remote_id: c
+                for c in await self._db.list_worker_children(parent_id)
+            }
+            # Providers the worker no longer shares give up their names first,
+            # so one shared in their place can have <worker>/<provider>.
+            shared = {int(e["id"]) for e in conn.catalog}
+            for rid, old in existing.items():
+                if rid in shared or old.name.endswith(f"#{rid}"):
+                    continue
+                aside = f"{old.name}#{rid}"
+                if await self._name_free(aside, old.id):
+                    await self._rename(old, aside)
+            wanted: list[Provider] = []
+            # Children that could not take their name yet (another provider
+            # had it, maybe a sibling renamed later in this same catalog).
+            retry: list[tuple[Provider, str]] = []
+            for entry in conn.catalog:
+                rid = int(entry["id"])
+                name = f"{parent.name}/{entry['name']}"
+                try:
+                    child = await self._sync_child(
+                        parent, existing.pop(rid, None), entry, name
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Worker %s: could not add or update %s: %s",
+                        parent.name,
+                        name,
+                        exc,
+                    )
+                    continue
+                if child is None:
+                    continue
+                if child.name != name:
+                    retry.append((child, name))
+                self._alias_child(child)
+                if child.status in (ProviderStatus.OFFLINE, ProviderStatus.UNKNOWN):
+                    wanted.append(child)
+            for child, name in retry:
+                if await self._name_free(name, child.id):
+                    await self._rename(child, name)
+            gone = list(existing.values())
+        for child in gone:
+            self.worker_hub.remove_child(child.require_id())
+            await self._take_child_offline(child, "no longer shared by the worker")
+        for child in wanted:
+            async with self._worker_lock(child.require_id()):
+                if self.worker_hub.get(child.require_id()) is conn:
+                    await self._bring_worker_online(conn, child)
+
+    async def _name_free(self, name: str, own_id: int | None) -> bool:
+        holder = await self._db.get_provider_by_name(name)
+        return holder is None or holder.id == own_id
+
+    async def _child_name(self, name: str, rid: int, own_id: int | None) -> str | None:
+        """*name*, or ``<name>#<id on the worker>`` when another provider has it."""
+        for candidate in (name, f"{name}#{rid}"):
+            if await self._name_free(candidate, own_id):
+                return candidate
+        return None
+
+    async def _rename(self, child: Provider, name: str) -> None:
+        await self._db.update_provider(
+            child.require_id(),
+            name,
+            machine_type=child.machine_type,
+            gpu_type=child.gpu_type,
+            gpu_ram=child.gpu_ram,
+        )
+        child.name = name
+
+    async def _sync_child(
+        self,
+        parent: Provider,
+        child: Provider | None,
+        entry: dict[str, Any],
+        name: str,
+    ) -> Provider | None:
+        """Create or update the hub's row for one catalog entry."""
+        rid = int(entry["id"])
+        parent_id = parent.require_id()
+        free = await self._child_name(name, rid, child.id if child else None)
+        if free is None:
+            logger.warning(
+                "Worker %s shares %s, but providers named %s and %s#%d already "
+                "exist here; rename one of them",
+                parent.name,
+                entry["name"],
+                name,
+                name,
+                rid,
+            )
+        if child is None:
+            if free is None:
+                return None
+            child = await self._db.add_provider(
+                free,
+                parent.protocol,
+                worker_name=f"{parent.worker_name}/{rid}",
+                worker_parent_id=parent_id,
+                worker_remote_id=rid,
+            )
+            await self._db.add_address(
+                child.require_id(),
+                f"{WORKER_URL_SCHEME}{parent.worker_name}/{rid}",
+                is_preferred=True,
+            )
+            logger.info("Worker %s now shares %s", parent.name, free)
+        elif free is not None and child.name != free:
+            await self._rename(child, free)
+        if child.locality != entry["locality"]:
+            await self._db.update_provider_settings(
+                child.require_id(), locality=entry["locality"]
+            )
+            child.locality = entry["locality"]
+            await self._rebuild_clients(child)
+        return child
+
+    async def _take_child_offline(self, child: Provider, detail: str) -> None:
+        child_id = child.require_id()
+        async with self._worker_lock(child_id):
+            if self.worker_hub.is_connected(child_id):
+                return
+            await self._mark_worker_offline(child_id)
+            self._status_detail[child_id] = detail
+            self._logged_detail[child_id] = detail
+            self._child_reasons[child_id] = detail
 
     async def _on_worker_disconnected(self, conn: WorkerConnection) -> None:
         provider_id = conn.provider_id
@@ -1809,6 +2048,13 @@ class ProviderManager:
                     await self._log_event(
                         provider, "disconnect", ok=False, detail=detail
                     )
+        for child in await self._db.list_worker_children(provider_id):
+            child_id = child.require_id()
+            async with self._worker_lock(child_id):
+                if not self.worker_hub.is_connected(child_id):
+                    await self._mark_worker_offline(child_id)
+                    self._child_reasons.pop(child_id, None)
+                    self._logged_detail[child_id] = "worker is not connected"
 
     async def _set_worker_addresses_live(self, provider_id: int, live: bool) -> None:
         for addr in await self._db.get_addresses(provider_id):

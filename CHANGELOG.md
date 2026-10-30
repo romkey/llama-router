@@ -15,6 +15,13 @@ described in their git tags and GitHub Releases.
   `GET /api/keys/usage` returns the same data for scripts (`keys:read`).
 
 ### Added
+- **Share providers with a hub one by one.** A worker can now choose, on
+  its **Workers** tab or with `LLAMA_ROUTER_WORKER_EXPOSE=individual`, to
+  have each provider it shares appear on the hub as a provider of its own,
+  named `<worker>/<provider>`. Each one has its own models, status, health
+  checks, benchmarks, routing scores and request log entries on the hub.
+  The default is unchanged: the worker appears as one provider. See
+  "Sharing providers one by one" in docs/workers.md.
 
 - **Router IDs and loop protection.** Each router now has a random ID,
   shown on the **Workers** tab (with a *New ID* button for a router started

@@ -43,6 +43,43 @@ A client sending the header to a router narrows only its own routing, so
 the header is not a credential. The choice is saved per provider, so a new
 provider is shared until it is unticked.
 
+## Sharing providers one by one
+
+By default the hub sees a worker as one provider, `<worker>`, with every
+model the worker shares, and the worker's router picks which of its
+providers serves each job. A worker can instead share each provider on its
+own: on the worker's **Workers** tab, set *The hub sees* to *each provider
+ticked below on its own*, or set `LLAMA_ROUTER_WORKER_EXPOSE=individual`.
+
+The hub then shows one provider per shared provider, named
+`<worker>/<provider>`, with the address `worker://<worker>/<id>`. Each has
+its own models, status, health checks, benchmarks and routing scores, and
+the hub's request log records which one served each request. A cloud
+provider on the worker is marked cloud on the hub, so API keys limited to
+local providers stay off it. The worker's own provider row stays, with no
+models: it holds the socket and its concurrency limit, which all the
+worker's providers share.
+
+How it works:
+
+- The worker says `expose: "individual"` in `hello`, then sends a `catalog`
+  frame listing the providers it shares, and sends it again within 15
+  seconds of any change (a provider ticked or unticked, added, removed or
+  renamed). A remote that itself shares individually is left out of the
+  list; its providers are listed instead.
+- The hub creates a provider for each new entry and discovers its models
+  through the socket. An entry that disappears goes offline on the hub with
+  the reason *no longer shared by the worker* and keeps its history; it
+  comes back if it is shared again. A renamed provider is renamed on the
+  hub. Deleting the worker on the hub deletes them all.
+- Each job for one of these providers carries `provider` (the provider's id
+  on the worker) in its `request` frame. The worker passes it to its router
+  as `X-Llama-Router-Provider` beside `X-Llama-Router-Via: hub`, and the
+  router serves the job from that provider only, with no fallback to
+  another. Model listings with the header list only that provider's models.
+- Switching back to one provider reconnects the link. The hub takes the
+  individual providers offline and the worker's row gets its models back.
+
 ## Router IDs and loops
 
 Every router makes a random ID (a UUID) on first start and keeps it in its
@@ -88,9 +125,10 @@ id, then payload. Request ids let many exchanges share the socket.
 
 | Direction | Frame | Fields |
 |-----------|-------|--------|
-| worker → hub | `hello` | `version`, `protocols` (`ollama`, `llamacpp`), `max_concurrency`, `software_version`, `router_id` |
+| worker → hub | `hello` | `version`, `protocols` (`ollama`, `llamacpp`), `max_concurrency`, `software_version`, `router_id`, `expose` (`combined`, `individual`) |
+| worker → hub | `catalog` | `providers`: `[{id, name, locality}]`, sent only with `expose: individual` |
 | hub → worker | `welcome` | `version`, `worker_name`, `provider_id`, `router_id` |
-| hub → worker | `request` | `id`, `target`, `method`, `path` (with query), `headers` |
+| hub → worker | `request` | `id`, `target`, `method`, `path` (with query), `headers`, and `provider` for a job for one provider shared individually |
 | hub → worker | binary 1 / 2 | request body chunk / request body end |
 | worker → hub | `response` | `id`, `status`, `headers` |
 | worker → hub | binary 3 / 4 | response body chunk / response end |

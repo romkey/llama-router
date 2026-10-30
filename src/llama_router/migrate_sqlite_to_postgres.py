@@ -64,6 +64,9 @@ _TABLES: list[tuple[str, list[str]]] = [
             "model_filter",
             "read_timeout_s",
             "auto_benchmark",
+            "hub_shared",
+            "worker_parent_id",
+            "worker_remote_id",
         ],
     ),
     (

@@ -606,6 +606,112 @@ async def test_new_router_id(dash_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_worker_link_expose(dash_client, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "worker_hub_url", "")
+    monkeypatch.setattr(settings, "worker_token", "")
+    monkeypatch.setattr(settings, "worker_expose", "")
+    client, db = dash_client
+    uid = await db.create_dashboard_user("adm", hash_password("password-12345"), True)
+    invalidate_dashboard_user_count_cache()
+    hdr = _session_cookie_header(uid)
+
+    st = (await client.get("/api/worker-link", headers=hdr)).json()
+    assert st["expose"] == "combined"
+    assert st["expose_env_locked"] is False
+    page = await client.get("/", headers=hdr)
+    assert "worker-link-expose" in page.text
+
+    r = await client.post(
+        "/api/worker-link/expose", headers=hdr, json={"expose": "individual"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["expose"] == "individual"
+    assert await db.get_app_setting("worker_expose") == "individual"
+    r = await client.post("/api/worker-link/expose", headers=hdr, json={"expose": "x"})
+    assert r.status_code == 400
+
+    monkeypatch.setattr(settings, "worker_expose", "combined")
+    r = await client.post(
+        "/api/worker-link/expose", headers=hdr, json={"expose": "individual"}
+    )
+    assert r.status_code == 409
+    st = (await client.get("/api/worker-link", headers=hdr)).json()
+    assert st["expose"] == "combined"
+    assert st["expose_env_locked"] is True
+    await dash_deps.get_worker_link().stop()
+
+
+@pytest.mark.asyncio
+async def test_hub_catalog_lists_what_the_hub_may_use(db) -> None:
+    from llama_router.provider_manager import ProviderManager
+    from llama_router.worker_link.hub import WorkerConnection
+    from llama_router.worker_link.protocol import EXPOSE_COMBINED, EXPOSE_INDIVIDUAL
+    from llama_router.worker_link.worker import WorkerLinkManager
+
+    a = await db.add_provider("a")
+    b = await db.add_provider("b")
+    await db.update_provider_settings(b.id, locality="cloud")
+    remote = await db.add_provider("edge", worker_name="edge")
+    kids = [
+        await db.add_provider(
+            f"edge/{n}",
+            worker_name=f"edge/{rid}",
+            worker_parent_id=remote.id,
+            worker_remote_id=rid,
+        )
+        for rid, n in ((1, "gpu"), (2, "npu"))
+    ]
+    await db.set_hub_shared_providers([a.id, b.id, remote.id, *(k.id for k in kids)])
+
+    plain = WorkerLinkManager(db)
+    assert {e["name"] for e in await plain.hub_catalog()} == {
+        "a",
+        "b",
+        "edge",
+        "edge/gpu",
+        "edge/npu",
+    }
+
+    pm = ProviderManager(db)
+    link = WorkerLinkManager(db, pm)
+
+    async def names() -> set[str]:
+        return {e["name"] for e in await link.hub_catalog()}
+
+    # The remote is away: neither it nor the rows it once shared are offered.
+    assert await names() == {"a", "b"}
+
+    def connect(expose: str) -> None:
+        pm.worker_hub._conns[remote.id] = WorkerConnection(
+            None,
+            worker_id=1,
+            name="edge",
+            provider_id=remote.id,
+            protocols=["ollama"],
+            max_concurrency=1,
+            software_version=None,
+            remote_addr=None,
+            expose=expose,
+        )
+
+    # Back as one provider: it is offered, its old rows are not.
+    connect(EXPOSE_COMBINED)
+    for k in kids:
+        pm.worker_hub.add_child(k.id, remote.id, k.worker_remote_id)
+    assert await names() == {"a", "b", "edge"}
+
+    # Sharing one by one: its providers instead of it.
+    connect(EXPOSE_INDIVIDUAL)
+    assert await names() == {"a", "b", "edge/gpu", "edge/npu"}
+    entry = next(e for e in await link.hub_catalog() if e["name"] == "b")
+    assert entry == {"id": b.id, "name": "b", "locality": "cloud"}
+
+    # Unshared providers stay unshared.
+    await db.set_hub_shared_providers([a.id, kids[0].id])
+    assert await names() == {"a", "edge/gpu"}
+
+
+@pytest.mark.asyncio
 async def test_worker_link_locked_when_set_by_env(dash_client, monkeypatch) -> None:
     monkeypatch.setattr(settings, "worker_hub_url", "https://hub.example")
     monkeypatch.setattr(settings, "worker_token", "lrw_env")

@@ -224,7 +224,8 @@ def collect(
                 bench_tps.add(b.tokens_per_second, **blabels)
             if b.startup_time_ms is not None:
                 bench_startup.add(b.startup_time_ms, **blabels)
-        if p.is_worker:
+        if p.is_worker and not p.is_worker_child:
+            # One series per socket; the providers it shares count toward it.
             live = info.worker or {}
             wlabels = {"worker": p.worker_name, "provider_id": p.id}
             worker_conn.add(bool(live.get("connected")), **wlabels)

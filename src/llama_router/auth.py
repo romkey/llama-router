@@ -19,7 +19,7 @@ from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
 from .spend import tracker_for
 from .upstream_url import LOCALITIES
-from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE
+from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +170,15 @@ def from_hub(request: Request) -> bool:
     return value == HUB_HEADER_VALUE
 
 
+def hub_provider(request: Request) -> int | None:
+    """The one provider a job from this router's hub is for, when the worker
+    shares providers individually; None for any other request."""
+    if not from_hub(request):
+        return None
+    raw = (request.headers.get(PROVIDER_HEADER) or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
 def _locality(value: Any) -> str | None:
     v = str(value or "").strip().lower()
     return v if v in LOCALITIES else None
@@ -200,7 +209,11 @@ async def routing_preferences_from_request(
     """
     prefs = _narrow_locality(request, await _key_preferences(db, request))
     if from_hub(request):
-        prefs = replace(prefs or RoutingPreferences(), hub_only=True)
+        prefs = replace(
+            prefs or RoutingPreferences(),
+            hub_only=True,
+            hub_provider=hub_provider(request),
+        )
     if prefs is not None and prefs.key_id is not None:
         request.state.api_key_id = prefs.key_id
         prefs = await _apply_spend_cap(db, prefs)

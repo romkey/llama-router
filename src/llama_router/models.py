@@ -72,6 +72,10 @@ class Provider(BaseModel):
     updated_at: datetime | None = None
     # Set for providers backed by a worker that dials in over a WebSocket.
     worker_name: str | None = None
+    # For one provider of a worker that shares them individually: the
+    # worker's own provider row, and the provider's id on the worker.
+    worker_parent_id: int | None = None
+    worker_remote_id: int | None = None
     # Upstream API key, encrypted (see provider_secrets). Never rendered.
     api_key_enc: str | None = Field(default=None, repr=False, exclude=True)
     # Header carrying the key; None means "Authorization: Bearer <key>".
@@ -129,6 +133,11 @@ class Provider(BaseModel):
     def is_worker(self) -> bool:
         """Provider backed by a worker that dials in over a WebSocket."""
         return self.worker_name is not None
+
+    @property
+    def is_worker_child(self) -> bool:
+        """One provider of a worker that shares its providers individually."""
+        return self.worker_parent_id is not None
 
     @property
     def worker_address(self) -> str | None:

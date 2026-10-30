@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "lrw_"  # noqa: S105  # public prefix, not a secret
 _HELLO_TIMEOUT = 15.0
+# Providers one worker may share individually.
+_MAX_CATALOG = 256
 
 
 def generate_worker_token() -> str:
@@ -86,6 +88,8 @@ class WorkerConnection:
         software_version: str | None,
         remote_addr: str | None,
         router_id: str | None = None,
+        expose: str = p.EXPOSE_COMBINED,
+        on_catalog: Callable[[WorkerConnection], None] | None = None,
     ) -> None:
         self._ws = websocket
         self.worker_id = worker_id
@@ -97,6 +101,11 @@ class WorkerConnection:
         self.remote_addr = remote_addr
         # The worker's router ID; None from workers older than router IDs.
         self.router_id = router_id
+        # "individual": the worker lists its providers in catalog frames and
+        # each appears here as a provider of its own.
+        self.expose = expose
+        self.catalog: list[dict[str, Any]] | None = None
+        self._on_catalog = on_catalog
         self.connected_at = time.time()
         self.jobs_total = 0
         self._pending: dict[int, _Pending] = {}
@@ -126,6 +135,8 @@ class WorkerConnection:
             "jobs_total": self.jobs_total,
             "software_version": self.software_version,
             "router_id": self.router_id,
+            "expose": self.expose,
+            "shared_providers": len(self.catalog) if self.catalog is not None else None,
         }
 
     # --- sending ---
@@ -158,7 +169,10 @@ class WorkerConnection:
         with contextlib.suppress(Exception):
             await self._send_text({"type": "cancel", "id": req_id})
 
-    async def open(self, target: str, request: httpx.Request) -> httpx.Response:
+    async def open(
+        self, target: str, request: httpx.Request, remote: int | None = None
+    ) -> httpx.Response:
+        """Relay *request*; *remote* names the provider on the worker it is for."""
         timeouts = request.extensions.get("timeout") or {}
         pool_t = timeouts.get("pool")
         read_t = timeouts.get("read")
@@ -191,6 +205,8 @@ class WorkerConnection:
                 "path": request.url.raw_path.decode("ascii", errors="replace"),
                 "headers": p.filter_headers(request.headers.multi_items()),
             }
+            if remote is not None:
+                header["provider"] = remote
 
             async def _send_all() -> None:
                 await self._send_text(header)
@@ -254,8 +270,36 @@ class WorkerConnection:
             else:
                 pend.queue.put_nowait(exc)
             self._finish(pend.id)
+        elif kind == "catalog":
+            self._take_catalog(msg.get("providers"))
         else:
             logger.debug("Worker %s sent unknown frame type %r", self.name, kind)
+
+    def _take_catalog(self, raw: Any) -> None:
+        if self.expose != p.EXPOSE_INDIVIDUAL or not isinstance(raw, list):
+            return
+        entries: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for item in raw[:_MAX_CATALOG]:
+            if not isinstance(item, dict):
+                continue
+            rid, name = item.get("id"), item.get("name")
+            if not isinstance(rid, int) or isinstance(rid, bool) or rid in seen:
+                continue
+            if not isinstance(name, str) or not name.strip():
+                continue
+            seen.add(rid)
+            locality = item.get("locality")
+            entries.append(
+                {
+                    "id": rid,
+                    "name": name.strip()[:128],
+                    "locality": locality if locality in ("local", "cloud") else "local",
+                }
+            )
+        self.catalog = entries
+        if self._on_catalog is not None:
+            self._on_catalog(self)
 
     def _on_bytes(self, data: bytes) -> None:
         kind, req_id, payload = p.decode_binary(data)
@@ -367,13 +411,16 @@ class WorkerTransport(httpx.AsyncBaseTransport):
         if conn is None or conn.closed:
             raise httpx.ConnectError("worker is not connected", request=request)
         self._hub.count_job(self._provider_id)
-        return await conn.open(self._target, request)
+        return await conn.open(
+            self._target, request, self._hub.remote_id(self._provider_id)
+        )
 
 
 # Callbacks receive the connection itself so a handler that runs late can tell
 # whether its socket is still the provider's current one.
 ConnectCallback = Callable[[WorkerConnection], Awaitable[None]]
 DisconnectCallback = Callable[[WorkerConnection], Awaitable[None]]
+CatalogCallback = Callable[[WorkerConnection], Awaitable[None]]
 
 
 class WorkerHub:
@@ -383,6 +430,10 @@ class WorkerHub:
         self._conns: dict[int, WorkerConnection] = {}
         self._on_connect: ConnectCallback | None = None
         self._on_disconnect: DisconnectCallback | None = None
+        self._on_catalog: CatalogCallback | None = None
+        # Providers a worker shares individually: their provider id ->
+        # (the worker's own provider id, the provider's id on the worker).
+        self._children: dict[int, tuple[int, int]] = {}
         self._bg: set[asyncio.Task[None]] = set()
         # Jobs dispatched per provider since start-up, counted as they are
         # sent so the total never dips while a socket is being replaced.
@@ -392,22 +443,50 @@ class WorkerHub:
         self,
         on_connect: ConnectCallback | None,
         on_disconnect: DisconnectCallback | None,
+        on_catalog: CatalogCallback | None = None,
     ) -> None:
         self._on_connect = on_connect
         self._on_disconnect = on_disconnect
+        self._on_catalog = on_catalog
+
+    def add_child(self, provider_id: int, parent_id: int, remote_id: int) -> None:
+        """Reach *provider_id* through the socket of worker provider *parent_id*."""
+        self._children[provider_id] = (parent_id, remote_id)
+
+    def remove_child(self, provider_id: int) -> None:
+        self._children.pop(provider_id, None)
+
+    def children_of(self, parent_id: int) -> list[int]:
+        return [c for c, (par, _) in self._children.items() if par == parent_id]
+
+    def remote_id(self, provider_id: int) -> int | None:
+        child = self._children.get(provider_id)
+        return child[1] if child is not None else None
 
     def transport(self, provider_id: int, target: str) -> WorkerTransport:
         return WorkerTransport(self, provider_id, target)
 
     def get(self, provider_id: int) -> WorkerConnection | None:
+        """The socket that serves *provider_id*: its own, or its worker's."""
+        child = self._children.get(provider_id)
+        if child is not None:
+            conn = self._conns.get(child[0])
+            # A worker that went back to sharing as one provider no longer
+            # serves its old individual providers.
+            if conn is None or conn.expose != p.EXPOSE_INDIVIDUAL:
+                return None
+            return conn
         return self._conns.get(provider_id)
 
     def is_connected(self, provider_id: int) -> bool:
-        conn = self._conns.get(provider_id)
+        conn = self.get(provider_id)
         return conn is not None and not conn.closed
 
     def count_job(self, provider_id: int) -> None:
-        self._jobs[provider_id] = self._jobs.get(provider_id, 0) + 1
+        # Jobs for a provider shared individually count toward its worker.
+        child = self._children.get(provider_id)
+        pid = child[0] if child is not None else provider_id
+        self._jobs[pid] = self._jobs.get(pid, 0) + 1
 
     def jobs_total(self, provider_id: int) -> int:
         """Requests sent to the worker since start-up, across reconnects."""
@@ -424,6 +503,10 @@ class WorkerHub:
     async def close_all(self) -> None:
         for conn in list(self._conns.values()):
             await conn.close(1001, "hub shutting down")
+
+    def _catalog_received(self, conn: WorkerConnection) -> None:
+        if self._on_catalog is not None:
+            self._spawn(self._on_catalog(conn))
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)
@@ -460,6 +543,11 @@ class WorkerHub:
             if not protocols:
                 raise ValueError("hello must list at least one protocol")
             max_c = max(1, min(int(hello.get("max_concurrency") or 4), 64))
+            expose = (
+                p.EXPOSE_INDIVIDUAL
+                if hello.get("expose") == p.EXPOSE_INDIVIDUAL
+                else p.EXPOSE_COMBINED
+            )
             worker_rid = router_identity.parse_id(hello.get("router_id"))
         except (TimeoutError, ValueError, TypeError, WebSocketDisconnect) as exc:
             logger.warning("Worker %s handshake failed: %s", row.get("name"), exc)
@@ -492,6 +580,8 @@ class WorkerHub:
             software_version=str(hello.get("software_version") or "") or None,
             remote_addr=remote,
             router_id=worker_rid,
+            expose=expose,
+            on_catalog=self._catalog_received,
         )
 
         previous = self._conns.get(provider_id)
