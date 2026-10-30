@@ -294,8 +294,11 @@
             const data = await api("POST", "/api/chat/send", body);
             setStatus("");
             if (view !== state.view) {
-                // The reply is saved with its chat; just refresh the list.
-                loadConversations();
+                // Another chat was shown meanwhile. The reply is saved with
+                // its own chat: reload that chat if it is the one on screen
+                // again, otherwise just refresh the list.
+                if (state.convId === data.conversation.id) await openConversation(state.convId);
+                else loadConversations();
                 return;
             }
             pending.remove();
@@ -304,7 +307,8 @@
             for (const m of data.messages) addMessage(m);
             if (firstMessage) loadConversations();
         } catch (err) {
-            if (view === state.view) addMessage({ role: "error", content: err.message });
+            const sameChat = view === state.view || (body.conversation_id !== null && state.convId === body.conversation_id);
+            if (sameChat) addMessage({ role: "error", content: err.message });
             setStatus("");
         } finally {
             clearInterval(timer);
