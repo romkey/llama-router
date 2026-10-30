@@ -606,21 +606,16 @@ class WorkerLinkManager:
 
     async def hub_catalog(self) -> list[dict[str, Any]]:
         """The providers the hub may use, as a ``catalog`` frame lists them."""
-        out: list[dict[str, Any]] = []
-        for prov in await self._db.list_providers():
-            if self._pm is None:
-                shared = prov.hub_shared
-            else:
-                # A remote that shares its own providers one by one has no
-                # models of its own; those providers are listed instead.
-                shared = self._pm.shares_with_hub(
-                    prov
-                ) and not self._pm.shares_individually(prov)
-            if shared and prov.id is not None:
-                out.append(
-                    {"id": prov.id, "name": prov.name, "locality": prov.locality}
-                )
-        return out
+        providers = await self._db.list_providers()
+        if self._pm is not None:
+            providers = self._pm.hub_offers(providers)
+        else:
+            providers = [prov for prov in providers if prov.hub_shared]
+        return [
+            {"id": prov.id, "name": prov.name, "locality": prov.locality}
+            for prov in providers
+            if prov.id is not None
+        ]
 
     async def reload(self) -> None:
         from ..config import settings

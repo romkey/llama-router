@@ -696,6 +696,34 @@ class ProviderManager:
     def shares_with_hub(self, provider: Provider) -> bool:
         return provider.hub_shared and provider.id not in self.hub_loopback_ids()
 
+    def hub_offers(self, providers: list[Provider]) -> list[Provider]:
+        """Which of *providers* to list for a hub that sees them one by one.
+
+        A remote that shares its own providers one by one is replaced by
+        them. Those rows are offered only while that remote serves them: one
+        that went back to sharing as one provider, or is not connected,
+        leaves rows behind that nothing can reach.
+        """
+        has_children = {p.worker_parent_id for p in providers if p.is_worker_child}
+        out: list[Provider] = []
+        for prov in providers:
+            if prov.id is None or not self.shares_with_hub(prov):
+                continue
+            if prov.is_worker_child:
+                if not self.worker_hub.is_connected(prov.id):
+                    continue
+            elif prov.is_worker:
+                if self.shares_individually(prov):
+                    continue
+                if prov.id in has_children and not self.worker_hub.is_connected(
+                    prov.id
+                ):
+                    # Unknown until it reconnects whether it will share as
+                    # one provider or as these; it serves neither meanwhile.
+                    continue
+            out.append(prov)
+        return out
+
     def worker_summary(self, provider: Provider) -> dict[str, Any] | None:
         """Live socket details for a worker provider; None for HTTP providers."""
         if not provider.is_worker or provider.id is None:

@@ -642,32 +642,73 @@ async def test_worker_link_expose(dash_client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_hub_catalog_lists_what_the_hub_may_use(db, monkeypatch) -> None:
+async def test_hub_catalog_lists_what_the_hub_may_use(db) -> None:
+    from llama_router.provider_manager import ProviderManager
+    from llama_router.worker_link.hub import WorkerConnection
+    from llama_router.worker_link.protocol import EXPOSE_COMBINED, EXPOSE_INDIVIDUAL
     from llama_router.worker_link.worker import WorkerLinkManager
 
     a = await db.add_provider("a")
     b = await db.add_provider("b")
-    c = await db.add_provider("c")
     await db.update_provider_settings(b.id, locality="cloud")
-    await db.set_hub_shared_providers([a.id, b.id])
+    remote = await db.add_provider("edge", worker_name="edge")
+    kids = [
+        await db.add_provider(
+            f"edge/{n}",
+            worker_name=f"edge/{rid}",
+            worker_parent_id=remote.id,
+            worker_remote_id=rid,
+        )
+        for rid, n in ((1, "gpu"), (2, "npu"))
+    ]
+    await db.set_hub_shared_providers([a.id, b.id, remote.id, *(k.id for k in kids)])
 
     plain = WorkerLinkManager(db)
-    assert await plain.hub_catalog() == [
-        {"id": a.id, "name": "a", "locality": "local"},
-        {"id": b.id, "name": "b", "locality": "cloud"},
-    ]
+    assert {e["name"] for e in await plain.hub_catalog()} == {
+        "a",
+        "b",
+        "edge",
+        "edge/gpu",
+        "edge/npu",
+    }
 
-    class FakePM:
-        def shares_with_hub(self, prov):
-            return prov.hub_shared and prov.id != b.id
+    pm = ProviderManager(db)
+    link = WorkerLinkManager(db, pm)
 
-        def shares_individually(self, prov):
-            return prov.id == c.id
+    async def names() -> set[str]:
+        return {e["name"] for e in await link.hub_catalog()}
 
-    await db.set_hub_shared_providers([a.id, b.id, c.id])
-    assert await WorkerLinkManager(db, FakePM()).hub_catalog() == [
-        {"id": a.id, "name": "a", "locality": "local"}
-    ]
+    # The remote is away: neither it nor the rows it once shared are offered.
+    assert await names() == {"a", "b"}
+
+    def connect(expose: str) -> None:
+        pm.worker_hub._conns[remote.id] = WorkerConnection(
+            None,
+            worker_id=1,
+            name="edge",
+            provider_id=remote.id,
+            protocols=["ollama"],
+            max_concurrency=1,
+            software_version=None,
+            remote_addr=None,
+            expose=expose,
+        )
+
+    # Back as one provider: it is offered, its old rows are not.
+    connect(EXPOSE_COMBINED)
+    for k in kids:
+        pm.worker_hub.add_child(k.id, remote.id, k.worker_remote_id)
+    assert await names() == {"a", "b", "edge"}
+
+    # Sharing one by one: its providers instead of it.
+    connect(EXPOSE_INDIVIDUAL)
+    assert await names() == {"a", "b", "edge/gpu", "edge/npu"}
+    entry = next(e for e in await link.hub_catalog() if e["name"] == "b")
+    assert entry == {"id": b.id, "name": "b", "locality": "cloud"}
+
+    # Unshared providers stay unshared.
+    await db.set_hub_shared_providers([a.id, kids[0].id])
+    assert await names() == {"a", "edge/gpu"}
 
 
 @pytest.mark.asyncio
