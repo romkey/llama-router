@@ -77,9 +77,15 @@
 <script>
 (() => {
     const $ = (id) => document.getElementById(id);
-    // *view* changes whenever another chat is shown, so a reply that arrives
-    // after the user moved on is not put in the wrong transcript.
-    const state = { providers: [], convId: null, image: null, busy: false, view: 0, nav: 0 };
+    // *nav* counts the user's moves between chats (opening one, New chat);
+    // *convId* is the chat they moved to last, even while it loads, and
+    // *rendered* is the move whose chat is on screen. A reply that arrives
+    // after a move only goes into the transcript of its own chat; *late*
+    // keeps it for a chat that is still loading.
+    const state = {
+        providers: [], convId: null, image: null, busy: false,
+        nav: 0, rendered: 0, late: {},
+    };
 
     async function api(method, url, body) {
         const opts = { method, headers: {} };
@@ -181,7 +187,6 @@
     }
 
     function clearLog() {
-        state.view += 1;
         const log = $("chat-log");
         log.innerHTML = "";
         const empty = el("div", "text-muted text-center my-auto");
@@ -192,6 +197,7 @@
 
     function newChat() {
         state.nav += 1;
+        state.rendered = state.nav;
         state.convId = null;
         clearLog();
         loadConversations();
@@ -199,13 +205,16 @@
     }
 
     async function openConversation(id) {
-        // Only the latest click (or New chat) wins when fetches overlap.
+        // Only the latest move wins when fetches overlap.
         const nav = ++state.nav;
+        state.convId = id;
         const conv = await api("GET", `/api/chat/conversations/${id}`);
         if (nav !== state.nav) return;
-        state.convId = conv.id;
         clearLog();
         for (const m of conv.messages) addMessage(m);
+        for (const m of state.late[id] || []) showOnce(m);
+        delete state.late[id];
+        state.rendered = nav;
         pick(conv.provider_id, conv.model_name);
         loadConversations();
     }
@@ -214,11 +223,16 @@
 
     // ── Messages ──
 
+    function showOnce(m) {
+        if (!document.querySelector(`#chat-log [data-msg-id="${m.id}"]`)) addMessage(m);
+    }
+
     function addMessage(m) {
         const empty = $("chat-empty");
         if (empty) empty.remove();
         const mine = m.role === "user";
         const wrap = el("div", "d-flex flex-column " + (mine ? "align-items-end" : "align-items-start"));
+        if (m.id != null) wrap.dataset.msgId = String(m.id);
         const cls = mine ? "text-bg-primary" : m.role === "error" ? "text-bg-danger" : "bg-body-tertiary";
         const bubble = el("div", `chat-msg rounded px-3 py-2 ${cls}`);
         if (m.image) {
@@ -286,7 +300,7 @@
         if (state.image) body.image = state.image;
         // Show the message now; the server's copy replaces it.
         const pending = addMessage({ role: "user", content, image: state.image });
-        const view = state.view;
+        const nav = state.nav;
         $("chat-input").value = "";
         setAttachment(null);
         state.busy = true;
@@ -297,12 +311,15 @@
         try {
             const data = await api("POST", "/api/chat/send", body);
             setStatus("");
-            if (view !== state.view) {
-                // Another chat was shown meanwhile. The reply is saved with
-                // its own chat: reload that chat if it is the one on screen
-                // again, otherwise just refresh the list.
-                if (state.convId === data.conversation.id) await openConversation(state.convId);
-                else loadConversations();
+            if (nav !== state.nav) {
+                // The user moved meanwhile. The reply is saved with its chat;
+                // show it only if that chat is (or is loading) on screen.
+                const id = data.conversation.id;
+                if (state.convId === id) {
+                    if (state.rendered === state.nav) data.messages.forEach(showOnce);
+                    else state.late[id] = data.messages;
+                }
+                loadConversations();
                 return;
             }
             pending.remove();
@@ -311,7 +328,8 @@
             for (const m of data.messages) addMessage(m);
             if (firstMessage) loadConversations();
         } catch (err) {
-            const sameChat = view === state.view || (body.conversation_id !== null && state.convId === body.conversation_id);
+            const sameChat = nav === state.nav || (
+                body.conversation_id !== null && state.convId === body.conversation_id && state.rendered === state.nav);
             if (sameChat) addMessage({ role: "error", content: err.message });
             setStatus("");
         } finally {
