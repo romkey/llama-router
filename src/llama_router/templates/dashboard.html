@@ -1255,12 +1255,17 @@
                 if (!r.provider_exists) return '<span class="text-muted">' + name + ' (deleted)</span>';
                 return '<a href="/providers/' + esc(r.provider_id) + '">' + name + '</a>';
             }
+            var latest = 0;
             function load() {
+                // Only the newest request may fill the table, however the
+                // responses arrive.
+                var mine = ++latest;
                 body.innerHTML = '<tr><td colspan="8" class="text-muted small">Loading…</td></tr>';
                 fetch('/api/keys/usage?period=' + encodeURIComponent(sel.value)).then(function(r) {
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                     return r.json();
                 }).then(function(j) {
+                    if (mine !== latest) return;
                     if (!j.rows.length) {
                         body.innerHTML = '<tr><td colspan="8" class="text-muted small">No requests in this period.</td></tr>';
                         return;
@@ -1276,6 +1281,7 @@
                             '<td class="small text-muted">' + esc(when) + '</td></tr>';
                     }).join('');
                 }).catch(function(e) {
+                    if (mine !== latest) return;
                     body.innerHTML = '<tr><td colspan="8" class="text-danger small">Could not load usage: ' + esc(e.message) + '</td></tr>';
                 });
             }

@@ -84,7 +84,9 @@ async def test_usage_groups_by_key_and_provider(db: Database) -> None:
     assert (a_gpu["prompt_tokens"], a_gpu["completion_tokens"]) == (30, 12)
     assert a_gpu["cost_usd"] == 0
     assert a_gpu["provider_exists"] is True
-    assert a_gpu["last_request_at"] is not None
+    # Stored in UTC; returned so, whichever database stores it.
+    assert a_gpu["last_request_at"].tzinfo is not None
+    assert abs(datetime.now(UTC) - a_gpu["last_request_at"]) < timedelta(minutes=5)
     assert by[(ids["alice"], "cloud")]["cost_usd"] == 0.25
     gone = by[(ids["gone"], "old-name")]
     assert gone["key_prefix"] is None
@@ -100,6 +102,19 @@ async def test_usage_names_follow_renames(db: Database) -> None:
     names = {r["provider"] for r in await db.usage_by_key_and_provider()}
     assert "big-gpu" in names
     assert "gpu" not in names
+
+
+def test_utc_datetime() -> None:
+    from llama_router.database import _utc_datetime
+
+    assert _utc_datetime(None) is None
+    assert _utc_datetime("junk") is None
+    assert _utc_datetime(42) is None
+    got = _utc_datetime("2026-10-30 12:34:56")
+    assert got == datetime(2026, 10, 30, 12, 34, 56, tzinfo=UTC)
+    aware = datetime(2026, 1, 1, tzinfo=UTC)
+    assert _utc_datetime(aware) is aware
+    assert _utc_datetime(aware.replace(tzinfo=None)) == aware
 
 
 async def test_usage_period(db: Database) -> None:
@@ -133,6 +148,7 @@ async def test_usage_api(dash_client: tuple[httpx.AsyncClient, Database]) -> Non
     assert body["period"] == "7d"
     assert body["since"] is not None
     assert len(body["rows"]) == 5
+    assert all(row["last_request_at"].endswith("+00:00") for row in body["rows"])
 
     r = await client.get(
         f"/api/keys/usage?period=all&key_id={ids['alice']}", headers=_cookie(admin)

@@ -6,7 +6,7 @@ import functools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Concatenate
 
@@ -785,7 +785,7 @@ class Database:
                 "prompt_tokens": int(r["prompt_tokens"] or 0),
                 "completion_tokens": int(r["completion_tokens"] or 0),
                 "cost_usd": float(r["cost_usd"] or 0),
-                "last_request_at": r["last_request_at"],
+                "last_request_at": _utc_datetime(r["last_request_at"]),
             }
             for r in rows
         ]
@@ -1824,6 +1824,24 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         auto_benchmark=_tristate(row["auto_benchmark"]),
         hub_shared=row["hub_shared"] is None or bool(row["hub_shared"]),
     )
+
+
+def _utc_datetime(value: Any) -> datetime | None:
+    """A stored UTC timestamp as an aware datetime.
+
+    An aggregate such as ``MAX(created_at)`` comes back from SQLite as text,
+    which says nothing about its zone; the database writes UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace(" ", "T", 1))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _json_or_none(raw: Any) -> dict | None:
