@@ -15,7 +15,7 @@ out: `DASHBOARD_PORT` means `LLAMA_ROUTER_DASHBOARD_PORT`. Booleans accept
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `DATABASE_PATH` | `llama_router.db` (Docker: `/app/data/llama_router.db`) | SQLite file used when `DATABASE_URL` is empty |
-| `DATABASE_URL` | *(empty)* | Async SQLAlchemy URL: `sqlite+aiosqlite:///…`, `postgresql+asyncpg://…` or `mysql+asyncmy://…`. Overrides `DATABASE_PATH`. PostgreSQL and MySQL need the `postgres` or `mysql` install extra; Alembic migrations use the matching sync drivers (`psycopg`, `pymysql`) automatically |
+| `DATABASE_URL` | *(empty)* | Async SQLAlchemy URL: `sqlite+aiosqlite:///…`, `postgresql+asyncpg://…` or `mysql+asyncmy://…`. Overrides `DATABASE_PATH`. The Docker image includes the PostgreSQL and MySQL drivers; a pip or uv install needs the `postgres` or `mysql` extra; Alembic migrations use the matching sync drivers (`psycopg`, `pymysql`) automatically |
 
 SQLite is the default and fits a single router. To move to PostgreSQL, see
 "Migrating data from SQLite to PostgreSQL" in the README.
