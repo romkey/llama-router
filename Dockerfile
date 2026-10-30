@@ -6,6 +6,9 @@
 #   production  the app and its runtime dependencies only, as a non-root
 #               user. Released to ghcr.io by .github/workflows/release.yaml.
 #
+# Both include every install extra (the PostgreSQL and MySQL drivers), so
+# LLAMA_ROUTER_DATABASE_URL works with the released image as it is.
+#
 # The python tag matches .python-version and requires-python in
 # pyproject.toml; change all three together.
 
@@ -49,14 +52,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-dev --no-install-project
+    uv sync --locked --no-dev --all-extras --no-install-project
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+    uv sync --locked --no-dev --all-extras --no-editable
 
 FROM build AS dev
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
+    uv sync --locked --all-extras
 EXPOSE 80 8080 9200 11434
 CMD ["python", "-m", "llama_router"]
 
