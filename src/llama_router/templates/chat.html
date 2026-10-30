@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% block title %}Chat - llama-router{% endblock %}
+
+{% block nav_tabs %}
+<li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
+<li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
+<li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
+<li class="nav-item"><span class="nav-link active"><i class="bi bi-chat-dots me-1"></i>Chat</span></li>
+{% if show_users_tab %}
+<li class="nav-item"><a class="nav-link" href="/users"><i class="bi bi-people me-1"></i>Users</a></li>
+{% endif %}
+{% if show_api_keys %}
+<li class="nav-item"><a class="nav-link" href="/#keys-pane"><i class="bi bi-key me-1"></i>API Keys</a></li>
+{% endif %}
+{% if show_log %}
+<li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<style>
+    #chat-log { height: 60vh; overflow-y: auto; }
+    .chat-msg { max-width: 85%; white-space: pre-wrap; word-wrap: break-word; }
+    .chat-msg img { max-width: 100%; max-height: 24rem; display: block; border-radius: .375rem; }
+    .chat-conv { cursor: pointer; }
+    .chat-conv .chat-del { visibility: hidden; }
+    .chat-conv:hover .chat-del, .chat-conv.active .chat-del { visibility: visible; }
+</style>
+
+<div class="row g-3">
+    <div class="col-md-3">
+        <button type="button" class="btn btn-primary w-100 mb-2" id="chat-new"><i class="bi bi-plus-lg me-1"></i>New chat</button>
+        <div class="list-group small" id="chat-convs">
+            <div class="list-group-item text-muted">Loading…</div>
+        </div>
+    </div>
+    <div class="col-md-9">
+        <div class="row g-2 mb-2">
+            <div class="col-sm-5">
+                <select class="form-select form-select-sm" id="chat-provider" aria-label="Provider"></select>
+            </div>
+            <div class="col-sm-7">
+                <select class="form-select form-select-sm" id="chat-model" aria-label="Model"></select>
+            </div>
+        </div>
+        <div class="card mb-2">
+            <div class="card-body d-flex flex-column gap-2" id="chat-log">
+                <div class="text-muted text-center my-auto" id="chat-empty">Pick a model and say something. Attach an image to ask about it, or switch to <strong>Image</strong> to ask for one.</div>
+            </div>
+        </div>
+        <form id="chat-form" class="d-flex flex-column gap-2">
+            <div id="chat-attachment" class="d-none small">
+                <img id="chat-attachment-img" alt="Attached image" style="max-height: 4rem;" class="rounded me-2 align-middle">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="chat-attachment-clear"><i class="bi bi-x-lg"></i> Remove</button>
+            </div>
+            <textarea class="form-control" id="chat-input" rows="3" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
+            <div class="d-flex align-items-center gap-2">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Mode">
+                    <input type="radio" class="btn-check" name="chat-mode" id="chat-mode-chat" value="chat" checked>
+                    <label class="btn btn-outline-secondary" for="chat-mode-chat"><i class="bi bi-chat-text me-1"></i>Chat</label>
+                    <input type="radio" class="btn-check" name="chat-mode" id="chat-mode-image" value="image">
+                    <label class="btn btn-outline-secondary" for="chat-mode-image"><i class="bi bi-image me-1"></i>Image</label>
+                </div>
+                <label class="btn btn-sm btn-outline-secondary mb-0" id="chat-attach-label" title="Attach an image">
+                    <i class="bi bi-paperclip"></i> Attach
+                    <input type="file" accept="image/*" id="chat-file" class="d-none">
+                </label>
+                <span class="text-muted small ms-auto" id="chat-status"></span>
+                <button type="submit" class="btn btn-sm btn-primary" id="chat-send"><i class="bi bi-send me-1"></i>Send</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+    const $ = (id) => document.getElementById(id);
+    // *convId* is the chat on screen. While a reply is on its way (*busy*)
+    // the user stays in that chat, so the reply always belongs on screen.
+    // *nav* counts moves between chats and *rendered* is the move whose
+    // chat is on screen: when loads overlap only the latest one is drawn,
+    // and nothing is sent until it is.
+    const state = { providers: [], convId: null, image: null, busy: false, nav: 0, rendered: 0 };
+
+    async function api(method, url, body) {
+        const opts = { method, headers: {} };
+        if (body !== undefined) {
+            opts.headers["Content-Type"] = "application/json";
+            opts.body = JSON.stringify(body);
+        }
+        const resp = await fetch(url, opts);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+        return data;
+    }
+
+    function setStatus(text) { $("chat-status").textContent = text || ""; }
+
+    function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+    }
+
+    // ── Provider and model pickers ──
+
+    function fillModels(selected) {
+        const p = state.providers.find((x) => String(x.id) === $("chat-provider").value);
+        const sel = $("chat-model");
+        sel.innerHTML = "";
+        for (const m of (p ? p.models : [])) {
+            const o = el("option", "", m);
+            o.value = m;
+            sel.appendChild(o);
+        }
+        if (selected && p && p.models.includes(selected)) sel.value = selected;
+        localStorage.setItem("chat.provider", $("chat-provider").value);
+    }
+
+    function pick(providerId, model) {
+        if (providerId != null && state.providers.some((p) => p.id === providerId)) {
+            $("chat-provider").value = String(providerId);
+        }
+        fillModels(model);
+    }
+
+    async function loadTargets() {
+        const data = await api("GET", "/api/chat/targets");
+        state.providers = data.providers;
+        const sel = $("chat-provider");
+        sel.innerHTML = "";
+        if (!state.providers.length) {
+            sel.appendChild(el("option", "", "No online providers"));
+            sel.disabled = true;
+            return;
+        }
+        for (const p of state.providers) {
+            const o = el("option", "", p.name + (p.status === "busy" ? " (busy)" : ""));
+            o.value = String(p.id);
+            sel.appendChild(o);
+        }
+        const savedP = Number(localStorage.getItem("chat.provider"));
+        pick(savedP || null, localStorage.getItem("chat.model"));
+    }
+
+    $("chat-provider").addEventListener("change", () => fillModels(null));
+    $("chat-model").addEventListener("change", () => localStorage.setItem("chat.model", $("chat-model").value));
+
+    // ── Conversations ──
+
+    async function loadConversations() {
+        const data = await api("GET", "/api/chat/conversations");
+        const list = $("chat-convs");
+        list.innerHTML = "";
+        if (!data.conversations.length) {
+            list.appendChild(el("div", "list-group-item text-muted", "No chats yet."));
+            return;
+        }
+        for (const c of data.conversations) {
+            const item = el("div", "list-group-item list-group-item-action chat-conv d-flex align-items-start gap-2");
+            if (c.id === state.convId) item.classList.add("active");
+            const text = el("div", "flex-grow-1 text-truncate");
+            text.appendChild(el("div", "text-truncate", c.title));
+            text.appendChild(el("div", "small opacity-75 text-truncate", c.model_name || ""));
+            item.appendChild(text);
+            const del = el("button", "btn btn-sm btn-link p-0 chat-del text-reset");
+            del.type = "button";
+            del.title = "Delete chat";
+            del.appendChild(el("i", "bi bi-trash"));
+            del.addEventListener("click", async (ev) => {
+                ev.stopPropagation();
+                if (state.busy || state.rendered !== state.nav) { setStatus("Wait a moment and try again."); return; }
+                if (!confirm(`Delete "${c.title}"?`)) return;
+                // Busy until it is gone, so nothing is sent to or opened over it.
+                setBusy(true);
+                try {
+                    await api("DELETE", `/api/chat/conversations/${c.id}`);
+                    if (state.convId === c.id) emptyChat();
+                } catch (err) {
+                    setStatus(err.message);
+                } finally {
+                    setBusy(false);
+                    loadConversations();
+                }
+            });
+            item.appendChild(del);
+            item.addEventListener("click", () => openConversation(c.id));
+            list.appendChild(item);
+        }
+    }
+
+    function clearLog() {
+        const log = $("chat-log");
+        log.innerHTML = "";
+        const empty = el("div", "text-muted text-center my-auto");
+        empty.id = "chat-empty";
+        empty.innerHTML = 'Pick a model and say something. Attach an image to ask about it, or switch to <strong>Image</strong> to ask for one.';
+        log.appendChild(empty);
+    }
+
+    function newChat() {
+        if (state.busy) { setStatus("Wait for the reply first."); return; }
+        emptyChat();
+        loadConversations();
+        $("chat-input").focus();
+    }
+
+    function emptyChat() {
+        state.nav += 1;
+        state.rendered = state.nav;
+        state.convId = null;
+        setStatus("");
+        clearLog();
+    }
+
+    async function openConversation(id) {
+        if (state.busy) { setStatus("Wait for the reply first."); return; }
+        const nav = ++state.nav;
+        let conv;
+        try {
+            conv = await api("GET", `/api/chat/conversations/${id}`);
+        } catch (err) {
+            // The chat on screen stays; sending to it is fine again.
+            if (nav === state.nav) {
+                state.rendered = nav;
+                setStatus(err.message);
+            }
+            return;
+        }
+        if (nav !== state.nav) return;
+        state.convId = conv.id;
+        state.rendered = nav;
+        setStatus("");
+        clearLog();
+        for (const m of conv.messages) addMessage(m);
+        pick(conv.provider_id, conv.model_name);
+        loadConversations();
+    }
+
+    $("chat-new").addEventListener("click", newChat);
+
+    // ── Messages ──
+
+    function addMessage(m) {
+        const empty = $("chat-empty");
+        if (empty) empty.remove();
+        const mine = m.role === "user";
+        const wrap = el("div", "d-flex flex-column " + (mine ? "align-items-end" : "align-items-start"));
+        const cls = mine ? "text-bg-primary" : m.role === "error" ? "text-bg-danger" : "bg-body-tertiary";
+        const bubble = el("div", `chat-msg rounded px-3 py-2 ${cls}`);
+        if (m.image) {
+            const img = el("img", m.content ? "mb-2" : "");
+            img.alt = mine ? "Attached image" : "Generated image";
+            img.src = m.image;
+            bubble.appendChild(img);
+        }
+        if (m.content) bubble.appendChild(el("div", "", m.content));
+        wrap.appendChild(bubble);
+        if (!mine && (m.model_name || m.duration_ms != null)) {
+            const bits = [];
+            if (m.model_name) bits.push(m.model_name + (m.provider_name ? ` on ${m.provider_name}` : ""));
+            if (m.duration_ms != null) bits.push(`${(m.duration_ms / 1000).toFixed(1)} s`);
+            wrap.appendChild(el("div", "small text-muted mt-1", bits.join(" · ")));
+        }
+        $("chat-log").appendChild(wrap);
+        $("chat-log").scrollTop = $("chat-log").scrollHeight;
+        return wrap;
+    }
+
+    function mode() { return document.querySelector('input[name="chat-mode"]:checked').value; }
+
+    function syncMode() {
+        const image = mode() === "image";
+        $("chat-attach-label").classList.toggle("disabled", image);
+        $("chat-input").placeholder = image
+            ? "Describe the image to generate"
+            : "Message (Enter to send, Shift+Enter for a new line)";
+        if (image) setAttachment(null);
+    }
+    for (const r of document.querySelectorAll('input[name="chat-mode"]')) r.addEventListener("change", syncMode);
+
+    function setAttachment(dataUrl) {
+        state.image = dataUrl;
+        $("chat-attachment").classList.toggle("d-none", !dataUrl);
+        if (dataUrl) $("chat-attachment-img").src = dataUrl;
+        else $("chat-attachment-img").removeAttribute("src");
+        $("chat-file").value = "";
+    }
+
+    $("chat-file").addEventListener("change", () => {
+        const f = $("chat-file").files[0];
+        if (!f) return;
+        if (f.size > 10 * 1024 * 1024) { setStatus("Image is over 10 MB."); return; }
+        const reader = new FileReader();
+        reader.onload = () => setAttachment(reader.result);
+        reader.readAsDataURL(f);
+    });
+    $("chat-attachment-clear").addEventListener("click", () => setAttachment(null));
+
+    async function send() {
+        if (state.busy) return;
+        // The chat being opened would replace the transcript under the reply.
+        if (state.rendered !== state.nav) { setStatus("Loading the chat…"); return; }
+        const content = $("chat-input").value.trim();
+        if (!content && !state.image) return;
+        const model = $("chat-model").value;
+        if (!model) { setStatus("Pick a model first."); return; }
+        const body = {
+            conversation_id: state.convId,
+            provider_id: Number($("chat-provider").value),
+            model,
+            content,
+            mode: mode(),
+        };
+        if (state.image) body.image = state.image;
+        // Show the message now; the server's copy replaces it.
+        const pending = addMessage({ role: "user", content, image: state.image });
+        $("chat-input").value = "";
+        setAttachment(null);
+        setBusy(true);
+        setStatus(body.mode === "image" ? "Generating image…" : "Waiting for the model…");
+        const started = Date.now();
+        const timer = setInterval(() => setStatus(`Waiting… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
+        try {
+            const data = await api("POST", "/api/chat/send", body);
+            pending.remove();
+            const firstMessage = state.convId === null;
+            state.convId = data.conversation.id;
+            for (const m of data.messages) addMessage(m);
+            setStatus("");
+            if (firstMessage) loadConversations();
+        } catch (err) {
+            addMessage({ role: "error", content: err.message });
+            setStatus("");
+        } finally {
+            clearInterval(timer);
+            setBusy(false);
+            $("chat-input").focus();
+        }
+    }
+
+    function setBusy(busy) {
+        state.busy = busy;
+        $("chat-send").disabled = busy;
+        $("chat-new").disabled = busy;
+        $("chat-convs").classList.toggle("opacity-50", busy);
+    }
+
+    $("chat-form").addEventListener("submit", (ev) => { ev.preventDefault(); send(); });
+    $("chat-input").addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); send(); }
+    });
+    $("chat-input").addEventListener("paste", (ev) => {
+        if (mode() !== "chat") return;
+        const item = [...(ev.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
+        if (!item) return;
+        const reader = new FileReader();
+        reader.onload = () => setAttachment(reader.result);
+        reader.readAsDataURL(item.getAsFile());
+    });
+
+    loadTargets().catch((err) => setStatus(err.message));
+    loadConversations().catch((err) => setStatus(err.message));
+})();
+</script>
+{% endblock %}
