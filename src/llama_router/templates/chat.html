@@ -79,12 +79,12 @@
     const $ = (id) => document.getElementById(id);
     // *nav* counts the user's moves between chats (opening one, New chat);
     // *convId* is the chat they moved to last, even while it loads, and
-    // *rendered* is the move whose chat is on screen. A reply that arrives
+    // *rendered* is the move whose chat (*shownId*) is on screen. A reply that arrives
     // after a move only goes into the transcript of its own chat; *late*
     // keeps it for a chat that is still loading.
     const state = {
         providers: [], convId: null, image: null, busy: false,
-        nav: 0, rendered: 0, late: {},
+        nav: 0, rendered: 0, shownId: null, late: {},
     };
 
     async function api(method, url, body) {
@@ -199,6 +199,7 @@
         state.nav += 1;
         state.rendered = state.nav;
         state.convId = null;
+        state.shownId = null;
         clearLog();
         loadConversations();
         $("chat-input").focus();
@@ -208,8 +209,21 @@
         // Only the latest move wins when fetches overlap.
         const nav = ++state.nav;
         state.convId = id;
-        const conv = await api("GET", `/api/chat/conversations/${id}`);
+        let conv;
+        try {
+            conv = await api("GET", `/api/chat/conversations/${id}`);
+        } catch (err) {
+            if (nav === state.nav) {
+                // Stay on the chat that is still on screen.
+                state.convId = state.shownId;
+                state.rendered = nav;
+                setStatus(err.message);
+                loadConversations();
+            }
+            return;
+        }
         if (nav !== state.nav) return;
+        state.shownId = id;
         clearLog();
         for (const m of conv.messages) addMessage(m);
         for (const m of state.late[id] || []) showOnce(m);
@@ -286,6 +300,9 @@
 
     async function send() {
         if (state.busy) return;
+        // A reply sent now would be drawn on the old transcript and then
+        // replaced when the chat being opened arrives.
+        if (state.rendered !== state.nav) { setStatus("Loading the chat…"); return; }
         const content = $("chat-input").value.trim();
         if (!content && !state.image) return;
         const model = $("chat-model").value;
@@ -324,7 +341,7 @@
             }
             pending.remove();
             const firstMessage = state.convId === null;
-            state.convId = data.conversation.id;
+            state.convId = state.shownId = data.conversation.id;
             for (const m of data.messages) addMessage(m);
             if (firstMessage) loadConversations();
         } catch (err) {
