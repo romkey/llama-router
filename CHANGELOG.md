@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-30
+
 ### Added
 
 - **Chat tab.** The dashboard's new **Chat** tab (`/chat`) talks to one
