@@ -172,11 +172,19 @@
             del.appendChild(el("i", "bi bi-trash"));
             del.addEventListener("click", async (ev) => {
                 ev.stopPropagation();
-                if (state.busy) { setStatus("Wait for the reply first."); return; }
+                if (state.busy || state.rendered !== state.nav) { setStatus("Wait a moment and try again."); return; }
                 if (!confirm(`Delete "${c.title}"?`)) return;
-                await api("DELETE", `/api/chat/conversations/${c.id}`);
-                if (state.convId === c.id) newChat();
-                loadConversations();
+                // Busy until it is gone, so nothing is sent to or opened over it.
+                setBusy(true);
+                try {
+                    await api("DELETE", `/api/chat/conversations/${c.id}`);
+                    if (state.convId === c.id) emptyChat();
+                } catch (err) {
+                    setStatus(err.message);
+                } finally {
+                    setBusy(false);
+                    loadConversations();
+                }
             });
             item.appendChild(del);
             item.addEventListener("click", () => openConversation(c.id));
@@ -195,13 +203,17 @@
 
     function newChat() {
         if (state.busy) { setStatus("Wait for the reply first."); return; }
+        emptyChat();
+        loadConversations();
+        $("chat-input").focus();
+    }
+
+    function emptyChat() {
         state.nav += 1;
         state.rendered = state.nav;
         state.convId = null;
         setStatus("");
         clearLog();
-        loadConversations();
-        $("chat-input").focus();
     }
 
     async function openConversation(id) {
