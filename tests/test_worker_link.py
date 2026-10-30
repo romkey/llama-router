@@ -1069,9 +1069,12 @@ async def test_providers_shared_individually_appear_on_the_hub(
 
     async def renamed_and_back():
         kids = await _children(link)
+        # The rename and the return can land in either order.
+        back = kids.get("alice-gpu/api")
         return (
             "alice-gpu/big-gpu" in kids
-            and kids["alice-gpu/api"].status == ProviderStatus.IDLE
+            and back is not None
+            and back.status == ProviderStatus.IDLE
         )
 
     await _wait_for(renamed_and_back)
