@@ -223,6 +223,32 @@ _TABLES: list[tuple[str, list[str]]] = [
         "api_key_decision_policies",
         ["api_key_id", "policy", "created_at", "updated_at"],
     ),
+    (
+        "chat_conversations",
+        [
+            "id",
+            "user_id",
+            "title",
+            "provider_id",
+            "model_name",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "chat_messages",
+        [
+            "id",
+            "conversation_id",
+            "role",
+            "content",
+            "image",
+            "model_name",
+            "provider_name",
+            "duration_ms",
+            "created_at",
+        ],
+    ),
 ]
 
 # Tables with a PostgreSQL sequence on ``id`` (reset after copy).
@@ -242,6 +268,8 @@ _SEQUENCE_TABLES = [
     "model_group_members",
     "model_prices",
     "decision_calibrations",
+    "chat_conversations",
+    "chat_messages",
 ]
 
 

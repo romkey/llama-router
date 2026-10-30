@@ -131,7 +131,9 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not user.is_admin:
-            if request.method != "GET":
+            # Everyone may chat; the chat API only touches the user's own
+            # conversations.
+            if request.method != "GET" and not path.startswith("/api/chat/"):
                 return _forbidden(request)
             if non_admin_forbidden_get_path(path):
                 return _forbidden(request)

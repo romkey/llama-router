@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ..request_logger import log_request
 from . import deps
+from .chat import router as chat_router
 from .decisions import router as decisions_router
 from .middleware import DashboardAuthMiddleware
 from .model_groups import router as model_groups_router
@@ -45,3 +46,4 @@ async def http_exception_handler(
 app.include_router(router)
 app.include_router(decisions_router)
 app.include_router(model_groups_router)
+app.include_router(chat_router)

@@ -21,7 +21,7 @@ Everything lives in the `llama_router` package under `src/`:
 | `config.py` | Settings from `LLAMA_ROUTER_*` environment variables |
 | `api/` | Ollama-compatible API (port 11434), decisions API and the hub's worker socket |
 | `llamacpp_api/` | OpenAI-compatible API (port 8080) |
-| `dashboard/` and `templates/` | Web dashboard (port 80): providers, models, benchmarks, users, sign-in and OIDC |
+| `dashboard/` and `templates/` | Web dashboard (port 80): providers, models, benchmarks, chat, users, sign-in and OIDC |
 | `registry_cache/` | Pull-through cache for Ollama model downloads (port 9200) |
 | `worker_link/` | Hub and worker links over one outbound WebSocket |
 | `shared_port.py` | Serves the APIs on the dashboard port too, when enabled |

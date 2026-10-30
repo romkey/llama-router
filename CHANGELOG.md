@@ -7,6 +7,14 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Chat tab.** The dashboard's new **Chat** tab (`/chat`) talks to one
+  model on one provider, for trying models out. Attach or paste an image
+  to ask about it, or switch to **Image** to ask the model for one. Each
+  dashboard user keeps their own chats, and viewers may chat too.
+  Requests go straight to the chosen provider and show in the request log.
+
 ## [0.22.1] - 2026-10-29
 
 ### Added
