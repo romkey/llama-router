@@ -433,6 +433,42 @@ curl http://localhost/api/keys/1/pins
 curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 ```
 
+## Management Keys
+
+A management key lets a script, such as an onboarding bot, call the
+dashboard's management API without a dashboard account. An administrator
+issues it under **Management keys** on the **Users** page, picks its
+privileges and, optionally, an expiry in days. The key (`lrm_...`) is shown
+once.
+
+| Privilege | Allows |
+|-----------|--------|
+| `keys:read` | `GET /api/keys` and the keys' pins and decision policies |
+| `keys:write` | Issue, configure and revoke API keys (`/api/keys/...`) |
+| `models:read` | Read model aliases, fallbacks, groups, the routing table and `/api/routing/explain` (explaining by `key_id` also needs `keys:read`) |
+| `models:write` | Change model aliases, fallbacks and groups; rebuild the routing table |
+| `status:read` | `GET /api/status`, as a dashboard viewer sees it |
+
+A `write` privilege includes the matching `read` one. Send the key to the
+dashboard port:
+
+```bash
+curl -X POST http://localhost/api/keys/generate \
+  -H 'Authorization: Bearer lrm_...' -H 'Content-Type: application/json' \
+  -d '{"routing_mode": "balanced", "daily_spend_cap_usd": 5}'
+curl http://localhost/api/keys -H 'Authorization: Bearer lrm_...'
+curl -X DELETE http://localhost/api/keys/7 -H 'Authorization: Bearer lrm_...'
+```
+
+A management key cannot open dashboard pages, manage dashboard accounts,
+issue or revoke management keys, or reach any endpoint its privileges do
+not cover; those requests get 403. Unknown, revoked and expired keys get
+401. Requests that change something are logged with the key's name.
+Administrators can also manage these keys at `/api/management-keys`
+(GET, POST `{name, privileges, expires_in_days}`, DELETE `/{id}`), signed in
+to the dashboard. Management keys only matter once dashboard accounts
+exist; before that the dashboard is open to everyone.
+
 ## Cloud Services
 
 The **Add Provider** dialog starts from a self-hosted server or one of these presets: OpenAI, OpenRouter, Anthropic, Perplexity, Groq, Together AI, Fireworks AI, DeepSeek, Mistral AI, Google Gemini, xAI, Cerebras, DeepInfra, Ollama Cloud, Azure OpenAI and TypeSafe (Jev, for [decision requests](#decision-models) only). A preset fills in the URL, protocol, key header and any extra headers; you add a name and a key.

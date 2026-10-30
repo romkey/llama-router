@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 
@@ -11,13 +12,15 @@ from starlette.requests import Request
 
 from ..config import settings
 from ..database import Database
-from . import deps
+from . import deps, management_keys
 from .auth_core import (
     AUTH_COOKIE,
     DashboardUser,
     non_admin_forbidden_get_path,
     unsign_session,
 )
+
+logger = logging.getLogger(__name__)
 
 _USER_COUNT_CACHE: tuple[int, float] | None = None
 _USER_COUNT_TTL = 5.0
@@ -63,6 +66,44 @@ def _metrics_token_ok(request: Request) -> bool:
     return secrets.compare_digest(raw[7:].strip(), token)
 
 
+async def _dispatch_management_key(
+    request: Request, call_next: RequestResponseEndpoint, db: Database, token: str
+) -> Response:
+    """Serve a request signed with a management key, if its privileges allow."""
+    key = await management_keys.authenticate(db, token)
+    if key is None:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or expired management key"},
+        )
+    path = request.url.path
+    needed = management_keys.required_privilege(request.method, path)
+    if needed is None:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Not available to management keys"},
+        )
+    if not management_keys.has_privilege(key.privileges, needed):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": f"Management key lacks the {needed} privilege"},
+        )
+    request.state.management_key = key
+    # Not an admin: routes that show admins more (the status payload, API
+    # key details in routing explanations) must not show it to a key.
+    request.state.dashboard_user = DashboardUser(
+        id=0,
+        username=f"key:{key.name}",
+        is_admin=False,
+        auth_source=management_keys.AUTH_SOURCE,
+    )
+    if request.method not in ("GET", "HEAD"):
+        logger.info(
+            "Management key %d (%s): %s %s", key.id, key.name, request.method, path
+        )
+    return await call_next(request)
+
+
 def _forbidden(request: Request) -> Response:
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
@@ -95,6 +136,10 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
 
         request.state.auth_bootstrap = False
         request.state.dashboard_users_exist = True
+
+        token = management_keys.bearer_token(request)
+        if token is not None:
+            return await _dispatch_management_key(request, call_next, db, token)
 
         secret = await deps.get_dashboard_session_secret()
         raw = request.cookies.get(AUTH_COOKIE)

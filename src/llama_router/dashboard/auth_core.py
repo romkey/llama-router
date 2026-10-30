@@ -87,6 +87,7 @@ def normalize_username(username: str) -> str:
 
 _NON_ADMIN_FORBIDDEN_PREFIXES = (
     "/api/keys",
+    "/api/management-keys",
     "/api/workers",
     "/api/worker-link",
     "/api/cache",

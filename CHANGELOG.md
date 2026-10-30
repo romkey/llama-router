@@ -7,6 +7,17 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Management keys.** Administrators can issue management keys
+  (`lrm_...`) on the **Users** page, each limited to the privileges they
+  pick: `keys:read`, `keys:write`, `models:read`, `models:write` and
+  `status:read` (the same status a dashboard viewer sees), with an optional expiry. A script sends one as
+  `Authorization: Bearer` to the dashboard's `/api/...` endpoints, for
+  example to issue API keys for new users, without a dashboard account.
+  See "Management Keys" in the README.
+- `GET /api/keys` lists API keys and their settings (never the keys).
+
 ## [0.23.0] - 2026-10-30
 
 ### Added
