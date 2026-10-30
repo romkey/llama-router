@@ -760,10 +760,16 @@ class Database:
 
         Counts requests logged since *since* (UTC; None for all), only for
         *key_id* when given. Requests with no key have ``api_key_id`` None;
-        requests that never reached a provider are left out. Names come from
-        the current rows, or from the log for a provider since deleted.
+        requests that never reached a provider, and the router's own entries
+        (health and probe events, benchmarks, model pulls), are left out.
+        Names come from the current rows, or from the log for a provider
+        since deleted.
         """
-        where = ["r.provider_id IS NOT NULL"]
+        where = [
+            "r.provider_id IS NOT NULL",
+            "r.protocol <> 'system'",
+            "COALESCE(r.source_ip, '') <> 'internal'",
+        ]
         params: list[Any] = []
         if since is not None:
             where.append("r.created_at >= ?")

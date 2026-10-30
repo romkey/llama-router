@@ -61,6 +61,27 @@ async def _seed(db: Database) -> dict[str, int]:
     await _log(db, gone_key, old, "old-name")
     # Refused before routing: no provider, not usage of one.
     await _log(db, alice, None, None, status="error")
+    # The router's own entries are not usage either.
+    for protocol, endpoint in (("system", "health"), ("system", "hf-pull")):
+        await db.save_request_log(
+            RequestLog(
+                provider_id=gpu,
+                provider_name="gpu",
+                protocol=protocol,
+                endpoint=endpoint,
+                source_ip="internal",
+                status="error",
+            )
+        )
+    await db.save_request_log(
+        RequestLog(
+            provider_id=gpu,
+            provider_name="gpu",
+            protocol="v1",
+            endpoint="benchmark",
+            source_ip="internal",
+        )
+    )
     await db.delete_api_key(gone_key)
     await db.remove_provider(old)
     return {"alice": alice, "bob": bob, "gone": gone_key, "gpu": gpu, "cloud": cloud}
@@ -88,6 +109,8 @@ async def test_usage_groups_by_key_and_provider(db: Database) -> None:
     assert a_gpu["last_request_at"].tzinfo is not None
     assert abs(datetime.now(UTC) - a_gpu["last_request_at"]) < timedelta(minutes=5)
     assert by[(ids["alice"], "cloud")]["cost_usd"] == 0.25
+    no_key = by[(None, "gpu")]
+    assert (no_key["requests"], no_key["errors"]) == (1, 0)
     gone = by[(ids["gone"], "old-name")]
     assert gone["key_prefix"] is None
     assert gone["provider_exists"] is False
