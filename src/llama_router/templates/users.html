@@ -162,4 +162,133 @@
         </div>
     </div>
 </div>
+
+{% if users_exist %}
+<div class="card mt-4" id="management-keys">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>Management keys</h5>
+        <span class="badge bg-secondary">{{ management_keys | length }}</span>
+    </div>
+    <div class="card-body">
+        <p class="small text-muted">
+            A management key lets a script call the dashboard's management API with only the privileges you pick, for example to issue API keys for new users.
+            Send it as <code>Authorization: Bearer lrm_…</code> to this dashboard's <code>/api/…</code> endpoints.
+            It cannot open dashboard pages, manage accounts or management keys, or reach any endpoint its privileges do not cover.
+            A <code>write</code> privilege includes the matching <code>read</code> one.
+        </p>
+        <form id="mgmt-key-form" class="row g-3 align-items-end mb-3" onsubmit="createManagementKey(event)">
+            <div class="col-md-4">
+                <label class="form-label" for="mgmt-key-name">Name</label>
+                <input class="form-control" id="mgmt-key-name" required maxlength="64" placeholder="e.g. onboarding-bot" autocomplete="off">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="mgmt-key-expiry">Expires after (days)</label>
+                <input type="number" class="form-control" id="mgmt-key-expiry" min="1" max="3650" placeholder="never">
+            </div>
+            <div class="col-md-5">
+                <span class="form-label d-block">Privileges</span>
+                {% for name, desc in management_privileges.items() %}
+                <div class="form-check">
+                    <input class="form-check-input mgmt-priv" type="checkbox" value="{{ name }}" id="mgmt-priv-{{ loop.index }}">
+                    <label class="form-check-label small" for="mgmt-priv-{{ loop.index }}"><code>{{ name }}</code> <span class="text-muted">{{ desc }}</span></label>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary">Issue management key</button>
+            </div>
+        </form>
+        <div id="mgmt-key-output"></div>
+        {% if management_keys %}
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Key</th>
+                        <th>Privileges</th>
+                        <th>Issued</th>
+                        <th>Expires</th>
+                        <th>Last used</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for k in management_keys %}
+                    <tr>
+                        <td>{{ k.name }}</td>
+                        <td><code>{{ k.key_prefix }}</code></td>
+                        <td>{% for p in k.privileges %}<span class="badge text-bg-light border me-1">{{ p }}</span>{% endfor %}</td>
+                        <td class="small text-muted text-nowrap">{{ k.created_at | localtime }}{% if k.created_by %}<div>by {{ k.created_by }}</div>{% endif %}</td>
+                        <td class="small text-nowrap">{% if k.expired %}<span class="badge bg-danger">expired</span>{% elif k.expires_at_dt %}{{ k.expires_at_dt | localtime }}{% else %}<span class="text-muted">never</span>{% endif %}</td>
+                        <td class="small text-muted text-nowrap">{% if k.last_used_at %}{{ k.last_used_at | localtime }}{% else %}never{% endif %}</td>
+                        <td class="text-end">
+                            <button type="button" class="btn btn-sm btn-outline-danger" data-key-id="{{ k.id }}" data-key-name="{{ k.name }}" onclick="revokeManagementKey(this)">Revoke</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-muted mb-0">No management keys.</p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function createManagementKey(ev) {
+    ev.preventDefault();
+    var privs = Array.prototype.map.call(
+        document.querySelectorAll('.mgmt-priv:checked'), function(el) { return el.value; });
+    if (!privs.length) { alert('Pick at least one privilege.'); return; }
+    var days = document.getElementById('mgmt-key-expiry').value.trim();
+    fetch('/api/management-keys', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            name: document.getElementById('mgmt-key-name').value.trim(),
+            privileges: privs,
+            expires_in_days: days === '' ? null : parseInt(days, 10)
+        })
+    })
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    })
+    .then(function(data) {
+        var out = document.getElementById('mgmt-key-output');
+        out.innerHTML = '';
+        var box = document.createElement('div');
+        box.className = 'alert alert-warning';
+        var note = document.createElement('div');
+        note.className = 'small text-muted mb-1';
+        note.textContent = 'Copy this key now. It is only shown once; reload the page to see it in the list.';
+        var code = document.createElement('code');
+        code.textContent = data.management_key;
+        var copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'btn btn-sm btn-outline-secondary ms-2';
+        copy.textContent = 'Copy';
+        copy.onclick = function() { navigator.clipboard.writeText(data.management_key); };
+        box.append(note, code, copy);
+        out.appendChild(box);
+        document.getElementById('mgmt-key-form').reset();
+    })
+    .catch(function(err) { alert(err.message || 'Failed to issue key'); });
+}
+
+function revokeManagementKey(btn) {
+    if (!confirm('Revoke management key ' + btn.dataset.keyName + '? Scripts using it stop working at once.')) return;
+    fetch('/api/management-keys/' + encodeURIComponent(btn.dataset.keyId), {method: 'DELETE'})
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        location.reload();
+    })
+    .catch(function(err) { alert(err.message || 'Failed to revoke key'); });
+}
+</script>
 {% endblock %}

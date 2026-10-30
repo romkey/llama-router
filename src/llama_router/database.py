@@ -1507,6 +1507,60 @@ class Database:
                 (key, value),
             )
 
+    # --- Management keys ---
+
+    async def create_management_key(
+        self,
+        *,
+        name: str,
+        key_prefix: str,
+        key_hash: str,
+        privileges: Iterable[str],
+        created_by: str | None,
+        expires_at: int | None,
+    ) -> int:
+        return await self._insert_get_id(
+            "INSERT INTO management_keys "
+            "(name, key_prefix, key_hash, privileges, created_by, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                name,
+                key_prefix,
+                key_hash,
+                " ".join(sorted(privileges)),
+                created_by,
+                expires_at,
+            ),
+        )
+
+    async def list_management_keys(self) -> list[dict]:
+        rows = await self._select_all(
+            f"SELECT {_MANAGEMENT_KEY_COLUMNS} FROM management_keys "  # noqa: S608 - fixed column list
+            "ORDER BY created_at DESC, id DESC"
+        )
+        return [_row_to_management_key(r) for r in rows]
+
+    async def lookup_management_key(self, key_hash: str) -> dict | None:
+        row = await self._select_one(
+            f"SELECT {_MANAGEMENT_KEY_COLUMNS} FROM management_keys "  # noqa: S608 - fixed column list
+            "WHERE key_hash = ?",
+            (key_hash,),
+        )
+        return _row_to_management_key(row) if row else None
+
+    async def touch_management_key(self, key_id: int) -> None:
+        await self._execute(
+            "UPDATE management_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (key_id,),
+        )
+
+    async def delete_management_key(self, key_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM management_keys WHERE id = ?", (key_id,)
+            )
+        )
+
     async def count_dashboard_users(self) -> int:
         row = await self._select_one("SELECT COUNT(*) AS c FROM dashboard_users")
         return int(row["c"]) if row else 0
@@ -1621,6 +1675,25 @@ class Database:
             "SELECT COUNT(*) AS c FROM dashboard_users WHERE is_admin = 1"
         )
         return int(row["c"]) if row else 0
+
+
+_MANAGEMENT_KEY_COLUMNS = (
+    "id, name, key_prefix, privileges, created_by, created_at, expires_at, last_used_at"
+)
+
+
+def _row_to_management_key(row: Mapping[str, Any]) -> dict:
+    expires = row["expires_at"]
+    return {
+        "id": int(row["id"]),
+        "name": row["name"],
+        "key_prefix": row["key_prefix"],
+        "privileges": str(row["privileges"] or "").split(),
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "expires_at": None if expires is None else int(expires),
+        "last_used_at": row["last_used_at"],
+    }
 
 
 _DASHBOARD_USER_COLUMNS = (

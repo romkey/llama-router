@@ -48,7 +48,7 @@ from ..worker_link.hub import (
 )
 from ..worker_link.protocol import CLOSE_REVOKED
 from ..worker_link.worker import normalize_hub_url
-from . import deps, oidc
+from . import deps, management_keys, oidc
 from .auth_core import (
     AUTH_COOKIE,
     SESSION_MAX_AGE,
@@ -620,6 +620,12 @@ async def users_page(request: Request):
     if n > 0 and not bootstrap and (not user or not user.is_admin):
         raise HTTPException(status_code=403, detail="Forbidden")
     users = await db.list_dashboard_users() if n else []
+    mgmt_keys = await db.list_management_keys()
+    now = time.time()
+    for k in mgmt_keys:
+        exp = k["expires_at"]
+        k["expires_at_dt"] = None if exp is None else datetime.fromtimestamp(exp, UTC)
+        k["expired"] = exp is not None and exp <= now
     cfg = oidc.current_config()
     scheme, host = _external_origin(request)
     return templates.TemplateResponse(
@@ -630,6 +636,8 @@ async def users_page(request: Request):
             {
                 "dashboard_users": users,
                 "users_exist": n > 0,
+                "management_keys": mgmt_keys,
+                "management_privileges": management_keys.PRIVILEGES,
                 "oidc": cfg if cfg.enabled else None,
                 "oidc_problems": cfg.problems(),
                 "oidc_callback": oidc.redirect_uri(cfg, scheme, host),
@@ -1210,6 +1218,13 @@ async def api_rebuild_routing_table():
     rt.mark_dirty("manual")
     table = await rt.rebuild()
     return JSONResponse({"version": table.version, "build_ms": table.build_ms})
+
+
+@router.get("/api/keys")
+async def api_list_keys():
+    """API keys with their settings; never the keys themselves."""
+    keys = await deps.get_db().list_api_keys()
+    return JSONResponse(jsonable_encoder({"keys": keys}))
 
 
 @router.post("/api/keys/generate")

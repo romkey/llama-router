@@ -21,6 +21,7 @@ optionally Sentry and an OpenID Connect provider.
 - `src/llama_router/provider_manager.py`, `probe.py`: discovery, probing, health.
 - `src/llama_router/router.py`, `routing_table.py`, `routing_stats.py`, `affinity.py`: routing.
 - `src/llama_router/model_listing.py`, `dashboard/model_groups.py`: model groups in listings and their API.
+- `src/llama_router/dashboard/management_keys.py`: privilege-scoped management keys for the dashboard API.
 - `src/llama_router/dashboard/chat.py`, `templates/chat.html`: Chat tab for trying a model on a provider.
 - `src/llama_router/*_client.py`, `translate.py`: backend clients, Ollama/OpenAI translation.
 - `src/llama_router/decision*.py`: decision models and per-key policies.
