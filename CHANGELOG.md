@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-10-31
+
 ### Fixed
 
 - **Chat without choosing a provider.** The Chat tab's provider list starts
