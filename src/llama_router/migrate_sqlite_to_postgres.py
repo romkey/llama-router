@@ -17,7 +17,10 @@ Steps:
 
 1. Run Alembic migrations on PostgreSQL (idempotent).
 2. Truncate application tables on PostgreSQL.
-3. Copy rows in foreign-key order, preserving primary keys.
+3. Copy rows in foreign-key order, preserving primary keys. SQLite may hold
+   rows whose parent is gone (it only enforces foreign keys when asked to);
+   those are handled as the target's ``ON DELETE`` rule would have: dropped
+   for ``CASCADE``, the reference cleared for ``SET NULL``.
 4. Reset PostgreSQL sequences so new inserts get correct IDs.
 """
 
@@ -343,6 +346,67 @@ def _insert_rows_pg(
         pg.execute(stmt, payload)
 
 
+def _foreign_keys(pg: Connection, table: str) -> list[dict[str, Any]]:
+    """Single-column foreign keys of ``table`` on the target, as reflected."""
+    out = []
+    for fk in inspect(pg).get_foreign_keys(table):
+        if len(fk["constrained_columns"]) != 1:
+            continue
+        out.append(
+            {
+                "column": fk["constrained_columns"][0],
+                "referred_table": fk["referred_table"],
+                "referred_column": fk["referred_columns"][0],
+                "ondelete": (fk.get("options", {}).get("ondelete") or "").upper(),
+            }
+        )
+    return out
+
+
+def _drop_orphans(
+    table: str,
+    rows: list[dict[str, Any]],
+    foreign_keys: Sequence[dict[str, Any]],
+    copied: dict[tuple[str, str], set[Any]],
+) -> list[dict[str, Any]]:
+    """Drop or detach rows that point at a parent row that wasn't copied.
+
+    ``copied`` maps ``(table, column)`` to the values copied so far. A key
+    whose parent table wasn't copied is left alone.
+    """
+    kept = []
+    dropped = 0
+    cleared = 0
+    for row in rows:
+        keep = True
+        for fk in foreign_keys:
+            value = row.get(fk["column"])
+            parents = copied.get((fk["referred_table"], fk["referred_column"]))
+            if value is None or parents is None or value in parents:
+                continue
+            if fk["ondelete"] == "SET NULL":
+                row[fk["column"]] = None
+                cleared += 1
+            else:
+                keep = False
+                break
+        if keep:
+            kept.append(row)
+        else:
+            dropped += 1
+    if dropped:
+        logger.warning(
+            "Skipping %d %s row(s) whose parent row no longer exists", dropped, table
+        )
+    if cleared:
+        logger.warning(
+            "Cleared %d reference(s) in %s to parent rows that no longer exist",
+            cleared,
+            table,
+        )
+    return kept
+
+
 def _reset_sequences(pg: Connection) -> None:
     for table in _SEQUENCE_TABLES:
         seq = pg.execute(
@@ -389,6 +453,7 @@ def migrate_sqlite_to_postgres(
         _truncate_app_tables(pg_conn)
 
         source_tables = set(inspect(sl_conn).get_table_names())
+        copied: dict[tuple[str, str], set[Any]] = {}
         for table, columns in _TABLES:
             if table not in source_tables:
                 logger.info("Skipping %s (not in source database)", table)
@@ -398,8 +463,11 @@ def migrate_sqlite_to_postgres(
             present = {c["name"] for c in inspect(sl_conn).get_columns(table)}
             cols = [c for c in columns if c in present]
             rows = _fetch_sqlite_rows(sl_conn, table, cols)
+            rows = _drop_orphans(table, rows, _foreign_keys(pg_conn, table), copied)
             logger.info("Copying %s (%d rows)", table, len(rows))
             _insert_rows_pg(pg_conn, table, cols, rows)
+            if "id" in cols:
+                copied[(table, "id")] = {r["id"] for r in rows}
 
         logger.info("Resetting PostgreSQL sequences")
         _reset_sequences(pg_conn)
