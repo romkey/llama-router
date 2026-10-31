@@ -439,6 +439,10 @@ curl http://localhost/api/keys/1/pins
 curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 ```
 
+## Keys Users Issue Themselves
+
+Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback and session affinity. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can revoke their own keys, and deleting a user deletes the keys they issued.
+
 ## Management Keys
 
 A management key lets a script, such as an onboarding bot, call the
@@ -503,7 +507,7 @@ Each provider can also carry extra headers (one `Name: value` per line) and mode
 
 ## Single sign-on (OpenID Connect)
 
-The dashboard can sign people in through an OpenID Connect provider such as Authentik, Keycloak, Okta, Entra ID or dex. Members of an admin group become administrators. Everyone else who signs in is a read-only viewer. Local accounts keep working alongside SSO unless you turn password sign-in off.
+The dashboard can sign people in through an OpenID Connect provider such as Authentik, Keycloak, Okta, Entra ID or dex. Members of an admin group become administrators. Everyone else who signs in is a read-only viewer who may chat and [issue themselves API keys](#keys-users-issue-themselves). Local accounts keep working alongside SSO unless you turn password sign-in off.
 
 Register a confidential client at your provider with this redirect URI:
 
