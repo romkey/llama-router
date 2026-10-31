@@ -7,6 +7,15 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Streamed chats no longer end in a transfer-length error.** When the
+  upstream refused a streaming request (unknown model, server error), the
+  router had already sent `200` and then cut the body short, which Open WebUI
+  showed as "Response payload is not completed: TransferEncodingError". The
+  router now waits for the upstream to answer and passes its real status and
+  message through.
+
 ## [0.26.0] - 2026-10-31
 
 ### Fixed

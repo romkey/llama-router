@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .httpx_errors import describe_httpx_error
+from .httpx_errors import describe_httpx_error, raise_for_stream_status
 from .models import ProviderModel
 from .upstream_url import split_api_base
 
@@ -194,7 +194,7 @@ class OpenAIClient:
             async with self._http.stream(
                 "POST", "/v1/chat/completions", json=body
             ) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -227,7 +227,7 @@ class OpenAIClient:
         body["stream"] = True
         try:
             async with self._http.stream("POST", "/v1/completions", json=body) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -253,7 +253,7 @@ class OpenAIClient:
         body["stream"] = True
         try:
             async with self._http.stream("POST", "/v1/responses", json=body) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -308,7 +308,7 @@ class OpenAIClient:
                 json=body,
                 timeout=httpx.Timeout(10.0, read=600.0),
             ) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:

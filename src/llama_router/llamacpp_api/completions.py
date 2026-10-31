@@ -6,12 +6,12 @@ from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..auth import routing_preferences_from_request
 from ..decision_policy import apply_decision_policy
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..request_logger import StreamLogger, log_request_background
+from ..request_logger import StreamLogger, log_request_background, stream_response
 from ..v1_client import get_v1_client
 from . import deps
 
@@ -75,7 +75,7 @@ async def completions(request: Request) -> Response:
             request_body=body,
             start_time=start,
         )
-        return StreamingResponse(logged, media_type="text/event-stream")
+        return await stream_response(logged, "text/event-stream")
 
     try:
         async with pm.acquire_provider(provider_id):
