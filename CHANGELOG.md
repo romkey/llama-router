@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-31
+
 ### Added
 
 - **Usage by key and provider.** The Keys tab has a table of requests,
@@ -14,7 +16,6 @@ described in their git tags and GitHub Releases.
   7 days, 30 days or all time, read from the request log.
   `GET /api/keys/usage` returns the same data for scripts (`keys:read`).
 
-### Added
 - **Share providers with a hub one by one.** A worker can now choose, on
   its **Workers** tab or with `LLAMA_ROUTER_WORKER_EXPOSE=individual`, to
   have each provider it shares appear on the hub as a provider of its own,
