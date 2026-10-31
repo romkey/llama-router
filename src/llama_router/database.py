@@ -6,7 +6,7 @@ import functools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Concatenate
 
@@ -752,6 +752,71 @@ class Database:
             (when,),
         )
         return {int(r["api_key_id"]): float(r["total"] or 0) for r in rows}
+
+    async def usage_by_key_and_provider(
+        self, since: datetime | None = None, key_id: int | None = None
+    ) -> list[dict]:
+        """Requests, tokens and cost per API key and provider, busiest first.
+
+        Counts requests logged since *since* (UTC; None for all), only for
+        *key_id* when given. Requests with no key have ``api_key_id`` None;
+        requests that never reached a provider, and the router's own entries
+        (health and probe events, benchmarks, model pulls), are left out.
+        Names come from the current rows, or from the log for a provider
+        since deleted.
+        """
+        where = [
+            "r.provider_id IS NOT NULL",
+            "r.protocol <> 'system'",
+            "COALESCE(r.source_ip, '') <> 'internal'",
+        ]
+        params: list[Any] = []
+        if since is not None:
+            where.append("r.created_at >= ?")
+            params.append(
+                since.strftime("%Y-%m-%d %H:%M:%S")
+                if self._dialect_name == "sqlite"
+                else since
+            )
+        if key_id is not None:
+            where.append("r.api_key_id = ?")
+            params.append(key_id)
+        rows = await self._select_all(
+            "SELECT r.api_key_id, MAX(k.key_prefix) AS key_prefix, "  # noqa: S608 - fixed clauses; values are bound
+            "r.provider_id, COALESCE(MAX(p.name), MAX(r.provider_name)) AS provider, "
+            "MAX(CASE WHEN p.id IS NULL THEN 0 ELSE 1 END) AS provider_exists, "
+            "COUNT(*) AS requests, "
+            "SUM(CASE WHEN r.status = 'error' THEN 1 ELSE 0 END) AS errors, "
+            "COALESCE(SUM(r.prompt_tokens), 0) AS prompt_tokens, "
+            "COALESCE(SUM(r.completion_tokens), 0) AS completion_tokens, "
+            "COALESCE(SUM(r.cost_usd), 0) AS cost_usd, "
+            "MAX(r.created_at) AS last_request_at "
+            "FROM request_log r "
+            "LEFT JOIN api_keys k ON k.id = r.api_key_id "
+            "LEFT JOIN providers p ON p.id = r.provider_id "
+            f"WHERE {' AND '.join(where)} "
+            "GROUP BY r.api_key_id, r.provider_id "
+            "ORDER BY requests DESC, r.api_key_id, r.provider_id",
+            tuple(params),
+        )
+        return [
+            {
+                "api_key_id": (
+                    int(r["api_key_id"]) if r["api_key_id"] is not None else None
+                ),
+                "key_prefix": r["key_prefix"],
+                "provider_id": int(r["provider_id"]),
+                "provider": r["provider"],
+                "provider_exists": bool(r["provider_exists"]),
+                "requests": int(r["requests"]),
+                "errors": int(r["errors"] or 0),
+                "prompt_tokens": int(r["prompt_tokens"] or 0),
+                "completion_tokens": int(r["completion_tokens"] or 0),
+                "cost_usd": float(r["cost_usd"] or 0),
+                "last_request_at": _utc_datetime(r["last_request_at"]),
+            }
+            for r in rows
+        ]
 
     # ── Model prices ──────────────────────────────────────────────────
 
@@ -1789,6 +1854,24 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         worker_parent_id=row["worker_parent_id"],
         worker_remote_id=row["worker_remote_id"],
     )
+
+
+def _utc_datetime(value: Any) -> datetime | None:
+    """A stored UTC timestamp as an aware datetime.
+
+    An aggregate such as ``MAX(created_at)`` comes back from SQLite as text,
+    which says nothing about its zone; the database writes UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace(" ", "T", 1))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _json_or_none(raw: Any) -> dict | None:
