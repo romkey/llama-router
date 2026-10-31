@@ -239,15 +239,31 @@ async def _apply_spend_cap(
     return replace(prefs, locality="local", spend_capped=True)
 
 
+def client_api_key(request: Request) -> str:
+    """The client's key from ``API-KEY``, else ``Authorization: Bearer``.
+
+    OpenAI-compatible clients such as Open WebUI and the OpenAI SDKs can only
+    send Bearer. Neither header is forwarded upstream.
+    """
+    key = (request.headers.get("API-KEY") or "").strip()
+    if key:
+        return key
+    raw = (request.headers.get("authorization") or "").strip()
+    scheme, _, token = raw.partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
 async def _key_preferences(db: Database, request: Request) -> RoutingPreferences | None:
     cache = _cache_for(db)
-    raw_key = request.headers.get("API-KEY")
-    key = (raw_key or "").strip()
+    key = client_api_key(request)
 
     if not key:
         if await _allow_unauthenticated(db, cache):
             return None
-        raise HTTPException(status_code=401, detail="Missing API-KEY header")
+        raise HTTPException(
+            status_code=401,
+            detail="Missing API key: send API-KEY or Authorization: Bearer",
+        )
 
     # The legacy digest is needed for the lookup anyway; it doubles as the
     # in-memory cache key so the plain key is never kept.

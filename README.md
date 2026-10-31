@@ -65,6 +65,8 @@ Every request is routed from an in-memory routing table. Building the table read
 
 Each API key picks a mode. Requests without a key use **balanced**.
 
+Clients send their key as `API-KEY: lr_...` or as `Authorization: Bearer lr_...`. Use Bearer for Open WebUI, the OpenAI SDKs and other clients that can't set custom headers. If both are sent, `API-KEY` wins. Neither header is forwarded to providers.
+
 | Mode | Picks the provider that |
 |------|-------------------------|
 | `balanced` | finishes a typical response soonest: startup or time to first token, plus network round trip, plus 256 tokens at the provider's speed. For embeddings, images and audio, the measured time those calls take |
