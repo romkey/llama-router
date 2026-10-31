@@ -7,6 +7,23 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Changed
+
+- **Models tab sub-tabs.** Models, Fallbacks, Aliases and Groups are tabs of
+  their own on the Models tab, each with a count. The address names the
+  sub-tab, so a reload after an edit returns to it.
+- **Choose a group's models from a list.** **Edit members** opens a checklist
+  of models with a live filter. Pick **All providers** to add a model on any
+  provider, or one provider to add it only there; unchecking removes it.
+  Members the list doesn't show are listed below it, with a remove button.
+  A new group opens the list straight away. The remove button on a member is
+  now easy to see.
+
+### Added
+
+- `PUT /api/model-groups/{id}/members` replaces a group's members in one
+  transaction; members that stay keep their place.
+
 ## [0.25.2] - 2026-10-31
 
 ### Fixed

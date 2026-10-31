@@ -1265,6 +1265,45 @@ class Database:
         )
         return n > 0
 
+    @_notifies(CHANGE_GROUPS)
+    async def set_model_group_members(
+        self, group_id: int, members: list[tuple[str, int | None]]
+    ) -> None:
+        """Make the group's members exactly ``members`` (model, provider id)
+        in one transaction. Members that stay keep their id and position; new
+        ones go after them in the order given."""
+        wanted = list(dict.fromkeys(members))
+        sf = self._require_session_factory()
+        async with sf() as session, session.begin():
+            st, bd = qmark(
+                "SELECT id, model_name, provider_id, position "
+                "FROM model_group_members WHERE group_id = ?",
+                group_id,
+            )
+            rows = list(result_mappings(await session.execute(st, bd)))
+            have = {(r["model_name"], r["provider_id"]): r for r in rows}
+            for key, r in have.items():
+                if key not in wanted:
+                    st, bd = qmark(
+                        "DELETE FROM model_group_members WHERE id = ?", r["id"]
+                    )
+                    await session.execute(st, bd)
+            position = max((int(r["position"]) for r in rows), default=-1)
+            for model_name, provider_id in wanted:
+                if (model_name, provider_id) in have:
+                    continue
+                position += 1
+                st, bd = qmark(
+                    "INSERT INTO model_group_members "
+                    "(group_id, model_name, provider_id, position) "
+                    "VALUES (?, ?, ?, ?)",
+                    group_id,
+                    model_name,
+                    provider_id,
+                    position,
+                )
+                await session.execute(st, bd)
+
     # --- Workers (hub side) ---
 
     async def create_worker(

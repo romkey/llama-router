@@ -902,6 +902,21 @@ async def dashboard(request: Request):
                 "model_fallbacks": model_fallbacks,
                 "model_aliases": model_aliases,
                 "model_groups": model_groups,
+                "group_picker": {
+                    "providers": [
+                        {
+                            "id": i.provider.id,
+                            "name": i.provider.name,
+                            "models": sorted({m.name for m in i.models}),
+                        }
+                        for i in infos
+                        if i.provider.id is not None
+                    ],
+                    "groups": {
+                        str(g["id"]): {"name": g["name"], "members": g["members"]}
+                        for g in model_groups
+                    },
+                },
                 "api_keys": api_keys,
                 "session_affinity_default": (
                     deps.get_pm().router.session_affinity_default

@@ -356,7 +356,7 @@ The request log records each request's tokens in and out, the API key that made 
 
 The same model often has different names at different providers: `claude-sonnet-4-5` at Anthropic, `anthropic/claude-sonnet-4-5` at OpenRouter, `llama3.2:latest` and `llama3.2` across Ollama and llama.cpp. An alias joins them. A request for any name in the group can go to any provider that serves one of them, and each provider is sent its own name for the model. Aliases chain, so `a → b → c` is one group.
 
-Add them in **Model Aliases** on the Models tab; **Suggest aliases** proposes `vendor/model` and `model:latest` names whose bare form another provider serves. Or use the API:
+Add them under **Aliases** on the Models tab; **Suggest aliases** proposes `vendor/model` and `model:latest` names whose bare form another provider serves. Or use the API:
 
 ```bash
 curl -X POST http://localhost/api/model-aliases \
@@ -394,7 +394,7 @@ Groups appear in `/api/tags` and `/v1/models` while at least one member can be s
 
 A group cannot have the name of a model a provider serves, an alias or another group, and groups do not contain other groups. If a provider later starts serving a model with the group's name, the group wins and the dashboard's routing table reports it.
 
-Manage groups in **Model Groups** on the Models tab, or with the API:
+Manage groups under **Groups** on the Models tab. **Edit members** opens a checklist of models with a search box: with **All providers** chosen a checked model is a member on any provider, and with one provider chosen it is a member only on that provider. Or use the API:
 
 ```bash
 # Create a group with two members, one of them only on provider 3
@@ -411,6 +411,10 @@ curl http://localhost/api/model-groups
 curl -X POST http://localhost/api/model-groups/1/members \
   -H 'Content-Type: application/json' -d '{"model_name": "codestral"}'
 curl -X DELETE http://localhost/api/model-groups/1/members/2
+# Replace all members at once
+curl -X PUT http://localhost/api/model-groups/1/members \
+  -H 'Content-Type: application/json' \
+  -d '{"members": [{"model_name": "codestral"}, {"model_name": "qwen3:14b", "provider_id": 3}]}'
 curl -X PATCH http://localhost/api/model-groups/1 \
   -H 'Content-Type: application/json' -d '{"name": "code"}'
 curl -X DELETE http://localhost/api/model-groups/1
