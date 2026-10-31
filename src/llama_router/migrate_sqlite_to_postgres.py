@@ -168,6 +168,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "daily_spend_cap_usd",
             "created_at",
             "last_used_at",
+            "owner_user_id",
         ],
     ),
     (

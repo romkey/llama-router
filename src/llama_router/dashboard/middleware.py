@@ -104,6 +104,14 @@ async def _dispatch_management_key(
     return await call_next(request)
 
 
+def _own_data_path(path: str) -> bool:
+    return (
+        path.startswith("/api/chat/")
+        or path == "/api/my-keys"
+        or path.startswith("/api/my-keys/")
+    )
+
+
 def _forbidden(request: Request) -> Response:
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
@@ -176,9 +184,9 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not user.is_admin:
-            # Everyone may chat; the chat API only touches the user's own
-            # conversations.
-            if request.method != "GET" and not path.startswith("/api/chat/"):
+            # Everyone may chat and issue themselves API keys; those APIs
+            # only touch the user's own conversations and keys.
+            if request.method != "GET" and not _own_data_path(path):
                 return _forbidden(request)
             if non_admin_forbidden_get_path(path):
                 return _forbidden(request)

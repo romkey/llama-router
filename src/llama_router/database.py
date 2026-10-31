@@ -1397,11 +1397,15 @@ class Database:
         session_affinity: bool | None = None,
         locality: str | None = None,
         daily_spend_cap_usd: float | None = None,
+        owner_user_id: int | None = None,
     ) -> int:
+        """*owner_user_id* is the dashboard user who issued the key to
+        themselves; None for a key an admin issued."""
         return await self._insert_get_id(
             "INSERT INTO api_keys "
             "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
-            "locality, daily_spend_cap_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "locality, daily_spend_cap_usd, owner_user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
@@ -1410,6 +1414,7 @@ class Database:
                 None if session_affinity is None else int(session_affinity),
                 locality,
                 daily_spend_cap_usd,
+                owner_user_id,
             ),
         )
 
@@ -1432,18 +1437,24 @@ class Database:
             )
         )
 
-    async def list_api_keys(self) -> list[dict]:
+    async def list_api_keys(self, owner_user_id: int | None = None) -> list[dict]:
+        """All keys, or only those *owner_user_id* issued to themselves."""
+        where = "WHERE k.owner_user_id = ? " if owner_user_id is not None else ""
         rows = await self._select_all(
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
             "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
+            "k.owner_user_id, u.username AS owner_username, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
-            "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
+            "LEFT JOIN dashboard_users u ON u.id = k.owner_user_id "
+            + where
+            + "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
-            "k.last_used_at "
-            "ORDER BY k.created_at DESC, k.id DESC"
+            "k.last_used_at, k.owner_user_id, u.username "
+            "ORDER BY k.created_at DESC, k.id DESC",
+            (owner_user_id,) if owner_user_id is not None else (),
         )
         return [
             {
@@ -1456,6 +1467,10 @@ class Database:
                 "daily_spend_cap_usd": r["daily_spend_cap_usd"],
                 "created_at": r["created_at"],
                 "last_used_at": r["last_used_at"],
+                "owner_user_id": (
+                    None if r["owner_user_id"] is None else int(r["owner_user_id"])
+                ),
+                "owner_username": r["owner_username"],
                 "pin_count": int(r["pin_count"] or 0),
             }
             for r in rows
@@ -1464,6 +1479,16 @@ class Database:
     @_notifies(CHANGE_API_KEYS)
     async def delete_api_key(self, key_id: int) -> None:
         await self._execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+
+    @_notifies(CHANGE_API_KEYS)
+    async def delete_owned_api_key(self, key_id: int, owner_user_id: int) -> bool:
+        """Delete *key_id* only if *owner_user_id* issued it to themselves."""
+        return bool(
+            await self._execute_rowcount(
+                "DELETE FROM api_keys WHERE id = ? AND owner_user_id = ?",
+                (key_id, owner_user_id),
+            )
+        )
 
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
@@ -1808,7 +1833,10 @@ class Database:
             (password_hash, user_id),
         )
 
+    @_notifies(CHANGE_API_KEYS)
     async def delete_dashboard_user(self, user_id: int) -> None:
+        """Delete the user and the API keys they issued to themselves."""
+        await self._execute("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,))
         await self._execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
 
     async def count_dashboard_admins(self) -> int:
