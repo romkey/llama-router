@@ -12,6 +12,10 @@ described in their git tags and GitHub Releases.
 - **API keys from OpenAI-compatible clients.** Clients can send their key as
   `Authorization: Bearer lr_...` as well as `API-KEY: lr_...`, so Open WebUI,
   the OpenAI SDKs and other clients that only send Bearer can connect.
+- **New API keys stay on screen.** A key generated on the API Keys tab
+  appears in a dialog that stays open until you close it, so there is time
+  to copy it.
+
 ### Changed
 
 - **Models tab sub-tabs.** Models, Fallbacks, Aliases and Groups are tabs of
@@ -26,6 +30,16 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Users issue their own API keys.** Any signed-in dashboard user, admin or
+  viewer, local or SSO, can issue, list and revoke their own keys for model
+  access on the new **My API keys** page (`/my-keys`, linked in the top
+  bar), or through `GET`/`POST /api/my-keys` and `DELETE /api/my-keys/{id}`.
+  A card on the API Keys tab sets the providers (local, cloud or either) and
+  daily spend cap that self-issued keys get; until an admin changes it they
+  are **local only**, so users can't give themselves cloud spending. The
+  admin key table gains an **Owner** column, and deleting a user deletes the
+  keys they issued. Admins read and set the limits with
+  `GET`/`PUT /api/keys/self-service`. Adds migration `024_api_key_owner`.
 - `PUT /api/model-groups/{id}/members` replaces a group's members in one
   transaction; members that stay keep their place.
 
