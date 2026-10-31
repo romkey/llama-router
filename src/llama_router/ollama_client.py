@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .httpx_errors import describe_httpx_error
+from .httpx_errors import describe_httpx_error, raise_for_stream_status
 from .models import ProviderModel
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ class OllamaClient:
         body["stream"] = True
         try:
             async with self._http.stream("POST", "/api/chat", json=body) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -153,7 +153,7 @@ class OllamaClient:
         body["stream"] = True
         try:
             async with self._http.stream("POST", "/api/generate", json=body) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -236,7 +236,7 @@ class OllamaClient:
                 json={"model": pull_model, "stream": True, "insecure": insecure},
                 timeout=httpx.Timeout(30.0, read=1800.0),
             ) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 buffer = b""
                 async for chunk in resp.aiter_bytes():
                     buffer += chunk
@@ -310,7 +310,7 @@ class OllamaClient:
             async with self._http.stream(
                 "POST", "/v1/chat/completions", json=body
             ) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -336,7 +336,7 @@ class OllamaClient:
         body["stream"] = True
         try:
             async with self._http.stream("POST", "/v1/completions", json=body) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -371,7 +371,7 @@ class OllamaClient:
         body["stream"] = True
         try:
             async with self._http.stream("POST", "/v1/responses", json=body) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:
@@ -422,7 +422,7 @@ class OllamaClient:
                 json=body,
                 timeout=httpx.Timeout(10.0, read=600.0),
             ) as resp:
-                resp.raise_for_status()
+                await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
         except httpx.HTTPError as exc:

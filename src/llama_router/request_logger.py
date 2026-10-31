@@ -7,16 +7,17 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable
 from typing import Any
 
 import httpx
 from fastapi import Request
+from fastapi.responses import Response, StreamingResponse
 
 from .background import spawn
 from .database import Database
 from .endpoints import endpoint_class
-from .httpx_errors import describe_httpx_error
+from .httpx_errors import describe_httpx_error, forward_upstream_http_error
 from .models import Provider, RequestLog
 from .pricing import Price
 from .routing_stats import ProviderStats
@@ -436,7 +437,7 @@ class StreamLogger:
         self._first_chunk_at: float | None = None
         self._tail: deque[bytes] = deque(maxlen=_TAIL_CHUNKS)
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
+    async def __aiter__(self) -> AsyncGenerator[bytes]:
         status = "ok"
         error_detail = None
         try:
@@ -505,3 +506,30 @@ class StreamLogger:
                 )
             except Exception:
                 logger.exception("Could not schedule request log write")
+
+
+async def stream_response(logged: StreamLogger, media_type: str) -> Response:
+    """Start *logged* and answer with it as a stream.
+
+    The first chunk is awaited before the response begins. If the upstream
+    refuses the request, the client gets that error as a normal HTTP reply
+    instead of a 200 whose body stops short (which clients report as a
+    transfer-length error).
+    """
+    stream = logged.__aiter__()
+    try:
+        first = await stream.__anext__()
+    except StopAsyncIteration:
+        return StreamingResponse(iter(()), media_type=media_type)
+    except httpx.HTTPStatusError as exc:
+        return forward_upstream_http_error(exc)
+    except BaseException:
+        await stream.aclose()
+        raise
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield first
+        async for chunk in stream:
+            yield chunk
+
+    return StreamingResponse(chunks(), media_type=media_type)

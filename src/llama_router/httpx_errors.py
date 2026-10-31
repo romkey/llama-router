@@ -36,6 +36,17 @@ def describe_httpx_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+async def raise_for_stream_status(resp: httpx.Response) -> None:
+    """``raise_for_status`` for a streamed response.
+
+    Reads an error body first, while the stream is still open, so the
+    ``HTTPStatusError`` can still be turned into the upstream's own reply.
+    """
+    if resp.is_error:
+        await resp.aread()
+    resp.raise_for_status()
+
+
 def forward_upstream_http_error(exc: httpx.HTTPStatusError) -> JSONResponse:
     """Return the upstream JSON body when safe; never echo exception text to clients."""
     status_code = exc.response.status_code

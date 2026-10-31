@@ -7,11 +7,11 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..auth import from_hub, hub_provider, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..request_logger import StreamLogger, log_request_background
+from ..request_logger import StreamLogger, log_request_background, stream_response
 from ..v1_client import get_v1_client
 from . import deps
 
@@ -77,7 +77,7 @@ async def audio_speech(request: Request) -> Response:
             request_body=body,
             start_time=start,
         )
-        return StreamingResponse(logged, media_type=media_type)
+        return await stream_response(logged, media_type)
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
