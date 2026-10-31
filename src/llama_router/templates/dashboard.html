@@ -850,7 +850,6 @@
                         <button class="btn btn-sm btn-primary" onclick="generateApiKey()">
                             <i class="bi bi-plus-lg me-1"></i>Generate Key
                         </button>
-                        <div id="new-key-output" class="mt-3"></div>
                     </div>
                 </div>
                 <div class="card mt-3">
@@ -2055,6 +2054,30 @@
     </div>
 </div>
 
+<!-- New API Key Modal: static backdrop so a stray click can't dismiss it;
+     the page reloads only after it is closed. -->
+<div class="modal fade" id="newApiKeyModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-key me-2"></i>New API Key</h5>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning small">Copy this key now. It is only shown once.</div>
+                <div class="input-group">
+                    <input type="text" class="form-control font-monospace" id="generated-api-key" readonly>
+                    <button class="btn btn-outline-secondary" type="button" onclick="copyGeneratedKey()">
+                        <i class="bi bi-clipboard me-1"></i><span id="generated-api-key-copy">Copy</span>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">I've copied it</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- API Key Decision Policy Modal -->
 <div class="modal fade" id="apiKeyPolicyModal" tabindex="-1">
     <div class="modal-dialog modal-lg">
@@ -2983,14 +3006,14 @@ function generateApiKey() {
         return r.json();
     })
     .then(function(data) {
-        var out = document.getElementById('new-key-output');
-        if (!out) return;
-        out.innerHTML = '<div class="alert alert-warning mb-0">' +
-            '<div class="small text-muted mb-1">Copy this key now. It is only shown once.</div>' +
-            '<code id="generated-api-key">' + data.api_key + '</code> ' +
-            '<button class="btn btn-sm btn-outline-secondary ms-2" onclick="copyGeneratedKey()">Copy</button>' +
-            '</div>';
-        setTimeout(function() { location.reload(); }, 1000);
+        var modalEl = document.getElementById('newApiKeyModal');
+        var input = document.getElementById('generated-api-key');
+        input.value = data.api_key;
+        document.getElementById('generated-api-key-copy').textContent = 'Copy';
+        // Reload (to list the new key) only once the user has dismissed the modal.
+        modalEl.addEventListener('hidden.bs.modal', function() { location.reload(); }, {once: true});
+        modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
     })
     .catch(function(err) { alert(err.message || 'Failed to generate key'); });
 }
@@ -3023,7 +3046,10 @@ function setKeyLocality(keyId, locality) {
 function copyGeneratedKey() {
     var el = document.getElementById('generated-api-key');
     if (!el) return;
-    navigator.clipboard.writeText(el.textContent || '').catch(function() {});
+    var label = document.getElementById('generated-api-key-copy');
+    navigator.clipboard.writeText(el.value || '')
+        .then(function() { if (label) label.textContent = 'Copied'; })
+        .catch(function() { el.select(); });
 }
 
 function deleteApiKey(keyId) {
