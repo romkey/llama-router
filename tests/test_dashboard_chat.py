@@ -274,6 +274,31 @@ async def test_group_and_alias_on_a_chosen_provider(dash_client: DashClient) -> 
     assert resp.status_code == 404
 
 
+async def test_group_hides_a_model_on_a_chosen_provider(
+    dash_client: DashClient,
+) -> None:
+    c, db = dash_client
+    seen: list[dict[str, Any]] = []
+    pid = await _backend(db, seen)
+    await db.set_provider_models(
+        pid,
+        [
+            ProviderModel(provider_id=pid, name="chatty", raw_name="chatty:q4"),
+            ProviderModel(provider_id=pid, name="big"),
+        ],
+    )
+    # A group named like a served model; requests for "big" go to the group.
+    group = await db.create_model_group("big")
+    assert group.id is not None
+    await db.add_model_group_member(group.id, "chatty")
+    Router(db, dash_deps.get_pm())
+    resp = await c.post(
+        "/api/chat/send", json={"provider_id": pid, "model": "big", "content": "hi"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen[0]["model"] == "chatty:q4"
+
+
 def test_chat_messages_and_replies() -> None:
     history: list[dict[str, Any]] = [
         {"role": "user", "content": "draw", "image": None},

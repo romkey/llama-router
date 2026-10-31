@@ -173,11 +173,13 @@ async def _target(db: Database, body: dict[str, Any], model: str, path: str) -> 
     provider = await db.get_provider(pid)
     if provider is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    for m in await db.get_provider_models(pid):
-        if m.name == model:
-            return Target(provider, m.backend_name, model, True)
-    # A model group or an alias with a member on this provider.
     table = await _table()
+    # A group hides a model of the same name, as it does when routing.
+    if table is None or not table.is_group(model):
+        for m in await db.get_provider_models(pid):
+            if m.name == model:
+                return Target(provider, m.backend_name, model, True)
+    # A model group or an alias with a member on this provider.
     if table is not None and any(
         c.provider_id == pid for c in table.all_candidates.get((model, path), ())
     ):
