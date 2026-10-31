@@ -7,6 +7,11 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **API keys from OpenAI-compatible clients.** Clients can send their key as
+  `Authorization: Bearer lr_...` as well as `API-KEY: lr_...`, so Open WebUI,
+  the OpenAI SDKs and other clients that only send Bearer can connect.
 ### Changed
 
 - **Models tab sub-tabs.** Models, Fallbacks, Aliases and Groups are tabs of
