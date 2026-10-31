@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}My API keys - llama-router{% endblock %}
+
+{% block nav_tabs %}
+<li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
+<li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
+<li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
+<li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots me-1"></i>Chat</a></li>
+{% if show_users_tab %}
+<li class="nav-item"><a class="nav-link" href="/users"><i class="bi bi-people me-1"></i>Users</a></li>
+{% endif %}
+{% if show_api_keys %}
+<li class="nav-item"><a class="nav-link" href="/#keys-pane"><i class="bi bi-key me-1"></i>API Keys</a></li>
+{% endif %}
+{% if show_log %}
+<li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<h2 class="mb-3"><i class="bi bi-key me-2"></i>My API keys</h2>
+
+{% if not dash_user %}
+<div class="alert alert-info">Sign in to issue yourself an API key. With no users set up yet, use the API Keys tab.</div>
+{% else %}
+<p class="text-muted">
+    Keys you issue here give programs model access through the router's Ollama and OpenAI APIs.
+    Send the key in the <code>API-KEY</code> header.
+</p>
+
+<div class="row g-4">
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header"><h5 class="mb-0">New key</h5></div>
+            <div class="card-body">
+                <div class="mb-2">
+                    <label for="my-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
+                    <select id="my-key-mode" class="form-select form-select-sm">
+                        <option value="balanced" selected>Balanced (fastest overall response)</option>
+                        <option value="latency">Minimal latency</option>
+                        <option value="throughput">Maximum tokens/sec</option>
+                        <option value="cheapest">Cheapest (lowest price per request)</option>
+                        <option value="chaos">Chaos mode (random provider/model)</option>
+                    </select>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="my-key-fallback" checked>
+                    <label class="form-check-label" for="my-key-fallback">Allow fallback models</label>
+                </div>
+                <div class="mb-3">
+                    <label for="my-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
+                    <select id="my-key-affinity" class="form-select form-select-sm">
+                        <option value="default" selected>Server default</option>
+                        <option value="on">On: keep each conversation on one provider</option>
+                        <option value="off">Off: route every request afresh</option>
+                    </select>
+                </div>
+                <div class="small text-muted mb-3" id="my-key-limits">Loading limits…</div>
+                <button class="btn btn-sm btn-primary" onclick="issueMyKey()">
+                    <i class="bi bi-plus-lg me-1"></i>Issue key
+                </button>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Your keys</h5>
+                <span class="badge bg-secondary" id="my-keys-count"></span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Prefix</th>
+                                <th>Priority</th>
+                                <th>Providers</th>
+                                <th title="Spent today (UTC) / daily cap">Spend</th>
+                                <th>Created</th>
+                                <th>Last used</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="my-keys-body">
+                            <tr><td colspan="7" class="text-muted small">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Shows a new key until the user closes it: it can't be shown again. -->
+<div class="modal fade" id="myNewKeyModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-key me-2"></i>New API key</h5>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning small">Copy this key now. It is only shown once.</div>
+                <div class="input-group">
+                    <input type="text" class="form-control font-monospace" id="my-new-key" readonly>
+                    <button class="btn btn-outline-secondary" type="button" onclick="copyMyNewKey()">
+                        <i class="bi bi-clipboard me-1"></i><span id="my-new-key-copy">Copy</span>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">I've copied it</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if dash_user %}
+<script>
+var MODE_LABELS = {latency: 'minimal latency', throughput: 'max tokens/sec', balanced: 'balanced', cheapest: 'cheapest', chaos: 'chaos'};
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+    });
+}
+
+function localityLabel(l) {
+    return l === 'local' ? 'local only' : l === 'cloud' ? 'cloud only' : 'local or cloud';
+}
+
+function when(iso) {
+    return iso ? new Date(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z').toLocaleString() : '—';
+}
+
+function money(v) { return '$' + Number(v || 0).toFixed(2); }
+
+function loadMyKeys() {
+    fetch('/api/my-keys').then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.statusText); });
+        return r.json();
+    }).then(function(data) {
+        var d = data.defaults;
+        document.getElementById('my-key-limits').textContent =
+            'New keys can use ' + ({local: 'local providers only', cloud: 'cloud providers only'}[d.locality] || 'local and cloud providers') +
+            (d.daily_spend_cap_usd == null ? '' : ', with a daily spend cap of ' + money(d.daily_spend_cap_usd)) +
+            '. An administrator sets these.';
+        document.getElementById('my-keys-count').textContent = data.keys.length;
+        var body = document.getElementById('my-keys-body');
+        if (!data.keys.length) {
+            body.innerHTML = '<tr><td colspan="7" class="text-muted small">No keys yet.</td></tr>';
+            return;
+        }
+        body.innerHTML = data.keys.map(function(k) {
+            var cap = k.daily_spend_cap_usd == null ? '' : ' <span class="text-muted">/ ' + money(k.daily_spend_cap_usd) + '</span>';
+            return '<tr>' +
+                '<td><code>' + esc(k.key_prefix) + '</code></td>' +
+                '<td>' + esc(MODE_LABELS[k.routing_mode] || k.routing_mode) + '</td>' +
+                '<td>' + esc(localityLabel(k.locality)) + '</td>' +
+                '<td class="small text-nowrap">' + money(k.spent_today_usd) + cap + '</td>' +
+                '<td class="small text-muted">' + esc(when(k.created_at)) + '</td>' +
+                '<td class="small text-muted">' + esc(when(k.last_used_at)) + '</td>' +
+                '<td class="text-end"><button class="btn btn-sm btn-outline-danger" title="Revoke" onclick="revokeMyKey(' + k.id + ', \'' + esc(k.key_prefix) + '\')"><i class="bi bi-trash"></i></button></td>' +
+                '</tr>';
+        }).join('');
+    }).catch(function(err) {
+        document.getElementById('my-keys-body').innerHTML =
+            '<tr><td colspan="7" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
+    });
+}
+
+function issueMyKey() {
+    fetch('/api/my-keys', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            routing_mode: document.getElementById('my-key-mode').value,
+            allow_fallback: document.getElementById('my-key-fallback').checked,
+            session_affinity: document.getElementById('my-key-affinity').value
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    }).then(function(data) {
+        var input = document.getElementById('my-new-key');
+        input.value = data.api_key;
+        document.getElementById('my-new-key-copy').textContent = 'Copy';
+        var modalEl = document.getElementById('myNewKeyModal');
+        modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
+        modalEl.addEventListener('hidden.bs.modal', function() { input.value = ''; }, {once: true});
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        loadMyKeys();
+    }).catch(function(err) { alert(err.message || 'Failed to issue key'); });
+}
+
+function copyMyNewKey() {
+    var el = document.getElementById('my-new-key');
+    navigator.clipboard.writeText(el.value)
+        .then(function() { document.getElementById('my-new-key-copy').textContent = 'Copied'; })
+        .catch(function() { el.select(); });
+}
+
+function revokeMyKey(id, prefix) {
+    if (!confirm('Revoke key ' + prefix + '? Programs using it stop working at once.')) return;
+    fetch('/api/my-keys/' + id, {method: 'DELETE'}).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        loadMyKeys();
+    }).catch(function(err) { alert(err.message); });
+}
+
+loadMyKeys();
+</script>
+{% endif %}
+{% endblock %}
