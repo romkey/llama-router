@@ -55,3 +55,23 @@ async def test_successful_stream_is_passed_through() -> None:
     assert resp.status_code == 200
     body = b"".join([c async for c in resp.body_iterator])  # type: ignore[attr-defined]
     assert body == b"data: one\n\ndata: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_inner_stream_closed_when_response_abandoned() -> None:
+    closed = False
+
+    async def inner() -> Any:
+        nonlocal closed
+        try:
+            yield b"one"
+            yield b"two"
+        finally:
+            closed = True
+
+    resp = await stream_response(_Logged(inner()), "text/event-stream")  # type: ignore[arg-type]
+    body = resp.body_iterator  # type: ignore[attr-defined]
+    assert await body.__anext__() == b"one"
+    await body.aclose()
+
+    assert closed

@@ -528,8 +528,11 @@ async def stream_response(logged: StreamLogger, media_type: str) -> Response:
         raise
 
     async def chunks() -> AsyncIterator[bytes]:
-        yield first
-        async for chunk in stream:
-            yield chunk
+        try:
+            yield first
+            async for chunk in stream:
+                yield chunk
+        finally:
+            await stream.aclose()
 
     return StreamingResponse(chunks(), media_type=media_type)

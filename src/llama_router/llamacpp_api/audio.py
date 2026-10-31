@@ -64,69 +64,19 @@ async def audio_speech(request: Request) -> Response:
     }
     media_type = media_types.get(response_format, "audio/mpeg")
 
-    try:
-        logged = StreamLogger(
-            generate(),
-            db=db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/audio/speech",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            start_time=start,
-        )
-        return await stream_response(logged, media_type)
-    except httpx.HTTPStatusError as exc:
-        duration = (time.monotonic() - start) * 1000
-        logger.warning(
-            "Backend %s returned HTTP %d for /v1/audio/speech %s",
-            provider.name,
-            exc.response.status_code,
-            model,
-        )
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/audio/speech",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_size=0,
-            duration_ms=duration,
-            status="error",
-            error_detail=f"HTTP {exc.response.status_code}: {exc.response.text[:400]}",
-        )
-        return forward_upstream_http_error(exc)
-    except Exception as exc:
-        duration = (time.monotonic() - start) * 1000
-        err_detail = str(exc)[:500]
-        if isinstance(exc, httpx.HTTPError):
-            err_detail = describe_httpx_error(exc)[:500]
-            logger.error(
-                "Upstream failure on /v1/audio/speech (model=%r, provider=%s): %s",
-                model,
-                provider.name,
-                describe_httpx_error(exc),
-            )
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/audio/speech",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_size=0,
-            duration_ms=duration,
-            status="error",
-            error_detail=err_detail,
-        )
-        raise
+    logged = StreamLogger(
+        generate(),
+        db=db,
+        provider=provider,
+        protocol="v1",
+        endpoint="/v1/audio/speech",
+        request=request,
+        model=model,
+        routed_model=routed,
+        request_body=body,
+        start_time=start,
+    )
+    return await stream_response(logged, media_type)
 
 
 @router.post("/v1/audio/transcriptions")
