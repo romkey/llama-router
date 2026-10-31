@@ -446,6 +446,32 @@
     <div class="tab-pane fade" id="models-pane" role="tabpanel" aria-labelledby="models-tab" tabindex="0">
         <div id="pull-status-area"></div>
         {% if not read_only %}
+        <ul class="nav nav-pills mb-3" id="models-subtabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="models-list-tab" data-bs-toggle="pill" data-bs-target="#models-list-pane" type="button" role="tab" aria-controls="models-list-pane" aria-selected="true">
+                    <i class="bi bi-boxes me-1"></i>Models <span class="badge text-bg-secondary ms-1">{{ models | length }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="model-fallbacks-tab" data-bs-toggle="pill" data-bs-target="#model-fallbacks-pane" type="button" role="tab" aria-controls="model-fallbacks-pane" aria-selected="false">
+                    <i class="bi bi-arrow-return-right me-1"></i>Fallbacks <span class="badge text-bg-secondary ms-1">{{ model_fallbacks | length }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="model-aliases-tab" data-bs-toggle="pill" data-bs-target="#model-aliases-pane" type="button" role="tab" aria-controls="model-aliases-pane" aria-selected="false">
+                    <i class="bi bi-link-45deg me-1"></i>Aliases <span class="badge text-bg-secondary ms-1">{{ model_aliases | length }}</span>
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="model-groups-tab" data-bs-toggle="pill" data-bs-target="#model-groups-pane" type="button" role="tab" aria-controls="model-groups-pane" aria-selected="false">
+                    <i class="bi bi-collection me-1"></i>Groups <span class="badge text-bg-secondary ms-1">{{ model_groups | length }}</span>
+                </button>
+            </li>
+        </ul>
+        {% endif %}
+        <div class="tab-content">
+        <div class="tab-pane fade show active" id="models-list-pane" role="tabpanel" aria-labelledby="models-list-tab" tabindex="0">
+        {% if not read_only %}
         <div class="card mb-3" id="hf-card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h6 class="mb-0"><i class="bi bi-cloud-download me-1"></i>Download from Hugging Face</h6>
@@ -623,10 +649,11 @@
             <i class="bi bi-info-circle me-2"></i>No models available. Add a provider to discover models.
         </div>
         {% endif %}
+        </div>
 
-        <!-- Fallbacks section -->
         {% if not read_only %}
-        <div class="card mt-4" id="fallbacks-card">
+        <div class="tab-pane fade" id="model-fallbacks-pane" role="tabpanel" aria-labelledby="model-fallbacks-tab" tabindex="0">
+        <div class="card" id="fallbacks-card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0"><i class="bi bi-arrow-return-right me-2"></i>Model Fallbacks</h5>
                 <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addFallbackModal">
@@ -676,7 +703,9 @@
                 </table>
             </div>
         </div>
-        <div class="card mt-4" id="aliases-card">
+        </div>
+        <div class="tab-pane fade" id="model-aliases-pane" role="tabpanel" aria-labelledby="model-aliases-tab" tabindex="0">
+        <div class="card" id="aliases-card">
             <div class="card-header">
                 <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Model Aliases</h5>
             </div>
@@ -713,15 +742,14 @@
                 <div id="alias-suggestions" class="mt-2"></div>
             </div>
         </div>
-        <div class="card mt-4" id="model-groups-card">
+        </div>
+        <div class="tab-pane fade" id="model-groups-pane" role="tabpanel" aria-labelledby="model-groups-tab" tabindex="0">
+        <div class="card" id="model-groups-card">
             <div class="card-header">
                 <h5 class="mb-0"><i class="bi bi-collection me-2"></i>Model Groups</h5>
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-2">A name clients ask for like a model, such as <code>coding</code> or <code>vision</code>. Each request goes to the best member that can serve it now, scored the way a model's providers are. A member is a model on any provider, or a model on one provider. A conversation stays on the member model and provider it started on.</p>
-                <datalist id="group-member-models">
-                    {% for m in models %}<option value="{{ m.name }}"></option>{% endfor %}
-                </datalist>
                 <form class="row g-2 align-items-end mb-3" onsubmit="addModelGroup(event)">
                     <div class="col-sm-4">
                         <label for="group-name" class="form-label small text-muted mb-1">Group name</label>
@@ -742,32 +770,19 @@
                             <code class="fw-semibold">{{ g.name }}</code>
                             {% if g.description %}<span class="small text-muted ms-2">{{ g.description }}</span>{% endif %}
                         </div>
+                        <button class="btn btn-sm btn-outline-primary" data-edit-members="{{ g.id }}" title="Choose this group's models"><i class="bi bi-pencil-square me-1"></i>Edit members</button>
                         <button class="btn btn-sm btn-outline-danger" data-remove-group="{{ g.id }}" data-group-name="{{ g.name }}" title="Delete group"><i class="bi bi-trash"></i></button>
                     </div>
                     <div class="mt-2 d-flex flex-wrap gap-1">
                         {% for m in g.members %}
-                        <span class="badge rounded-pill {% if m.available %}text-bg-light border{% else %}text-bg-secondary opacity-50{% endif %} font-monospace" title="{% if m.available %}Served now{% else %}Nothing serves this member now{% endif %}">
+                        <span class="badge rounded-pill {% if m.available %}text-bg-light border{% else %}text-bg-secondary opacity-50{% endif %} font-monospace d-inline-flex align-items-center" title="{% if m.available %}Served now{% else %}Nothing serves this member now{% endif %}">
                             {{ m.label }}
-                            <button type="button" class="btn-close btn-close-sm ms-1 align-middle" style="font-size:.5rem" aria-label="Remove {{ m.label }}" data-remove-member="{{ m.id }}" data-group-id="{{ g.id }}"></button>
+                            <button type="button" class="btn btn-link btn-sm p-0 ms-1 lh-1 text-danger" title="Remove {{ m.label }} from {{ g.name }}" aria-label="Remove {{ m.label }}" data-remove-member="{{ m.id }}" data-group-id="{{ g.id }}"><i class="bi bi-x-circle-fill"></i></button>
                         </span>
                         {% else %}
                         <span class="small text-muted">No members yet.</span>
                         {% endfor %}
                     </div>
-                    <form class="row g-2 align-items-end mt-1" data-add-member="{{ g.id }}">
-                        <div class="col-sm-5">
-                            <input class="form-control form-control-sm font-monospace" name="model_name" list="group-member-models" placeholder="model name" required maxlength="255" aria-label="Member model">
-                        </div>
-                        <div class="col-sm-5">
-                            <select class="form-select form-select-sm" name="provider_id" aria-label="Member provider">
-                                <option value="">On any provider</option>
-                                {% for info in providers %}<option value="{{ info.provider.id }}">Only on {{ info.provider.name }}</option>{% endfor %}
-                            </select>
-                        </div>
-                        <div class="col-sm-2">
-                            <button class="btn btn-sm btn-outline-secondary w-100" type="submit">Add member</button>
-                        </div>
-                    </form>
                     <div class="small text-muted mt-2">
                         {% if g.choices %}
                         Now routes <code>{{ g.endpoint }}</code> to:
@@ -782,7 +797,9 @@
                 {% endfor %}
             </div>
         </div>
+        </div>
         {% endif %}
+        </div>
     </div>
 
     <!-- ==================== API KEYS TAB ==================== -->
@@ -1791,6 +1808,49 @@
 </div>
 
 {% if not read_only %}
+<!-- Group Members Modal -->
+<script type="application/json" id="group-picker-data">{{ group_picker | tojson }}</script>
+<div class="modal fade" id="groupMembersModal" tabindex="-1" aria-labelledby="gm-title">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="gm-title">Members of <code id="gm-name"></code></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-2">
+                    <div class="col-sm-5">
+                        <label for="gm-provider" class="form-label small text-muted mb-1">Provider</label>
+                        <select id="gm-provider" class="form-select form-select-sm"></select>
+                    </div>
+                    <div class="col-sm-7">
+                        <label for="gm-search" class="form-label small text-muted mb-1">Filter</label>
+                        <input id="gm-search" type="search" class="form-control form-control-sm font-monospace" placeholder="Type to narrow the list" autocomplete="off">
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between align-items-center small mb-1">
+                    <span class="text-muted" id="gm-hint"></span>
+                    <span class="text-nowrap">
+                        <button type="button" class="btn btn-link btn-sm p-0" id="gm-check-shown">Check shown</button>
+                        ·
+                        <button type="button" class="btn btn-link btn-sm p-0" id="gm-uncheck-shown">Uncheck shown</button>
+                    </span>
+                </div>
+                <div id="gm-list" class="border rounded p-2" style="height: min(45vh, 24rem); overflow-y: auto;"></div>
+                <div id="gm-other" class="mt-3" style="display:none">
+                    <div class="small text-muted mb-1">Also in this group (not in the list above):</div>
+                    <div class="d-flex flex-wrap gap-1" id="gm-other-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="me-auto small text-muted" id="gm-count"></span>
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm btn-primary" id="gm-save">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Set Fallback Modal -->
 <div class="modal fade" id="addFallbackModal" tabindex="-1">
     <div class="modal-dialog modal-sm">
@@ -2364,12 +2424,26 @@ function switchProviderView(view) {
     const saved = localStorage.getItem('providerView');
     if (saved) switchProviderView(saved);
 
+    // The hash names a tab's pane, or a sub-tab's pane inside one (such as
+    // #model-groups-pane in Models), so a reload after an edit stays put.
     if (location.hash) {
         const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
-        if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
+        if (tab) {
+            bootstrap.Tab.getOrCreateInstance(tab).show();
+            const outer = tab.closest('.tab-pane');
+            const outerTab = outer && document.querySelector('[data-bs-target="#' + outer.id + '"]');
+            if (outerTab) bootstrap.Tab.getOrCreateInstance(outerTab).show();
+        }
     }
 
     document.querySelectorAll('[data-bs-toggle="tab"]').forEach(function(tab) {
+        tab.addEventListener('shown.bs.tab', function(e) {
+            const pane = document.querySelector(e.target.dataset.bsTarget);
+            const sub = pane && pane.querySelector('[data-bs-toggle="pill"].active');
+            history.replaceState(null, '', sub ? sub.dataset.bsTarget : e.target.dataset.bsTarget);
+        });
+    });
+    document.querySelectorAll('#models-subtabs [data-bs-toggle="pill"]').forEach(function(tab) {
         tab.addEventListener('shown.bs.tab', function(e) {
             history.replaceState(null, '', e.target.dataset.bsTarget);
         });
@@ -3705,23 +3779,203 @@ function addModelGroup(ev) {
     groupFetch('/api/model-groups', 'POST', {
         name: document.getElementById('group-name').value.trim(),
         description: document.getElementById('group-description').value.trim()
-    }).then(function() { location.reload(); })
-      .catch(function(err) { alert(err.message); });
+    }).then(function(d) {
+        // Go straight on to choosing its models; the page reloads after.
+        GROUP_PICKER.groups[String(d.id)] = {name: d.name, members: []};
+        gmReloadOnClose = true;
+        openGroupMembers(String(d.id));
+    }).catch(function(err) { alert(err.message); });
 }
 
-document.addEventListener('submit', function(ev) {
-    const form = ev.target.closest('form[data-add-member]');
-    if (!form) return;
-    ev.preventDefault();
-    if (!dashRequireWrite()) return;
-    groupFetch('/api/model-groups/' + form.dataset.addMember + '/members', 'POST', {
-        model_name: form.elements.model_name.value.trim(),
-        provider_id: form.elements.provider_id.value || null
-    }).then(function() { location.reload(); })
-      .catch(function(err) { alert(err.message); });
-});
+// ---- Group member editor -------------------------------------------------
+// Members are keyed "<provider id>|<model>", with an empty provider id for
+// "this model on any provider". The provider picker chooses which kind the
+// checkboxes add: All providers lists every model as an any-provider member;
+// a provider lists its own models as members pinned to it.
+var GROUP_PICKER = (function() {
+    var el = document.getElementById('group-picker-data');
+    return el ? JSON.parse(el.textContent) : {providers: [], groups: {}};
+})();
+var gmGroupId = null;
+var gmSelected = new Map();   // key -> {model_name, provider_id}, in member order
+var gmReloadOnClose = false;
+var gmSaved = false;
+
+function gmKey(pid, model) { return (pid == null ? '' : String(pid)) + '|' + model; }
+
+function gmProviderName(pid) {
+    var p = GROUP_PICKER.providers.find(function(x) { return String(x.id) === String(pid); });
+    return p ? p.name : 'provider ' + pid;
+}
+
+function gmServed() {
+    var all = new Set();
+    GROUP_PICKER.providers.forEach(function(p) { p.models.forEach(function(m) { all.add(m); }); });
+    return all;
+}
+
+function gmViewModels(view) {
+    // Models the current view lists, plus selected members of this view that
+    // nothing serves now, so they can still be unchecked.
+    var served;
+    if (view === '') {
+        served = gmServed();
+    } else {
+        var p = GROUP_PICKER.providers.find(function(x) { return String(x.id) === view; });
+        served = new Set(p ? p.models : []);
+    }
+    var names = new Set(served);
+    gmSelected.forEach(function(m) {
+        if ((m.provider_id == null ? '' : String(m.provider_id)) === view) names.add(m.model_name);
+    });
+    return Array.from(names).sort().map(function(n) { return {name: n, served: served.has(n)}; });
+}
+
+function gmShown() {
+    var view = document.getElementById('gm-provider').value;
+    var q = document.getElementById('gm-search').value.trim().toLowerCase();
+    return gmViewModels(view).filter(function(m) { return !q || m.name.toLowerCase().indexOf(q) !== -1; });
+}
+
+function gmRender() {
+    var view = document.getElementById('gm-provider').value;
+    var shown = gmShown();
+    var list = document.getElementById('gm-list');
+    list.innerHTML = '';
+    document.getElementById('gm-hint').textContent = view === ''
+        ? 'A checked model is a member on any provider that serves it.'
+        : 'A checked model is a member only on ' + gmProviderName(view) + '.';
+    if (!shown.length) {
+        var none = document.createElement('div');
+        none.className = 'small text-muted';
+        none.textContent = document.getElementById('gm-search').value ? 'No models match.' : 'No models.';
+        list.appendChild(none);
+    }
+    shown.forEach(function(m, i) {
+        var key = gmKey(view === '' ? null : view, m.name);
+        var row = document.createElement('div');
+        row.className = 'form-check';
+        var box = document.createElement('input');
+        box.type = 'checkbox';
+        box.className = 'form-check-input';
+        box.id = 'gm-m-' + i;
+        box.checked = gmSelected.has(key);
+        box.addEventListener('change', function() {
+            if (box.checked) gmSelected.set(key, {model_name: m.name, provider_id: view === '' ? null : Number(view)});
+            else gmSelected.delete(key);
+            gmRenderOther();
+        });
+        var label = document.createElement('label');
+        label.className = 'form-check-label font-monospace small';
+        label.htmlFor = box.id;
+        label.textContent = m.name;
+        row.appendChild(box);
+        row.appendChild(label);
+        if (!m.served) {
+            var tag = document.createElement('span');
+            tag.className = 'badge text-bg-secondary ms-2';
+            tag.textContent = 'not served now';
+            row.appendChild(tag);
+        }
+        list.appendChild(row);
+    });
+    gmRenderOther();
+}
+
+function gmRenderOther() {
+    // Members the list above doesn't show: pinned to another provider, any-
+    // provider members while a provider is picked, or filtered out.
+    var view = document.getElementById('gm-provider').value;
+    var shownKeys = new Set(gmShown().map(function(m) { return gmKey(view === '' ? null : view, m.name); }));
+    var box = document.getElementById('gm-other-list');
+    box.innerHTML = '';
+    var n = 0;
+    gmSelected.forEach(function(m, key) {
+        if (shownKeys.has(key)) return;
+        n++;
+        var pill = document.createElement('span');
+        pill.className = 'badge rounded-pill text-bg-light border font-monospace d-inline-flex align-items-center';
+        pill.textContent = m.provider_id == null ? m.model_name : m.model_name + ' on ' + gmProviderName(m.provider_id);
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn btn-link btn-sm p-0 ms-1 lh-1 text-danger';
+        x.title = 'Remove';
+        x.setAttribute('aria-label', 'Remove ' + pill.textContent);
+        x.innerHTML = '<i class="bi bi-x-circle-fill"></i>';
+        x.addEventListener('click', function() { gmSelected.delete(key); gmRenderOther(); });
+        pill.appendChild(x);
+        box.appendChild(pill);
+    });
+    document.getElementById('gm-other').style.display = n ? '' : 'none';
+    document.getElementById('gm-count').textContent = gmSelected.size + (gmSelected.size === 1 ? ' member' : ' members');
+}
+
+function openGroupMembers(gid) {
+    var g = GROUP_PICKER.groups[gid];
+    if (!g) return;
+    gmGroupId = gid;
+    gmSaved = false;
+    gmSelected = new Map();
+    g.members.forEach(function(m) {
+        gmSelected.set(gmKey(m.provider_id, m.model_name), {model_name: m.model_name, provider_id: m.provider_id});
+    });
+    document.getElementById('gm-name').textContent = g.name;
+    var sel = document.getElementById('gm-provider');
+    sel.innerHTML = '';
+    var all = document.createElement('option');
+    all.value = '';
+    all.textContent = 'All providers (' + gmServed().size + ' models)';
+    sel.appendChild(all);
+    GROUP_PICKER.providers.forEach(function(p) {
+        var o = document.createElement('option');
+        o.value = String(p.id);
+        o.textContent = 'Only on ' + p.name + ' (' + p.models.length + ')';
+        sel.appendChild(o);
+    });
+    document.getElementById('gm-search').value = '';
+    gmRender();
+    var modal = document.getElementById('groupMembersModal');
+    bootstrap.Modal.getOrCreateInstance(modal).show();
+}
+
+(function() {
+    var modal = document.getElementById('groupMembersModal');
+    if (!modal) return;
+    modal.addEventListener('shown.bs.modal', function() { document.getElementById('gm-search').focus(); });
+    modal.addEventListener('hidden.bs.modal', function() {
+        if (gmReloadOnClose && !gmSaved) location.reload();
+    });
+    document.getElementById('gm-provider').addEventListener('change', gmRender);
+    document.getElementById('gm-search').addEventListener('input', gmRender);
+    function setShown(checked) {
+        var view = document.getElementById('gm-provider').value;
+        gmShown().forEach(function(m) {
+            var key = gmKey(view === '' ? null : view, m.name);
+            if (checked) gmSelected.set(key, {model_name: m.name, provider_id: view === '' ? null : Number(view)});
+            else gmSelected.delete(key);
+        });
+        gmRender();
+    }
+    document.getElementById('gm-check-shown').addEventListener('click', function() { setShown(true); });
+    document.getElementById('gm-uncheck-shown').addEventListener('click', function() { setShown(false); });
+    document.getElementById('gm-save').addEventListener('click', function() {
+        if (!dashRequireWrite()) return;
+        var btn = this;
+        btn.disabled = true;
+        groupFetch('/api/model-groups/' + gmGroupId + '/members', 'PUT', {
+            members: Array.from(gmSelected.values())
+        }).then(function() { gmSaved = true; location.reload(); })
+          .catch(function(err) { btn.disabled = false; alert(err.message); });
+    });
+})();
 
 document.addEventListener('click', function(ev) {
+    const edit = ev.target.closest('[data-edit-members]');
+    if (edit) {
+        if (!dashRequireWrite()) return;
+        openGroupMembers(edit.dataset.editMembers);
+        return;
+    }
     const member = ev.target.closest('[data-remove-member]');
     if (member) {
         if (!dashRequireWrite()) return;
