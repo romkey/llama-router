@@ -211,3 +211,60 @@ async def test_listing_without_a_router(db: Database) -> None:
     assert body["warnings"] == []
     assert body["groups"][0]["choices"] == {}
     await pm.stop()
+
+
+async def test_members_can_be_replaced(
+    client: tuple[httpx.AsyncClient, Router], db: Database
+) -> None:
+    c, rt = client
+    gpu = await _provider(db, "gpu", {"a": 100.0, "b": 100.0})
+    gid = (
+        await c.post(
+            "/api/model-groups",
+            json={"name": "g", "members": [{"model_name": "a"}, {"model_name": "x"}]},
+        )
+    ).json()["id"]
+    [before] = (await _listing(c, rt))["groups"]
+    kept_id = before["members"][0]["id"]
+
+    resp = await c.put(
+        f"/api/model-groups/{gid}/members",
+        json={
+            "members": [
+                {"model_name": "b", "provider_id": gpu.id},
+                {"model_name": "a"},
+                {"model_name": "a"},
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["members"] == 2
+    [g] = (await _listing(c, rt))["groups"]
+    assert [(m["model_name"], m["provider_id"]) for m in g["members"]] == [
+        ("a", None),
+        ("b", gpu.id),
+    ]
+    assert g["members"][0]["id"] == kept_id
+
+    assert (
+        await c.put(f"/api/model-groups/{gid}/members", json={"members": []})
+    ).status_code == 200
+    [g] = (await _listing(c, rt))["groups"]
+    assert g["members"] == []
+
+
+async def test_replace_members_rejects_bad_input(
+    client: tuple[httpx.AsyncClient, Router],
+) -> None:
+    c, _rt = client
+    gid = (await c.post("/api/model-groups", json={"name": "g"})).json()["id"]
+    url = f"/api/model-groups/{gid}/members"
+    assert (await c.put(url, json={"members": "a"})).status_code == 400
+    assert (await c.put(url, json={})).status_code == 400
+    bad_self = {"members": [{"model_name": "g"}]}
+    assert (await c.put(url, json=bad_self)).status_code == 400
+    bad_pid = {"members": [{"model_name": "a", "provider_id": 999}]}
+    assert (await c.put(url, json=bad_pid)).status_code == 404
+    assert (
+        await c.put("/api/model-groups/999/members", json={"members": []})
+    ).status_code == 404
