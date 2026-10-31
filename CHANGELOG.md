@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-10-31
+
 ### Fixed
 
 - **SQLite foreign keys.** Foreign keys were enforced on only one of the
