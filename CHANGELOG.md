@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-31
+
 ### Fixed
 
 - **API keys from OpenAI-compatible clients.** Clients can send their key as
