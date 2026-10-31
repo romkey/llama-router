@@ -13,6 +13,7 @@ from llama_router.auth import (
     key_prefix,
     routing_preferences_from_request,
 )
+from llama_router.database import Database
 
 
 def _request(headers: dict[str, str]) -> Request:
@@ -37,7 +38,7 @@ def test_client_api_key(headers: dict[str, str], expected: str) -> None:
     assert client_api_key(_request(headers)) == expected
 
 
-async def test_bearer_key_resolves_like_api_key(db) -> None:
+async def test_bearer_key_resolves_like_api_key(db: Database) -> None:
     plain = generate_api_key()
     await db.create_api_key(
         key_prefix(plain), key_hash(plain), "balanced", True, locality="local"
@@ -45,10 +46,11 @@ async def test_bearer_key_resolves_like_api_key(db) -> None:
     prefs = await routing_preferences_from_request(
         db, _request({"Authorization": f"Bearer {plain}"})
     )
+    assert prefs is not None
     assert prefs.locality == "local"
 
 
-async def test_missing_and_invalid_bearer_key_refused(db) -> None:
+async def test_missing_and_invalid_bearer_key_refused(db: Database) -> None:
     await db.set_allow_unauthenticated(False)
     with pytest.raises(HTTPException) as missing:
         await routing_preferences_from_request(db, _request({}))
