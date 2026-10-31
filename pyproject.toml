@@ -1,6 +1,6 @@
 [project]
 name = "llama-router"
-version = "0.25.2"
+version = "0.26.0"
 description = "An LLM router that aggregates Ollama and OpenAI-compatible backends behind unified APIs"
 readme = "README.md"
 license = "MIT"
