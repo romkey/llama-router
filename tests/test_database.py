@@ -223,3 +223,17 @@ async def test_api_key_model_pins(db: Database):
     await db.remove_api_key_model_pin(key_id, "llama3:8b")
     pins = await db.list_api_key_model_pins(key_id)
     assert pins == []
+
+
+@pytest.mark.asyncio
+async def test_sqlite_enforces_foreign_keys_on_every_connection(db: Database):
+    """Each pooled connection has foreign keys on, not just the first."""
+    if db._dialect_name != "sqlite":
+        pytest.skip("SQLite only")
+    from sqlalchemy import text
+
+    assert db._engine is not None
+    async with db._engine.connect() as a, db._engine.connect() as b:
+        for conn in (a, b):
+            on = (await conn.execute(text("PRAGMA foreign_keys"))).scalar()
+            assert on == 1

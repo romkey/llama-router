@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Concatenate
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine.url import URL
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -35,6 +35,13 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_foreign_keys_on(dbapi_connection: Any, _record: Any) -> None:
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON")
+    cursor.close()
+
 
 # Reasons passed to change listeners. The router rebuilds its table on the
 # routing ones; the auth cache drops entries on the auth ones.
@@ -156,8 +163,9 @@ class Database:
         self._dialect_name = self._engine.sync_engine.dialect.name
 
         if self._dialect_name == "sqlite":
-            async with self._engine.begin() as conn:
-                await conn.execute(text("PRAGMA foreign_keys = ON"))
+            # SQLite enforces foreign keys (and ON DELETE) only on connections
+            # that ask, so ask on every connection the pool opens.
+            event.listen(self._engine.sync_engine, "connect", _sqlite_foreign_keys_on)
 
     async def close(self) -> None:
         if self._engine is not None:
