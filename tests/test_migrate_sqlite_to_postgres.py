@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -78,7 +79,10 @@ def test_drop_orphans_skips_rows_whose_cascade_parent_is_gone() -> None:
 
 def test_drop_orphans_clears_set_null_references() -> None:
     fk = {**_PROVIDER_FK, "ondelete": "SET NULL"}
-    rows = [{"id": 1, "provider_id": 1}, {"id": 2, "provider_id": None}]
+    rows: list[dict[str, Any]] = [
+        {"id": 1, "provider_id": 1},
+        {"id": 2, "provider_id": None},
+    ]
     kept = _drop_orphans("chat_conversations", rows, [fk], {("providers", "id"): {2}})
     assert kept == [{"id": 1, "provider_id": None}, {"id": 2, "provider_id": None}]
 
