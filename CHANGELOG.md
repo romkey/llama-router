@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-10-31
+
 ### Fixed
 
 - **Streamed chats no longer end in a transfer-length error.** When the
