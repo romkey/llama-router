@@ -240,6 +240,22 @@ async def add_member(group_id: int, request: Request) -> JSONResponse:
     return JSONResponse(m.model_dump(), status_code=201)
 
 
+@router.put("/api/model-groups/{group_id}/members")
+async def set_members(group_id: int, request: Request) -> JSONResponse:
+    """Body: {members: [{model_name, provider_id?}]}. Replaces the group's
+    members in one go; members that stay keep their place."""
+    db = deps.get_db()
+    group = await _group(db, group_id)
+    raw_members = (await _body(request)).get("members")
+    if not isinstance(raw_members, list):
+        raise HTTPException(status_code=400, detail="members must be a list")
+    members = [await _member(db, m if isinstance(m, dict) else {}) for m in raw_members]
+    if any(model == group.name for model, _ in members):
+        raise HTTPException(status_code=400, detail="a group cannot contain itself")
+    await db.set_model_group_members(group_id, members)
+    return JSONResponse({"status": "ok", "members": len(set(members))})
+
+
 @router.delete("/api/model-groups/{group_id}/members/{member_id}")
 async def remove_member(group_id: int, member_id: int) -> JSONResponse:
     db = deps.get_db()
