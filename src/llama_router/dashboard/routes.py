@@ -1101,7 +1101,7 @@ async def api_routing_table():
 _DEFAULT_EXPLAIN_ENDPOINT = "/v1/chat/completions"
 
 
-def _tristate(value) -> bool | None:
+def _tristate(value: Any) -> bool | None:
     """Parse an optional on/off flag: None, "", "default" mean unset."""
     if value is None or isinstance(value, bool):
         return value

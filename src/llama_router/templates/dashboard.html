@@ -838,6 +838,30 @@
                 </div>
                 <div class="card mt-3">
                     <div class="card-header">
+                        <h5 class="mb-0">Keys Users Issue Themselves</h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="small text-muted mb-2">Any signed-in user can issue themselves keys under <a href="/my-keys">My API keys</a>. Those keys get these limits; change one afterwards in the table.</p>
+                        <div class="mb-2">
+                            <label for="self-key-locality" class="form-label small text-muted mb-1">Providers</label>
+                            <select id="self-key-locality" class="form-select form-select-sm" {% if read_only %}disabled{% endif %}>
+                                <option value="local">Local only</option>
+                                <option value="any">Local or cloud</option>
+                                <option value="cloud">Cloud only</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label for="self-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
+                            <input id="self-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap" {% if read_only %}disabled{% endif %}>
+                        </div>
+                        {% if not read_only %}
+                        <button class="btn btn-sm btn-outline-primary" onclick="saveSelfServiceDefaults()">Save</button>
+                        <span class="small text-muted ms-2" id="self-key-status"></span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card mt-3">
+                    <div class="card-header">
                         <h5 class="mb-0">Authentication Policy</h5>
                     </div>
                     <div class="card-body">
@@ -1134,6 +1158,7 @@
                                 <thead>
                                     <tr>
                                         <th>Prefix</th>
+                                        <th>Owner</th>
                                         <th>Priority</th>
                                         <th>Fallback</th>
                                         <th>Sessions</th>
@@ -1149,6 +1174,7 @@
                                     {% for k in api_keys %}
                                     <tr>
                                         <td><code>{{ k.key_prefix }}</code></td>
+                                        <td class="small">{% if k.owner_username %}{{ k.owner_username }}{% else %}<span class="text-muted">admin</span>{% endif %}</td>
                                         <td>
                                             {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
                                             {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
@@ -2920,6 +2946,36 @@ function generateApiKey() {
     })
     .catch(function(err) { alert(err.message || 'Failed to generate key'); });
 }
+
+function loadSelfServiceDefaults() {
+    var loc = document.getElementById('self-key-locality');
+    if (!loc) return;
+    fetch('/api/keys/self-service').then(function(r) { return r.ok ? r.json() : null; }).then(function(d) {
+        if (!d) return;
+        loc.value = d.locality || 'any';
+        document.getElementById('self-key-cap').value = d.daily_spend_cap_usd == null ? '' : d.daily_spend_cap_usd;
+    });
+}
+
+function saveSelfServiceDefaults() {
+    if (!dashRequireWrite()) return;
+    var status = document.getElementById('self-key-status');
+    var cap = document.getElementById('self-key-cap').value;
+    fetch('/api/keys/self-service', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            locality: document.getElementById('self-key-locality').value,
+            daily_spend_cap_usd: cap === '' ? null : cap
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        status.textContent = 'Saved';
+        setTimeout(function() { status.textContent = ''; }, 2000);
+    }).catch(function(err) { alert(err.message); });
+}
+
+loadSelfServiceDefaults();
 
 function setKeySpendCap(keyId, current) {
     if (!dashRequireWrite()) return;
