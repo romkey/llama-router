@@ -7,6 +7,15 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat without choosing a provider.** The Chat tab's provider list starts
+  with **Any provider**, which offers every model, model group and alias and
+  lets the router pick where the request goes, as it would for an API
+  request. With a provider chosen, the model list now also offers the groups
+  and aliases that reach it. A reply from a group or alias names the model
+  that answered.
+
 ## [0.25.1] - 2026-10-31
 
 ### Fixed
