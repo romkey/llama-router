@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-31
+
 ### Added
 
 - **Usage by key and provider.** The Keys tab has a table of requests,
