@@ -268,7 +268,8 @@ class Router:
                 logger.exception("Routing table rebuild failed")
             await asyncio.sleep(self._min_interval_s)
 
-    async def _current_table(self) -> RoutingTable:
+    async def current_table(self) -> RoutingTable:
+        """The table, built now if there is none or no task keeps it current."""
         table = self._table
         if table is None or (
             self._task is None and (self._need_reload or self._need_rescore)
@@ -352,7 +353,7 @@ class Router:
 
         Raises :class:`UnknownEndpointError` for a path the router does not proxy.
         """
-        table = await self._current_table()
+        table = await self.current_table()
         return self.route_with(
             table, model_name, endpoint, preferences, session=session
         )
@@ -513,7 +514,7 @@ class Router:
         :meth:`route_with`, so the explanation cannot drift from what a real
         request would get.
         """
-        table = await self._current_table()
+        table = await self.current_table()
         decision = self.route_with(
             table, model_name, endpoint, preferences, session=session, record=False
         )

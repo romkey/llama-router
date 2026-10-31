@@ -15,6 +15,7 @@ from llama_router.dashboard.middleware import invalidate_dashboard_user_count_ca
 from llama_router.database import Database
 from llama_router.llamacpp_client import OpenAIClient
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
+from llama_router.router import Router
 
 DashClient = tuple[httpx.AsyncClient, Database]
 IMAGE = "data:image/png;base64,iVBORw0KGgo="
@@ -65,6 +66,7 @@ async def test_targets_list_online_providers(dash_client: DashClient) -> None:
     assert [(p["name"], p["models"]) for p in resp.json()["providers"]] == [
         ("gpu", ["chatty"])
     ]
+    assert resp.json()["any"] == {"models": ["chatty"], "groups": [], "aliases": []}
     page = await c.get("/chat")
     assert page.status_code == 200
     assert "chat-provider" in page.text
@@ -197,6 +199,104 @@ async def test_each_user_sees_only_their_chats(dash_client: DashClient) -> None:
     assert gone.status_code == 404
     mine = await c.get("/api/chat/conversations", headers=_as(viewer))
     assert [x["id"] for x in mine.json()["conversations"]] == [conv_id]
+
+
+async def _names(db: Database) -> Router:
+    """A router, with the alias "chat" for chatty and the group "team"."""
+    await db.set_model_alias("chat", "chatty")
+    group = await db.create_model_group("team")
+    assert group.id is not None
+    await db.add_model_group_member(group.id, "chatty")
+    return Router(db, dash_deps.get_pm())
+
+
+async def test_targets_list_groups_and_aliases(dash_client: DashClient) -> None:
+    c, db = dash_client
+    pid = await _backend(db, [])
+    other = await db.add_provider("cpu", ProviderProtocol.OPENAI)
+    oid = other.require_id()
+    await db.update_provider_status(oid, ProviderStatus.IDLE)
+    await db.set_provider_models(oid, [ProviderModel(provider_id=oid, name="tiny")])
+    await _names(db)
+    data = (await c.get("/api/chat/targets")).json()
+    by_id = {p["id"]: p for p in data["providers"]}
+    assert by_id[pid]["groups"] == ["team"]
+    assert by_id[pid]["aliases"] == ["chat"]
+    # Neither the group nor the alias reaches the other provider.
+    assert (by_id[oid]["groups"], by_id[oid]["aliases"]) == ([], [])
+    assert data["any"] == {
+        "models": ["chatty", "tiny"],
+        "groups": ["team"],
+        "aliases": ["chat"],
+    }
+
+
+async def test_any_provider_lets_the_router_pick(dash_client: DashClient) -> None:
+    c, db = dash_client
+    seen: list[dict[str, Any]] = []
+    await _backend(db, seen)
+    await _names(db)
+    resp = await c.post("/api/chat/send", json={"model": "team", "content": "hi"})
+    assert resp.status_code == 200, resp.text
+    assert seen[0]["model"] == "chatty:q4"
+    reply = resp.json()["messages"][1]
+    assert (reply["model_name"], reply["provider_name"]) == ("team → chatty", "gpu")
+    # The chat remembers "any provider", not the router's pick.
+    conv = resp.json()["conversation"]
+    assert (conv["provider_id"], conv["model_name"]) == (None, "team")
+
+    resp = await c.post("/api/chat/send", json={"model": "nope", "content": "hi"})
+    assert resp.status_code == 404
+    assert "No provider" in resp.json()["detail"]
+
+
+async def test_group_and_alias_on_a_chosen_provider(dash_client: DashClient) -> None:
+    c, db = dash_client
+    seen: list[dict[str, Any]] = []
+    pid = await _backend(db, seen)
+    await _names(db)
+    for name in ("team", "chat"):
+        resp = await c.post(
+            "/api/chat/send",
+            json={"provider_id": pid, "model": name, "content": "hi"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["conversation"]["provider_id"] == pid
+    assert [b["model"] for b in seen] == ["chatty:q4", "chatty:q4"]
+
+    other = await db.add_provider("cpu", ProviderProtocol.OPENAI)
+    oid = other.require_id()
+    await db.update_provider_status(oid, ProviderStatus.IDLE)
+    await db.set_provider_models(oid, [ProviderModel(provider_id=oid, name="tiny")])
+    resp = await c.post(
+        "/api/chat/send", json={"provider_id": oid, "model": "team", "content": "hi"}
+    )
+    assert resp.status_code == 404
+
+
+async def test_group_hides_a_model_on_a_chosen_provider(
+    dash_client: DashClient,
+) -> None:
+    c, db = dash_client
+    seen: list[dict[str, Any]] = []
+    pid = await _backend(db, seen)
+    await db.set_provider_models(
+        pid,
+        [
+            ProviderModel(provider_id=pid, name="chatty", raw_name="chatty:q4"),
+            ProviderModel(provider_id=pid, name="big"),
+        ],
+    )
+    # A group named like a served model; requests for "big" go to the group.
+    group = await db.create_model_group("big")
+    assert group.id is not None
+    await db.add_model_group_member(group.id, "chatty")
+    Router(db, dash_deps.get_pm())
+    resp = await c.post(
+        "/api/chat/send", json={"provider_id": pid, "model": "big", "content": "hi"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen[0]["model"] == "chatty:q4"
 
 
 def test_chat_messages_and_replies() -> None:

@@ -37,7 +37,7 @@
     <div class="col-md-9">
         <div class="row g-2 mb-2">
             <div class="col-sm-5">
-                <select class="form-select form-select-sm" id="chat-provider" aria-label="Provider"></select>
+                <select class="form-select form-select-sm" id="chat-provider" aria-label="Provider" title="Any provider lets the router choose"></select>
             </div>
             <div class="col-sm-7">
                 <select class="form-select form-select-sm" id="chat-model" aria-label="Model"></select>
@@ -82,7 +82,7 @@
     // *nav* counts moves between chats and *rendered* is the move whose
     // chat is on screen: when loads overlap only the latest one is drawn,
     // and nothing is sent until it is.
-    const state = { providers: [], convId: null, image: null, busy: false, nav: 0, rendered: 0 };
+    const state = { providers: [], any: null, convId: null, image: null, busy: false, nav: 0, rendered: 0 };
 
     async function api(method, url, body) {
         const opts = { method, headers: {} };
@@ -107,21 +107,47 @@
 
     // ── Provider and model pickers ──
 
+    // The provider picked, or null for any provider (the router picks).
+    function providerId() {
+        const v = $("chat-provider").value;
+        return v === "" ? null : Number(v);
+    }
+
+    // Names on offer: the chosen provider's, or every provider's.
+    function names() {
+        const pid = providerId();
+        if (pid === null) return state.any;
+        return state.providers.find((x) => x.id === pid) || null;
+    }
+
+    const KINDS = [["models", "Models"], ["groups", "Model groups"], ["aliases", "Aliases"]];
+
     function fillModels(selected) {
-        const p = state.providers.find((x) => String(x.id) === $("chat-provider").value);
+        const n = names();
         const sel = $("chat-model");
         sel.innerHTML = "";
-        for (const m of (p ? p.models : [])) {
-            const o = el("option", "", m);
-            o.value = m;
-            sel.appendChild(o);
+        const all = [];
+        for (const [kind, label] of KINDS) {
+            const list = n ? (n[kind] || []) : [];
+            if (!list.length) continue;
+            const group = el("optgroup");
+            group.label = label;
+            for (const m of list) {
+                const o = el("option", "", m);
+                o.value = m;
+                group.appendChild(o);
+                all.push(m);
+            }
+            sel.appendChild(group);
         }
-        if (selected && p && p.models.includes(selected)) sel.value = selected;
+        if (selected && all.includes(selected)) sel.value = selected;
         localStorage.setItem("chat.provider", $("chat-provider").value);
     }
 
     function pick(providerId, model) {
-        if (providerId != null && state.providers.some((p) => p.id === providerId)) {
+        if (providerId == null) {
+            $("chat-provider").value = "";
+        } else if (state.providers.some((p) => p.id === providerId)) {
             $("chat-provider").value = String(providerId);
         }
         fillModels(model);
@@ -130,6 +156,7 @@
     async function loadTargets() {
         const data = await api("GET", "/api/chat/targets");
         state.providers = data.providers;
+        state.any = data.any;
         const sel = $("chat-provider");
         sel.innerHTML = "";
         if (!state.providers.length) {
@@ -137,13 +164,16 @@
             sel.disabled = true;
             return;
         }
+        const any = el("option", "", "Any provider");
+        any.value = "";
+        sel.appendChild(any);
         for (const p of state.providers) {
             const o = el("option", "", p.name + (p.status === "busy" ? " (busy)" : ""));
             o.value = String(p.id);
             sel.appendChild(o);
         }
-        const savedP = Number(localStorage.getItem("chat.provider"));
-        pick(savedP || null, localStorage.getItem("chat.model"));
+        const savedP = localStorage.getItem("chat.provider");
+        pick(savedP ? Number(savedP) : null, localStorage.getItem("chat.model"));
     }
 
     $("chat-provider").addEventListener("change", () => fillModels(null));
@@ -310,7 +340,7 @@
         if (!model) { setStatus("Pick a model first."); return; }
         const body = {
             conversation_id: state.convId,
-            provider_id: Number($("chat-provider").value),
+            provider_id: providerId(),
             model,
             content,
             mode: mode(),

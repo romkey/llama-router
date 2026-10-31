@@ -1,7 +1,9 @@
-"""Dashboard chat: talk to one model on one provider, for trying models out.
+"""Dashboard chat: talk to a model, for trying models out.
 
-Requests go straight to the chosen provider (no routing), through its
-OpenAI-compatible endpoints: ``/v1/chat/completions`` for chat, with an
+The model can be a served model, a model group or an alias. With a provider
+chosen the request goes to it; without one the router picks, as it would for
+an API request. Either way it goes through the provider's OpenAI-compatible
+endpoints: ``/v1/chat/completions`` for chat, with an
 attached image sent as an ``image_url`` part, and ``/v1/images/generations``
 when asking for an image. Each dashboard user keeps their own history.
 """
@@ -9,6 +11,7 @@ when asking for an image. Each dashboard user keeps their own history.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -19,6 +22,8 @@ from ..database import Database
 from ..httpx_errors import describe_httpx_error
 from ..models import Provider, ProviderStatus
 from ..request_logger import log_request_background
+from ..router import Router
+from ..routing_table import RoutingTable, alias_groups
 from ..v1_client import get_v1_client
 from . import deps
 from .routes import merge_dash_template_ctx, templates
@@ -30,6 +35,8 @@ MAX_CONTENT = 100_000
 # A data URL; base64 makes it a third larger than the image.
 MAX_IMAGE_CHARS = 14_000_000
 TITLE_LEN = 60
+PATHS = {"chat": "/v1/chat/completions", "image": "/v1/images/generations"}
+NAME_KINDS = ("models", "groups", "aliases")
 
 
 def _user_id(request: Request) -> int | None:
@@ -55,24 +62,58 @@ async def chat_page(request: Request) -> Response:
     )
 
 
+async def _table() -> RoutingTable | None:
+    rt = deps.get_pm().router
+    return await rt.current_table() if rt is not None else None
+
+
 @router.get("/api/chat/targets")
 async def chat_targets() -> JSONResponse:
-    """Providers that are not offline, each with the models it serves."""
+    """Providers that are not offline, each with the models it serves and
+    the model groups and aliases that reach it, and under "any" every name
+    the router can place on one of them."""
     db = deps.get_db()
-    models: dict[int, list[str]] = {}
+    served: dict[int, set[str]] = {}
     for m in await db.get_all_provider_models():
-        models.setdefault(m.provider_id, []).append(m.name)
-    rows = [
+        served.setdefault(m.provider_id, set()).add(m.name)
+    aliases = alias_groups(await db.get_model_aliases())
+    table = await _table()
+    group_names = set(table.groups) if table is not None else set()
+    groups: dict[int, set[str]] = {}
+    if table is not None:
+        for (name, _path), cands in table.all_candidates.items():
+            if name in group_names:
+                for c in cands:
+                    groups.setdefault(c.provider_id, set()).add(name)
+    rows: list[dict[str, Any]] = []
+    for p in await db.list_providers():
+        if p.id is None or p.status == ProviderStatus.OFFLINE:
+            continue
+        # A group hides a model or alias of the same name.
+        models = served.get(p.id, set()) - group_names
+        if not models:
+            continue
+        reach: set[str] = set()
+        for n in models:
+            reach |= aliases.get(n, frozenset())
+        rows.append(
+            {
+                "id": p.id,
+                "name": p.name,
+                "status": p.status.value,
+                "models": sorted(models),
+                "groups": sorted(groups.get(p.id, set())),
+                "aliases": sorted(reach - models - group_names),
+            }
+        )
+    anywhere = {k: set().union(*(r[k] for r in rows)) for k in NAME_KINDS}
+    anywhere["aliases"] -= anywhere["models"]
+    return JSONResponse(
         {
-            "id": p.id,
-            "name": p.name,
-            "status": p.status.value,
-            "models": sorted(set(models.get(p.id, []))),
+            "providers": rows,
+            "any": {k: sorted(v) for k, v in anywhere.items()},
         }
-        for p in await db.list_providers()
-        if p.id is not None and p.status != ProviderStatus.OFFLINE
-    ]
-    return JSONResponse({"providers": [r for r in rows if r["models"]]})
+    )
 
 
 @router.get("/api/chat/conversations")
@@ -98,10 +139,33 @@ async def delete_conversation(conversation_id: int, request: Request) -> JSONRes
     return JSONResponse({"status": "ok"})
 
 
-async def _target(db: Database, body: dict[str, Any]) -> tuple[Provider, str, str]:
-    """The provider, the model as listed, and the name the backend knows."""
+@dataclass(slots=True)
+class Target:
+    provider: Provider
+    # The name the backend knows the model by.
+    backend_model: str
+    # The model that answers: a group's member, an alias's model.
+    served: str
+    # The user chose the provider; otherwise the router did.
+    chosen: bool
+
+
+def _not_found(model: str, provider: Provider | None) -> HTTPException:
+    where = provider.name if provider is not None else "No provider"
+    return HTTPException(status_code=404, detail=f"{where} does not serve {model}")
+
+
+async def _target(db: Database, body: dict[str, Any], model: str, path: str) -> Target:
+    """Where *model* goes: the chosen provider, or the router's pick."""
+    raw = body.get("provider_id")
+    if raw in (None, ""):
+        rt = deps.get_pm().router
+        result = await rt.route(model, path) if rt is not None else None
+        if result is None:
+            raise _not_found(model, None)
+        return Target(result.provider, result.backend_model, result.model_key, False)
     try:
-        pid = int(body.get("provider_id"))  # type: ignore[arg-type]
+        pid = int(raw)
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=400, detail="provider_id must be a number"
@@ -109,15 +173,20 @@ async def _target(db: Database, body: dict[str, Any]) -> tuple[Provider, str, st
     provider = await db.get_provider(pid)
     if provider is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    model = str(body.get("model") or "").strip()
-    if not model:
-        raise HTTPException(status_code=400, detail="model is required")
-    for m in await db.get_provider_models(pid):
-        if m.name == model:
-            return provider, model, m.backend_name
-    raise HTTPException(
-        status_code=404, detail=f"{provider.name} does not serve {model}"
-    )
+    table = await _table()
+    # A group hides a model of the same name, as it does when routing.
+    if table is None or not table.is_group(model):
+        for m in await db.get_provider_models(pid):
+            if m.name == model:
+                return Target(provider, m.backend_name, model, True)
+    # A model group or an alias with a member on this provider.
+    if table is not None and any(
+        c.provider_id == pid for c in table.all_candidates.get((model, path), ())
+    ):
+        c = Router._pinned(table, model, path, pid)
+        if c is not None:
+            return Target(provider, c.backend_model, c.model, True)
+    raise _not_found(model, provider)
 
 
 def _image(body: dict[str, Any]) -> str | None:
@@ -188,9 +257,11 @@ def reply_image(resp: dict[str, Any]) -> tuple[str | None, str]:
 
 @router.post("/api/chat/send")
 async def send(request: Request) -> JSONResponse:
-    """Body: {conversation_id?, provider_id, model, content, image?, mode?}.
+    """Body: {conversation_id?, provider_id?, model, content, image?, mode?}.
 
-    *mode* is "chat" (default) or "image" (generate an image from *content*).
+    *model* is a model, a model group or an alias. Without *provider_id*
+    the router picks the provider. *mode* is "chat" (default) or "image"
+    (generate an image from *content*).
     Without *conversation_id* a new conversation is started. Returns the
     conversation and the two new messages: the user's and the reply, which
     is an "error" message when the backend failed.
@@ -208,13 +279,20 @@ async def send(request: Request) -> JSONResponse:
     image = _image(body) if mode == "chat" else None
     if not content and image is None:
         raise HTTPException(status_code=400, detail="content is required")
-    provider, model, backend_model = await _target(db, body)
+    model = str(body.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    target = await _target(db, body, model, PATHS[mode])
+    provider, backend_model = target.provider, target.backend_model
     pid = provider.require_id()
+    # Reopening the chat brings back the choice made, not the router's pick.
+    chosen_pid = pid if target.chosen else None
+    answered_by = model if target.served == model else f"{model} → {target.served}"
 
     conv_id = body.get("conversation_id")
     if conv_id in (None, ""):
         title = (content or "Image").splitlines()[0][:TITLE_LEN]
-        conv_id = await db.create_chat_conversation(uid, title, pid, model)
+        conv_id = await db.create_chat_conversation(uid, title, chosen_pid, model)
         history: list[dict[str, Any]] = []
     else:
         try:
@@ -231,11 +309,10 @@ async def send(request: Request) -> JSONResponse:
     user_msg = await db.add_chat_message(
         conv_id, "user", content, image=image, model_name=model
     )
+    endpoint = PATHS[mode]
     if mode == "image":
-        endpoint = "/v1/images/generations"
         upstream: dict[str, Any] = {"model": backend_model, "prompt": content, "n": 1}
     else:
-        endpoint = "/v1/chat/completions"
         upstream = {
             "model": backend_model,
             "messages": chat_messages([*history, user_msg]),
@@ -274,7 +351,7 @@ async def send(request: Request) -> JSONResponse:
             conv_id,
             "error",
             detail,
-            model_name=model,
+            model_name=answered_by,
             provider_name=provider.name,
             duration_ms=duration,
         )
@@ -292,11 +369,11 @@ async def send(request: Request) -> JSONResponse:
             "assistant" if mode == "chat" or out_image else "error",
             text,
             image=out_image,
-            model_name=model,
+            model_name=answered_by,
             provider_name=provider.name,
             duration_ms=duration,
         )
-    await db.touch_chat_conversation(conv_id, pid, model)
+    await db.touch_chat_conversation(conv_id, chosen_pid, model)
     conversation = await db.get_chat_conversation(conv_id, uid)
     if conversation is not None:
         conversation.pop("messages", None)
