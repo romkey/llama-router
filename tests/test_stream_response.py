@@ -42,7 +42,7 @@ async def test_upstream_error_becomes_http_error() -> None:
     resp = await stream_response(_Logged(await _upstream(handler)), "text/event-stream")  # type: ignore[arg-type]
 
     assert resp.status_code == 404
-    assert json.loads(bytes(resp.body)) == {"error": "model not found"}  # type: ignore[attr-defined]
+    assert json.loads(bytes(resp.body)) == {"error": "model not found"}
 
 
 @pytest.mark.asyncio
