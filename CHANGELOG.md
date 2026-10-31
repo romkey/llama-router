@@ -7,6 +7,18 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **SQLite foreign keys.** Foreign keys were enforced on only one of the
+  database's connections, so deleting a provider could leave its models,
+  benchmarks and other rows behind. They are now enforced on every
+  connection.
+
+- **Copying SQLite to PostgreSQL with leftover rows.**
+  `llama-router-migrate-sqlite-pg` no longer fails on rows whose parent was
+  deleted (such as models of a removed provider). It skips them, or clears
+  the reference where the column may be empty, and logs how many.
+
 ## [0.25.0] - 2026-10-31
 
 ### Added
