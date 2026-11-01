@@ -24,9 +24,15 @@ from llama_router.models import (
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RouteResult, RoutingPreferences
 from llama_router.worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE
+from llama_router.worker_link.relay import (
+    RELAY_HEADER,
+    HubRelayMiddleware,
+    relay_secret,
+)
 
 CHAT = "/v1/chat/completions"
-VIA = {HUB_HEADER: HUB_HEADER_VALUE}
+# What this router's own worker link sends with a relayed job.
+VIA = {HUB_HEADER: HUB_HEADER_VALUE, RELAY_HEADER: relay_secret()}
 
 
 @pytest.fixture
@@ -68,9 +74,17 @@ def _pid(result: RouteResult | None) -> int | None:
     return result.provider.id if result is not None else None
 
 
-def _request(headers: dict[str, str]) -> Request:
+async def _request(headers: dict[str, str]) -> Request:
+    """A request as the routes see it, after HubRelayMiddleware."""
     raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
-    return Request({"type": "http", "headers": raw, "method": "GET", "path": "/"})
+    seen: list[Any] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        seen.append(scope)
+
+    scope = {"type": "http", "headers": raw, "method": "GET", "path": "/"}
+    await HubRelayMiddleware(app)(scope, None, None)  # type: ignore[arg-type]
+    return Request(seen[0])
 
 
 async def test_providers_are_shared_by_default_and_set_as_a_whole(
@@ -145,13 +159,13 @@ async def test_hub_scope_combines_with_key_locality(
 
 async def test_via_header_sets_hub_scope(db: Database) -> None:
     await db.set_allow_unauthenticated(True)
-    assert from_hub(_request(VIA))
-    assert not from_hub(_request({HUB_HEADER: "client"}))
-    assert not from_hub(_request({}))
-    prefs = await routing_preferences_from_request(db, _request(VIA))
+    assert from_hub(await _request(VIA))
+    assert not from_hub(await _request({HUB_HEADER: "client"}))
+    assert not from_hub(await _request({}))
+    prefs = await routing_preferences_from_request(db, await _request(VIA))
     assert prefs is not None
     assert prefs.hub_only
-    assert await routing_preferences_from_request(db, _request({})) is None
+    assert await routing_preferences_from_request(db, await _request({})) is None
 
 
 async def test_model_listings_hide_unshared_providers_from_the_hub(
@@ -240,12 +254,12 @@ async def test_provider_header_narrows_hub_jobs_to_one_provider(
     v1_deps.init(db, pm, rt)
 
     to_slow = {**VIA, PROVIDER_HEADER: str(slow.require_id())}
-    assert hub_provider(_request(to_slow)) == slow.id
+    assert hub_provider(await _request(to_slow)) == slow.id
     # Without the Via header, or with junk, it means nothing.
-    assert hub_provider(_request({PROVIDER_HEADER: str(slow.id)})) is None
-    assert hub_provider(_request({**VIA, PROVIDER_HEADER: "x"})) is None
+    assert hub_provider(await _request({PROVIDER_HEADER: str(slow.id)})) is None
+    assert hub_provider(await _request({**VIA, PROVIDER_HEADER: "x"})) is None
 
-    prefs = await routing_preferences_from_request(db, _request(to_slow))
+    prefs = await routing_preferences_from_request(db, await _request(to_slow))
     assert prefs is not None
     assert prefs.hub_provider == slow.id
     assert _pid(await rt.route("m", CHAT, prefs)) == slow.id
@@ -278,3 +292,93 @@ async def test_provider_header_narrows_hub_jobs_to_one_provider(
     finally:
         for p in await db.list_providers():
             pm.release(p.require_id())
+
+
+async def test_hub_headers_from_clients_count_for_nothing(
+    db: Database, pm: ProviderManager
+) -> None:
+    """Only the worker link in this process can mark a job as the hub's: the
+    headers without its secret are ignored, and stripped either way."""
+    from llama_router.auth import hub_provider
+    from llama_router.worker_link.protocol import PROVIDER_HEADER
+    from llama_router.worker_link.relay import SCOPE_KEY
+
+    await db.set_allow_unauthenticated(True)
+    forged = {HUB_HEADER: HUB_HEADER_VALUE, PROVIDER_HEADER: "1"}
+    for headers in (forged, {**forged, RELAY_HEADER: "guess"}):
+        req = await _request(headers)
+        assert not from_hub(req)
+        assert hub_provider(req) is None
+        assert await routing_preferences_from_request(db, req) is None
+        assert HUB_HEADER not in req.headers
+        assert PROVIDER_HEADER not in req.headers
+        assert RELAY_HEADER not in req.headers
+
+    genuine = await _request({**VIA, PROVIDER_HEADER: "1"})
+    assert from_hub(genuine)
+    assert hub_provider(genuine) == 1
+    assert RELAY_HEADER not in genuine.headers
+    assert HUB_HEADER not in genuine.headers
+
+    # A scope that arrives already marked is not believed either.
+    seen: list[Any] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        seen.append(scope)
+
+    marked = {"type": "http", "headers": [], SCOPE_KEY: {"provider": 1}}
+    await HubRelayMiddleware(app)(marked, None, None)  # type: ignore[arg-type]
+    assert SCOPE_KEY not in seen[0]
+
+    # Over the API: a client that forges the headers sees everything, as
+    # it would without them, and is not narrowed to a provider it names.
+    await _provider(db, "mine", models=("private",), hub_shared=False)
+    shared = await _provider(db, "shared", models=("public",))
+    rt = Router(db, pm)
+    api_deps.init(db, pm, rt)
+    v1_deps.init(db, pm, rt)
+    transport = httpx.ASGITransport(app=api_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://r") as c:
+        to_shared = {HUB_HEADER: HUB_HEADER_VALUE, PROVIDER_HEADER: str(shared.id)}
+        tags = (await c.get("/api/tags", headers=to_shared)).json()["models"]
+    assert {m["name"] for m in tags} == {"private", "public"}
+
+
+async def test_hub_provider_jobs_keep_the_keys_pins(
+    db: Database, pm: ProviderManager
+) -> None:
+    fast = await _provider(db, "fast", startup=100.0)
+    slow = await _provider(db, "slow", startup=5000.0)
+    rt = Router(db, pm)
+    to_slow = RoutingPreferences(hub_only=True, hub_provider=slow.require_id())
+    assert _pid(await rt.route("m", CHAT, to_slow)) == slow.id
+    pinned_away = RoutingPreferences(
+        hub_only=True,
+        hub_provider=slow.require_id(),
+        pinned_providers={"m": fast.require_id()},
+    )
+    assert await rt.route("m", CHAT, pinned_away) is None
+    pinned_here = RoutingPreferences(
+        hub_only=True,
+        hub_provider=slow.require_id(),
+        pinned_providers={"m": slow.require_id()},
+    )
+    assert _pid(await rt.route("m", CHAT, pinned_here)) == slow.id
+
+
+@pytest.mark.parametrize(
+    ("url", "ok"),
+    [
+        ("http://127.0.0.1:11434", True),
+        ("http://localhost:8080", True),
+        ("http://[::1]:8080", True),
+        ("http://router.localhost", True),
+        ("http://192.168.1.5:11434", False),
+        ("https://ollama.example.org", False),
+        ("not a url", False),
+    ],
+)
+def test_relay_secret_only_goes_to_this_machine(url: str, ok: bool) -> None:
+    from llama_router.worker_link.relay import is_loopback_url
+
+    assert is_loopback_url(url) is ok

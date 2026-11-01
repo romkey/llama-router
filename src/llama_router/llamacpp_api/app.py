@@ -12,6 +12,7 @@ from .. import __version__
 from ..request_logger import log_request
 from ..router_identity import LoopGuardMiddleware
 from ..timing import RequestTimingMiddleware
+from ..worker_link.relay import HubRelayMiddleware
 from . import deps
 from .audio import router as audio_router
 from .chat import router as chat_router
@@ -25,6 +26,7 @@ from .responses import router as responses_router
 app = FastAPI(title="llama-router OpenAI API")
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(HubRelayMiddleware)
 
 
 @app.get("/health")

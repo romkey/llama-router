@@ -22,6 +22,7 @@ from ..request_logger import log_request
 from ..router_identity import LoopGuardMiddleware
 from ..timing import RequestTimingMiddleware
 from ..worker_link.protocol import WS_PATH
+from ..worker_link.relay import HubRelayMiddleware
 from . import deps
 from .chat import router as chat_router
 from .embeddings import router as embeddings_router
@@ -31,6 +32,7 @@ from .tags import router as tags_router
 app = FastAPI(title="llama-router Ollama API")
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(HubRelayMiddleware)
 
 
 @app.get("/health")

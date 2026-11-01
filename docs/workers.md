@@ -39,9 +39,14 @@ being spent by the hub.
 The worker adds `X-Llama-Router-Via: hub` to every job it relays. Its own
 router reads the header and limits routing and `/api/tags` / `/v1/models` to
 the shared providers (`Provider.hub_shared`); any other upstream ignores it.
-A client sending the header to a router narrows only its own routing, so
-the header is not a credential. The choice is saved per provider, so a new
-provider is shared until it is unticked.
+The router believes the header only alongside `X-Llama-Router-Relay`, a
+secret made fresh each time the router starts that only its own worker link
+knows, and sent only to an upstream on this machine (`127.0.0.1`, `::1`,
+`localhost`). The router strips all three headers from every request, so a
+client cannot send them to steer its routing. A worker whose upstream is
+another machine sends only `X-Llama-Router-Via`, which that upstream ignores.
+The choice is saved per provider, so a new provider is shared until it is
+unticked.
 
 ## Sharing providers one by one
 
@@ -77,6 +82,15 @@ How it works:
   as `X-Llama-Router-Provider` beside `X-Llama-Router-Via: hub`, and the
   router serves the job from that provider only, with no fallback to
   another. Model listings with the header list only that provider's models.
+  The worker's upstream API key still applies: a model it pins to another
+  provider is not served.
+- Limits on the hub: a worker may share up to
+  `LLAMA_ROUTER_WORKER_MAX_SHARED_PROVIDERS` (256) providers, counting those
+  it stopped sharing that are not deleted yet; beyond that the longest
+  unshared are deleted at once. Unshared providers are deleted after
+  `LLAMA_ROUTER_WORKER_UNSHARED_PURGE_HOURS` (24). Catalogs are applied at
+  most every `LLAMA_ROUTER_WORKER_CATALOG_MIN_INTERVAL_SECONDS` (5) per
+  worker, the latest one winning.
 - Switching back to one provider reconnects the link. The hub takes the
   individual providers offline and the worker's row gets its models back.
 

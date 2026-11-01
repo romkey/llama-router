@@ -26,6 +26,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketExce
 
 from .. import __version__, router_identity
 from . import protocol as p
+from .relay import RELAY_HEADER, is_loopback_url, relay_secret
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,10 @@ _INFERENCE_PATHS = {
 _ADMIN_PATHS = {("POST", "/api/pull"), ("DELETE", "/api/delete")}
 
 _MAX_REQUEST_BODY = 64 * 1024 * 1024
+# Jobs accepted at once (running or waiting for a slot), per unit of
+# max_concurrency. The hub never sends more than max_concurrency at a time,
+# so only a misbehaving hub reaches this.
+_PENDING_FACTOR = 4
 _HTTP_TIMEOUT = httpx.Timeout(15.0, read=1800.0)
 _BACKOFF_MAX = 60.0
 _REJECTED_RETRY = 300.0
@@ -88,13 +93,26 @@ def path_allowed(method: str, raw_path: str, allow_admin: bool) -> bool:
 
 
 class _Job:
-    __slots__ = ("body", "body_done", "body_size", "id", "meta", "task")
+    __slots__ = (
+        "body",
+        "body_done",
+        "body_size",
+        "buffered",
+        "id",
+        "meta",
+        "over_budget",
+        "task",
+    )
 
     def __init__(self, req_id: int, meta: dict[str, Any]) -> None:
         self.id = req_id
         self.meta = meta
         self.body: list[bytes] = []
         self.body_size = 0
+        # Bytes of ``body`` counted toward the worker's in-flight budget.
+        self.buffered = 0
+        # The body would have taken the worker over its budget; refused.
+        self.over_budget = False
         self.body_done = asyncio.Event()
         self.task: asyncio.Task[None] | None = None
 
@@ -117,6 +135,7 @@ class WorkerClient:
         allow_admin: bool = False,
         upstream_api_key: str = "",
         catalog: CatalogSource | None = None,
+        max_body_bytes_in_flight: int = 256 * 1024 * 1024,
     ) -> None:
         self.hub_url = hub_url
         self._token = token
@@ -133,6 +152,11 @@ class WorkerClient:
         self._http = httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
         self._task: asyncio.Task[None] | None = None
         self._jobs: dict[int, _Job] = {}
+        # Request body bytes buffered across all jobs, and the most allowed.
+        self._body_bytes = 0
+        self._body_budget = max(1, max_body_bytes_in_flight)
+        # Replies sent for jobs refused on arrival.
+        self._refusals: set[asyncio.Task[None]] = set()
         self._slots = asyncio.Semaphore(self._max_concurrency)
         self._send_lock = asyncio.Lock()
         self._ws: ClientConnection | None = None
@@ -372,6 +396,10 @@ class WorkerClient:
             req_id = msg.get("id")
             if not isinstance(req_id, int) or req_id in self._jobs:
                 return
+            if len(self._jobs) >= self._max_concurrency * _PENDING_FACTOR:
+                # Its body frames find no job and are dropped.
+                self._refuse(req_id, 503, "worker is overloaded; try again later")
+                return
             job = _Job(req_id, msg)
             self._jobs[req_id] = job
             self.jobs_total += 1
@@ -391,15 +419,38 @@ class WorkerClient:
             return
         if kind == p.REQ_BODY:
             job.body_size += len(payload)
-            if job.body_size <= _MAX_REQUEST_BODY:
+            if job.body_size > _MAX_REQUEST_BODY or job.over_budget:
+                self._drop_body(job)
+            elif self._body_bytes + len(payload) > self._body_budget:
+                job.over_budget = True
+                self._drop_body(job)
+            else:
                 job.body.append(payload)
+                job.buffered += len(payload)
+                self._body_bytes += len(payload)
         elif kind == p.REQ_END:
             job.body_done.set()
+
+    def _drop_body(self, job: _Job) -> None:
+        """Free a job's buffered body (it is refused, or done with it)."""
+        job.body.clear()
+        self._body_bytes -= job.buffered
+        job.buffered = 0
+
+    def _refuse(self, req_id: int, status: int, message: str) -> None:
+        async def reply() -> None:
+            with contextlib.suppress(Exception):
+                await self._reply_json(req_id, status, {"error": message})
+
+        task = asyncio.create_task(reply())
+        self._refusals.add(task)
+        task.add_done_callback(self._refusals.discard)
 
     def _cancel_all_jobs(self) -> None:
         for job in list(self._jobs.values()):
             if job.task is not None:
                 job.task.cancel()
+            self._drop_body(job)
         self._jobs.clear()
 
     # --- outbound frames ---
@@ -454,7 +505,9 @@ class WorkerClient:
                     }
                 )
         finally:
-            self._jobs.pop(req_id, None)
+            if self._jobs.get(req_id) is job:
+                del self._jobs[req_id]
+            self._drop_body(job)
 
     async def _execute(self, job: _Job) -> None:
         req_id = job.id
@@ -466,6 +519,11 @@ class WorkerClient:
         await asyncio.wait_for(job.body_done.wait(), timeout=120)
         if job.body_size > _MAX_REQUEST_BODY:
             await self._reply_json(req_id, 413, {"error": "request body too large"})
+            return
+        if job.over_budget:
+            await self._reply_json(
+                req_id, 503, {"error": "worker is busy with large requests; try later"}
+            )
             return
 
         base = self._upstreams.get(target)
@@ -483,12 +541,16 @@ class WorkerClient:
             return
 
         headers = p.filter_headers(meta.get("headers") or [])
-        ours = {p.HUB_HEADER.lower(), p.PROVIDER_HEADER.lower()}
+        ours = {p.HUB_HEADER.lower(), p.PROVIDER_HEADER.lower(), RELAY_HEADER.lower()}
         headers = [h for h in headers if h[0].lower() not in ours]
         headers.append(["accept-encoding", "identity"])
         # Tells this router (the usual upstream) to use only the providers
         # shared with the hub; any other upstream ignores it.
         headers.append([p.HUB_HEADER, p.HUB_HEADER_VALUE])
+        if is_loopback_url(base):
+            # Proves to this router that the job really came over the link;
+            # never sent off this machine.
+            headers.append([RELAY_HEADER, relay_secret()])
         provider = meta.get("provider")
         if self._catalog is not None and isinstance(provider, int):
             # A job for one of the providers shared individually.
@@ -647,6 +709,7 @@ class WorkerLinkManager:
                 max_concurrency=settings.worker_max_concurrency,
                 allow_admin=settings.worker_allow_admin,
                 upstream_api_key=settings.worker_upstream_api_key,
+                max_body_bytes_in_flight=settings.worker_max_body_bytes_in_flight,
                 catalog=(
                     self.hub_catalog
                     if await self.resolved_expose() == p.EXPOSE_INDIVIDUAL

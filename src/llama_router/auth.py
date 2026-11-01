@@ -19,7 +19,7 @@ from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
 from .spend import tracker_for
 from .upstream_url import LOCALITIES
-from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
+from .worker_link.relay import SCOPE_KEY as _RELAY_SCOPE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -165,18 +165,22 @@ LOCALITY_HEADER = "X-Llama-Router-Locality"
 
 
 def from_hub(request: Request) -> bool:
-    """The request was relayed by the worker link from this router's hub."""
-    value = (request.headers.get(HUB_HEADER) or "").strip().lower()
-    return value == HUB_HEADER_VALUE
+    """The request was relayed by the worker link from this router's hub.
+
+    Set by :class:`~.worker_link.relay.HubRelayMiddleware` only for jobs the
+    worker link in this process sent; the headers alone mean nothing.
+    """
+    return _RELAY_SCOPE_KEY in request.scope
 
 
 def hub_provider(request: Request) -> int | None:
     """The one provider a job from this router's hub is for, when the worker
     shares providers individually; None for any other request."""
-    if not from_hub(request):
+    relay = request.scope.get(_RELAY_SCOPE_KEY)
+    if not isinstance(relay, dict):
         return None
-    raw = (request.headers.get(PROVIDER_HEADER) or "").strip()
-    return int(raw) if raw.isdigit() else None
+    pid = relay.get("provider")
+    return pid if isinstance(pid, int) else None
 
 
 def _locality(value: Any) -> str | None:
