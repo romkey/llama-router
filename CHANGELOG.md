@@ -9,7 +9,6 @@ described in their git tags and GitHub Releases.
 
 ### Security
 
-<<<<<<< HEAD
 - **Hub headers from clients are ignored.** `X-Llama-Router-Via` and
   `X-Llama-Router-Provider` now count only on jobs relayed by the router's
   own worker link, proven by a per-process secret in `X-Llama-Router-Relay`
@@ -29,7 +28,6 @@ described in their git tags and GitHub Releases.
   `LLAMA_ROUTER_WORKER_MAX_SHARED_PROVIDERS` (256), and deletes providers a
   worker stopped sharing after `LLAMA_ROUTER_WORKER_UNSHARED_PURGE_HOURS`
   (24; `0` keeps them), or at once when they would go over the cap.
-=======
 - **Decision requests are bounded.** A decision request may now ask at most 8
   questions (was 32) about a state of at most 32,000 characters (was 128,000),
   set with `LLAMA_ROUTER_DECISION_MAX_QUESTIONS` and
@@ -47,7 +45,6 @@ described in their git tags and GitHub Releases.
   restores the old behaviour. Tier-only policies still fall back to the
   requested model.
 
->>>>>>> origin/main
 - **Signed release images.** The release workflow signs each image with
   cosign keyless signing (by digest, every platform); the README shows how to
   verify one with `cosign verify`.
