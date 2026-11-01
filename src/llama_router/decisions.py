@@ -24,8 +24,9 @@ Measured on local Llama models (``docs/decision-models-plan.md``, Phase 0):
 - score questions drift to the middle level and need per-model calibration
   (:class:`Calibration`, fit with :func:`fit_calibration`).
 
-Everything here is pure: no I/O, no settings, no clock. The endpoint does the
-network calls and passes the upstream responses in.
+Everything here is pure apart from the request size limits, which come from
+settings: no I/O, no clock. The endpoint does the network calls and passes the
+upstream responses in.
 """
 
 from __future__ import annotations
@@ -40,11 +41,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-MAX_QUESTIONS = 32
+from .config import settings
+
+# The most questions (settings.decision_max_questions) and the longest state
+# (settings.decision_max_state_chars) are settings: every question is a
+# backend call that sends the whole state again.
 MAX_CHOICE_OPTIONS = 26  # letters A..Z
 MAX_SCORE_LEVELS = 10  # digits 0..9
-# About 32k tokens at four characters a token, matching Jev's state limit.
-MAX_STATE_CHARS = 128_000
 DEFAULT_TOP_LOGPROBS = 20
 
 SYSTEM_PROMPT = (
@@ -139,14 +142,16 @@ class DecisionRequest(BaseModel):
     @field_validator("questions")
     @classmethod
     def _questions(cls, v: dict[str, Any]) -> dict[str, Any]:
-        if not 1 <= len(v) <= MAX_QUESTIONS:
-            raise ValueError(f"needs 1 to {MAX_QUESTIONS} questions")
+        most = settings.decision_max_questions
+        if not 1 <= len(v) <= most:
+            raise ValueError(f"needs 1 to {most} questions")
         return v
 
     @model_validator(mode="after")
     def _state_size(self) -> DecisionRequest:
-        if len(render_state(self.state)) > MAX_STATE_CHARS:
-            raise ValueError(f"state is longer than {MAX_STATE_CHARS} characters")
+        most = settings.decision_max_state_chars
+        if len(render_state(self.state)) > most:
+            raise ValueError(f"state is longer than {most} characters")
         return self
 
 
