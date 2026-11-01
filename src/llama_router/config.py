@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0
+    decision_policy_fail_open: bool = False
+    """When a policy with gates cannot be decided (no provider, an error, a
+    timeout), let the request through unchecked instead of refusing it with
+    503. A policy with only a tier always goes on with the requested model."""
+    decision_max_questions: int = 8
+    """Most questions in one decision request; each is a backend call."""
+    decision_max_state_chars: int = 32_000
+    """Longest state of a decision request, in characters. Every question
+    sends the whole state again."""
+    decision_max_concurrency: int = 4
+    """Questions of one decision request asked of the backend at once."""
     # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
     # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
     # needs a dashboard sign-in like the rest of the dashboard.

@@ -36,6 +36,23 @@ described in their git tags and GitHub Releases.
   `--include=...` / `--revision=...`.
 - **No `/docs`, `/redoc` or `/openapi.json` on the Ollama and OpenAI API
   ports.** The dashboard keeps its own.
+- **Decision requests are bounded.** A decision request may now ask at most 8
+  questions (was 32) about a state of at most 32,000 characters (was 128,000),
+  set with `LLAMA_ROUTER_DECISION_MAX_QUESTIONS` and
+  `LLAMA_ROUTER_DECISION_MAX_STATE_CHARS`. A key's policy may have one gate
+  fewer than that. Emulated questions are asked at most
+  `LLAMA_ROUTER_DECISION_MAX_CONCURRENCY` (4) at a time, and a key with a daily
+  spend cap is refused with 429 before any call is made when the request's
+  estimated cost would pass the cap.
+
+- **Decision policy gates see the whole request and fail closed.** Gates (and
+  tiers) now read messages of every role, system, assistant and tool included,
+  whatever their case, and tool-call arguments, not only user messages. When a policy with gates cannot
+  be decided (no provider, an error, a timeout), the request is refused with
+  503 instead of passing unchecked; `LLAMA_ROUTER_DECISION_POLICY_FAIL_OPEN=true`
+  restores the old behaviour. Tier-only policies still fall back to the
+  requested model.
+
 - **Signed release images.** The release workflow signs each image with
   cosign keyless signing (by digest, every platform); the README shows how to
   verify one with `cosign verify`.
