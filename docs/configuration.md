@@ -42,6 +42,8 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SECRET_KEY_PATH` | *(empty)* | File holding the generated secret when `SESSION_SECRET` is empty, created with mode 0600 and never stored in the database. Empty: `secret.key` beside the SQLite database (`/app/data/secret.key` in the Docker image). Back it up with the database: without it stored provider keys must be entered again and client API keys reissued |
 | `DASHBOARD_COOKIE_SECURE` | `false` | Always send session cookies over HTTPS only. Without it they are Secure whenever the request came over HTTPS or with `X-Forwarded-Proto: https` |
 | `DASHBOARD_TRUSTED_ORIGINS` | *(empty)* | Comma-separated extra origins (`https://llm.example.org`) allowed to POST to the dashboard. The dashboard refuses state-changing requests whose `Sec-Fetch-Site` or `Origin` says they come from another site; needed only behind a plain-HTTP proxy that rewrites `Host` without setting `X-Forwarded-Host`. `OIDC_REDIRECT_BASE_URL` is always trusted |
+| `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
+| `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
 | `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `OIDC_ISSUER` | *(empty)* | OpenID Connect issuer URL. Empty turns single sign-on off |
@@ -54,7 +56,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `OIDC_REQUIRE_APPROVAL` | `false` | New SSO accounts wait for an administrator's approval on the Users page |
 | `OIDC_REDIRECT_BASE_URL` | *(empty)* | External dashboard URL, e.g. `https://llm.example.org`; the callback is `{base}/login/oidc/callback`. Empty uses the request's host and `X-Forwarded-*` headers |
 | `OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with …" |
-| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in |
+| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. Ignored without `OIDC_ADMIN_GROUP` |
 | `OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the identity provider on logout |
 | `OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only |
 
@@ -119,7 +121,7 @@ together pins the link and locks the dashboard form.
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub's Workers tab |
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
 | `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
-| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
+| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one. Not needed for the default upstreams (this router's own ports): the worker proves to them with a per-process token that it relayed the job |
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
 | `WORKER_EXPOSE` | *(dashboard; `combined`)* | `combined`: the hub sees this worker as one provider. `individual`: each shared provider on its own |

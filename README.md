@@ -533,7 +533,7 @@ Then set:
 | `LLAMA_ROUTER_OIDC_SCOPES` | `openid profile email groups` | Requested scopes. |
 | `LLAMA_ROUTER_OIDC_REDIRECT_BASE_URL` | empty | External dashboard URL, e.g. `https://llm.example.org`. Empty uses the request's host and `X-Forwarded-*` headers. |
 | `LLAMA_ROUTER_OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with ...". |
-| `LLAMA_ROUTER_OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. |
+| `LLAMA_ROUTER_OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. Ignored without an admin group, since only a local account could administer. |
 | `LLAMA_ROUTER_OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the provider on logout. |
 | `LLAMA_ROUTER_OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only. |
 
@@ -550,7 +550,7 @@ How accounts behave:
 - **No passwords.** SSO accounts cannot use password sign-in and cannot be given a password.
 - **Signing out.** **Everywhere** next to **Log out** ends all of your sessions; **Sign out** on the **Users** page does it for another account. Changing a password does it too.
 - **Removing access.** Deleting an SSO account on the **Users** page signs it out, but the account is recreated at the person's next sign-in. To keep someone out, remove them at the provider or set `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`.
-- **Bootstrap.** With no accounts at all, the dashboard is open as before. The first SSO sign-in creates the first account. If an admin group is set, that first person must be in it. Otherwise the first account is an administrator.
+- **First account.** With no accounts at all, the dashboard is locked. Create the first administrator with `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD`, or, if an admin group is set, by signing in through SSO as a member of it. Without an admin group SSO cannot create the first account, since whoever signed in first would own the router.
 - **Break-glass.** Keep one local administrator, or use the lockout steps above, in case the provider is unreachable.
 
 Provider notes:
@@ -559,7 +559,7 @@ Provider notes:
 - **Keycloak:** add a *Group Membership* mapper with "Full group path" off, or use realm roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=realm_access.roles`.
 - **Okta:** add a `groups` claim with a filter on the authorization server.
 - **Entra ID:** group claims carry object IDs, not names, so use the group's ID as the admin group. Users in many groups get an overage marker instead of a list, so app roles with `LLAMA_ROUTER_OIDC_GROUPS_CLAIM=roles` are more reliable.
-- **Google:** has no groups claim. Leave the admin group empty so the first account administers, and promote others by hand.
+- **Google:** has no groups claim. Leave the admin group empty, create the first administrator with `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD`, and promote others by hand.
 
 To try it locally, start the mock provider in `docker-compose.yaml`. It shows a form where you type any subject and claims, such as `{"preferred_username": "ada", "groups": ["router-admins"]}`:
 
@@ -651,7 +651,13 @@ curl http://localhost/v1/chat/completions -H 'API-KEY: lr_...' \
 
 A request goes to the API when its path and method match an API route; the rest goes to the dashboard. `GET /decisions` is the dashboard page and `POST /decisions` is the API. `/health` stays the dashboard's.
 
-API requests on the dashboard port are checked by API key, not by dashboard login. Anyone who can reach port 80 can reach the API, so require API keys (turn off unauthenticated access) before exposing it.
+API requests on the dashboard port are checked by API key, not by dashboard login. Anyone who can reach port 80 can reach the API, so require API keys (leave unauthenticated access off) before exposing it.
+
+### Requests without an API key
+
+New installs require an API key on every API request. **Accept requests without an API key** under *Authentication Policy* on the **API Keys** tab lets clients without one through; llama-router logs a warning at startup while it is on. A request that sends a key that is wrong, revoked or expired is always refused with 401, even then.
+
+Routers that were already set up keep the setting they had: earlier versions accepted requests without a key by default, and upgrading does not change a router that already has providers, API keys or dashboard accounts. Check the setting after upgrading if you meant to require keys.
 
 ### Migrating data from SQLite to PostgreSQL
 
@@ -712,7 +718,9 @@ The released image is on `ghcr.io/romkey/llama-router`. Copy [`docker-compose.pr
 docker compose -f docker-compose.prod.yaml up -d
 ```
 
-Open http://localhost to access the dashboard and add your backends. The database, the registry cache and Hugging Face downloads live on the `llama-router-data` volume at `/app/data`. Set `APP_VERSION=0.21.0` to pin a release instead of `latest`.
+Before the first start, set `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD` (at least 8 characters) in `.env`: llama-router creates that administrator at startup when there are no dashboard accounts yet. There is no way to create the first account from the web; until one exists the dashboard only shows a page asking for these variables. Once any account exists they are ignored, so you can remove them.
+
+Open http://localhost, sign in and add your backends. The database, the registry cache and Hugging Face downloads live on the `llama-router-data` volume at `/app/data`. Set `APP_VERSION=0.21.0` to pin a release instead of `latest`.
 
 The container runs as user 10001 with a read-only root filesystem and no capabilities. A data volume created by an image older than 0.22 is owned by root; give it to the new user once:
 
@@ -741,7 +749,7 @@ Add `[postgres]` or `[mysql]` for those databases (the Docker image already incl
 
 ### Dashboard login lockout (forgot password)
 
-After you create at least one account under **Users**, the dashboard requires sign-in. Passwords are stored hashed; they cannot be read back. After five failed password sign-ins in a row, from one address or for one username, further attempts get HTTP 429 for a delay that doubles with each failure, up to five minutes; a restart clears it. If you lose the password, clear the dashboard user table and start over (you will briefly have an open dashboard until you create a new user).
+The dashboard always requires sign-in. Passwords are stored hashed; they cannot be read back. After five failed password sign-ins in a row, from one address or for one username, further attempts get HTTP 429 for a delay that doubles with each failure, up to five minutes; a restart clears it. If you lose the password, clear the dashboard user table and restart with `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD` set; the new administrator is created at startup. The dashboard stays locked while there are no accounts.
 
 **Docker Compose** (the image keeps the database at `/app/data/llama_router.db`; with the development setup, drop `-f docker-compose.prod.yaml`):
 
@@ -750,7 +758,7 @@ docker compose -f docker-compose.prod.yaml exec llama-router python -c "import s
 docker compose -f docker-compose.prod.yaml restart llama-router
 ```
 
-The first command removes **all** dashboard accounts. The restart clears the in-process user-count cache so the UI immediately returns to bootstrap mode (no login required). Then open **Users** and create a new administrator.
+The first command removes **all** dashboard accounts. Set `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD` in `.env` before the restart, which creates the new administrator.
 
 If you set `LLAMA_ROUTER_DATABASE_PATH` to something else, use that path inside the `sqlite3.connect(...)` call. For a local SQLite file (no Docker), run the same `DELETE FROM dashboard_users` against your database file with any SQLite client.
 

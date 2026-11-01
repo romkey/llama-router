@@ -6,7 +6,7 @@ waiting for an administrator (``LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL``);
 existing accounts stay approved.
 
 Revision ID: 026_session_version
-Revises: 024_api_key_owner
+Revises: 025_default_deny_anonymous
 Create Date: 2026-10-31
 """
 
@@ -16,8 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "026_session_version"
-# Rebase onto 025_default_deny_anonymous once that migration is on main.
-down_revision = "024_api_key_owner"
+down_revision = "025_default_deny_anonymous"
 branch_labels = None
 depends_on = None
 

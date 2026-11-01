@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Set up - llama-router{% endblock %}
+
+{% block nav_tabs %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="card shadow-sm">
+            <div class="card-body p-4">
+                <h2 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Create the first administrator</h2>
+                <p>This router has no dashboard accounts yet, so the dashboard is locked. The first administrator cannot be created from the web.</p>
+                <p>Set these environment variables and restart llama-router; the account is created at startup:</p>
+<pre class="bg-body-tertiary p-3 rounded"><code>LLAMA_ROUTER_ADMIN_USERNAME=admin
+LLAMA_ROUTER_ADMIN_PASSWORD=a-long-random-password</code></pre>
+                <p class="text-muted small mb-0">The password must be at least 8 characters. Once any account exists the variables are ignored, so you can remove them after the first start and manage accounts under <strong>Users</strong>.</p>
+                {% if oidc_enabled %}
+                <hr>
+                <p class="mb-2">Or sign in with single sign-on as a member of <code>{{ oidc_admin_group }}</code>:</p>
+                <a class="btn btn-primary" href="/login/oidc"><i class="bi bi-box-arrow-in-right me-1"></i>Sign in with {{ oidc_display_name }}</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -318,21 +318,9 @@ router = APIRouter()
 
 
 def template_auth_ctx(request: Request) -> dict[str, Any]:
-    if getattr(request.state, "auth_bootstrap", False):
-        return {
-            "auth_bootstrap": True,
-            "read_only": False,
-            "show_api_keys": True,
-            "show_workers": True,
-            "show_log": True,
-            "show_cache": True,
-            "show_users_tab": True,
-            "dash_user": None,
-        }
     user = getattr(request.state, "dashboard_user", None)
     if user is None:
         return {
-            "auth_bootstrap": False,
             "read_only": True,
             "show_api_keys": False,
             "show_workers": False,
@@ -343,7 +331,6 @@ def template_auth_ctx(request: Request) -> dict[str, Any]:
         }
     adm = user.is_admin
     return {
-        "auth_bootstrap": False,
         "read_only": not adm,
         "show_api_keys": adm,
         "show_workers": adm,
@@ -508,7 +495,8 @@ async def login_page(request: Request):
     db = deps.get_db()
     cfg = oidc.current_config()
     users_exist = await db.count_dashboard_users() > 0
-    if not users_exist and not cfg.usable:
+    # With no accounts only an admin-group SSO sign-in can create the first.
+    if not users_exist and not (cfg.usable and cfg.admin_group):
         return RedirectResponse(url="/", status_code=302)
     err = request.query_params.get("error")
     next_url = _safe_next_url(request.query_params.get("next"))
@@ -697,12 +685,10 @@ async def logout_everywhere(request: Request):
 @router.get("/users", response_class=HTMLResponse)
 async def users_page(request: Request):
     db = deps.get_db()
-    n = await db.count_dashboard_users()
-    bootstrap = getattr(request.state, "auth_bootstrap", False)
     user = getattr(request.state, "dashboard_user", None)
-    if n > 0 and not bootstrap and (not user or not user.is_admin):
+    if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
-    users = await db.list_dashboard_users() if n else []
+    users = await db.list_dashboard_users()
     mgmt_keys = await db.list_management_keys()
     now = time.time()
     for k in mgmt_keys:
@@ -718,7 +704,7 @@ async def users_page(request: Request):
             request,
             {
                 "dashboard_users": users,
-                "users_exist": n > 0,
+                "users_exist": bool(users),
                 "management_keys": mgmt_keys,
                 "management_privileges": management_keys.PRIVILEGES,
                 "oidc": cfg if cfg.enabled else None,
@@ -743,10 +729,8 @@ async def users_add(
     is_admin: str = Form("0"),
 ):
     db = deps.get_db()
-    n = await db.count_dashboard_users()
-    bootstrap = getattr(request.state, "auth_bootstrap", False)
     user = getattr(request.state, "dashboard_user", None)
-    if n > 0 and not bootstrap and (not user or not user.is_admin):
+    if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
     try:
         un = normalize_username(username)
@@ -757,8 +741,6 @@ async def users_add(
     if len(password) < 8:
         return RedirectResponse(url="/users?error=password", status_code=303)
     make_admin = is_admin in ("1", "on", "true", "yes")
-    if n == 0:
-        make_admin = True
     await db.create_dashboard_user(un, hash_password(password), make_admin)
     invalidate_dashboard_user_count_cache()
     return RedirectResponse(url="/users?created=1", status_code=303)
@@ -767,10 +749,8 @@ async def users_add(
 @router.post("/users/{user_id}/delete")
 async def users_delete(request: Request, user_id: int):
     db = deps.get_db()
-    n = await db.count_dashboard_users()
-    bootstrap = getattr(request.state, "auth_bootstrap", False)
     user = getattr(request.state, "dashboard_user", None)
-    if n > 0 and not bootstrap and (not user or not user.is_admin):
+    if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
     target = await db.get_dashboard_user_by_id(user_id)
     if not target:
@@ -792,10 +772,8 @@ async def users_set_password(
     new_password: str = Form(...),
 ):
     db = deps.get_db()
-    n = await db.count_dashboard_users()
-    bootstrap = getattr(request.state, "auth_bootstrap", False)
     user = getattr(request.state, "dashboard_user", None)
-    if n > 0 and not bootstrap and (not user or not user.is_admin):
+    if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
     target = await db.get_dashboard_user_by_id(user_id)
     if not target:
@@ -818,9 +796,7 @@ async def users_set_password(
 
 def _require_admin(request: Request) -> None:
     user = getattr(request.state, "dashboard_user", None)
-    if not getattr(request.state, "auth_bootstrap", False) and (
-        not user or not user.is_admin
-    ):
+    if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
@@ -1132,8 +1108,7 @@ async def api_status(request: Request):
     pm = deps.get_pm()
     db = deps.get_db()
     dash_user = getattr(request.state, "dashboard_user", None)
-    bootstrap = getattr(request.state, "auth_bootstrap", False)
-    admin_payload = bootstrap or (dash_user is not None and dash_user.is_admin)
+    admin_payload = dash_user is not None and dash_user.is_admin
     infos = await pm.list_provider_infos()
     all_models = await db.list_all_models()
     log_total = await db.count_request_logs() if admin_payload else 0
@@ -1284,8 +1259,6 @@ def _tristate(value: Any) -> bool | None:
 
 
 def _is_admin(request: Request) -> bool:
-    if getattr(request.state, "auth_bootstrap", False):
-        return True
     user = getattr(request.state, "dashboard_user", None)
     return bool(user and user.is_admin)
 

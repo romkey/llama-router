@@ -138,6 +138,11 @@ class Settings(BaseSettings):
     # HTTP proxy that rewrites Host without setting X-Forwarded-Host; the
     # OIDC redirect base URL is always trusted.
     dashboard_trusted_origins: str = ""
+    # The first dashboard administrator, created at startup when there are no
+    # dashboard accounts yet; ignored once any account exists. There is no way
+    # to create the first account from the web.
+    admin_username: str = ""
+    admin_password: str = ""
     # Most API keys one dashboard user may issue themselves on /my-keys
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20

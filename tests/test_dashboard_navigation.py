@@ -35,7 +35,7 @@ class _Navigation(HTMLParser):
             self.in_nav = False
 
 
-@pytest.mark.parametrize("role", ["bootstrap", "admin", "viewer"])
+@pytest.mark.parametrize("role", ["admin", "viewer"])
 @pytest.mark.parametrize("cache_state", ["absent", "enabled", "disabled"])
 async def test_navigation_stays_consistent_across_pages(
     dash_client: tuple[httpx.AsyncClient, Database],
@@ -48,11 +48,10 @@ async def test_navigation_stays_consistent_across_pages(
     monkeypatch.setattr(settings, "cache_enabled", cache_state == "enabled")
     cache = None if cache_state == "absent" else BlobCache(str(tmp_path / "cache"))
     monkeypatch.setattr(deps, "_blob_cache", cache)
-    if role != "bootstrap":
-        user_id = await db.create_dashboard_user(
-            "test-user", hash_password("test-password"), role == "admin"
-        )
-        client.cookies.set(AUTH_COOKIE, sign_session(user_id, settings.session_secret))
+    user_id = await db.create_dashboard_user(
+        "test-user", hash_password("test-password"), role == "admin"
+    )
+    client.cookies.set(AUTH_COOKIE, sign_session(user_id, settings.session_secret))
     provider = await db.add_provider("test-provider", ProviderProtocol.OLLAMA)
     pages = ["/", "/chat", "/my-keys", "/decisions", f"/providers/{provider.id}"]
     expected = ["/#providers-pane", "/#benchmarks-pane", "/#models-pane", "/chat"]

@@ -129,6 +129,21 @@ described in their git tags and GitHub Releases.
   ping, traceroute, ip and ps are gone from the released image (the
   development image keeps them). The README shows Python one-liners and a
   sidecar container for checking reachability instead.
+- **The first dashboard administrator comes from the environment.** With no
+  dashboard accounts the dashboard used to be open to anyone, and whoever
+  reached it first could create the administrator. Now it is locked and only
+  shows how to set `LLAMA_ROUTER_ADMIN_USERNAME` and
+  `LLAMA_ROUTER_ADMIN_PASSWORD`; llama-router creates that account at startup
+  while there are none. SSO can create the first account only for a member of
+  `LLAMA_ROUTER_OIDC_ADMIN_GROUP`. **Breaking:** set the variables before
+  starting a new install, or after clearing the accounts.
+- **New installs require API keys.** Requests without a key are refused unless
+  *Accept requests without an API key* is turned on (llama-router warns at
+  startup while it is). Routers that already have providers, API keys or
+  dashboard accounts keep their setting. A missing setting now means "refuse".
+- **A wrong API key is always refused.** A request that sends a key that does
+  not resolve gets 401 even when requests without a key are accepted, instead
+  of quietly being served as anonymous.
 
 ### Fixed
 

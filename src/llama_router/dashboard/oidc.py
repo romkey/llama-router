@@ -111,8 +111,10 @@ class OIDCConfig:
     @property
     def password_login_enabled(self) -> bool:
         # OIDC_ONLY takes effect only while SSO actually works; a broken
-        # configuration must not lock out every account.
-        return not (self.usable and self.only)
+        # configuration must not lock out every account. Nor without an
+        # admin group: SSO then makes no administrators, and the local one
+        # from LLAMA_ROUTER_ADMIN_* is the only way to manage the router.
+        return not (self.usable and self.only and self.admin_group)
 
     def problems(self) -> list[str]:
         """Configuration errors that stop OIDC from working at all."""
@@ -577,14 +579,12 @@ async def sign_in(
     # The first account is always approved: nobody could approve it.
     approved = not cfg.require_approval
     if await db.count_dashboard_users() == 0:
-        approved = True
-        if not cfg.admin_group:
-            # Same rule as local accounts: the first account administers.
-            is_admin = True
-        elif not is_admin:
-            # A non-admin first account would close the open bootstrap
-            # dashboard with nobody able to manage it.
+        if not is_admin:
+            # Only the admin group may create the first account: without one,
+            # whoever signed in first would claim the router, and a non-admin
+            # first account would leave nobody able to manage it.
             raise OIDCError("first_admin", "first sign-in is not an administrator")
+        approved = True
 
     base = base_username(claims)
     for n in range(1, 1000):
