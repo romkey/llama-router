@@ -25,6 +25,8 @@ worker refuses to relay (403 "worker does not allow ...").
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -326,6 +328,61 @@ def normalize_base_url(url: str) -> str:
     return raw
 
 
+# Cloud instance metadata services (AWS, GCP, Azure, ...) hand out
+# credentials to anything on the instance that asks. A provider URL must never
+# reach them. Private and loopback addresses stay allowed: local providers are
+# the normal case.
+_METADATA_V4 = ipaddress.ip_network("169.254.0.0/16")
+_METADATA_V6 = ipaddress.ip_address("fd00:ec2::254")
+_RESOLVE_TIMEOUT_S = 3.0
+
+
+class BlockedAddressError(ValueError):
+    """A provider URL points somewhere the router must never connect to."""
+
+
+def is_metadata_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True for a link-local IPv4 address or AWS's IPv6 metadata address."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped in _METADATA_V4
+        return ip == _METADATA_V6
+    return ip in _METADATA_V4
+
+
+async def check_not_metadata(url: str) -> None:
+    """Raise BlockedAddressError if *url*'s host is, or resolves to, a cloud metadata
+    address. A host that does not resolve passes: it may be offline now."""
+    host = urlparse((url or "").strip()).hostname
+    if not host:
+        return
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        ips = [literal]
+    else:
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await asyncio.wait_for(
+                loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
+                _RESOLVE_TIMEOUT_S,
+            )
+        except OSError, TimeoutError, UnicodeError:
+            return
+        ips = []
+        for info in infos:
+            try:
+                ips.append(ipaddress.ip_address(str(info[4][0]).split("%")[0]))
+            except ValueError:
+                continue
+    if any(is_metadata_ip(ip) for ip in ips):
+        raise BlockedAddressError(
+            "URL points at a cloud metadata address, which is not allowed"
+        )
+
+
 def _classify(resp: httpx.Response) -> str:
     code = resp.status_code
     if 200 <= code < 300:
@@ -542,6 +599,9 @@ async def probe_url(
     if key_sent is None:
         key_sent = bool(api_key or headers)
     base = normalize_base_url(base_url)
+    if transport is None:
+        # A custom transport (a worker's socket) does not dial the URL's host.
+        await check_not_metadata(base)
     result = ProbeResult(base_url=base)
     if headers is None and api_key:
         headers = auth_headers(api_key, api_key_header)
