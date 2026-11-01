@@ -528,6 +528,7 @@ Then set:
 | `LLAMA_ROUTER_OIDC_CLIENT_SECRET` | empty | Client secret. |
 | `LLAMA_ROUTER_OIDC_ADMIN_GROUP` | empty | Members are administrators. |
 | `LLAMA_ROUTER_OIDC_ALLOWED_GROUP` | empty | If set, only members (and admins) may sign in. |
+| `LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL` | `false` | New SSO accounts wait for an administrator to approve them on the **Users** page. |
 | `LLAMA_ROUTER_OIDC_GROUPS_CLAIM` | `groups` | Claim holding the groups. Dots reach nested claims. |
 | `LLAMA_ROUTER_OIDC_SCOPES` | `openid profile email groups` | Requested scopes. |
 | `LLAMA_ROUTER_OIDC_REDIRECT_BASE_URL` | empty | External dashboard URL, e.g. `https://llm.example.org`. Empty uses the request's host and `X-Forwarded-*` headers. |
@@ -536,14 +537,18 @@ Then set:
 | `LLAMA_ROUTER_OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the provider on logout. |
 | `LLAMA_ROUTER_OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only. |
 
-Behind HTTPS, also set `LLAMA_ROUTER_DASHBOARD_COOKIE_SECURE=true`. The **Users** page shows the issuer, callback URL and group rules in effect, and marks SSO accounts.
+Session cookies are marked Secure when the request arrives over HTTPS or with `X-Forwarded-Proto: https` from a reverse proxy; set `LLAMA_ROUTER_DASHBOARD_COOKIE_SECURE=true` to always mark them. The **Users** page shows the issuer, callback URL and group rules in effect, and marks SSO accounts.
+
+Set at least one of `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`, `LLAMA_ROUTER_OIDC_ADMIN_GROUP` or `LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL`. With none of them, anyone your provider authenticates (for Google, any Google account) can use the dashboard; the router logs an error at startup and the **Users** page shows a warning.
 
 How accounts behave:
 
 - **First sign-in creates the account.** It is matched to the provider by issuer and subject, never by email, so SSO cannot take over a local account. If the username is taken, a number is appended.
-- **Roles follow the provider.** The admin flag is recomputed from the groups claim at every sign-in. A removed admin loses access at their next sign-in. Sessions last up to 14 days.
+- **Roles follow the provider.** The admin flag is recomputed from the groups claim at every sign-in; a change ends the account's other sessions. SSO sessions last up to 12 hours (local ones 14 days), so someone removed at the provider loses the dashboard within half a day.
+- **Approval.** With `LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL`, a new SSO account is created as *Pending approval* and told so at sign-in; an administrator clicks **Approve** on the **Users** page. The very first account is approved automatically. Existing accounts are not affected.
 - **Groups.** If the ID token has no groups claim, the userinfo endpoint is asked.
 - **No passwords.** SSO accounts cannot use password sign-in and cannot be given a password.
+- **Signing out.** **Everywhere** next to **Log out** ends all of your sessions; **Sign out** on the **Users** page does it for another account. Changing a password does it too.
 - **Removing access.** Deleting an SSO account on the **Users** page signs it out, but the account is recreated at the person's next sign-in. To keep someone out, remove them at the provider or set `LLAMA_ROUTER_OIDC_ALLOWED_GROUP`.
 - **First account.** With no accounts at all, the dashboard is locked. Create the first administrator with `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD`, or, if an admin group is set, by signing in through SSO as a member of it. Without an admin group SSO cannot create the first account, since whoever signed in first would own the router.
 - **Break-glass.** Keep one local administrator, or use the lockout steps above, in case the provider is unreachable.
@@ -744,7 +749,7 @@ Add `[postgres]` or `[mysql]` for those databases (the Docker image already incl
 
 ### Dashboard login lockout (forgot password)
 
-The dashboard always requires sign-in. Passwords are stored hashed; they cannot be read back. If you lose the password, clear the dashboard user table and restart with `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD` set; the new administrator is created at startup. The dashboard stays locked while there are no accounts.
+The dashboard always requires sign-in. Passwords are stored hashed; they cannot be read back. After five failed password sign-ins in a row, from one address or for one username, further attempts get HTTP 429 for a delay that doubles with each failure, up to five minutes; a restart clears it. If you lose the password, clear the dashboard user table and restart with `LLAMA_ROUTER_ADMIN_USERNAME` and `LLAMA_ROUTER_ADMIN_PASSWORD` set; the new administrator is created at startup. The dashboard stays locked while there are no accounts.
 
 **Docker Compose** (the image keeps the database at `/app/data/llama_router.db`; with the development setup, drop `-f docker-compose.prod.yaml`):
 

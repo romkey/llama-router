@@ -40,7 +40,8 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `SESSION_SECRET` | *(empty)* | Secret for signing session cookies, encrypting stored provider keys and the worker hub token, and peppering client API key hashes. Empty: cookies use a random secret kept in the database; the rest use a random secret kept in `SECRET_KEY_PATH` |
 | `SECRET_KEY_PATH` | *(empty)* | File holding the generated secret when `SESSION_SECRET` is empty, created with mode 0600 and never stored in the database. Empty: `secret.key` beside the SQLite database (`/app/data/secret.key` in the Docker image). Back it up with the database: without it stored provider keys must be entered again and client API keys reissued |
-| `DASHBOARD_COOKIE_SECURE` | `false` | Send session cookies over HTTPS only. Set `true` behind TLS |
+| `DASHBOARD_COOKIE_SECURE` | `false` | Always send session cookies over HTTPS only. Without it they are Secure whenever the request came over HTTPS or with `X-Forwarded-Proto: https` |
+| `DASHBOARD_TRUSTED_ORIGINS` | *(empty)* | Comma-separated extra origins (`https://llm.example.org`) allowed to POST to the dashboard. The dashboard refuses state-changing requests whose `Sec-Fetch-Site` or `Origin` says they come from another site; needed only behind a plain-HTTP proxy that rewrites `Host` without setting `X-Forwarded-Host`. `OIDC_REDIRECT_BASE_URL` is always trusted |
 | `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
 | `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
@@ -52,6 +53,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `OIDC_GROUPS_CLAIM` | `groups` | Claim holding the user's groups; dots reach nested claims (Keycloak: `realm_access.roles`) |
 | `OIDC_ADMIN_GROUP` | *(empty)* | Members are dashboard administrators |
 | `OIDC_ALLOWED_GROUP` | *(empty)* | If set, only members (and admins) may sign in |
+| `OIDC_REQUIRE_APPROVAL` | `false` | New SSO accounts wait for an administrator's approval on the Users page |
 | `OIDC_REDIRECT_BASE_URL` | *(empty)* | External dashboard URL, e.g. `https://llm.example.org`; the callback is `{base}/login/oidc/callback`. Empty uses the request's host and `X-Forwarded-*` headers |
 | `OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with …" |
 | `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. Ignored without `OIDC_ADMIN_GROUP` |

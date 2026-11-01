@@ -8,7 +8,13 @@
 <div class="alert alert-success py-2">User created.</div>
 {% endif %}
 {% if query_updated %}
-<div class="alert alert-success py-2">Password updated.</div>
+<div class="alert alert-success py-2">Password updated. The account's other sessions were signed out.</div>
+{% endif %}
+{% if query_approved %}
+<div class="alert alert-success py-2">Account approved.</div>
+{% endif %}
+{% if query_signed_out %}
+<div class="alert alert-success py-2">All of that account's sessions were signed out.</div>
 {% endif %}
 {% if query_error == 'exists' %}
 <div class="alert alert-warning py-2">That username is already taken.</div>
@@ -34,11 +40,14 @@
             <ul class="mb-0">{% for p in oidc_problems %}<li>{{ p }}</li>{% endfor %}</ul>
         </div>
         {% endif %}
+        {% for w in oidc_warnings %}
+        <div class="alert alert-warning py-2 mb-3"><i class="bi bi-exclamation-triangle me-1"></i>{{ w }}</div>
+        {% endfor %}
         <dl class="row mb-0">
             <dt class="col-sm-3">Issuer</dt><dd class="col-sm-9"><code>{{ oidc.issuer }}</code></dd>
             <dt class="col-sm-3">Callback URL</dt><dd class="col-sm-9"><code>{{ oidc_callback }}</code>{% if not oidc.redirect_base_url %} <span class="text-muted">(from this request; set <code>LLAMA_ROUTER_OIDC_REDIRECT_BASE_URL</code> to pin it)</span>{% endif %}</dd>
             <dt class="col-sm-3">Administrators</dt><dd class="col-sm-9">{% if oidc.admin_group %}members of <code>{{ oidc.admin_group }}</code> in the <code>{{ oidc.groups_claim }}</code> claim{% else %}<span class="text-muted">no admin group; only the first account is an administrator</span>{% endif %}</dd>
-            <dt class="col-sm-3">Who may sign in</dt><dd class="col-sm-9">{% if oidc.allowed_group %}members of <code>{{ oidc.allowed_group }}</code> or the admin group{% else %}anyone the identity provider authenticates{% endif %}</dd>
+            <dt class="col-sm-3">Who may sign in</dt><dd class="col-sm-9">{% if oidc.allowed_group %}members of <code>{{ oidc.allowed_group }}</code> or the admin group{% else %}anyone the identity provider authenticates{% endif %}{% if oidc.require_approval %}; new accounts wait for an administrator's approval{% endif %}</dd>
             <dt class="col-sm-3">Password sign-in</dt><dd class="col-sm-9">{% if not oidc.password_login_enabled %}disabled{% elif oidc.only and not oidc.admin_group %}enabled for local accounts (<code>LLAMA_ROUTER_OIDC_ONLY</code> is ignored without <code>LLAMA_ROUTER_OIDC_ADMIN_GROUP</code>){% elif oidc.only %}enabled for local accounts (<code>LLAMA_ROUTER_OIDC_ONLY</code> is ignored until single sign-on works){% else %}enabled for local accounts{% endif %}</dd>
         </dl>
         <p class="text-muted mb-0 mt-2">Roles of single sign-on accounts follow the identity provider and are updated at each sign-in. Settings come from <code>LLAMA_ROUTER_OIDC_*</code> environment variables.</p>
@@ -95,10 +104,19 @@
                             {% for u in dashboard_users %}
                             <tr>
                                 <td><code>{{ u.username }}</code>{% if u.display_name and u.display_name != u.username %}<div class="small text-muted">{{ u.display_name }}</div>{% endif %}</td>
-                                <td>{% if u.is_admin %}<span class="badge bg-primary">Admin</span>{% else %}<span class="badge bg-secondary">Viewer</span>{% endif %}</td>
+                                <td>{% if u.is_admin %}<span class="badge bg-primary">Admin</span>{% else %}<span class="badge bg-secondary">Viewer</span>{% endif %}{% if not u.approved %} <span class="badge text-bg-warning">Pending approval</span>{% endif %}</td>
                                 <td>{% if u.auth_source == 'oidc' %}<span class="badge text-bg-info" title="Role managed by the identity provider">SSO</span>{% if u.email %}<div class="small text-muted">{{ u.email }}</div>{% endif %}{% else %}<span class="badge text-bg-light border">Local</span>{% endif %}</td>
                                 <td class="small text-muted text-nowrap">{% if u.last_login_at %}{{ u.last_login_at | localtime }}{% else %}never{% endif %}</td>
                                 <td class="text-end text-nowrap">
+                                    {% if not u.approved %}
+                                    <form method="post" action="/users/{{ u.id }}/approve" class="d-inline">
+                                        <button type="submit" class="btn btn-sm btn-success">Approve</button>
+                                    </form>
+                                    {% else %}
+                                    <form method="post" action="/users/{{ u.id }}/sign-out" class="d-inline" onsubmit="return confirm('Sign {{ u.username }} out of every browser?');">
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary" title="End every session of this account">Sign out</button>
+                                    </form>
+                                    {% endif %}
                                     {% if u.auth_source != 'oidc' %}
                                     <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#pw-{{ u.id }}">Set password</button>
                                     {% endif %}

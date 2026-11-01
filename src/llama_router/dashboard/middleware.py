@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import secrets
 import time
+from urllib.parse import urlsplit
 
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -118,6 +119,65 @@ def _own_data_path(path: str) -> bool:
     )
 
 
+_LOGOUT_PATHS = ("/logout", "/logout/everywhere")
+_SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def _netloc(scheme: str, netloc: str) -> str:
+    """*netloc* lowercased, without the default port for *scheme*."""
+    n = netloc.strip().lower()
+    for s, port in (("http", ":80"), ("https", ":443")):
+        if scheme in (s, "") and n.endswith(port):
+            return n[: -len(port)]
+    return n
+
+
+def _trusted_origins() -> set[str]:
+    out = set()
+    extra = settings.dashboard_trusted_origins.split(",")
+    for raw in [settings.oidc_redirect_base_url, *extra]:
+        u = urlsplit(raw.strip())
+        if u.scheme and u.netloc:
+            out.add(f"{u.scheme}://{_netloc(u.scheme, u.netloc)}")
+    return out
+
+
+def cross_site_refusal(request: Request) -> str | None:
+    """Why a state-changing request looks forged by another site, or None.
+
+    Browsers send ``Sec-Fetch-Site`` on HTTPS (and localhost); it is set by
+    the browser and cannot be forged by a page. Over plain HTTP they still
+    send ``Origin`` on every POST, which must name this dashboard's host.
+    A request with neither header comes from a script, curl or a very old
+    browser: it is let through, since no current browser leaves both out of
+    a cross-site POST, and the SameSite=Lax session cookie is not sent on
+    one anyway.
+    """
+    if request.method in _SAFE_METHODS:
+        return None
+    origin = (request.headers.get("origin") or "").strip()
+    u = urlsplit(origin) if origin and origin != "null" else None
+    canonical = f"{u.scheme}://{_netloc(u.scheme, u.netloc)}" if u else None
+    if canonical is not None and canonical in _trusted_origins():
+        return None
+    site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if site in ("same-origin", "none"):
+        return None
+    if site:
+        return f"Sec-Fetch-Site: {site}"
+    if not origin:
+        return None
+    if u is None:
+        return "Origin: null"
+    hosts = {
+        _netloc("", request.headers.get("host") or request.url.netloc),
+        _netloc("", request.headers.get("x-forwarded-host", "").split(",")[0]),
+    }
+    if _netloc(u.scheme, u.netloc) in hosts:
+        return None
+    return f"Origin: {origin}"
+
+
 SETUP_REQUIRED_DETAIL = (
     "No dashboard accounts: set LLAMA_ROUTER_ADMIN_USERNAME and "
     "LLAMA_ROUTER_ADMIN_PASSWORD and restart llama-router"
@@ -174,6 +234,17 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
         if path == "/metrics" and _metrics_token_ok(request):
             return await call_next(request)
 
+        # Before sign-in handling, so a forged POST /login (signing the
+        # victim in as the attacker) is refused too.
+        refusal = cross_site_refusal(request)
+        if refusal is not None:
+            logger.warning(
+                "Refused cross-site %s %s (%s)", request.method, path, refusal
+            )
+            return JSONResponse(
+                status_code=403, content={"detail": "Cross-site request refused"}
+            )
+
         if path == "/login" or path.startswith("/login"):
             return await call_next(request)
 
@@ -194,11 +265,12 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
 
         secret = await deps.get_dashboard_session_secret()
         raw = request.cookies.get(AUTH_COOKIE)
-        uid = unsign_session(raw, secret) if raw else None
+        session = unsign_session(raw, secret) if raw else None
         user: DashboardUser | None = None
-        if uid is not None:
-            row = await db.get_dashboard_user_by_id(uid)
-            if row:
+        if session is not None:
+            row = await db.get_dashboard_user_by_id(session.user_id)
+            # Revoked (session_version bumped), expired, or awaiting approval.
+            if row and session.valid_for(row):
                 user = DashboardUser(
                     id=row["id"],
                     username=row["username"],
@@ -223,7 +295,7 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
 
         request.state.dashboard_user = user
 
-        if user and request.method == "POST" and path == "/logout":
+        if user and request.method == "POST" and path in _LOGOUT_PATHS:
             return await call_next(request)
 
         if not user.is_admin:

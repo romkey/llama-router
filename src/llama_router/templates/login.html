@@ -11,6 +11,10 @@
                 <h2 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Sign in</h2>
                 {% if error == 'invalid' %}
                 <div class="alert alert-danger py-2">Invalid username or password.</div>
+                {% elif error == 'throttled' %}
+                <div class="alert alert-danger py-2">Too many failed sign-in attempts. Try again in {{ retry_after }} second{% if retry_after != 1 %}s{% endif %}.</div>
+                {% elif error == 'oidc_pending' %}
+                <div class="alert alert-info py-2">Your account was created and is waiting for an administrator to approve it. Sign in again once they have.</div>
                 {% elif error == 'oidc_denied' %}
                 <div class="alert alert-warning py-2">Sign-in was cancelled or refused by the identity provider.</div>
                 {% elif error == 'oidc_not_member' %}
