@@ -321,9 +321,13 @@ async def test_hub_headers_from_clients_count_for_nothing(
         assert RELAY_HEADER not in req.headers
 
     # The token counts only from this machine.
-    remote = await _request({**VIA, PROVIDER_HEADER: "1"}, host="192.0.2.7")
-    assert not from_hub(remote)
-    assert hub_provider(remote) is None
+    for host in ("192.0.2.7", "::ffff:192.0.2.7", "not-an-ip"):
+        remote = await _request({**VIA, PROVIDER_HEADER: "1"}, host=host)
+        assert not from_hub(remote)
+        assert hub_provider(remote) is None
+    # Loopback over IPv6, or IPv4 as a dual-stack socket reports it.
+    for host in ("::1", "::ffff:127.0.0.1"):
+        assert from_hub(await _request(VIA, host=host))
 
     genuine = await _request({**VIA, PROVIDER_HEADER: "1"})
     assert from_hub(genuine)

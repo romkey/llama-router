@@ -17,6 +17,7 @@ never logged. :func:`is_own_relay` and ``auth.from_hub`` read the scope.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import secrets
 
 from starlette.requests import Request
@@ -31,7 +32,6 @@ RELAY_HEADER = "X-Llama-Router-Relay"
 SCOPE_KEY = "llama_router.hub_relay"
 
 _TOKEN = secrets.token_urlsafe(32)
-_LOOPBACK = frozenset({"127.0.0.1", "::1"})
 _STRIP = frozenset(
     h.lower().encode("latin-1") for h in (HUB_HEADER, PROVIDER_HEADER, RELAY_HEADER)
 )
@@ -40,6 +40,18 @@ _STRIP = frozenset(
 def relay_token() -> str:
     """The token the worker link sends in ``RELAY_HEADER``."""
     return _TOKEN
+
+
+def _loopback(host: object) -> bool:
+    """*host*, the TCP peer, is this machine. A dual-stack socket reports
+    IPv4 peers as ``::ffff:127.0.0.1``, which counts too."""
+    try:
+        addr = ipaddress.ip_address(str(host))
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.is_loopback
 
 
 def is_own_relay(request: Request) -> bool:
@@ -75,10 +87,10 @@ class HubRelayMiddleware:
         scope["headers"] = kept
         scope.pop(SCOPE_KEY, None)
         client = scope.get("client")
-        peer = client[0] if client else None
         if (
             token
-            and peer in _LOOPBACK
+            and client
+            and _loopback(client[0])
             and hmac.compare_digest(token.encode(), _TOKEN.encode())
         ):
             hub = via.lower() == HUB_HEADER_VALUE
