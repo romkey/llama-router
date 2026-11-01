@@ -17,8 +17,6 @@ open a pull request; CI and Lint must pass before it can merge.
   `LLAMA_ROUTER_DATABASE_URL`. The owner agreed to keep this.
 - **Compose service name** is `llama-router`, not `app`, so existing
   `docker compose exec llama-router ...` commands keep working.
-- **Production image** keeps network debugging tools (ping, dig, curl,
-  nc, traceroute...) for `docker compose exec`; see the README.
 - **Environment variables** use the `LLAMA_ROUTER_` prefix (pydantic-settings
   in `config.py`).
 
