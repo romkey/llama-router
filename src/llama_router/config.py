@@ -112,9 +112,17 @@ class Settings(BaseSettings):
     metrics_token: str = ""
     cache_enabled: bool = True
     cache_dir: str = "./model_cache"
-    cache_host: str = "0.0.0.0"  # noqa: S104  # containers bind all interfaces
+    cache_host: str = "127.0.0.1"
+    """Cache bind address. Loopback by default: the cache is unauthenticated
+    unless ``cache_token`` is set, so exposing it to the LAN is opt-in."""
     cache_port: int = 9200
     cache_external_host: str = ""
+    cache_token: str = ""
+    """When set, every cache request must send ``Authorization: Bearer <token>``.
+    Stock Ollama cannot send one; use it with a reverse proxy that adds it."""
+    cache_max_bytes: int = 0
+    """Upper bound on cached blob bytes; least recently used blobs are evicted
+    after each download to stay under it. 0 means unlimited."""
     cache_manifest_ttl_hours: int = 240
     cache_max_concurrent_blobs: int = 4
     sentry_dsn: str = ""

@@ -22,7 +22,6 @@ services:
     ports:
       - "80:80"         # dashboard
       - "8080:8080"     # OpenAI-compatible API
-      - "9200:9200"     # Ollama registry cache
       - "11434:11434"   # Ollama API and worker links
     volumes:
       - llama-router-data:/app/data

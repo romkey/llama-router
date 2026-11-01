@@ -184,7 +184,9 @@ async def run() -> None:
         from .registry_cache.cache import BlobCache
 
         cache_blob_cache = BlobCache(
-            settings.cache_dir, settings.cache_manifest_ttl_hours
+            settings.cache_dir,
+            settings.cache_manifest_ttl_hours,
+            settings.cache_max_bytes,
         )
         init_cache(cache_blob_cache)
         dash_deps.init_cache(cache_blob_cache)
