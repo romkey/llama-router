@@ -113,6 +113,22 @@ def test_lru_eviction_keeps_cache_under_max_bytes(tmp_path):
     assert cache.stats()["blob_bytes"] <= 250
 
 
+def test_eviction_spares_recently_used_blobs(tmp_path):
+    # A blob handed out by a hit (touched) must survive while Ollama fetches
+    # it, even if the cache is over its limit for a while.
+    cache = BlobCache(str(tmp_path / "cache"), max_bytes=150)
+    in_use = _put_blob(cache, b"a" * 100, 1000)
+    cache.touch_blob(in_use)
+    new = _put_blob(cache, b"b" * 100, 2000)
+    assert cache.has_blob(in_use)
+    assert cache.has_blob(new)
+    # Once it goes stale, the next eviction catches up.
+    import os
+
+    os.utime(cache.blob_path(in_use), (1000, 1000))
+    assert cache.evict() == [in_use]
+
+
 def test_eviction_never_drops_the_new_blob(tmp_path):
     cache = BlobCache(str(tmp_path / "cache"), max_bytes=10)
     big = _put_blob(cache, b"z" * 100, 1)

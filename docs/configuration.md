@@ -91,7 +91,7 @@ values once saved.
 | `CACHE_PORT` | `9200` | Cache port |
 | `CACHE_EXTERNAL_HOST` | *(empty)* | Host or IP Ollama backends use to reach the cache, e.g. `192.168.1.50`. Empty means `127.0.0.1`, which only works when Ollama runs on the same machine. Also used for the blob `Location` header (relative when empty) |
 | `CACHE_TOKEN` | *(empty)* | When set, every cache request must send `Authorization: Bearer <token>`, else 401. Stock Ollama cannot send it, so use it only behind a reverse proxy that adds the header |
-| `CACHE_MAX_BYTES` | `0` | Cap on cached blob bytes; least recently used blobs are evicted after each download to stay under it. `0` is unlimited |
+| `CACHE_MAX_BYTES` | `0` | Cap on cached blob bytes; least recently used blobs are evicted after each download to stay under it; blobs used in the last 15 minutes are spared, so it can run over while pulls are in flight. `0` is unlimited |
 | `CACHE_MANIFEST_TTL_HOURS` | `240` | Hours before a cached manifest is fetched again |
 | `CACHE_MAX_CONCURRENT_BLOBS` | `4` | Parallel blob downloads when pre-caching a model from the dashboard |
 

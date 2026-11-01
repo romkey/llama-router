@@ -359,6 +359,7 @@ async def get_blob(name: str, digest: str) -> Response:
         await event.wait()
         if cache.has_blob(digest):
             cache.blob_hits += 1
+            cache.touch_blob(digest)
             size = cache.blob_size(digest)
             logger.info(
                 "Blob served from cache after wait: %s (%s)",
@@ -482,6 +483,8 @@ async def precache_model(
         if not digest:
             return
         if cache.has_blob(digest):
+            # Mark it used so evicting for this model's other layers spares it.
+            cache.touch_blob(digest)
             if progress_callback:
                 progress_callback(
                     f"blob {i}/{total} already cached ({_human_bytes(size)})"
@@ -489,6 +492,7 @@ async def precache_model(
             return
         async with sem:
             if cache.has_blob(digest):
+                cache.touch_blob(digest)
                 if progress_callback:
                     progress_callback(
                         f"blob {i}/{total} already cached ({_human_bytes(size)})"

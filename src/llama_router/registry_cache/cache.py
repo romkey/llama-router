@@ -65,6 +65,9 @@ def sha256_digest(data: bytes) -> str:
 
 
 class BlobCache:
+    # Blobs used more recently than this are never evicted (see evict()).
+    EVICT_GRACE_SECONDS = 15 * 60
+
     def __init__(
         self,
         cache_dir: str,
@@ -222,11 +225,16 @@ class BlobCache:
     def evict(self, keep: str | None = None) -> list[str]:
         """Delete least recently used blobs until the cache fits ``max_bytes``.
 
-        *keep* (the blob just committed) is never evicted.  Returns the
+        *keep* (the blob just committed) is never evicted, nor is any blob
+        used within ``EVICT_GRACE_SECONDS``: a hit hands Ollama a ``Location``
+        it fetches in later (ranged) requests, each of which touches the blob,
+        so a blob in use must survive until that pull finishes.  The cache can
+        therefore exceed ``max_bytes`` while pulls are in flight.  Returns the
         evicted digests; a ``max_bytes`` of 0 means unlimited.
         """
         if self._max_bytes <= 0:
             return []
+        recent = time.time() - self.EVICT_GRACE_SECONDS
         blobs: list[tuple[float, int, Path]] = []
         total = 0
         for f in self._blobs_dir.iterdir():
@@ -237,8 +245,8 @@ class BlobCache:
             blobs.append((st.st_mtime, st.st_size, f))
         keep_name = keep.removeprefix("sha256:") if keep else None
         evicted: list[str] = []
-        for _mtime, size, f in sorted(blobs, key=lambda b: b[0]):
-            if total <= self._max_bytes:
+        for mtime, size, f in sorted(blobs, key=lambda b: b[0]):
+            if total <= self._max_bytes or mtime >= recent:
                 break
             if f.name == keep_name:
                 continue

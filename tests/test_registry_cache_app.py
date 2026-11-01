@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -248,9 +249,22 @@ async def test_precache_model_downloads_all_blobs(
     httpx_mock.add_response(
         url=f"{UP}/v2/library/llama3/manifests/latest", content=MANIFEST
     )
+    os.utime(cache.blob_path(DIGEST), (1000, 1000))
     messages.clear()
     await rc.precache_model(cache, "llama3:latest", messages.append)
     assert any("already cached" in m for m in messages)
+    # Already-cached layers are marked used, so LRU eviction spares them.
+    assert cache.blob_path(DIGEST).stat().st_mtime > 1000
+
+
+async def test_blob_hit_marks_blob_used(
+    env: tuple[BlobCache, httpx.AsyncClient],
+) -> None:
+    cache, client = env
+    _commit(cache, DIGEST, BLOB)
+    os.utime(cache.blob_path(DIGEST), (1000, 1000))
+    await client.get(f"/v2/library/m/blobs/{DIGEST}")
+    assert cache.blob_path(DIGEST).stat().st_mtime > 1000
 
 
 async def test_precache_manifest_failure(
