@@ -472,9 +472,43 @@ async def test_unknown_key_is_rejected(db: Database):
     with pytest.raises(HTTPException) as err:
         await routing_preferences_from_request(db, _key_request("lrk_nope"))
     assert err.value.status_code == 401
-    # Turning on open access applies at once.
+    # A key that is presented must be valid, even with open access on.
     await db.set_allow_unauthenticated(True)
-    assert await routing_preferences_from_request(db, _key_request("lrk_nope")) is None
+    with pytest.raises(HTTPException) as err:
+        await routing_preferences_from_request(db, _key_request("lrk_nope"))
+    assert err.value.status_code == 401
+
+
+def _relay_request(token: str, host: str = "127.0.0.1") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/chat",
+            "headers": [(b"x-llama-router-relay", token.encode())],
+            "client": (host, 50000),
+        }
+    )
+
+
+async def test_own_worker_relay_needs_no_key(db: Database):
+    """Hub jobs the worker replays to its own router pass without a key."""
+    from fastapi import HTTPException
+
+    from llama_router.worker_link.relay import relay_token
+
+    await db.set_allow_unauthenticated(False)
+    assert (
+        await routing_preferences_from_request(db, _relay_request(relay_token()))
+        is None
+    )
+    for req in (
+        _relay_request("not-the-token"),
+        _relay_request(relay_token(), host="192.0.2.7"),
+    ):
+        with pytest.raises(HTTPException) as err:
+            await routing_preferences_from_request(db, req)
+        assert err.value.status_code == 401
 
 
 async def test_legacy_sha256_keys_still_work(db: Database):

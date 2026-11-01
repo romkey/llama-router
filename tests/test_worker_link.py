@@ -30,6 +30,7 @@ from llama_router.worker_link.hub import (
     worker_token_hash,
     worker_token_prefix,
 )
+from llama_router.worker_link.relay import relay_token
 from llama_router.worker_link.worker import (
     WorkerClient,
     normalize_hub_url,
@@ -119,6 +120,7 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
         "chat_bodies": [],
         "stream_cancelled": False,
         "api_keys": [],
+        "relay": [],
         "v1_chat_bodies": [],
         "systemone_bodies": [],
         "serve_systemone": True,
@@ -131,6 +133,7 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
     @app.get("/api/version")
     async def version(request: Request):
         seen["api_keys"].append(request.headers.get("api-key"))
+        seen["relay"].append(request.headers.get("x-llama-router-relay"))
         return {"version": "0.0-test"}
 
     @app.get("/api/tags")
@@ -387,6 +390,22 @@ async def test_upstream_api_key_is_added_by_worker(link) -> None:
     client = link["pm"].get_ollama_client(link["provider_id"])
     assert await client.is_reachable()
     assert "local-key" in link["seen"]["api_keys"]
+
+
+async def test_relay_token_goes_only_to_this_router(link) -> None:
+    """The in-process token is sent to the default loopback upstreams only."""
+    await _connected_worker(link)
+    client = link["pm"].get_ollama_client(link["provider_id"])
+    assert await client.is_reachable()
+    assert link["seen"]["relay"]
+    assert set(link["seen"]["relay"]) == {None}
+
+
+async def test_relay_token_added_for_own_router(link) -> None:
+    await _connected_worker(link, relay_targets=frozenset({"ollama"}))
+    client = link["pm"].get_ollama_client(link["provider_id"])
+    assert await client.is_reachable()
+    assert link["seen"]["relay"][-1] == relay_token()
 
 
 async def test_abandoned_stream_cancels_upstream(link) -> None:

@@ -480,3 +480,52 @@ def test_oidc_migration_keeps_local_users_and_allows_passwordless(
             )
     finally:
         con.close()
+
+
+def _anonymous_setting(dbfile: Path) -> str:
+    con = sqlite3.connect(dbfile)
+    try:
+        row = con.execute(
+            "SELECT value FROM app_settings WHERE key = 'allow_unauthenticated'"
+        ).fetchone()
+        return str(row[0])
+    finally:
+        con.close()
+
+
+def test_new_install_denies_anonymous_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    dbfile = tmp_path / "fresh.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    run_upgrade_sync(config.settings.sync_database_url_for_alembic())
+    assert _anonymous_setting(dbfile) == "false"
+
+
+@pytest.mark.parametrize(
+    "in_use",
+    [
+        "INSERT INTO providers (name) VALUES ('gpu')",
+        "INSERT INTO api_keys (key_prefix, key_hash) VALUES ('lrk_', 'h')",
+        "INSERT INTO dashboard_users (username, password_hash, is_admin) "
+        "VALUES ('alice', 'aa:bb', 1)",
+    ],
+)
+def test_existing_install_keeps_anonymous_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, in_use: str
+) -> None:
+    """A router already in use may rely on anonymous access; leave it."""
+    dbfile = tmp_path / "in_use.db"
+    monkeypatch.setattr(config.settings, "database_url", "")
+    monkeypatch.setattr(config.settings, "database_path", str(dbfile))
+    sync_url = config.settings.sync_database_url_for_alembic()
+    command.upgrade(_alembic_cfg(sync_url), "024_api_key_owner")
+    con = sqlite3.connect(dbfile)
+    try:
+        con.execute(in_use)
+        con.commit()
+    finally:
+        con.close()
+    run_upgrade_sync(sync_url)
+    assert _anonymous_setting(dbfile) == "true"
