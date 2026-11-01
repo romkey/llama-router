@@ -26,6 +26,17 @@ described in their git tags and GitHub Releases.
   restores the old behaviour. Tier-only policies still fall back to the
   requested model.
 
+- **Signed release images.** The release workflow signs each image with
+  cosign keyless signing (by digest, every platform); the README shows how to
+  verify one with `cosign verify`.
+- **GitHub Actions pinned to commit SHAs.** Every action in the workflows is
+  pinned to a full commit SHA with its version in a comment, and Renovate
+  keeps the digests current.
+- **No network tools in the production image.** curl, wget, nc, dig, host,
+  ping, traceroute, ip and ps are gone from the released image (the
+  development image keeps them). The README shows Python one-liners and a
+  sidecar container for checking reachability instead.
+
 ### Fixed
 
 - **Readable error rows in the request log.** Error highlights use soft burgundy
