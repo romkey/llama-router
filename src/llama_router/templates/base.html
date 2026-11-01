@@ -13,6 +13,17 @@
         .status-unknown { color: #6c757d; }
         .provider-card { transition: transform 0.15s ease-in-out; }
         .provider-card:hover { transform: translateY(-2px); }
+        /* Keep request-log details neutral and reserve blue for links. */
+        #log-table code { color: #d6dce5; }
+        #log-table a { color: #8bb9ff; }
+        #log-table .table-danger {
+            --bs-table-bg: #3b1b20;
+            --bs-table-color: #dee2e6;
+            --bs-table-border-color: #65383f;
+            --bs-table-hover-bg: #452329;
+            --bs-table-hover-color: #dee2e6;
+        }
+        #log-table .table-danger .text-muted { color: #bfc0c3 !important; }
     </style>
 </head>
 <body>

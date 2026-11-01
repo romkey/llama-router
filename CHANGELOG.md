@@ -7,6 +7,12 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Readable error rows in the request log.** Error highlights use soft burgundy
+  with blue links and neutral details, keeping timestamps, model names, metadata
+  and expanded error details readable both normally and on hover.
+
 ## [0.26.1] - 2026-10-31
 
 ### Fixed
