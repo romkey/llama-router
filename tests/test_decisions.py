@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from llama_router import decisions as d
+from llama_router.config import settings
 
 
 def _lp(*pairs: tuple[str, float]) -> list[dict]:
@@ -103,7 +104,7 @@ def test_rejects_empty_and_too_many_questions():
     q = {"type": "noul", "instructions": "x"}
     with pytest.raises(ValidationError):
         d.DecisionRequest.model_validate({**QUICKSTART, "questions": {}})
-    many = {f"q{i}": q for i in range(d.MAX_QUESTIONS + 1)}
+    many = {f"q{i}": q for i in range(settings.decision_max_questions + 1)}
     with pytest.raises(ValidationError):
         d.DecisionRequest.model_validate({**QUICKSTART, "questions": many})
 
@@ -111,8 +112,24 @@ def test_rejects_empty_and_too_many_questions():
 def test_rejects_oversized_state():
     with pytest.raises(ValidationError, match="state is longer"):
         d.DecisionRequest.model_validate(
-            {**QUICKSTART, "state": "x" * (d.MAX_STATE_CHARS + 1)}
+            {**QUICKSTART, "state": "x" * (settings.decision_max_state_chars + 1)}
         )
+
+
+def test_limits_default_small_and_follow_the_settings(monkeypatch):
+    assert settings.decision_max_questions == 8
+    assert settings.decision_max_state_chars == 32_000
+    q = {"type": "noul", "instructions": "x"}
+    nine = {f"q{i}": q for i in range(9)}
+    with pytest.raises(ValidationError, match="needs 1 to 8 questions"):
+        d.DecisionRequest.model_validate({**QUICKSTART, "questions": nine})
+    monkeypatch.setattr(settings, "decision_max_questions", 9)
+    monkeypatch.setattr(settings, "decision_max_state_chars", 10)
+    d.DecisionRequest.model_validate(
+        {**QUICKSTART, "state": "x" * 10, "questions": nine}
+    )
+    with pytest.raises(ValidationError, match="longer than 10 characters"):
+        d.DecisionRequest.model_validate({**QUICKSTART, "state": "x" * 11})
 
 
 # --- Prompts ---

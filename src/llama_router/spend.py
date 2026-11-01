@@ -10,12 +10,22 @@ from __future__ import annotations
 import weakref
 from datetime import UTC, datetime
 
+from fastapi import HTTPException
+
 from .database import Database
 
 
 def _day_start(now: datetime | None = None) -> datetime:
     now = now or datetime.now(UTC)
     return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+
+def cap_reached(cap: float) -> HTTPException:
+    """The error a key past its daily spend cap is refused with."""
+    return HTTPException(
+        status_code=429,
+        detail=f"daily spend cap of ${cap:.2f} reached for this API key",
+    )
 
 
 class SpendTracker:
