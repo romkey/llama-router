@@ -23,11 +23,16 @@ _DASHBOARD_ONLY = {"/health"}
 
 def api_routes(api_app: FastAPI) -> list[BaseRoute]:
     """The API app's routes, without FastAPI's docs and schema pages."""
+    # A page turned off (None) must not match routes that have no path.
     docs = {
-        api_app.openapi_url,
-        api_app.docs_url,
-        api_app.redoc_url,
-        api_app.swagger_ui_oauth2_redirect_url,
+        url
+        for url in (
+            api_app.openapi_url,
+            api_app.docs_url,
+            api_app.redoc_url,
+            api_app.swagger_ui_oauth2_redirect_url,
+        )
+        if url is not None
     }
     return [r for r in api_app.routes if getattr(r, "path", None) not in docs]
 

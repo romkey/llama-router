@@ -62,6 +62,9 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between provider health checks |
 | `QUIET_HEALTH_CHECKS` | `false` | Leave successful `GET /healthz` and `GET /health` requests out of the access log. Failed ones are still logged |
+| `TRUSTED_PROXIES` | (empty) | Reverse proxies whose `X-Forwarded-For` header is believed, as IPs or CIDRs separated by commas (e.g. `127.0.0.1,10.0.0.0/8`). Empty ignores the header: the TCP peer is the client in the request log and for anonymous session affinity |
+| `REQUEST_LOG_RETENTION_DAYS` | `30` | Delete request log rows older than this, checked hourly; `0` keeps them forever |
+| `CIRCUIT_TIMEOUT_MAX_TOKENS` | `4096` | A read timeout on a request asking for more output tokens than this (`max_tokens`, `num_predict`...) is blamed on the request and does not count toward the provider's circuit breaker |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
 | `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
@@ -69,6 +72,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
 | `SPEND_ESTIMATE_COMPLETION_TOKENS` | `4096` | Output tokens assumed for a priced cloud request that sets no `max_tokens`. On a key with a daily spend cap, the estimated cost is held against the cap while the request runs; a response that reports no usage is charged the estimate |
+| `SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` | `200` | Most sessions one API key (or one client address, for requests without a key) may hold; its least recently used go first |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
 | `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
 | `DECISION_MAX_QUESTIONS` | `8` | Most questions in one decision request (each is one backend call); a policy may have one gate fewer |
