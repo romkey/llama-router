@@ -9,8 +9,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..auth import from_hub, hub_provider, routing_preferences_from_request
+from ..auth import (
+    from_hub,
+    hub_provider,
+    route_within_cap,
+    routing_preferences_from_request,
+)
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import StreamLogger, log_request_background, stream_response
 from ..v1_client import get_v1_client
@@ -19,10 +25,17 @@ from . import deps
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# How long a /v1/audio/voices answer is reused.
+VOICES_CACHE_TTL_S = 30.0
+# (from hub, hub's provider) -> (when fetched, voices).
+_voices_cache: dict[tuple[bool, int | None], tuple[float, list[dict[str, Any]]]] = {}
+
 
 @router.post("/v1/audio/speech")
 async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     body = await json_object(request)
     model = body.get("model")
     if not model:
@@ -30,10 +43,8 @@ async def audio_speech(request: Request) -> Response:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -49,9 +60,11 @@ async def audio_speech(request: Request) -> Response:
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
 
+    slot = await upstream_slot(request, prefs, stream=True)
+
     async def generate() -> AsyncIterator[bytes]:
-        async with pm.acquire_provider(provider_id):
-            async for chunk in client.audio_speech(body):
+        async with slot, pm.acquire_provider(provider_id):
+            async for chunk in slot.stream(client.audio_speech(body)):
                 yield chunk
 
     response_format = body.get("response_format", "mp3")
@@ -83,6 +96,8 @@ async def audio_speech(request: Request) -> Response:
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(request: Request) -> Response:
     """Speech-to-text: multipart audio file in, JSON transcript out."""
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
     log_body = {"audio": True, "attachments": True, "content_type": content_type}
@@ -94,10 +109,8 @@ async def audio_transcriptions(request: Request) -> Response:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, log_body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -108,8 +121,9 @@ async def audio_transcriptions(request: Request) -> Response:
     provider_id = provider.require_id()
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
+    slot = await upstream_slot(request, prefs)
     try:
-        async with pm.acquire_provider(provider_id):
+        async with slot, pm.acquire_provider(provider_id):
             resp = await client.audio_transcriptions(raw_body, content_type)
             duration = (time.monotonic() - start) * 1000
             log_request_background(
@@ -184,11 +198,21 @@ async def audio_transcriptions(request: Request) -> Response:
 @router.get("/v1/audio/voices")
 async def audio_voices(request: Request) -> JSONResponse:
     """List available voices — aggregated from all online providers (a hub
-    sees only the providers shared with it)."""
-    pm = deps.get_pm()
-    infos = await pm.list_provider_infos()
+    sees only the providers shared with it).
+
+    Needs an API key like the other endpoints. The answer is cached for a
+    short while, so polling it does not fan out to every provider each time.
+    """
+    await routing_preferences_from_request(deps.get_db(), request)
     hub = from_hub(request)
     only = hub_provider(request)
+    cache_key = (hub, only)
+    cached = _voices_cache.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < VOICES_CACHE_TTL_S:
+        return JSONResponse(content={"voices": cached[1]})
+    pm = deps.get_pm()
+    infos = await pm.list_provider_infos()
 
     all_voices: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -218,4 +242,5 @@ async def audio_voices(request: Request) -> JSONResponse:
             )
             continue
 
+    _voices_cache[cache_key] = (now, all_voices)
     return JSONResponse(content={"voices": all_voices})

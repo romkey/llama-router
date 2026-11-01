@@ -248,6 +248,8 @@ def test_config_problems() -> None:
     # A broken configuration must not lock everyone out.
     assert _cfg(client_secret="", only=True).password_login_enabled is True
     assert _cfg(issuer="http://idp", only=True).password_login_enabled is True
+    # Without an admin group only a local account can administer.
+    assert _cfg(admin_group="", only=True).password_login_enabled is True
 
 
 def test_state_cookie_round_trip_and_tampering() -> None:
@@ -455,17 +457,16 @@ async def test_admin_cannot_set_password_on_sso_account(dash_client, idp) -> Non
 # --- Bootstrap ---
 
 
-async def test_first_login_without_admin_group_is_admin(
-    dash_client, idp, monkeypatch
-) -> None:
+async def test_first_login_needs_an_admin_group(dash_client, idp, monkeypatch) -> None:
+    """Without an admin group, whoever signed in first would own the router."""
     client, db = dash_client
     monkeypatch.setattr(settings, "oidc_admin_group", "")
     r = await _login(client, idp)
-    assert r.status_code == 303
-    assert (await db.get_dashboard_user_by_oidc(ISSUER, "user-1"))["is_admin"]
-    # The dashboard now requires sign-in.
-    client.cookies.clear()
-    assert (await client.get("/")).status_code == 302
+    assert r.headers["location"] == "/login?error=oidc_first_admin"
+    assert await db.count_dashboard_users() == 0
+    # Nor is SSO offered for the first account.
+    r = await client.get("/login")
+    assert r.status_code == 302
 
 
 async def test_first_login_must_be_admin_when_group_configured(
@@ -706,10 +707,25 @@ async def test_users_page_reports_broken_config(dash_client, idp, monkeypatch) -
     assert "/login/oidc?next=/users" not in r.text
 
 
-async def test_users_page_bootstrap_offers_sso(dash_client, idp) -> None:
+@pytest.mark.no_accounts_locked
+async def test_setup_page_offers_sso_to_the_admin_group(dash_client, idp) -> None:
     client, _ = dash_client
     r = await client.get("/users")
-    assert "/login/oidc?next=/users" in r.text
+    assert r.status_code == 503
+    assert "/login/oidc" in r.text
+    assert "router-admins" in r.text
+
+
+@pytest.mark.no_accounts_locked
+async def test_setup_page_without_admin_group_has_no_sso(
+    dash_client, idp, monkeypatch
+) -> None:
+    client, _ = dash_client
+    monkeypatch.setattr(settings, "oidc_admin_group", "")
+    r = await client.get("/")
+    assert r.status_code == 503
+    assert "/login/oidc" not in r.text
+    assert "LLAMA_ROUTER_ADMIN_USERNAME" in r.text
 
 
 async def test_users_page_without_oidc_has_no_sso_card(
@@ -719,3 +735,108 @@ async def test_users_page_without_oidc_has_no_sso_card(
     monkeypatch.setattr(settings, "oidc_issuer", "")
     r = await client.get("/users")
     assert "Single sign-on" not in r.text
+
+
+# --- Approval, warnings and session lifetime ---
+
+
+def test_warning_when_anyone_may_sign_in() -> None:
+    assert _cfg(admin_group="", allowed_group="").warnings()
+    assert not _cfg(admin_group="admins", allowed_group="").warnings()
+    assert not _cfg(admin_group="", allowed_group="users").warnings()
+    assert not _cfg(admin_group="", allowed_group="", require_approval=True).warnings()
+
+
+async def test_users_page_warns_when_anyone_may_sign_in(
+    dash_client, idp, monkeypatch
+) -> None:
+    client, _ = dash_client
+    monkeypatch.setattr(settings, "oidc_admin_group", "")
+    r = await client.get("/users")
+    assert "anyone the identity provider authenticates gets dashboard" in r.text
+
+
+def _cookie_header(token: str) -> dict[str, str]:
+    return {"Cookie": f"{AUTH_COOKIE}={token}"}
+
+
+async def test_require_approval_holds_new_accounts(
+    dash_client, idp, monkeypatch
+) -> None:
+    client, db = dash_client
+    monkeypatch.setattr(settings, "oidc_require_approval", True)
+    await _seed_local_admin(db)
+    r = await _login(client, idp, groups=["staff"])
+    assert r.headers["location"] == "/login?error=oidc_pending"
+    assert AUTH_COOKIE not in r.cookies
+    row = await db.get_dashboard_user_by_oidc(ISSUER, "user-1")
+    assert row["approved"] is False
+    page = await client.get("/login?error=oidc_pending")
+    assert "waiting for an administrator" in page.text
+
+    # Still pending on the next try.
+    r = await _login(client, idp, groups=["staff"])
+    assert r.headers["location"] == "/login?error=oidc_pending"
+
+    client.cookies.clear()
+    r = await client.post(
+        "/login", data={"username": "root", "password": "password123", "next": "/"}
+    )
+    admin = _cookie_header(r.cookies[AUTH_COOKIE])
+    client.cookies.clear()
+    users = await client.get("/users", headers=admin)
+    assert "Pending approval" in users.text
+    assert f'action="/users/{row["id"]}/approve"' in users.text
+    r = await client.post(f"/users/{row['id']}/approve", headers=admin)
+    assert r.status_code == 303
+    assert (await db.get_dashboard_user_by_id(row["id"]))["approved"] is True
+
+    r = await _login(client, idp, groups=["staff"])
+    assert r.headers["location"] == "/"
+    assert AUTH_COOKIE in r.cookies
+
+
+async def test_require_approval_lets_the_first_account_in(
+    dash_client, idp, monkeypatch
+) -> None:
+    client, db = dash_client
+    monkeypatch.setattr(settings, "oidc_require_approval", True)
+    r = await _login(client, idp, groups=["router-admins"])
+    assert r.headers["location"] == "/"
+    assert (await db.get_dashboard_user_by_oidc(ISSUER, "user-1"))["approved"]
+
+
+async def test_unapproved_account_cookie_is_refused(dash_client, idp) -> None:
+    client, db = dash_client
+    await _seed_local_admin(db)
+    r = await _login(client, idp, groups=["staff"])
+    hdr = _cookie_header(r.cookies[AUTH_COOKIE])
+    client.cookies.clear()
+    assert (await client.get("/api/status", headers=hdr)).status_code == 200
+    row = await db.get_dashboard_user_by_oidc(ISSUER, "user-1")
+    await db._execute(
+        "UPDATE dashboard_users SET approved = 0 WHERE id = ?", (row["id"],)
+    )
+    assert (await client.get("/api/status", headers=hdr)).status_code == 401
+
+
+async def test_losing_admin_ends_old_sessions(dash_client, idp) -> None:
+    client, db = dash_client
+    await _seed_local_admin(db)
+    r = await _login(client, idp, groups=["router-admins"])
+    hdr = _cookie_header(r.cookies[AUTH_COOKIE])
+    client.cookies.clear()
+    # The same flag again: the old session survives.
+    await _login(client, idp, groups=["router-admins"])
+    client.cookies.clear()
+    assert (await client.get("/api/status", headers=hdr)).status_code == 200
+    await _login(client, idp, groups=[])
+    client.cookies.clear()
+    assert (await client.get("/api/status", headers=hdr)).status_code == 401
+
+
+async def test_sso_cookie_lasts_twelve_hours(dash_client, idp) -> None:
+    client, db = dash_client
+    await _seed_local_admin(db)
+    r = await _login(client, idp, groups=["staff"])
+    assert f"Max-Age={12 * 3600}" in r.headers["set-cookie"]

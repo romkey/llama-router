@@ -209,6 +209,8 @@ _TABLES: list[tuple[str, list[str]]] = [
             "email",
             "display_name",
             "last_login_at",
+            "session_version",
+            "approved",
         ],
     ),
     (

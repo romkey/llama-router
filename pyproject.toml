@@ -142,6 +142,9 @@ addopts = ["--cov", "--cov-report=term-missing", "--strict-markers"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 xfail_strict = true
+markers = [
+  "no_accounts_locked: keep the real locked dashboard when no accounts exist",
+]
 
 [tool.coverage.run]
 source = ["llama_router"]

@@ -145,6 +145,7 @@ class Router:
         self.affinity = affinity or SessionAffinity(
             settings.session_affinity_ttl_seconds,
             settings.session_affinity_max_sessions,
+            max_per_key=settings.session_affinity_max_sessions_per_key,
         )
         # (group, member model, provider id) -> requests routed, for metrics.
         self.group_routes: dict[tuple[str, str, int], int] = {}
@@ -294,18 +295,20 @@ class Router:
         headers: Mapping[str, str],
         body: dict[str, Any],
         preferences: RoutingPreferences | None,
+        client: str | None = None,
     ) -> str | None:
         """The affinity key for a request, or None when affinity does not apply.
 
         Called by the handlers before :meth:`route`. Costs one hash over the
         start of the conversation; skipped when affinity is off for the key.
+        *client* is the client's address, which scopes requests without a key.
         """
         if not self.affinity_enabled(preferences):
             return None
         if preferences is not None and preferences.mode == "chaos":
             return None
         key_id = preferences.key_id if preferences is not None else None
-        return session_key(headers, body, key_id)
+        return session_key(headers, body, key_id, client)
 
     def _not_busy(self, ranked: tuple[Candidate, ...]) -> tuple[Candidate, ...]:
         """Drop providers cooling down after a 429, unless all of them are."""
@@ -389,6 +392,7 @@ class Router:
                 preferences.allow_fallback,
                 mode,
                 locality,
+                pins,
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
@@ -867,10 +871,24 @@ class Router:
         allow_fallback: bool,
         mode: str,
         locality: str | None,
+        pins: dict[str, int] | None = None,
     ) -> RouteResult | None:
-        """Route to the one provider the hub asked for, or nowhere."""
+        """Route to the one provider the hub asked for, or nowhere.
+
+        The worker's API key still has its say: a model it pins to another
+        provider is not served by this one.
+        """
         chain = table.chain(model_name) if allow_fallback else (model_name,)
         for candidate_model in chain:
+            pinned = pins.get(candidate_model) if pins else None
+            if pinned is not None and pinned != pid:
+                logger.warning(
+                    "Hub asked for provider %d, but the key pins %s to provider %d",
+                    pid,
+                    candidate_model,
+                    pinned,
+                )
+                continue
             c = self._pinned(table, candidate_model, path, pid, mode)
             if c is None or not _eligible(c.provider, locality, hub_only=True):
                 continue

@@ -7,8 +7,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..auth import routing_preferences_from_request
+from ..auth import route_within_cap, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import log_request_background
 from ..v1_client import get_v1_client
@@ -20,6 +21,8 @@ router = APIRouter()
 
 @router.post("/v1/images/generations")
 async def images_generations(request: Request) -> JSONResponse:
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     body = await json_object(request)
     model = body.get("model")
     if not model:
@@ -27,10 +30,8 @@ async def images_generations(request: Request) -> JSONResponse:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -45,8 +46,9 @@ async def images_generations(request: Request) -> JSONResponse:
     body["model"] = result.backend_model
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
+    slot = await upstream_slot(request, prefs)
     try:
-        async with pm.acquire_provider(provider_id):
+        async with slot, pm.acquire_provider(provider_id):
             resp = await client.images_generations(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(
@@ -117,6 +119,8 @@ async def images_generations(request: Request) -> JSONResponse:
 @router.post("/v1/images/edits")
 async def images_edits(request: Request) -> Response:
     """Proxy multipart image edit requests."""
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
     log_body = {"attachments": True, "content_type": content_type}
@@ -128,10 +132,8 @@ async def images_edits(request: Request) -> Response:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, log_body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -142,8 +144,9 @@ async def images_edits(request: Request) -> Response:
     provider_id = provider.require_id()
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
+    slot = await upstream_slot(request, prefs)
     try:
-        async with pm.acquire_provider(provider_id):
+        async with slot, pm.acquire_provider(provider_id):
             resp = await client.images_edits(raw_body, content_type)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

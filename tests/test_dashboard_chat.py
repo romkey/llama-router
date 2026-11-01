@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 
 from llama_router.config import settings
 from llama_router.dashboard import deps as dash_deps
@@ -54,6 +55,17 @@ async def _backend(db: Database, seen: list[dict[str, Any]]) -> int:
 def _as(user_id: int) -> dict[str, str]:
     token = sign_session(user_id, settings.session_secret.strip())
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
+
+
+@pytest.fixture(autouse=True)
+async def _signed_in(dash_client: DashClient) -> None:
+    """Conversations belong to a real account."""
+    c, db = dash_client
+    uid = await db.create_dashboard_user(
+        "chat-admin", hash_password("pw-123456789"), True
+    )
+    invalidate_dashboard_user_count_cache()
+    c.cookies.set(AUTH_COOKIE, sign_session(uid, settings.session_secret.strip()))
 
 
 async def test_targets_list_online_providers(dash_client: DashClient) -> None:

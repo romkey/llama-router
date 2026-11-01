@@ -7,8 +7,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ..auth import routing_preferences_from_request
+from ..auth import route_within_cap, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import log_request_background
 from ..v1_client import get_v1_client
@@ -20,6 +21,8 @@ router = APIRouter()
 
 @router.post("/v1/embeddings")
 async def embeddings(request: Request) -> JSONResponse:
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     body = await json_object(request)
     model = body.get("model")
     if not model:
@@ -27,10 +30,8 @@ async def embeddings(request: Request) -> JSONResponse:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -45,23 +46,24 @@ async def embeddings(request: Request) -> JSONResponse:
     body["model"] = result.backend_model
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
-    pm.acquire(provider_id)
+    slot = await upstream_slot(request, prefs)
     try:
-        resp = await client.embeddings(body)
-        duration = (time.monotonic() - start) * 1000
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/embeddings",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_body=resp,
-            duration_ms=duration,
-        )
-        return JSONResponse(content=resp)
+        async with slot, pm.acquire_provider(provider_id):
+            resp = await client.embeddings(body)
+            duration = (time.monotonic() - start) * 1000
+            log_request_background(
+                db,
+                provider=provider,
+                protocol="v1",
+                endpoint="/v1/embeddings",
+                request=request,
+                model=model,
+                routed_model=routed,
+                request_body=body,
+                response_body=resp,
+                duration_ms=duration,
+            )
+            return JSONResponse(content=resp)
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
@@ -111,5 +113,3 @@ async def embeddings(request: Request) -> JSONResponse:
             error_detail=err_detail,
         )
         raise
-    finally:
-        pm.release(provider_id)

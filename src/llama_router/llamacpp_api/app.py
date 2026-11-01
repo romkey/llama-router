@@ -9,9 +9,12 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
-from ..request_logger import log_request
+from ..limits import BodySizeLimitMiddleware
+from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
+from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
+from ..worker_link.relay import HubRelayMiddleware
 from . import deps
 from .audio import router as audio_router
 from .chat import router as chat_router
@@ -22,9 +25,16 @@ from .images import router as images_router
 from .models import router as models_router
 from .responses import router as responses_router
 
-app = FastAPI(title="llama-router OpenAI API")
+# No interactive docs or schema on the public API ports; the dashboard
+# keeps its own.
+app = FastAPI(
+    title="llama-router OpenAI API", docs_url=None, redoc_url=None, openapi_url=None
+)
+app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(HubRelayMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.get("/health")
@@ -36,7 +46,7 @@ async def health() -> JSONResponse:
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
-    if exc.status_code in (400, 401, 403, 404):
+    if refusal_worth_logging(request, exc.status_code):
         with contextlib.suppress(Exception):
             db = deps.get_db()
             await log_request(
@@ -52,7 +62,11 @@ async def http_exception_handler(
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
 
 
 app.include_router(audio_router)

@@ -738,6 +738,15 @@ class Database:
             ),
         )
 
+    async def delete_request_logs_before(self, before: datetime) -> int:
+        """Delete request log rows created before *before* (UTC); the count."""
+        when: Any = before
+        if self._dialect_name == "sqlite":
+            when = before.strftime("%Y-%m-%d %H:%M:%S")
+        return await self._execute_rowcount(
+            "DELETE FROM request_log WHERE created_at < ?", (when,)
+        )
+
     async def spend_since(self, key_id: int, since: datetime) -> float:
         """USD a key has spent on requests logged since *since* (UTC)."""
         when: Any = since
@@ -1491,7 +1500,8 @@ class Database:
         )
 
     async def set_api_key_hash(self, key_id: int, key_hash: str) -> None:
-        """Replace a key's stored fingerprint (re-hashing with a new pepper)."""
+        """Replace a key's stored fingerprint (re-hashing with a new pepper, or
+        upgrading a legacy SHA-256 one)."""
         await self._execute(
             "UPDATE api_keys SET key_hash = ? WHERE id = ?", (key_hash, key_id)
         )
@@ -1625,7 +1635,8 @@ class Database:
             "WHERE app_settings.key = 'allow_unauthenticated'"
         )
         if not row:
-            return True
+            # Fail closed: anonymous access is something to opt into.
+            return False
         return str(row["value"]).lower() in ("1", "true", "yes", "on")
 
     @_notifies(CHANGE_AUTH_SETTINGS)
@@ -1786,10 +1797,34 @@ class Database:
     async def create_dashboard_user(
         self, username: str, password_hash: str, is_admin: bool
     ) -> int:
+        floor = self._floor_sql()
+        sql = (
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "  # noqa: S608 - fixed SQL fragment; values are bound
+            f"session_version) VALUES (?, ?, ?, {floor})"
+        )
         return await self._insert_get_id(
-            "INSERT INTO dashboard_users (username, password_hash, is_admin) "
-            "VALUES (?, ?, ?)",
-            (username.strip(), password_hash, int(is_admin)),
+            sql, (username.strip(), password_hash, int(is_admin), _SESSION_FLOOR_KEY)
+        )
+
+    def _cast_sql(self, expr: str, to: str) -> str:
+        mysql = self._dialect_name in ("mysql", "mariadb")
+        if to == "int":
+            return f"CAST({expr} AS {'SIGNED' if mysql else 'INTEGER'})"
+        return f"CAST({expr} AS {'CHAR' if mysql else 'TEXT'})"
+
+    def _floor_sql(self) -> str:
+        """SQL for the session_version a new account starts at (binds the key).
+
+        The floor is above the version of every account ever deleted, so a
+        cookie left over from a deleted account never matches a new one, even
+        with the same id (SQLite reuses the highest) and the same username.
+        It is read inside the INSERT, so a concurrent delete can't slip
+        between reading it and using it.
+        """
+        value = self._cast_sql("value", "int")
+        return (
+            f"COALESCE((SELECT {value} FROM app_settings "  # noqa: S608 - fixed SQL fragment; the key is bound
+            "WHERE app_settings.key = ?), 0)"
         )
 
     async def create_oidc_dashboard_user(
@@ -1801,13 +1836,32 @@ class Database:
         email: str | None,
         display_name: str | None,
         is_admin: bool,
+        approved: bool = True,
     ) -> int:
-        """Create an account that signs in only through OpenID Connect."""
-        return await self._insert_get_id(
-            "INSERT INTO dashboard_users (username, password_hash, is_admin, "
+        """Create an account that signs in only through OpenID Connect.
+
+        An unapproved account exists but cannot use the dashboard until an
+        administrator approves it.
+        """
+        floor = self._floor_sql()
+        sql = (
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "  # noqa: S608 - fixed SQL fragment; values are bound
             "auth_source, oidc_issuer, oidc_subject, email, display_name, "
-            "last_login_at) VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (username.strip(), int(is_admin), issuer, subject, email, display_name),
+            "last_login_at, approved, session_version) "
+            f"VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, {floor})"
+        )
+        return await self._insert_get_id(
+            sql,
+            (
+                username.strip(),
+                int(is_admin),
+                issuer,
+                subject,
+                email,
+                display_name,
+                int(approved),
+                _SESSION_FLOOR_KEY,
+            ),
         )
 
     async def update_oidc_dashboard_user(
@@ -1818,11 +1872,19 @@ class Database:
         display_name: str | None,
         is_admin: bool,
     ) -> None:
-        """Refresh an OIDC account from the identity provider at sign-in."""
+        """Refresh an OIDC account from the identity provider at sign-in.
+
+        A change of the admin flag ends the account's other sessions.
+        """
+        # session_version is assigned before is_admin: MySQL evaluates SET
+        # left to right and would otherwise compare against the new value.
         await self._execute(
-            "UPDATE dashboard_users SET email = ?, display_name = ?, is_admin = ?, "
+            "UPDATE dashboard_users SET "
+            "session_version = session_version "
+            "+ CASE WHEN is_admin <> ? THEN 1 ELSE 0 END, "
+            "email = ?, display_name = ?, is_admin = ?, "
             "last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (email, display_name, int(is_admin), user_id),
+            (int(is_admin), email, display_name, int(is_admin), user_id),
         )
 
     async def touch_dashboard_user_login(self, user_id: int) -> None:
@@ -1834,20 +1896,70 @@ class Database:
     async def update_dashboard_user_password(
         self, user_id: int, password_hash: str
     ) -> None:
+        """Set the password and end every session of the account."""
         await self._execute(
-            "UPDATE dashboard_users SET password_hash = ? WHERE id = ?",
+            "UPDATE dashboard_users SET password_hash = ?, "
+            "session_version = session_version + 1 WHERE id = ?",
             (password_hash, user_id),
+        )
+
+    async def bump_dashboard_user_session_version(self, user_id: int) -> None:
+        """Invalidate every session cookie issued to the account so far."""
+        await self._execute(
+            "UPDATE dashboard_users SET session_version = session_version + 1 "
+            "WHERE id = ?",
+            (user_id,),
+        )
+
+    async def approve_dashboard_user(self, user_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE dashboard_users SET approved = 1 WHERE id = ?", (user_id,)
+            )
         )
 
     @_notifies(CHANGE_API_KEYS)
     async def delete_dashboard_user(self, user_id: int) -> None:
         """Delete the user and the API keys they issued to themselves."""
-        await self._execute("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,))
-        await self._execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
+        # Raise the floor new accounts start at above this account's version,
+        # so its cookies stay dead if the id and username come back. One
+        # transaction, and the floor only ever grows (GREATEST in SQL), so
+        # concurrent deletes can't lower it.
+        if self._dialect_name in ("mysql", "mariadb"):
+            seed = "INSERT IGNORE INTO app_settings (`key`, value) VALUES (?, '0')"
+        else:
+            seed = (
+                "INSERT INTO app_settings (\"key\", value) VALUES (?, '0') "
+                'ON CONFLICT ("key") DO NOTHING'
+            )
+        greatest = "MAX" if self._dialect_name == "sqlite" else "GREATEST"
+        current = self._cast_sql("value", "int")
+        deleted = (
+            "COALESCE((SELECT session_version + 1 FROM dashboard_users "
+            "WHERE id = ?), 0)"
+        )
+        raise_floor = (
+            "UPDATE app_settings SET value = "  # noqa: S608 - fixed SQL fragments; values are bound
+            f"{self._cast_sql(f'{greatest}({current}, {deleted})', 'text')} "
+            "WHERE app_settings.key = ?"
+        )
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (seed, (_SESSION_FLOOR_KEY,)),
+            (raise_floor, (user_id, _SESSION_FLOOR_KEY)),
+            ("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,)),
+            ("DELETE FROM dashboard_users WHERE id = ?", (user_id,)),
+        ]
+        sf = self._require_session_factory()
+        async with sf() as session, session.begin():
+            for sql, params in statements:
+                stmt, bind = qmark(sql, *_bind_params(params))
+                await session.execute(stmt, bind)
 
     async def count_dashboard_admins(self) -> int:
+        """Administrators who can use the dashboard (approved accounts only)."""
         row = await self._select_one(
-            "SELECT COUNT(*) AS c FROM dashboard_users WHERE is_admin = 1"
+            "SELECT COUNT(*) AS c FROM dashboard_users "
+            "WHERE is_admin = 1 AND approved = 1"
         )
         return int(row["c"]) if row else 0
 
@@ -1871,9 +1983,12 @@ def _row_to_management_key(row: Mapping[str, Any]) -> dict:
     }
 
 
+_SESSION_FLOOR_KEY = "dashboard_session_version_floor"
+
 _DASHBOARD_USER_COLUMNS = (
     "id, username, password_hash, is_admin, created_at, auth_source, "
-    "oidc_issuer, oidc_subject, email, display_name, last_login_at"
+    "oidc_issuer, oidc_subject, email, display_name, last_login_at, "
+    "session_version, approved"
 )
 
 
@@ -1890,6 +2005,8 @@ def _row_to_dashboard_user(row: Mapping[str, Any]) -> dict:
         "email": row["email"],
         "display_name": row["display_name"],
         "last_login_at": row["last_login_at"],
+        "session_version": int(row["session_version"] or 0),
+        "approved": bool(row["approved"]),
     }
 
 

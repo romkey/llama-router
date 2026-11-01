@@ -40,7 +40,10 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `SESSION_SECRET` | *(empty)* | Secret for signing session cookies, encrypting stored provider keys and the worker hub token, and peppering client API key hashes. Empty: cookies use a random secret kept in the database; the rest use a random secret kept in `SECRET_KEY_PATH` |
 | `SECRET_KEY_PATH` | *(empty)* | File holding the generated secret when `SESSION_SECRET` is empty, created with mode 0600 and never stored in the database. Empty: `secret.key` beside the SQLite database (`/app/data/secret.key` in the Docker image). Back it up with the database: without it stored provider keys must be entered again and client API keys reissued |
-| `DASHBOARD_COOKIE_SECURE` | `false` | Send session cookies over HTTPS only. Set `true` behind TLS |
+| `DASHBOARD_COOKIE_SECURE` | `false` | Always send session cookies over HTTPS only. Without it they are Secure whenever the request came over HTTPS or with `X-Forwarded-Proto: https` |
+| `DASHBOARD_TRUSTED_ORIGINS` | *(empty)* | Comma-separated extra origins (`https://llm.example.org`) allowed to POST to the dashboard. The dashboard refuses state-changing requests whose `Sec-Fetch-Site` or `Origin` says they come from another site; needed only behind a plain-HTTP proxy that rewrites `Host` without setting `X-Forwarded-Host`. `OIDC_REDIRECT_BASE_URL` is always trusted |
+| `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
+| `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
 | `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `OIDC_ISSUER` | *(empty)* | OpenID Connect issuer URL. Empty turns single sign-on off |
@@ -50,9 +53,10 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `OIDC_GROUPS_CLAIM` | `groups` | Claim holding the user's groups; dots reach nested claims (Keycloak: `realm_access.roles`) |
 | `OIDC_ADMIN_GROUP` | *(empty)* | Members are dashboard administrators |
 | `OIDC_ALLOWED_GROUP` | *(empty)* | If set, only members (and admins) may sign in |
+| `OIDC_REQUIRE_APPROVAL` | `false` | New SSO accounts wait for an administrator's approval on the Users page |
 | `OIDC_REDIRECT_BASE_URL` | *(empty)* | External dashboard URL, e.g. `https://llm.example.org`; the callback is `{base}/login/oidc/callback`. Empty uses the request's host and `X-Forwarded-*` headers |
 | `OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with …" |
-| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in |
+| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. Ignored without `OIDC_ADMIN_GROUP` |
 | `OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the identity provider on logout |
 | `OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only |
 
@@ -62,17 +66,39 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between provider health checks |
 | `QUIET_HEALTH_CHECKS` | `false` | Leave successful `GET /healthz` and `GET /health` requests out of the access log. Failed ones are still logged |
+| `TRUSTED_PROXIES` | (empty) | Reverse proxies whose `X-Forwarded-For` header is believed, as IPs or CIDRs separated by commas (e.g. `127.0.0.1,10.0.0.0/8`). Empty ignores the header: the TCP peer is the client in the request log and for anonymous session affinity |
+| `REQUEST_LOG_RETENTION_DAYS` | `30` | Delete request log rows older than this, checked hourly; `0` keeps them forever |
+| `CIRCUIT_TIMEOUT_MAX_TOKENS` | `4096` | A read timeout on a request asking for more output tokens than this (`max_tokens`, `num_predict`...) is blamed on the request and does not count toward the provider's circuit breaker |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
 | `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
+| `SPEND_ESTIMATE_COMPLETION_TOKENS` | `4096` | Output tokens assumed for a priced cloud request that sets no `max_tokens`. On a key with a daily spend cap, the estimated cost is held against the cap while the request runs; a response that reports no usage is charged the estimate |
+| `SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` | `200` | Most sessions one API key (or one client address, for requests without a key) may hold; its least recently used go first |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
 | `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
 | `DECISION_MAX_QUESTIONS` | `8` | Most questions in one decision request (each is one backend call); a policy may have one gate fewer |
 | `DECISION_MAX_STATE_CHARS` | `32000` | Longest decision request state, in characters |
 | `DECISION_MAX_CONCURRENCY` | `4` | Questions of one decision request asked of the backend at once |
+
+## Request limits
+
+Limits on what one client can make the router do. For sizes and counts, `0`
+turns the limit off.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MAX_BODY_BYTES` | `10485760` (10 MiB) | Largest request body on the API and dashboard ports. A larger one gets 413, whether declared in `Content-Length` or sent chunked |
+| `MAX_MEDIA_BODY_BYTES` | `52428800` (50 MiB) | The same for `/v1/audio/` and `/v1/images/` |
+| `MAX_N` | `4` | `n` and `best_of` on chat and completion requests are lowered to this |
+| `MAX_TOKENS_CAP` | `32768` | `max_tokens`, `max_completion_tokens`, `max_output_tokens` and Ollama's `options.num_predict` are lowered to this (a negative, unlimited `num_predict` too). Absent fields are left absent |
+| `UPSTREAM_MAX_CONCURRENCY` | `256` | Upstream calls in flight at once across all clients |
+| `UPSTREAM_MAX_CONCURRENCY_PER_KEY` | `32` | Upstream calls in flight at once for one API key. Requests without a key share only the global limit |
+| `UPSTREAM_QUEUE_TIMEOUT_SECONDS` | `30` | When those are full, a request waits this long (never past its deadline) for a slot, then gets 429 with `Retry-After` |
+| `MAX_STREAMS_PER_KEY` | `16` | Streamed responses open at once for one API key; one more gets 429 straight away |
+| `REQUEST_DEADLINE_SECONDS` | `1800` | A proxied request must finish this long after it arrives. Before the response starts it gets 504; a stream already under way is ended |
 
 ## Benchmarks
 
@@ -114,10 +140,16 @@ together pins the link and locks the dashboard form.
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub's Workers tab |
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
 | `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
-| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
-| `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
+| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one. Not needed for the default upstreams (this router's own ports): the worker proves to them with a per-process token that it relayed the job |
+| `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest. The worker refuses (503) new jobs while more than four times this many are pending |
+| `WORKER_MAX_BODY_BYTES_IN_FLIGHT` | `268435456` (256 MiB) | Request bodies the worker buffers at once across all jobs; a job that would go over is refused with 503 |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
 | `WORKER_EXPOSE` | *(dashboard; `combined`)* | `combined`: the hub sees this worker as one provider. `individual`: each shared provider on its own |
+| `WORKER_RESPONSE_BUFFER_BYTES` | `16777216` (16 MiB) | Hub: response bytes held per job for a slow client. When full the hub stops reading from that worker; a job still full after 30 s is failed |
+| `WORKER_MAX_RESPONSE_BYTES` | `1073741824` (1 GiB) | Hub: largest response one job may send back; a larger one is cut off with an error |
+| `WORKER_MAX_SHARED_PROVIDERS` | `256` | Hub: providers one worker may share individually, counting ones it stopped sharing that are not yet deleted |
+| `WORKER_CATALOG_MIN_INTERVAL_SECONDS` | `5` | Hub: a worker's provider list is applied at most this often; only the latest list in between is used |
+| `WORKER_UNSHARED_PURGE_HOURS` | `24` | Hub: providers a worker stopped sharing are deleted after this long; `0` keeps them |
 
 ## Cloud providers
 

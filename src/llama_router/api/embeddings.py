@@ -7,8 +7,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ..auth import routing_preferences_from_request
+from ..auth import route_within_cap, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import log_request_background
 from . import deps
@@ -20,6 +21,8 @@ router = APIRouter()
 async def _handle_embedding(
     request: Request, endpoint: str, method: str
 ) -> JSONResponse:
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     body = await json_object(request)
     model = body.get("model")
     if not model:
@@ -27,10 +30,8 @@ async def _handle_embedding(
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -45,23 +46,24 @@ async def _handle_embedding(
     body["model"] = result.backend_model
     client = pm.ollama_api_client(provider_id)
     start = time.monotonic()
-    pm.acquire(provider_id)
+    slot = await upstream_slot(request, prefs)
     try:
-        result = await getattr(client, method)(body)
-        duration = (time.monotonic() - start) * 1000
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="ollama",
-            endpoint=endpoint,
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_body=result,
-            duration_ms=duration,
-        )
-        return JSONResponse(content=result)
+        async with slot, pm.acquire_provider(provider_id):
+            result = await getattr(client, method)(body)
+            duration = (time.monotonic() - start) * 1000
+            log_request_background(
+                db,
+                provider=provider,
+                protocol="ollama",
+                endpoint=endpoint,
+                request=request,
+                model=model,
+                routed_model=routed,
+                request_body=body,
+                response_body=result,
+                duration_ms=duration,
+            )
+            return JSONResponse(content=result)
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(
@@ -113,8 +115,6 @@ async def _handle_embedding(
             error_detail=err_detail,
         )
         raise
-    finally:
-        pm.release(provider_id)
 
 
 @router.post("/api/embeddings")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -15,13 +16,16 @@ from fastapi import Request
 from fastapi.responses import Response, StreamingResponse
 
 from .background import spawn
+from .client_address import client_ip
+from .config import settings
 from .database import Database
 from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
+from .limits import DeadlineExceeded
 from .models import Provider, RequestLog
-from .pricing import Price
+from .pricing import Price, estimate_tokens
 from .routing_stats import ProviderStats
-from .spend import tracker_for
+from .spend import RESERVATION_STATE, Reservation, tracker_for
 from .timing import received_at
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,16 @@ _COMPLETION_TOKEN_RES = tuple(
 )
 # Chunks kept from the end of a stream to read those fields from.
 _TAIL_CHUNKS = 3
+# Request fields that cap the length of the answer.
+_MAX_TOKEN_FIELDS = (
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "num_predict",
+)
+# Log status of a stream the client hung up on. Not an error, and not a
+# sample for the routing stats either way.
+STATUS_CANCELLED = "cancelled"
 
 
 def attach_stats(stats: ProviderStats | None) -> None:
@@ -112,6 +126,107 @@ def usage_from_tail(tail: bytes) -> tuple[int | None, int | None]:
         return None
 
     return last(_PROMPT_TOKEN_RES), last(_COMPLETION_TOKEN_RES)
+
+
+def ask_stream_usage(body: dict[str, Any], provider: Provider) -> bool:
+    """Ask a cloud provider to end an OpenAI-style stream with its usage, so
+    the request can be costed. True when the client did not ask for it
+    itself, and the usage-only chunk should be kept from the client."""
+    if not provider.is_cloud:
+        return False
+    options = body.get("stream_options")
+    if isinstance(options, dict) and options.get("include_usage"):
+        return False
+    body["stream_options"] = {
+        **(options if isinstance(options, dict) else {}),
+        "include_usage": True,
+    }
+    return True
+
+
+def _is_usage_only_event(event: bytes) -> bool:
+    """True for the SSE event ``include_usage`` adds: no choices, just usage."""
+    data = b"".join(
+        line[5:].strip() for line in event.splitlines() if line.startswith(b"data:")
+    )
+    if not data.startswith(b"{") or b'"usage"' not in data:
+        return False
+    try:
+        obj = json.loads(data)
+    except ValueError:
+        return False
+    return (
+        isinstance(obj, dict)
+        and obj.get("choices") == []
+        and isinstance(obj.get("usage"), dict)
+    )
+
+
+# The blank line that ends an SSE event, with LF or CRLF line endings.
+_EVENT_END_RE = re.compile(rb"\r?\n\r?\n")
+
+
+def _take_reservation(request: Request) -> Reservation | None:
+    """The request's spend reservation, which only its first log entry after
+    routing (the one for the request itself) settles."""
+    held = getattr(request.state, RESERVATION_STATE, None)
+    setattr(request.state, RESERVATION_STATE, None)
+    return held if isinstance(held, Reservation) else None
+
+
+class _UsageChunkFilter:
+    """Drops the usage-only event from an SSE byte stream. Chunks need not
+    line up with events; whole events are passed on as they complete."""
+
+    def __init__(self) -> None:
+        self._buf = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        self._buf += chunk
+        out: list[bytes] = []
+        while True:
+            m = _EVENT_END_RE.search(self._buf)
+            if m is None:
+                break
+            event, self._buf = self._buf[: m.end()], self._buf[m.end() :]
+            if not _is_usage_only_event(event.replace(b"\r", b"")):
+                out.append(event)
+        return b"".join(out)
+
+    def flush(self) -> bytes:
+        rest, self._buf = self._buf, b""
+        return b"" if _is_usage_only_event(rest.replace(b"\r", b"")) else rest
+
+
+def _requested_max_tokens(body: Any) -> int | None:
+    """The output-token limit a request asked for; -1 for "no limit"."""
+    if not isinstance(body, dict):
+        return None
+    options = body.get("options")
+    values = [body.get(k) for k in _MAX_TOKEN_FIELDS]
+    if isinstance(options, dict):
+        values.append(options.get("num_predict"))
+    limits = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+    if not limits:
+        return None
+    if any(v < 0 for v in limits):
+        return -1  # Ollama's num_predict -1: generate until the model stops
+    return max(limits)
+
+
+def _timeout_from_request(error_detail: str | None, request_body: Any) -> bool:
+    """A read timeout on a request that asked for a very long answer.
+
+    The backend was busy generating what it was asked for; that says
+    nothing about its health, and counting it would let any client trip a
+    provider's circuit breaker on purpose.
+    """
+    if not (error_detail or "").startswith("ReadTimeout"):
+        return False
+    limit = _requested_max_tokens(request_body)
+    if limit is None:
+        return False
+    return limit < 0 or limit > settings.circuit_timeout_max_tokens
 
 
 def _is_provider_failure(error_detail: str | None) -> bool:
@@ -172,13 +287,18 @@ def _record_outcome(
     ttft_ms: float | None = None,
     tokens_per_second: float | None = None,
     duration_ms: float | None = None,
+    request_body: Any = None,
 ) -> None:
     stats = _stats
     if stats is None or provider is None or provider.id is None or not model:
         return
+    if status == STATUS_CANCELLED:
+        return  # the client went away; says nothing about the provider
     ok = status == "ok"
     if not ok and not _is_provider_failure(error_detail):
         return  # the client's request was bad; says nothing about the provider
+    if not ok and _timeout_from_request(error_detail, request_body):
+        return
     stats.record_request(
         provider.id,
         model,
@@ -190,11 +310,13 @@ def _record_outcome(
     )
 
 
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+def refusal_worth_logging(request: Request, status_code: int) -> bool:
+    """Whether an API refusal goes to the request log: 400, 401 and 403
+    always, 404 only with an API key, so scanners probing random paths
+    cannot fill the log."""
+    if status_code == 404:
+        return getattr(request.state, "api_key_id", None) is not None
+    return status_code in (400, 401, 403)
 
 
 def _payload_size(body: Any) -> int:
@@ -298,6 +420,7 @@ async def log_request(
     completion_tokens: int | None = None,
     api_key_id: int | None = None,
     request_meta: str | None = None,
+    spend_reservation: Reservation | None = None,
 ) -> None:
     """Write one request to the log.
 
@@ -305,6 +428,10 @@ async def log_request(
     the handler, so serialising it again never delays the response.
     *sample* also feeds the outcome to the routing stats under *routed_model*.
     *request_meta* replaces the summary worked out from *request_body*.
+    *spend_reservation* (from the spend cap) is swapped for the actual cost.
+
+    A successful priced cloud request whose response reports no usage is
+    charged an estimate from *request_body* rather than nothing.
     """
     if response_body is not None and not response_size:
         response_size = _payload_size(response_body)
@@ -319,23 +446,34 @@ async def log_request(
                 _tps_from_body(response_body, duration_ms) if status == "ok" else None
             ),
             duration_ms=duration_ms,
+            request_body=request_body,
         )
-    ip = source_ip or (_client_ip(request) if request else "internal")
+    ip = source_ip or (client_ip(request) if request else "internal")
     if api_key_id is None and request is not None:
         api_key_id = getattr(request.state, "api_key_id", None)
+    if spend_reservation is None and request is not None:
+        spend_reservation = _take_reservation(request)
     if prompt_tokens is None and completion_tokens is None:
         prompt_tokens, completion_tokens = usage_from_body(response_body)
     cost = None
-    if (
-        _pricer is not None
-        and provider is not None
-        and provider.id is not None
-        and (prompt_tokens is not None or completion_tokens is not None)
-    ):
+    price = None
+    if _pricer is not None and provider is not None and provider.id is not None:
         price = _pricer(provider.id, routed_model or model or "")
-        if price is not None:
+    if price is not None:
+        if prompt_tokens is not None or completion_tokens is not None:
             cost = price.cost(prompt_tokens, completion_tokens)
-    if cost and api_key_id is not None:
+        elif status == "ok" and provider is not None and provider.is_cloud:
+            if spend_reservation is not None:
+                cost = spend_reservation.amount
+            else:
+                cost = price.cost(
+                    *estimate_tokens(
+                        request_body, settings.spend_estimate_completion_tokens
+                    )
+                )
+    if spend_reservation is not None:
+        tracker_for(db).settle(spend_reservation, cost)
+    elif cost and api_key_id is not None:
         tracker_for(db).add(api_key_id, cost)
     entry = RequestLog(
         provider_id=provider.id if provider else None,
@@ -383,9 +521,11 @@ def log_request_background(
                 f"{policy}; {summary}" if summary else str(policy)
             )[:240]
         # Resolve what is needed now; the request object is done after.
-        kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
+        kwargs["source_ip"] = kwargs.get("source_ip") or client_ip(request)
         if kwargs.get("api_key_id") is None:
             kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
+        if kwargs.get("spend_reservation") is None:
+            kwargs["spend_reservation"] = _take_reservation(request)
         if kwargs.get("router_ms") is None:
             kwargs["router_ms"] = _router_ms(
                 request, dispatched_at, kwargs.get("duration_ms", 0.0)
@@ -422,6 +562,7 @@ class StreamLogger:
         request_body: Any,
         start_time: float,
         routed_model: str | None = None,
+        hide_usage: bool = False,
     ):
         self._inner = inner
         self._db = db
@@ -436,6 +577,9 @@ class StreamLogger:
         self._total_bytes = 0
         self._first_chunk_at: float | None = None
         self._tail: deque[bytes] = deque(maxlen=_TAIL_CHUNKS)
+        # Keep the usage-only event the router asked for from the client;
+        # it is still read for token counts (see ask_stream_usage).
+        self._filter = _UsageChunkFilter() if hide_usage else None
 
     async def __aiter__(self) -> AsyncGenerator[bytes]:
         status = "ok"
@@ -446,7 +590,21 @@ class StreamLogger:
                     self._first_chunk_at = time.monotonic()
                 self._total_bytes += len(chunk)
                 self._tail.append(chunk)
-                yield chunk
+                if self._filter is None:
+                    yield chunk
+                    continue
+                out = self._filter.feed(chunk)
+                if out:
+                    yield out
+            if self._filter is not None:
+                rest = self._filter.flush()
+                if rest:
+                    yield rest
+        except asyncio.CancelledError, GeneratorExit:
+            # The client disconnected before the stream finished.
+            status = STATUS_CANCELLED
+            error_detail = "client disconnected before the response finished"
+            raise
         except Exception as exc:
             status = "error"
             if isinstance(exc, httpx.HTTPError):
@@ -482,6 +640,7 @@ class StreamLogger:
                 ttft_ms=ttft_ms,
                 tokens_per_second=tps,
                 duration_ms=duration,
+                request_body=self._request_body,
             )
             try:
                 log_request_background(
@@ -532,6 +691,10 @@ async def stream_response(logged: StreamLogger, media_type: str) -> Response:
             yield first
             async for chunk in stream:
                 yield chunk
+        except DeadlineExceeded:
+            # Already logged as the request's error; end the body rather than
+            # abort the connection.
+            logger.warning("Stream ended at the request deadline")
         finally:
             await stream.aclose()
 

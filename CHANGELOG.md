@@ -20,6 +20,82 @@ described in their git tags and GitHub Releases.
   header, pre-cache names are validated, and the cache's OpenAPI docs are off.
   Manifests move to `manifests/<name>/_refs/<tag>`: `library/` models migrate
   at startup, others are fetched again on the next pull.
+- **Password sign-in backs off.** After five failures in a row from one
+  address or for one username, sign-in answers HTTP 429 for a delay that
+  doubles each time, up to five minutes. Password checks run off the event
+  loop, and unknown usernames take as long as real ones.
+- **Sessions can be revoked.** Session cookies carry a per-account version.
+  Changing a password, a change of an SSO account's admin flag, **Sign out
+  everywhere** (next to Log out) and an administrator's **Sign out** on the
+  Users page end the account's existing sessions. SSO sessions last at most
+  12 hours. Existing cookies are not accepted after upgrading: everyone signs
+  in once more.
+- **SSO without group limits is flagged**, with an error at startup and a
+  warning on the Users page. The new `LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL`
+  creates new SSO accounts pending until an administrator approves them.
+- **Cross-site requests refused.** The dashboard rejects POSTs (sign-in
+  included) whose `Sec-Fetch-Site` or `Origin` names another site.
+  `LLAMA_ROUTER_DASHBOARD_TRUSTED_ORIGINS` lists exceptions.
+- **Secure cookies behind HTTPS proxies.** Session cookies are marked Secure
+  whenever the request came over HTTPS or with `X-Forwarded-Proto: https`.
+- **Hub headers from clients are ignored.** `X-Llama-Router-Via` and
+  `X-Llama-Router-Provider` now count only on jobs relayed by the router's
+  own worker link, proven by the per-process token in `X-Llama-Router-Relay`
+  (sent only to the default upstreams, accepted only from a loopback
+  address). One middleware checks it for both uses (hub narrowing and
+  keyless relayed jobs) and strips all three headers from every request. A job the hub sends to one provider still obeys
+  the worker key's model pins.
+- **Worker links are bounded.** A worker refuses (503) new jobs while more
+  than four times its concurrency are pending, and caps request bodies held
+  at once (`LLAMA_ROUTER_WORKER_MAX_BODY_BYTES_IN_FLIGHT`, 256 MiB). The hub
+  buffers at most `LLAMA_ROUTER_WORKER_RESPONSE_BUFFER_BYTES` (16 MiB) per
+  job, stops reading from the worker while a client falls behind and fails a
+  job whose client stops reading for 30 seconds, and cuts off responses over
+  `LLAMA_ROUTER_WORKER_MAX_RESPONSE_BYTES` (1 GiB).
+- **Worker provider lists are bounded.** The hub applies a worker's catalog
+  at most every `LLAMA_ROUTER_WORKER_CATALOG_MIN_INTERVAL_SECONDS` (5),
+  using only the latest, caps shared providers per worker at
+  `LLAMA_ROUTER_WORKER_MAX_SHARED_PROVIDERS` (256), and deletes providers a
+  worker stopped sharing after `LLAMA_ROUTER_WORKER_UNSHARED_PURGE_HOURS`
+  (24; `0` keeps them), or at once when they would go over the cap.
+- **Request limits.** Request bodies over `LLAMA_ROUTER_MAX_BODY_BYTES`
+  (10 MiB; `LLAMA_ROUTER_MAX_MEDIA_BODY_BYTES`, 50 MiB, for `/v1/audio/` and
+  `/v1/images/`) get 413 on the API and dashboard ports, including chunked
+  bodies. `n`/`best_of` are capped at 4 and output-token fields at
+  `LLAMA_ROUTER_MAX_TOKENS_CAP` (32768). Upstream calls are limited globally
+  (256) and per API key (32); a request waits up to 30 s for a slot, then gets
+  429. Each key may hold 16 streams at once. Every proxied request must finish
+  within `LLAMA_ROUTER_REQUEST_DEADLINE_SECONDS` (1800 s): 504, or a stream is
+  ended. The API key is now checked before the body is parsed, so a request
+  with a bad key and a bad body gets 401. See docs/configuration.md.
+
+- **X-Forwarded-For is only believed from trusted proxies.** The request log
+  (and the dashboard's pull log) used the header from anyone. Set
+  `LLAMA_ROUTER_TRUSTED_PROXIES` (IPs or CIDRs) to the reverse proxies in
+  front of the router; until then the TCP peer is logged. Values that are not
+  IP addresses are ignored.
+- **Request log retention.** Rows older than
+  `LLAMA_ROUTER_REQUEST_LOG_RETENTION_DAYS` (default 30; `0` keeps them) are
+  deleted hourly. Upgrades with an older log lose rows past that age.
+- **404s without an API key are no longer logged**, so scanners probing random
+  paths cannot fill the request log.
+- **Anonymous session affinity is scoped by client address**, and each API key
+  (or anonymous client) holds at most
+  `LLAMA_ROUTER_SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` sessions (default 200).
+- **`GET /v1/audio/voices` needs an API key** like the other endpoints, and its
+  answer is cached for 30 seconds.
+- **Client disconnects and long-answer timeouts no longer trip the circuit
+  breaker.** A stream the client abandons is logged as `cancelled` and not
+  sampled; a read timeout on a request asking for more than
+  `LLAMA_ROUTER_CIRCUIT_TIMEOUT_MAX_TOKENS` output tokens (default 4096) is
+  blamed on the request.
+- **Legacy SHA-256 API key hashes are upgraded to PBKDF2** the next time the key
+  is used.
+- **Hugging Face download values cannot become `hf` options:** patterns and
+  revisions starting with `-` are refused, and values are passed as
+  `--include=...` / `--revision=...`.
+- **No `/docs`, `/redoc` or `/openapi.json` on the Ollama and OpenAI API
+  ports.** The dashboard keeps its own.
 - **No more fixed fallback secret.** Without `LLAMA_ROUTER_SESSION_SECRET`,
   provider API keys were encrypted, and client API keys peppered, with a key
   written in the source. A random secret is now generated once into
@@ -69,6 +145,7 @@ described in their git tags and GitHub Releases.
 - **Addresses hidden from non-admins.** `/api/status`, the dashboard and the
   provider page show `(hidden)` instead of provider address URLs to users
   who aren't admins, and leave out a worker's remote address.
+
 - **Decision requests are bounded.** A decision request may now ask at most 8
   questions (was 32) about a state of at most 32,000 characters (was 128,000),
   set with `LLAMA_ROUTER_DECISION_MAX_QUESTIONS` and
@@ -85,7 +162,6 @@ described in their git tags and GitHub Releases.
   503 instead of passing unchecked; `LLAMA_ROUTER_DECISION_POLICY_FAIL_OPEN=true`
   restores the old behaviour. Tier-only policies still fall back to the
   requested model.
-
 - **Signed release images.** The release workflow signs each image with
   cosign keyless signing (by digest, every platform); the README shows how to
   verify one with `cosign verify`.
@@ -96,8 +172,35 @@ described in their git tags and GitHub Releases.
   ping, traceroute, ip and ps are gone from the released image (the
   development image keeps them). The README shows Python one-liners and a
   sidecar container for checking reachability instead.
+- **The first dashboard administrator comes from the environment.** With no
+  dashboard accounts the dashboard used to be open to anyone, and whoever
+  reached it first could create the administrator. Now it is locked and only
+  shows how to set `LLAMA_ROUTER_ADMIN_USERNAME` and
+  `LLAMA_ROUTER_ADMIN_PASSWORD`; llama-router creates that account at startup
+  while there are none. SSO can create the first account only for a member of
+  `LLAMA_ROUTER_OIDC_ADMIN_GROUP`. **Breaking:** set the variables before
+  starting a new install, or after clearing the accounts.
+- **New installs require API keys.** Requests without a key are refused unless
+  *Accept requests without an API key* is turned on (llama-router warns at
+  startup while it is). Routers that already have providers, API keys or
+  dashboard accounts keep their setting. A missing setting now means "refuse".
+- **A wrong API key is always refused.** A request that sends a key that does
+  not resolve gets 401 even when requests without a key are accepted, instead
+  of quietly being served as anonymous.
 
 ### Fixed
+
+- **Daily spend caps hold under concurrency and unknown usage.** A request to
+  a priced cloud model now holds its estimated cost against the key's cap
+  while it runs, so simultaneous requests can no longer all pass a cap they
+  exceed together; the hold becomes the actual cost when the request is
+  logged, or is released if it failed. A priced cloud response that reports
+  no usage is charged an estimate (prompt size plus `max_tokens`, or
+  `LLAMA_ROUTER_SPEND_ESTIMATE_COMPLETION_TOKENS`) instead of nothing.
+  Streamed `/v1/chat/completions` and `/v1/completions` requests to cloud
+  providers ask for usage, and the extra usage event is hidden from clients
+  that did not ask for it. Capped keys can no longer send image or audio
+  requests to unpriced cloud models.
 
 - **Readable error rows in the request log.** Error highlights use soft burgundy
   with blue links and neutral details, keeping timestamps, model names, metadata

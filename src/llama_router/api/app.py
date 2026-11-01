@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..config import settings
+from ..limits import BodySizeLimitMiddleware
 from ..llamacpp_api.audio import router as v1_audio_router
 from ..llamacpp_api.chat import router as v1_chat_router
 from ..llamacpp_api.completions import router as v1_completions_router
@@ -18,19 +19,28 @@ from ..llamacpp_api.embeddings import router as v1_embeddings_router
 from ..llamacpp_api.images import router as v1_images_router
 from ..llamacpp_api.models import router as v1_models_router
 from ..llamacpp_api.responses import router as v1_responses_router
-from ..request_logger import log_request
+from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
+from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
 from ..worker_link.protocol import WS_PATH
+from ..worker_link.relay import HubRelayMiddleware
 from . import deps
 from .chat import router as chat_router
 from .embeddings import router as embeddings_router
 from .generate import router as generate_router
 from .tags import router as tags_router
 
-app = FastAPI(title="llama-router Ollama API")
+# No interactive docs or schema on the public API ports; the dashboard
+# keeps its own.
+app = FastAPI(
+    title="llama-router Ollama API", docs_url=None, redoc_url=None, openapi_url=None
+)
+app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(HubRelayMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.get("/health")
@@ -52,7 +62,7 @@ async def worker_socket(websocket: WebSocket) -> None:
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
-    if exc.status_code in (400, 401, 403, 404):
+    if refusal_worth_logging(request, exc.status_code):
         with contextlib.suppress(Exception):
             db = deps.get_db()
             await log_request(
@@ -68,7 +78,11 @@ async def http_exception_handler(
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
 
 
 app.include_router(chat_router)
