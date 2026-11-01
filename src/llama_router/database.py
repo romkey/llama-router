@@ -738,6 +738,15 @@ class Database:
             ),
         )
 
+    async def delete_request_logs_before(self, before: datetime) -> int:
+        """Delete request log rows created before *before* (UTC); the count."""
+        when: Any = before
+        if self._dialect_name == "sqlite":
+            when = before.strftime("%Y-%m-%d %H:%M:%S")
+        return await self._execute_rowcount(
+            "DELETE FROM request_log WHERE created_at < ?", (when,)
+        )
+
     async def spend_since(self, key_id: int, since: datetime) -> float:
         """USD a key has spent on requests logged since *since* (UTC)."""
         when: Any = since
@@ -1512,6 +1521,12 @@ class Database:
             "locality": row["locality"],
             "daily_spend_cap_usd": row["daily_spend_cap_usd"],
         }
+
+    async def set_api_key_hash(self, key_id: int, key_hash: str) -> None:
+        """Replace a key's stored hash (upgrading a legacy SHA-256 one)."""
+        await self._execute(
+            "UPDATE api_keys SET key_hash = ? WHERE id = ?", (key_hash, key_id)
+        )
 
     async def touch_api_key(self, key_id: int) -> None:
         await self._execute(

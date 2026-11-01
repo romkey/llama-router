@@ -26,6 +26,9 @@ FAKE_HF = textwrap.dedent("""\
     assert args[0] == "download", args
     repo = args[1]
     def opt(name):
+        for a in args:
+            if a.startswith(name + "="):
+                return a.split("=", 1)[1]
         return args[args.index(name) + 1] if name in args else None
     if repo == "owner/missing":
         sys.stderr.write("Warning: unauthenticated\\nRepository Not Found for url\\n")
@@ -91,7 +94,9 @@ def test_validate_repo_accepts_hf_co_prefix() -> None:
     assert hf_download.validate_repo("hf.co/Qwen/Qwen3-8B-GGUF") == "Qwen/Qwen3-8B-GGUF"
 
 
-@pytest.mark.parametrize("bad", ["../x.gguf", "a b", "x;rm", "$(x)"])
+@pytest.mark.parametrize(
+    "bad", ["../x.gguf", "a b", "x;rm", "$(x)", "--local-dir=/etc", "-h"]
+)
 def test_validate_pattern_rejects(bad) -> None:
     with pytest.raises(ValueError, match="file pattern may use"):
         hf_download.validate_pattern(bad)
@@ -342,6 +347,31 @@ async def test_plan_keeps_nested_files_hf_selected(fake_hf, monkeypatch) -> None
     monkeypatch.setattr(hf_download, "_run", run)
     files = await hf_download.plan("owner/model-GGUF", "*.gguf", None)
     assert [f["file"] for f in files] == ["Model-Q4.gguf", "sub/Model-Q8.gguf"]
+
+
+@pytest.mark.parametrize("bad", ["--local-dir=/etc", "-x", "a b"])
+def test_validate_revision_rejects(bad) -> None:
+    with pytest.raises(ValueError, match="revision may use"):
+        hf_download.validate_revision(bad)
+
+
+async def test_values_are_passed_in_option_equals_form(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    async def run(args, on_progress=None):
+        seen.append(args)
+        return 0, "[]", ""
+
+    monkeypatch.setattr(hf_download, "_run", run)
+    await hf_download.plan("owner/model-GGUF", "*.gguf", "main")
+    assert seen[0] == [
+        "download",
+        "owner/model-GGUF",
+        "--include=*.gguf",
+        "--dry-run",
+        "--json",
+        "--revision=main",
+    ]
 
 
 def test_path_under_accepts_base_with_parent_segments(tmp_path):

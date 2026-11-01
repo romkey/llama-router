@@ -27,6 +27,7 @@ from .. import metrics as metrics_mod
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
 from ..background import spawn
+from ..client_address import client_ip
 from ..cloud_presets import PRESETS, get_preset
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
@@ -2053,9 +2054,7 @@ async def api_pull_model(request: Request):
 
     cache_url = _cache_registry_url()
     db = deps.get_db()
-    source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
-        request.client.host if request.client else "unknown"
-    )
+    source_ip = client_ip(request)
 
     progress_lock = asyncio.Lock()
 
