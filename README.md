@@ -245,10 +245,12 @@ curl http://localhost:8080/v1/systemone -H 'Content-Type: application/json' -d '
 
 `/v1/decisions` is the same API under a vendor-neutral name. Both routes are also served without `/v1`, and on the Ollama API port (11434) as well as 8080. Routing, API key policies, pins and fallbacks apply as for chat.
 
+A request may ask up to 8 questions about a state of up to 32,000 characters (`LLAMA_ROUTER_DECISION_MAX_QUESTIONS`, `LLAMA_ROUTER_DECISION_MAX_STATE_CHARS`); larger ones are refused with 400. Each question is a backend call that sends the whole state, so a key with a daily spend cap is refused with 429, before any call is made, when the request's estimated cost would take it past the cap.
+
 How a request is answered:
 
 - **Passed through.** If the provider serves either decision route upstream (its last probe found one, or it is TypeSafe's own API), the request goes there unchanged apart from the model name. The two routes take the same body, so a `/v1/decisions` request reaches an upstream that has only `/v1/systemone`.
-- **Emulated.** Otherwise each question becomes a one-token chat completion with logprobs, all sent to one provider at once. The answer is read from the probabilities of the option labels. llama.cpp, vLLM and most OpenAI-compatible servers support this.
+- **Emulated.** Otherwise each question becomes a one-token chat completion with logprobs, all sent to one provider, up to `LLAMA_ROUTER_DECISION_MAX_CONCURRENCY` (4) at once. The answer is read from the probabilities of the option labels. llama.cpp, vLLM and most OpenAI-compatible servers support this.
 - **No logprobs.** A provider that answers without logprobs isn't offered for decisions for an hour, and the request is routed once more.
 - **Workers.** A hub sends decisions to its workers the same way. A worker that relays its own router answers them there; an older worker that doesn't relay decision routes gets them emulated. See [docs/workers.md](docs/workers.md#decision-requests).
 
@@ -277,12 +279,12 @@ curl -X DELETE http://localhost/api/decisions/calibrations/1
 
 ### Decision policies per API key
 
-An API key can ask decision questions about each generation request before it is routed (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/api/chat`, `/api/generate`). The state is the request's user text: every user message, oldest first, or its prompt or input, up to the newest 16,000 characters. A request with no user text at all, such as images only, is passed without asking. Keys without a policy are routed exactly as before, with no extra round trip.
+An API key can ask decision questions about each generation request before it is routed (`/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/api/chat`, `/api/generate`). The state is the request's text: every message of any role (system, user, assistant, tool), oldest first, with non-user turns prefixed by their role, or its system prompt and prompt or input, up to the newest 16,000 characters. A request with no text at all, such as images only, is passed without asking. Keys without a policy are routed exactly as before, with no extra round trip.
 
 - **Tiered routing.** A `score` question, typically a difficulty rubric, and a model for each level. The most probable level picks the model the request is routed to. A level without a target, or `models` that leaves out the requested model, keeps the requested model.
 - **Gating.** `noul` questions with a threshold each. A request whose probability reaches a gate's threshold is rejected with 403, and the detail names the gate and the probability.
 
-The tier and gate questions go to the policy's decision model as one decision request, answered in parallel, routed and calibrated like any other. The policy never fails a request on its own account: if the decision model has no provider, errors or takes longer than `LLAMA_ROUTER_DECISION_POLICY_TIMEOUT_SECONDS`, the request goes on with the model it asked for and no gate, and the reason is logged. The decision call is logged on its own, and the request log entry of the request it served starts with what the policy did and how long it took, for example `policy 180ms, tier=2 auto->llama3.1:70b, injection=0.03`.
+The tier and gate questions go to the policy's decision model as one decision request, answered in parallel, routed and calibrated like any other. If the decision model has no provider, errors or takes longer than `LLAMA_ROUTER_DECISION_POLICY_TIMEOUT_SECONDS`, a policy with gates fails closed: the request is refused with 503, since the gates could not check it. Set `LLAMA_ROUTER_DECISION_POLICY_FAIL_OPEN=true` to let such requests through unchecked instead. A policy with only a tier goes on with the model the request asked for. Either way the reason is logged. The decision call is logged on its own, and the request log entry of the request it served starts with what the policy did and how long it took, for example `policy 180ms, tier=2 auto->llama3.1:70b, injection=0.03`.
 
 ```bash
 curl -X PUT http://localhost/api/keys/1/decision-policy -H 'Content-Type: application/json' -d '{

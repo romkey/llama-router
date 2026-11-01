@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from fastapi import HTTPException
+
 from .database import Database
 
 
@@ -44,6 +46,14 @@ class Reservation:
             return
         self.released = True
         self.tracker._unhold(self)
+
+
+def cap_reached(cap: float) -> HTTPException:
+    """The error a key past its daily spend cap is refused with."""
+    return HTTPException(
+        status_code=429,
+        detail=f"daily spend cap of ${cap:.2f} reached for this API key",
+    )
 
 
 class SpendTracker:
