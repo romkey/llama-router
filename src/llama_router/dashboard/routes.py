@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import time
@@ -1157,7 +1158,8 @@ async def api_explain_routing(request: Request):
     ``allow_fallback`` and ``session_affinity``, or ``key_id`` to use an API
     key's mode, fallback, session affinity setting and pins (admins only).
     ``session_id`` shows how a client sending that ``X-Session-ID`` would be
-    routed, including its current binding.
+    routed, including its current binding. Without ``key_id``, ``client_ip``
+    names the client address, which scopes anonymous sessions.
     """
     q = request.query_params
     model = (q.get("model") or "").strip()
@@ -1219,8 +1221,16 @@ async def api_explain_routing(request: Request):
             locality=_key_locality(q.get("locality")),
         )
     session_id = (q.get("session_id") or "").strip()
+    client = (q.get("client_ip") or "").strip() or None
+    if client is not None:
+        try:
+            client = str(ipaddress.ip_address(client))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="client_ip must be an IP address"
+            ) from exc
     session = (
-        session_key({"x-session-id": session_id}, {"model": model}, key_id)
+        session_key({"x-session-id": session_id}, {"model": model}, key_id, client)
         if session_id
         else None
     )

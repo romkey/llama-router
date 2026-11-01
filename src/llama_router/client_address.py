@@ -29,7 +29,11 @@ def parse_trusted_proxies(value: str) -> tuple[Network, ...]:
         try:
             nets.append(ipaddress.ip_network(item, strict=False))
         except ValueError:
-            logger.warning("Ignoring invalid LLAMA_ROUTER_TRUSTED_PROXIES entry %r", item)
+            # The value itself stays out of the log: it comes from settings.
+            logger.warning(
+                "Ignoring an entry in LLAMA_ROUTER_TRUSTED_PROXIES that is "
+                "not an IP address or CIDR"
+            )
     return tuple(nets)
 
 

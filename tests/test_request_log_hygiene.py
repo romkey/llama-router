@@ -115,7 +115,8 @@ async def test_old_request_logs_are_purged(
             RequestLog(protocol="v1", endpoint="/v1/x", source_ip="1.2.3.4")
         )
     await db._execute(
-        "UPDATE request_log SET created_at = ? WHERE id = (SELECT MIN(id) FROM request_log)",
+        "UPDATE request_log SET created_at = ? "
+        "WHERE id = (SELECT MIN(id) FROM request_log)",
         ((datetime.now(UTC) - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S"),),
     )
     monkeypatch.setattr(settings, "request_log_retention_days", 30.0)
@@ -156,11 +157,17 @@ async def test_oversized_max_tokens_timeout_is_not_a_provider_failure(
     assert _samples(pm, pid) == 0
     # A modest request that timed out does count, as does any other failure.
     request_logger._record_outcome(
-        v1_provider, "m", status="error", error_detail=timeout,
+        v1_provider,
+        "m",
+        status="error",
+        error_detail=timeout,
         request_body={"max_tokens": 100},
     )
     request_logger._record_outcome(
-        v1_provider, "m", status="error", error_detail="ConnectError: refused",
+        v1_provider,
+        "m",
+        status="error",
+        error_detail="ConnectError: refused",
         request_body={"max_tokens": 100_000},
     )
     assert _samples(pm, pid) == 2
@@ -239,11 +246,14 @@ async def test_legacy_key_hash_is_upgraded(db: Database) -> None:
         {"type": "http", "headers": [(b"api-key", raw.encode())], "path": "/"}
     )
     prefs = await routing_preferences_from_request(db, req)
-    assert prefs is not None and prefs.key_id == key_id
+    assert prefs is not None
+    assert prefs.key_id == key_id
     assert await db.lookup_api_key(key_hash_legacy(raw)) is None
     record: dict[str, Any] | None = await db.lookup_api_key(key_hash(raw))
-    assert record is not None and record["id"] == key_id
+    assert record is not None
+    assert record["id"] == key_id
     # Still accepted after the upgrade, once the cache forgets it.
     invalidate_auth_cache(db)
     again = await routing_preferences_from_request(db, req)
-    assert again is not None and again.key_id == key_id
+    assert again is not None
+    assert again.key_id == key_id
