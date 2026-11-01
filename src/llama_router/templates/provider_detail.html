@@ -2,25 +2,7 @@
 {% block title %}{{ info.provider.name }} - llama-router{% endblock %}
 
 {% block nav_tabs %}
-<li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
-<li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
-<li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
-<li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots me-1"></i>Chat</a></li>
-{% if show_users_tab %}
-<li class="nav-item"><a class="nav-link" href="/users"><i class="bi bi-people me-1"></i>Users</a></li>
-{% endif %}
-{% if show_api_keys %}
-<li class="nav-item"><a class="nav-link" href="/#keys-pane"><i class="bi bi-key me-1"></i>API Keys</a></li>
-{% endif %}
-{% if show_workers %}
-<li class="nav-item"><a class="nav-link" href="/?tab=workers"><i class="bi bi-diagram-3 me-1"></i>Workers</a></li>
-{% endif %}
-{% if show_log %}
-<li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
-{% endif %}
-{% if show_cache %}
-<li class="nav-item"><a class="nav-link" href="/#cache-pane"><i class="bi bi-archive me-1"></i>Cache</a></li>
-{% endif %}
+{{ super() }}
 <li class="nav-item ms-auto">
     <span class="nav-link active"><i class="bi bi-hdd-network me-1"></i>{{ info.provider.name }}</span>
 </li>

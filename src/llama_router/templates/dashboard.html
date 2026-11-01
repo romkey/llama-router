@@ -1,61 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Dashboard - llama-router{% endblock %}
 
-{% block nav_tabs %}
-<li class="nav-item" role="presentation">
-    <button class="nav-link active" id="providers-tab" data-bs-toggle="tab" data-bs-target="#providers-pane" type="button" role="tab" aria-controls="providers-pane" aria-selected="true">
-        <i class="bi bi-hdd-stack me-1"></i>Providers
-    </button>
-</li>
-<li class="nav-item" role="presentation">
-    <button class="nav-link" id="benchmarks-tab" data-bs-toggle="tab" data-bs-target="#benchmarks-pane" type="button" role="tab" aria-controls="benchmarks-pane" aria-selected="false">
-        <i class="bi bi-speedometer me-1"></i>Benchmarks
-    </button>
-</li>
-<li class="nav-item" role="presentation">
-    <button class="nav-link" id="models-tab" data-bs-toggle="tab" data-bs-target="#models-pane" type="button" role="tab" aria-controls="models-pane" aria-selected="false">
-        <i class="bi bi-cpu me-1"></i>Models
-    </button>
-</li>
-<li class="nav-item" role="presentation">
-    <a class="nav-link" href="/chat"><i class="bi bi-chat-dots me-1"></i>Chat</a>
-</li>
-{% if show_users_tab %}
-<li class="nav-item" role="presentation">
-    <a class="nav-link" href="/users"><i class="bi bi-people me-1"></i>Users</a>
-</li>
-{% endif %}
-{% if show_api_keys %}
-<li class="nav-item" role="presentation">
-    <button class="nav-link" id="keys-tab" data-bs-toggle="tab" data-bs-target="#keys-pane" type="button" role="tab" aria-controls="keys-pane" aria-selected="false">
-        <i class="bi bi-key me-1"></i>API Keys
-    </button>
-</li>
-{% endif %}
-{% if show_workers %}
-<li class="nav-item" role="presentation">
-    <button class="nav-link" id="workers-tab" data-bs-toggle="tab" data-bs-target="#workers-pane" type="button" role="tab" aria-controls="workers-pane" aria-selected="false">
-        <i class="bi bi-diagram-3 me-1"></i>Workers
-    </button>
-</li>
-{% endif %}
-{% if show_log %}
-<li class="nav-item" role="presentation">
-    <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-pane" type="button" role="tab" aria-controls="log-pane" aria-selected="false">
-        <i class="bi bi-journal-text me-1"></i>Log
-        <span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>
-    </button>
-</li>
-{% endif %}
-{% if cache_stats and show_cache %}
-<li class="nav-item" role="presentation">
-    <button class="nav-link" id="cache-tab" data-bs-toggle="tab" data-bs-target="#cache-pane" type="button" role="tab" aria-controls="cache-pane" aria-selected="false">
-        <i class="bi bi-archive me-1"></i>Cache
-    </button>
-</li>
-{% endif %}
-{% endblock %}
-
 {% block content %}
 {% if request.query_params.get('error') == 'forbidden' %}
 <div class="alert alert-danger py-2"><i class="bi bi-slash-circle me-2"></i>You do not have permission for that.</div>
