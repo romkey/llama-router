@@ -12,6 +12,7 @@ from .. import __version__
 from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
+from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
 from . import deps
 from .audio import router as audio_router
@@ -28,6 +29,7 @@ from .responses import router as responses_router
 app = FastAPI(
     title="llama-router OpenAI API", docs_url=None, redoc_url=None, openapi_url=None
 )
+app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)

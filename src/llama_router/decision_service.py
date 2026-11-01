@@ -289,7 +289,7 @@ async def check_spend_cap(
     estimate = estimated_cost(price, request)
     if estimate <= 0:
         return
-    spent = await tracker_for(db).spent_today(prefs.key_id)
+    spent = await tracker_for(db).committed_today(prefs.key_id)
     if spent + estimate > cap:
         logger.info(
             "Refusing a decision request from key %s: $%.4f spent, about $%.4f "

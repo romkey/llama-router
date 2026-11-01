@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..auth import routing_preferences_from_request
+from ..auth import route_within_cap, routing_preferences_from_request
 from ..client_address import client_ip
 from ..decision_policy import apply_decision_policy
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
@@ -39,7 +39,9 @@ async def responses(request: Request) -> Response:
     )
     session = rt.session_for(request.headers, body, prefs, client_ip(request))
 
-    result = await rt.route(model, request.url.path, prefs, session=session)
+    result = await route_within_cap(
+        rt, db, request, model, prefs, body, session=session
+    )
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
