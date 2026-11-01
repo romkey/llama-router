@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     request_deadline_seconds: float = 1800.0
     """A proxied request, streamed or not, must finish within this long of
     arriving: 504 before the response starts, or the stream is ended."""
+    decision_policy_fail_open: bool = False
+    """When a policy with gates cannot be decided (no provider, an error, a
+    timeout), let the request through unchecked instead of refusing it with
+    503. A policy with only a tier always goes on with the requested model."""
+    decision_max_questions: int = 8
+    """Most questions in one decision request; each is a backend call."""
+    decision_max_state_chars: int = 32_000
+    """Longest state of a decision request, in characters. Every question
+    sends the whole state again."""
+    decision_max_concurrency: int = 4
+    """Questions of one decision request asked of the backend at once."""
     # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
     # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
     # needs a dashboard sign-in like the rest of the dashboard.
