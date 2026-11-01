@@ -115,6 +115,18 @@ described in their git tags and GitHub Releases.
 
 ### Fixed
 
+- **Daily spend caps hold under concurrency and unknown usage.** A request to
+  a priced cloud model now holds its estimated cost against the key's cap
+  while it runs, so simultaneous requests can no longer all pass a cap they
+  exceed together; the hold becomes the actual cost when the request is
+  logged, or is released if it failed. A priced cloud response that reports
+  no usage is charged an estimate (prompt size plus `max_tokens`, or
+  `LLAMA_ROUTER_SPEND_ESTIMATE_COMPLETION_TOKENS`) instead of nothing.
+  Streamed `/v1/chat/completions` and `/v1/completions` requests to cloud
+  providers ask for usage, and the extra usage event is hidden from clients
+  that did not ask for it. Capped keys can no longer send image or audio
+  requests to unpriced cloud models.
+
 - **Readable error rows in the request log.** Error highlights use soft burgundy
   with blue links and neutral details, keeping timestamps, model names, metadata
   and expanded error details readable both normally and on hover.

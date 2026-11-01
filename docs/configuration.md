@@ -71,6 +71,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
+| `SPEND_ESTIMATE_COMPLETION_TOKENS` | `4096` | Output tokens assumed for a priced cloud request that sets no `max_tokens`. On a key with a daily spend cap, the estimated cost is held against the cap while the request runs; a response that reports no usage is charged the estimate |
 | `SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` | `200` | Most sessions one API key (or one client address, for requests without a key) may hold; its least recently used go first |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
 | `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
