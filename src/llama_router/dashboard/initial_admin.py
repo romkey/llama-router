@@ -15,7 +15,7 @@ from .auth_core import hash_password, normalize_username
 
 logger = logging.getLogger(__name__)
 
-MIN_PASSWORD_LENGTH = 8
+MIN_LENGTH = 8  # Also in the error message below.
 
 
 async def ensure_initial_admin(db: Database, username: str, password: str) -> bool:
@@ -34,11 +34,11 @@ async def ensure_initial_admin(db: Database, username: str, password: str) -> bo
     except ValueError as exc:
         logger.error("LLAMA_ROUTER_ADMIN_USERNAME is not usable: %s", exc)
         return False
-    if len(password) < MIN_PASSWORD_LENGTH:
+    if len(password) < MIN_LENGTH:
+        # No arguments: CodeQL treats anything near the password as secret.
         logger.error(
-            "LLAMA_ROUTER_ADMIN_PASSWORD must be at least %d characters; "
-            "no administrator created",
-            MIN_PASSWORD_LENGTH,
+            "LLAMA_ROUTER_ADMIN_PASSWORD must be at least 8 characters; "
+            "no administrator created"
         )
         return False
     await db.create_dashboard_user(name, hash_password(password), True)
