@@ -1,4 +1,10 @@
-"""Require login when dashboard user accounts exist; restrict non-admin readers."""
+"""Require a dashboard login; restrict non-admin readers.
+
+With no accounts at all the dashboard is locked: it only explains how to
+create the first administrator (``LLAMA_ROUTER_ADMIN_USERNAME`` and
+``LLAMA_ROUTER_ADMIN_PASSWORD``, or a first single sign-on as a member of the
+admin group). Nobody can claim the router from the web.
+"""
 
 from __future__ import annotations
 
@@ -112,6 +118,35 @@ def _own_data_path(path: str) -> bool:
     )
 
 
+SETUP_REQUIRED_DETAIL = (
+    "No dashboard accounts: set LLAMA_ROUTER_ADMIN_USERNAME and "
+    "LLAMA_ROUTER_ADMIN_PASSWORD and restart llama-router"
+)
+
+
+async def setup_required_response(request: Request) -> Response:
+    """The only answer while there are no accounts."""
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=503, content={"detail": SETUP_REQUIRED_DETAIL})
+    # Imported here: routes imports this module.
+    from . import oidc
+    from .routes import templates
+
+    cfg = oidc.current_config()
+    return templates.TemplateResponse(
+        request,
+        "setup_required.html",
+        {
+            "dash_user": None,
+            "show_users_tab": False,
+            "oidc_enabled": cfg.usable and bool(cfg.admin_group),
+            "oidc_display_name": cfg.display_name,
+            "oidc_admin_group": cfg.admin_group,
+        },
+        status_code=503,
+    )
+
+
 def _forbidden(request: Request) -> Response:
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
@@ -119,6 +154,15 @@ def _forbidden(request: Request) -> Response:
 
 
 class DashboardAuthMiddleware(BaseHTTPMiddleware):
+    async def no_accounts(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Answer a request while no dashboard account exists.
+
+        Tests that are not about sign-in replace this to act as an admin.
+        """
+        return await setup_required_response(request)
+
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
@@ -135,15 +179,14 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
 
         db = deps.get_db()
         n_users = await _user_count(db)
+        if n_users == 0 and request.cookies.get(AUTH_COOKIE):
+            # The cache is per process: another replica may have just
+            # created the first account this session belongs to.
+            n_users = await db.count_dashboard_users()
+            _set_user_count_cache(n_users)
 
         if n_users == 0:
-            request.state.auth_bootstrap = True
-            request.state.dashboard_users_exist = False
-            request.state.dashboard_user = None
-            return await call_next(request)
-
-        request.state.auth_bootstrap = False
-        request.state.dashboard_users_exist = True
+            return await self.no_accounts(request, call_next)
 
         token = management_keys.bearer_token(request)
         if token is not None:

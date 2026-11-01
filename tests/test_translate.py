@@ -108,6 +108,7 @@ def test_chat_response_translation() -> None:
 
 @pytest.fixture
 async def api(db, httpx_mock):
+    await db.set_allow_unauthenticated(True)
     p = await db.add_provider("vllm", ProviderProtocol.OPENAI)
     await db.add_address(p.id, UP, is_preferred=True)
     await db.update_provider_status(p.id, ProviderStatus.IDLE)

@@ -152,6 +152,11 @@ class Settings(BaseSettings):
     secret_key_path: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
+    # The first dashboard administrator, created at startup when there are no
+    # dashboard accounts yet; ignored once any account exists. There is no way
+    # to create the first account from the web.
+    admin_username: str = ""
+    admin_password: str = ""
     # Most API keys one dashboard user may issue themselves on /my-keys
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20

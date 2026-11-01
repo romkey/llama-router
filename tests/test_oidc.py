@@ -248,6 +248,8 @@ def test_config_problems() -> None:
     # A broken configuration must not lock everyone out.
     assert _cfg(client_secret="", only=True).password_login_enabled is True
     assert _cfg(issuer="http://idp", only=True).password_login_enabled is True
+    # Without an admin group only a local account can administer.
+    assert _cfg(admin_group="", only=True).password_login_enabled is True
 
 
 def test_state_cookie_round_trip_and_tampering() -> None:
@@ -455,17 +457,16 @@ async def test_admin_cannot_set_password_on_sso_account(dash_client, idp) -> Non
 # --- Bootstrap ---
 
 
-async def test_first_login_without_admin_group_is_admin(
-    dash_client, idp, monkeypatch
-) -> None:
+async def test_first_login_needs_an_admin_group(dash_client, idp, monkeypatch) -> None:
+    """Without an admin group, whoever signed in first would own the router."""
     client, db = dash_client
     monkeypatch.setattr(settings, "oidc_admin_group", "")
     r = await _login(client, idp)
-    assert r.status_code == 303
-    assert (await db.get_dashboard_user_by_oidc(ISSUER, "user-1"))["is_admin"]
-    # The dashboard now requires sign-in.
-    client.cookies.clear()
-    assert (await client.get("/")).status_code == 302
+    assert r.headers["location"] == "/login?error=oidc_first_admin"
+    assert await db.count_dashboard_users() == 0
+    # Nor is SSO offered for the first account.
+    r = await client.get("/login")
+    assert r.status_code == 302
 
 
 async def test_first_login_must_be_admin_when_group_configured(
@@ -706,10 +707,25 @@ async def test_users_page_reports_broken_config(dash_client, idp, monkeypatch) -
     assert "/login/oidc?next=/users" not in r.text
 
 
-async def test_users_page_bootstrap_offers_sso(dash_client, idp) -> None:
+@pytest.mark.no_accounts_locked
+async def test_setup_page_offers_sso_to_the_admin_group(dash_client, idp) -> None:
     client, _ = dash_client
     r = await client.get("/users")
-    assert "/login/oidc?next=/users" in r.text
+    assert r.status_code == 503
+    assert "/login/oidc" in r.text
+    assert "router-admins" in r.text
+
+
+@pytest.mark.no_accounts_locked
+async def test_setup_page_without_admin_group_has_no_sso(
+    dash_client, idp, monkeypatch
+) -> None:
+    client, _ = dash_client
+    monkeypatch.setattr(settings, "oidc_admin_group", "")
+    r = await client.get("/")
+    assert r.status_code == 503
+    assert "/login/oidc" not in r.text
+    assert "LLAMA_ROUTER_ADMIN_USERNAME" in r.text
 
 
 async def test_users_page_without_oidc_has_no_sso_card(

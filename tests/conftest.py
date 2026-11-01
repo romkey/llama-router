@@ -8,15 +8,20 @@ import httpx
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from httpx import ASGITransport, AsyncClient
+from starlette.middleware.base import RequestResponseEndpoint
 
 from llama_router import request_logger
 from llama_router.config import Settings, settings
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.app import app as dashboard_app
+from llama_router.dashboard.auth_core import DashboardUser
 from llama_router.dashboard.decisions import router as dash_decisions_router
-from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
+from llama_router.dashboard.middleware import (
+    DashboardAuthMiddleware,
+    invalidate_dashboard_user_count_cache,
+)
 from llama_router.database import Database
 from llama_router.limits import limiter
 from llama_router.llamacpp_api import audio, deps
@@ -46,6 +51,33 @@ def _no_background_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Background endpoint probes would hit every fake upstream; tests that
     exercise them turn them back on."""
     monkeypatch.setattr(settings, "auto_probe_enabled", False)
+
+
+_TEST_ADMIN = DashboardUser(id=0, username="test-admin", is_admin=True)
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_admin_without_accounts(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no dashboard accounts, act as a signed-in administrator.
+
+    Most dashboard tests are about something other than sign-in. Tests of
+    the real no-accounts behaviour (a locked setup page) are marked
+    ``no_accounts_locked``.
+    """
+    if request.node.get_closest_marker("no_accounts_locked"):
+        return
+
+    async def as_admin(
+        _self: DashboardAuthMiddleware,
+        req: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        req.state.dashboard_user = _TEST_ADMIN
+        return await call_next(req)
+
+    monkeypatch.setattr(DashboardAuthMiddleware, "no_accounts", as_admin)
 
 
 @pytest.fixture(autouse=True)

@@ -37,7 +37,7 @@
             </button>
             <div class="collapse navbar-collapse" id="topNav">
                 <ul class="navbar-nav ms-auto align-items-md-center gap-md-2">
-                    {% if dash_user or auth_bootstrap %}
+                    {% if dash_user %}
                     <li class="nav-item">
                         <a class="nav-link" href="/decisions"><i class="bi bi-signpost-split me-1"></i>Decisions</a>
                     </li>
@@ -53,10 +53,6 @@
                         <form method="post" action="/logout" class="d-inline">
                             <button type="submit" class="btn btn-sm btn-outline-secondary">Log out</button>
                         </form>
-                    </li>
-                    {% elif auth_bootstrap %}
-                    <li class="nav-item">
-                        <span class="navbar-text small text-warning"><i class="bi bi-unlock me-1"></i>Set up a user under <strong>Users</strong> to require sign-in.</span>
                     </li>
                     {% endif %}
                 </ul>
