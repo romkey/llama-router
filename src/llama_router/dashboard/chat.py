@@ -18,15 +18,17 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from ..config import settings
 from ..database import Database
 from ..httpx_errors import describe_httpx_error
 from ..models import Provider, ProviderStatus
 from ..request_logger import log_request_background
-from ..router import Router
+from ..router import Router, RoutingPreferences
 from ..routing_table import RoutingTable, alias_groups
 from ..v1_client import get_v1_client
 from . import deps
-from .routes import merge_dash_template_ctx, templates
+from .my_keys import self_service_defaults
+from .routes import _is_admin, merge_dash_template_ctx, templates
 
 router = APIRouter()
 
@@ -62,17 +64,50 @@ async def chat_page(request: Request) -> Response:
     )
 
 
+async def _preferences(db: Database, request: Request) -> RoutingPreferences | None:
+    """Routing limits for the signed-in user's chats: None (no limits) for an
+    admin; otherwise the self-service defaults that keys users issue
+    themselves get, so chat can't reach providers those keys can't.
+
+    Chat requests are not tracked against a spend cap, so while the defaults
+    set one a non-admin chats on local providers only (and not at all when
+    the defaults allow cloud providers only).
+    """
+    if _is_admin(request):
+        return None
+    defaults = await self_service_defaults(db)
+    locality: str | None = defaults["locality"]
+    if defaults["daily_spend_cap_usd"] is not None:
+        if locality == "cloud":
+            raise HTTPException(
+                status_code=403,
+                detail="Chat is not available: your providers are cloud only "
+                "and a daily spend cap applies",
+            )
+        locality = "local"
+    return RoutingPreferences(locality=locality)
+
+
+def _allowed(provider: Provider, prefs: RoutingPreferences | None) -> bool:
+    return prefs is None or prefs.locality in (None, provider.locality)
+
+
 async def _table() -> RoutingTable | None:
     rt = deps.get_pm().router
     return await rt.current_table() if rt is not None else None
 
 
 @router.get("/api/chat/targets")
-async def chat_targets() -> JSONResponse:
-    """Providers that are not offline, each with the models it serves and
-    the model groups and aliases that reach it, and under "any" every name
-    the router can place on one of them."""
+async def chat_targets(request: Request) -> JSONResponse:
+    """Providers that are not offline (and that the user may chat with),
+    each with the models it serves and the model groups and aliases that
+    reach it, and under "any" every name the router can place on one of
+    them."""
     db = deps.get_db()
+    try:
+        prefs = await _preferences(db, request)
+    except HTTPException:
+        return JSONResponse({"providers": [], "any": {k: [] for k in NAME_KINDS}})
     served: dict[int, set[str]] = {}
     for m in await db.get_all_provider_models():
         served.setdefault(m.provider_id, set()).add(m.name)
@@ -88,6 +123,8 @@ async def chat_targets() -> JSONResponse:
     rows: list[dict[str, Any]] = []
     for p in await db.list_providers():
         if p.id is None or p.status == ProviderStatus.OFFLINE:
+            continue
+        if not _allowed(p, prefs):
             continue
         # A group hides a model or alias of the same name.
         models = served.get(p.id, set()) - group_names
@@ -155,12 +192,19 @@ def _not_found(model: str, provider: Provider | None) -> HTTPException:
     return HTTPException(status_code=404, detail=f"{where} does not serve {model}")
 
 
-async def _target(db: Database, body: dict[str, Any], model: str, path: str) -> Target:
-    """Where *model* goes: the chosen provider, or the router's pick."""
+async def _target(
+    db: Database,
+    body: dict[str, Any],
+    model: str,
+    path: str,
+    prefs: RoutingPreferences | None = None,
+) -> Target:
+    """Where *model* goes: the chosen provider, or the router's pick, within
+    *prefs* (the user's limits; None for none)."""
     raw = body.get("provider_id")
     if raw in (None, ""):
         rt = deps.get_pm().router
-        result = await rt.route(model, path) if rt is not None else None
+        result = await rt.route(model, path, prefs) if rt is not None else None
         if result is None:
             raise _not_found(model, None)
         return Target(result.provider, result.backend_model, result.model_key, False)
@@ -173,6 +217,12 @@ async def _target(db: Database, body: dict[str, Any], model: str, path: str) -> 
     provider = await db.get_provider(pid)
     if provider is None:
         raise HTTPException(status_code=404, detail="provider not found")
+    if not _allowed(provider, prefs):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{provider.name} is a {provider.locality} provider, "
+            "which you may not use",
+        )
     table = await _table()
     # A group hides a model of the same name, as it does when routing.
     if table is None or not table.is_group(model):
@@ -282,7 +332,9 @@ async def send(request: Request) -> JSONResponse:
     model = str(body.get("model") or "").strip()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
-    target = await _target(db, body, model, PATHS[mode])
+    target = await _target(
+        db, body, model, PATHS[mode], await _preferences(db, request)
+    )
     provider, backend_model = target.provider, target.backend_model
     pid = provider.require_id()
     # Reopening the chat brings back the choice made, not the router's pick.
@@ -291,6 +343,12 @@ async def send(request: Request) -> JSONResponse:
 
     conv_id = body.get("conversation_id")
     if conv_id in (None, ""):
+        limit = settings.max_chat_conversations_per_user
+        if limit > 0 and len(await db.list_chat_conversations(uid)) >= limit:
+            raise HTTPException(
+                status_code=409,
+                detail=f"You have {limit} conversations; delete one to start another",
+            )
         title = (content or "Image").splitlines()[0][:TITLE_LEN]
         conv_id = await db.create_chat_conversation(uid, title, chosen_pid, model)
         history: list[dict[str, Any]] = []

@@ -161,6 +161,7 @@ _NON_ADMIN_FORBIDDEN_PREFIXES = (
     "/api/fallbacks",
     "/api/pulls",
     "/api/auth/allow-unauthenticated",
+    "/api/hf",
 )
 
 
