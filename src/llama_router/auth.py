@@ -21,6 +21,7 @@ from .routing_table import DEFAULT_MODE
 from .spend import cap_reached, tracker_for
 from .upstream_url import LOCALITIES
 from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
+from .worker_link.relay import is_own_relay
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,9 @@ async def _key_preferences(db: Database, request: Request) -> RoutingPreferences
     key = client_api_key(request)
 
     if not key:
-        if await _allow_unauthenticated(db, cache):
+        # This router's own worker relaying a hub job; the hub authenticated
+        # the job, and HUB_HEADER still narrows it to the shared providers.
+        if is_own_relay(request) or await _allow_unauthenticated(db, cache):
             return None
         raise HTTPException(
             status_code=401,

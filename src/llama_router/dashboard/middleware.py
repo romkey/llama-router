@@ -179,6 +179,11 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
 
         db = deps.get_db()
         n_users = await _user_count(db)
+        if n_users == 0 and request.cookies.get(AUTH_COOKIE):
+            # The cache is per process: another replica may have just
+            # created the first account this session belongs to.
+            n_users = await db.count_dashboard_users()
+            _set_user_count_cache(n_users)
 
         if n_users == 0:
             return await self.no_accounts(request, call_next)

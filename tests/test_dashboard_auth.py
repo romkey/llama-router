@@ -739,3 +739,15 @@ async def test_worker_link_locked_when_set_by_env(dash_client, monkeypatch) -> N
         json={"hub_url": "https://other", "token": "x"},
     )
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_session_skips_a_stale_zero_user_count(dash_client) -> None:
+    """Another replica created the first account; this one cached zero."""
+    from llama_router.dashboard import middleware
+
+    client, db = dash_client
+    uid = await db.create_dashboard_user("first", hash_password("password-12345"), True)
+    middleware._set_user_count_cache(0)
+    r = await client.get("/api/status", headers=_session_cookie_header(uid))
+    assert r.status_code == 200
