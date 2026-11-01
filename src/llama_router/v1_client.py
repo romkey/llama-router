@@ -57,7 +57,7 @@ class V1Client:
         client = self._llamacpp or self._ollama
         if client is None:
             raise RuntimeError("V1Client has no upstream client")
-        resp = await client._post(path, op=op, json=body)
+        resp = await client._post(path, op=op, json=upstream_body(body))
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
         return out
