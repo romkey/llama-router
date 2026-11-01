@@ -338,7 +338,7 @@ async def test_upstream_http_error_is_forwarded(
     body = {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
     resp = await _post("/v1/systemone", body)
     assert resp.status_code == 503
-    assert resp.json() == {"error": "loading model"}
+    assert resp.json() == {"error": "upstream service returned an error"}
 
 
 @pytest.mark.parametrize(

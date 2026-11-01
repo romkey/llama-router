@@ -52,7 +52,35 @@ async def test_a_bad_stored_id_is_replaced(tmp_path: Path) -> None:
 
 def test_parse_path() -> None:
     assert ri.parse_path(None) == ()
-    assert ri.parse_path(" a , ,b,") == ("a", "b")
+    assert ri.parse_path(f" {ME} , ,{OTHER.upper()},") == (ME, OTHER)
+    # Anything that is not a router ID is dropped, not passed on.
+    assert ri.parse_path(f"a,{ME},<script>,b") == (ME,)
+
+
+async def test_relayed_path_keeps_only_router_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ri, "_router_id", ME)
+    sent: list[httpx.Request] = []
+    resp = await _get(_guarded_app(sent), {ri.PATH_HEADER: f"junk,{OTHER},x y"})
+    assert resp.status_code == 200
+    assert sent[-1].headers[ri.PATH_HEADER] == f"{OTHER},{ME}"
+
+
+async def test_an_oversized_path_header_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ri, "_router_id", ME)
+    sent: list[httpx.Request] = []
+    huge = "x" * (ri.MAX_PATH_HEADER_CHARS + 1)
+    resp = await _get(_guarded_app(sent), {ri.PATH_HEADER: huge})
+    assert resp.status_code == ri.LOOP_STATUS
+    assert "too long" in resp.json()["error"]
+    assert not sent
+    # A full path of real IDs still fits.
+    full = ",".join(str(uuid.uuid4()) for _ in range(ri.MAX_HOPS - 1))
+    assert len(full) <= ri.MAX_PATH_HEADER_CHARS
+    assert (await _get(_guarded_app(sent), {ri.PATH_HEADER: full})).status_code == 200
 
 
 def test_loop_reason(monkeypatch: pytest.MonkeyPatch) -> None:
