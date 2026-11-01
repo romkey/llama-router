@@ -19,6 +19,11 @@ from . import deps
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# How long a /v1/audio/voices answer is reused.
+VOICES_CACHE_TTL_S = 30.0
+# (from hub, hub's provider) -> (when fetched, voices).
+_voices_cache: dict[tuple[bool, int | None], tuple[float, list[dict[str, Any]]]] = {}
+
 
 @router.post("/v1/audio/speech")
 async def audio_speech(request: Request) -> Response:
@@ -184,11 +189,21 @@ async def audio_transcriptions(request: Request) -> Response:
 @router.get("/v1/audio/voices")
 async def audio_voices(request: Request) -> JSONResponse:
     """List available voices — aggregated from all online providers (a hub
-    sees only the providers shared with it)."""
-    pm = deps.get_pm()
-    infos = await pm.list_provider_infos()
+    sees only the providers shared with it).
+
+    Needs an API key like the other endpoints. The answer is cached for a
+    short while, so polling it does not fan out to every provider each time.
+    """
+    await routing_preferences_from_request(deps.get_db(), request)
     hub = from_hub(request)
     only = hub_provider(request)
+    cache_key = (hub, only)
+    cached = _voices_cache.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < VOICES_CACHE_TTL_S:
+        return JSONResponse(content={"voices": cached[1]})
+    pm = deps.get_pm()
+    infos = await pm.list_provider_infos()
 
     all_voices: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -218,4 +233,5 @@ async def audio_voices(request: Request) -> JSONResponse:
             )
             continue
 
+    _voices_cache[cache_key] = (now, all_voices)
     return JSONResponse(content={"voices": all_voices})

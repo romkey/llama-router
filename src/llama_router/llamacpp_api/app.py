@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
-from ..request_logger import log_request
+from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
 from ..timing import RequestTimingMiddleware
 from ..worker_link.relay import HubRelayMiddleware
@@ -23,7 +23,11 @@ from .images import router as images_router
 from .models import router as models_router
 from .responses import router as responses_router
 
-app = FastAPI(title="llama-router OpenAI API")
+# No interactive docs or schema on the public API ports; the dashboard
+# keeps its own.
+app = FastAPI(
+    title="llama-router OpenAI API", docs_url=None, redoc_url=None, openapi_url=None
+)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
 app.add_middleware(HubRelayMiddleware)
@@ -38,7 +42,7 @@ async def health() -> JSONResponse:
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
-    if exc.status_code in (400, 401, 403, 404):
+    if refusal_worth_logging(request, exc.status_code):
         with contextlib.suppress(Exception):
             db = deps.get_db()
             await log_request(

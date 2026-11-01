@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from llama_router.affinity import session_key
 from llama_router.auth import key_hash
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.app import app as dash_app
@@ -225,6 +226,29 @@ async def test_explain_api(db: Database, pm: ProviderManager, client):
     assert data["chosen"]["provider"] == "b"
     assert data["api_key"]["id"] == key_id
     assert data["request"]["pins"] == {"m": b.id}
+
+
+async def test_explain_api_shows_anonymous_binding_by_client(
+    db: Database, pm: ProviderManager, client
+):
+    a = await _provider(db, "a", ["m"])
+    await _provider(db, "b", ["m"])
+    rt = pm.router
+    assert rt is not None
+    key = session_key({"x-session-id": "s1"}, {"model": "m"}, None, "198.51.100.1")
+    assert key is not None
+    rt.affinity.bind(key, a.id, model="m")
+    params = {"model": "m", "session_id": "s1"}
+    data = client.get(
+        "/api/routing/explain", params={**params, "client_ip": "198.51.100.1"}
+    ).json()
+    assert data["session"]["bound_provider_id"] == a.id
+    data = client.get(
+        "/api/routing/explain", params={**params, "client_ip": "198.51.100.2"}
+    ).json()
+    assert data["session"]["bound_provider_id"] is None
+    bad = client.get("/api/routing/explain", params={**params, "client_ip": "x"})
+    assert bad.status_code == 400
 
 
 async def test_explain_api_validation(client):

@@ -17,7 +17,9 @@ A conversation is identified by, in order:
    ``/v1/responses``, or the system prompt and the first 2 KB of a long
    completion prompt.
 
-Keys are scoped by API key and requested model. A binding holds the
+Keys are scoped by API key (by client address for requests without one) and
+requested model, and each scope may hold only so many sessions. A binding
+holds the
 provider and the model it served, so a conversation that asked for a model
 group stays on the same member model as well as the same provider.
 Everything here is in memory; nothing touches the database, and bindings
@@ -126,14 +128,27 @@ def _explicit_id(headers: Mapping[str, str], body: Mapping[str, Any]) -> str | N
     return None
 
 
+def _scope(key_id: int | None, client: str | None) -> str:
+    """Who owns a session: the API key, else a hash of the client address
+    (kept out of the key in plain form, and free of IPv6 colons)."""
+    if key_id:
+        return str(key_id)
+    if client:
+        return "ip-" + hashlib.blake2b(client.encode(), digest_size=5).hexdigest()
+    return "0"
+
+
 def session_key(
     headers: Mapping[str, str],
     body: Mapping[str, Any],
     key_id: int | None = None,
+    client: str | None = None,
 ) -> str | None:
     """The affinity key for a request, or None when it has nothing stable.
 
     *headers* is a case-insensitive mapping such as ``request.headers``.
+    *client* is the client's address; it scopes requests without an API key,
+    so one anonymous client cannot claim or overwrite another's session.
     """
     if not isinstance(body, Mapping):
         return None
@@ -156,7 +171,7 @@ def session_key(
         digest = None
     if digest is None:
         return None
-    return f"{key_id or 0}:{model}:{digest}"
+    return f"{_scope(key_id, client)}:{model}:{digest}"
 
 
 def short_key(key: str | None) -> str | None:
@@ -165,6 +180,11 @@ def short_key(key: str | None) -> str | None:
         return None
     scope, _, digest = key.rpartition(":")
     return f"{scope}:{digest[:12]}"
+
+
+def _scope_of(key: str) -> str:
+    """The scope part of a session key (everything before the first colon)."""
+    return key.partition(":")[0]
 
 
 class Binding(NamedTuple):
@@ -187,6 +207,9 @@ class SessionAffinity:
     Synchronous and in memory. Entries are kept in least-recently-used order,
     so expired entries collect at the front and are swept a few at a time as
     new sessions are bound; no background task is needed.
+
+    *max_per_key* caps the sessions one scope (API key or anonymous client)
+    holds; its least recently used go first. 0 means no cap.
     """
 
     def __init__(
@@ -194,11 +217,15 @@ class SessionAffinity:
         ttl_s: float,
         max_sessions: int,
         clock: Callable[[], float] = time.monotonic,
+        max_per_key: int = 0,
     ) -> None:
         self.ttl_s = float(ttl_s)
         self.max_sessions = max(1, int(max_sessions))
+        self.max_per_key = max(0, int(max_per_key))
         self._clock = clock
         self._entries: OrderedDict[str, tuple[Binding, float]] = OrderedDict()
+        # Live entries per scope, kept in step with _entries.
+        self._per_scope: dict[str, int] = {}
         self.hits = 0  # request went to its bound provider
         self.misses = 0  # new session, bound to the normal choice
         self.rebinds = 0  # bound provider was not eligible; moved
@@ -225,7 +252,7 @@ class SessionAffinity:
         if entry is None:
             return None
         if self._clock() - entry[1] >= self.ttl_s:
-            del self._entries[key]
+            self._drop(key)
             return None
         return entry[0]
 
@@ -249,19 +276,36 @@ class SessionAffinity:
         else:
             self.rebinds += 1
         entries = self._entries
+        scope = _scope_of(key)
+        if key not in entries:
+            self._per_scope[scope] = self._per_scope.get(scope, 0) + 1
         entries[key] = (Binding(provider_id, model), now)
         entries.move_to_end(key)
         for _ in range(_SWEEP_BATCH):
-            first = next(iter(entries.items()), None)
-            if first is None or now - first[1][1] < self.ttl_s:
+            first = next(iter(entries), None)
+            if first is None or now - entries[first][1] < self.ttl_s:
                 break
-            entries.popitem(last=False)
+            self._drop(first)
+        if self.max_per_key and self._per_scope.get(scope, 0) > self.max_per_key:
+            # Oldest first, so the scope's least recently used session goes.
+            oldest = next(k for k in entries if _scope_of(k) == scope)
+            self._drop(oldest)
         while len(entries) > self.max_sessions:
-            entries.popitem(last=False)
+            self._drop(next(iter(entries)))
+
+    def _drop(self, key: str) -> None:
+        if self._entries.pop(key, None) is None:
+            return
+        scope = _scope_of(key)
+        left = self._per_scope.get(scope, 0) - 1
+        if left > 0:
+            self._per_scope[scope] = left
+        else:
+            self._per_scope.pop(scope, None)
 
     def forget(self, key: str | None) -> None:
         if key:
-            self._entries.pop(key, None)
+            self._drop(key)
 
     def forget_providers_not_in(self, provider_ids: set[int]) -> int:
         """Drop bindings to providers that no longer exist. Returns the count."""
@@ -271,11 +315,12 @@ class SessionAffinity:
             if b.provider_id not in provider_ids
         ]
         for k in stale:
-            del self._entries[k]
+            self._drop(k)
         return len(stale)
 
     def clear(self) -> None:
         self._entries.clear()
+        self._per_scope.clear()
 
     def stats(self) -> dict[str, Any]:
         now = self._clock()
@@ -292,4 +337,5 @@ class SessionAffinity:
             "rebinds": self.rebinds,
             "ttl_seconds": self.ttl_s,
             "max_sessions": self.max_sessions,
+            "max_sessions_per_key": self.max_per_key,
         }

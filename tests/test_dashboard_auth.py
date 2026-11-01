@@ -15,6 +15,7 @@ from llama_router.dashboard.auth_core import (
     verify_password,
 )
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
+from llama_router.provider_secrets import ENCRYPTED_SETTING_PREFIX, decrypt_setting
 
 
 def _session_cookie_header(user_id: int) -> dict[str, str]:
@@ -561,7 +562,11 @@ async def test_worker_link_save_and_clear(dash_client, monkeypatch) -> None:
     assert st["source"] == "dashboard"
     assert st["hub_url"] == "http://127.0.0.1:9"
     assert st["state"] in ("connecting", "backoff")
-    assert await db.get_app_setting("worker_token") == "lrw_abc"
+    stored = await db.get_app_setting("worker_token")
+    assert stored
+    assert stored.startswith(ENCRYPTED_SETTING_PREFIX)
+    assert "lrw_abc" not in stored
+    assert decrypt_setting(stored) == ("lrw_abc", False)
 
     r = await client.post(
         "/api/worker-link", headers=hdr, json={"hub_url": "", "token": ""}
