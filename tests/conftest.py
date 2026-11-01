@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import httpx
@@ -24,6 +24,7 @@ from llama_router.dashboard.middleware import (
     invalidate_dashboard_user_count_cache,
 )
 from llama_router.database import Database
+from llama_router.limits import limiter
 from llama_router.llamacpp_api import audio, deps
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
@@ -78,6 +79,14 @@ def _dashboard_admin_without_accounts(
         return await call_next(req)
 
     monkeypatch.setattr(DashboardAuthMiddleware, "no_accounts", as_admin)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_upstream_limiter() -> Iterator[None]:
+    """Each test gets new upstream semaphores (they bind to one event loop)."""
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest.fixture(autouse=True)

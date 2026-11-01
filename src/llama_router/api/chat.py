@@ -12,6 +12,7 @@ from ..auth import route_within_cap, routing_preferences_from_request
 from ..client_address import client_ip
 from ..decision_policy import apply_decision_policy
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import clamp_generation_params, upstream_slot
 from ..request_body import json_object
 from ..request_logger import StreamLogger, log_request_background, stream_response
 from . import deps
@@ -22,15 +23,16 @@ router = APIRouter()
 
 @router.post("/api/chat")
 async def chat(request: Request) -> Response:
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     body = await json_object(request)
+    clamp_generation_params(body)
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
     model = await apply_decision_policy(
         request, body, model, prefs, rt=rt, pm=pm, db=db
     )
@@ -56,11 +58,12 @@ async def chat(request: Request) -> Response:
     start = time.monotonic()
 
     if stream:
+        slot = await upstream_slot(request, prefs, stream=True)
 
         async def generate() -> AsyncIterator[bytes]:
             try:
-                async with pm.acquire_provider(provider_id):
-                    async for chunk in client.chat_stream(body):
+                async with slot, pm.acquire_provider(provider_id):
+                    async for chunk in slot.stream(client.chat_stream(body)):
                         yield chunk
             except Exception:
                 rt.forget_session(session)
@@ -80,8 +83,9 @@ async def chat(request: Request) -> Response:
         )
         return await stream_response(logged, "application/x-ndjson")
 
+    slot = await upstream_slot(request, prefs)
     try:
-        async with pm.acquire_provider(provider_id):
+        async with slot, pm.acquire_provider(provider_id):
             reply = await client.chat(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

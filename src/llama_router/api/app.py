@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..config import settings
+from ..limits import BodySizeLimitMiddleware
 from ..llamacpp_api.audio import router as v1_audio_router
 from ..llamacpp_api.chat import router as v1_chat_router
 from ..llamacpp_api.completions import router as v1_completions_router
@@ -37,6 +38,7 @@ app = FastAPI(
 app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.get("/health")
@@ -74,7 +76,11 @@ async def http_exception_handler(
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
 
 
 app.include_router(chat_router)

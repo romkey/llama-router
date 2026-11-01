@@ -1797,29 +1797,35 @@ class Database:
     async def create_dashboard_user(
         self, username: str, password_hash: str, is_admin: bool
     ) -> int:
+        floor = self._floor_sql()
+        sql = (
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "  # noqa: S608 - fixed SQL fragment; values are bound
+            f"session_version) VALUES (?, ?, ?, {floor})"
+        )
         return await self._insert_get_id(
-            "INSERT INTO dashboard_users (username, password_hash, is_admin, "
-            "session_version) VALUES (?, ?, ?, ?)",
-            (
-                username.strip(),
-                password_hash,
-                int(is_admin),
-                await self._session_version_floor(),
-            ),
+            sql, (username.strip(), password_hash, int(is_admin), _SESSION_FLOOR_KEY)
         )
 
-    async def _session_version_floor(self) -> int:
-        """The session_version a new account starts at.
+    def _cast_sql(self, expr: str, to: str) -> str:
+        mysql = self._dialect_name in ("mysql", "mariadb")
+        if to == "int":
+            return f"CAST({expr} AS {'SIGNED' if mysql else 'INTEGER'})"
+        return f"CAST({expr} AS {'CHAR' if mysql else 'TEXT'})"
 
-        It is above the version of every account ever deleted, so a cookie
-        left over from a deleted account never matches a new one, even with
-        the same id (SQLite reuses the highest) and the same username.
+    def _floor_sql(self) -> str:
+        """SQL for the session_version a new account starts at (binds the key).
+
+        The floor is above the version of every account ever deleted, so a
+        cookie left over from a deleted account never matches a new one, even
+        with the same id (SQLite reuses the highest) and the same username.
+        It is read inside the INSERT, so a concurrent delete can't slip
+        between reading it and using it.
         """
-        raw = await self.get_app_setting(_SESSION_FLOOR_KEY)
-        try:
-            return int(raw or 0)
-        except ValueError:
-            return 0
+        value = self._cast_sql("value", "int")
+        return (
+            f"COALESCE((SELECT {value} FROM app_settings "  # noqa: S608 - fixed SQL fragment; the key is bound
+            "WHERE app_settings.key = ?), 0)"
+        )
 
     async def create_oidc_dashboard_user(
         self,
@@ -1837,11 +1843,15 @@ class Database:
         An unapproved account exists but cannot use the dashboard until an
         administrator approves it.
         """
-        return await self._insert_get_id(
-            "INSERT INTO dashboard_users (username, password_hash, is_admin, "
+        floor = self._floor_sql()
+        sql = (
+            "INSERT INTO dashboard_users (username, password_hash, is_admin, "  # noqa: S608 - fixed SQL fragment; values are bound
             "auth_source, oidc_issuer, oidc_subject, email, display_name, "
             "last_login_at, approved, session_version) "
-            "VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)",
+            f"VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, {floor})"
+        )
+        return await self._insert_get_id(
+            sql,
             (
                 username.strip(),
                 int(is_admin),
@@ -1850,7 +1860,7 @@ class Database:
                 email,
                 display_name,
                 int(approved),
-                await self._session_version_floor(),
+                _SESSION_FLOOR_KEY,
             ),
         )
 
@@ -1912,17 +1922,38 @@ class Database:
     async def delete_dashboard_user(self, user_id: int) -> None:
         """Delete the user and the API keys they issued to themselves."""
         # Raise the floor new accounts start at above this account's version,
-        # so its cookies stay dead if the id and username come back.
-        row = await self._select_one(
-            "SELECT session_version FROM dashboard_users WHERE id = ?", (user_id,)
-        )
-        if row is not None:
-            floor = max(
-                await self._session_version_floor(), int(row["session_version"]) + 1
+        # so its cookies stay dead if the id and username come back. One
+        # transaction, and the floor only ever grows (GREATEST in SQL), so
+        # concurrent deletes can't lower it.
+        if self._dialect_name in ("mysql", "mariadb"):
+            seed = "INSERT IGNORE INTO app_settings (`key`, value) VALUES (?, '0')"
+        else:
+            seed = (
+                "INSERT INTO app_settings (\"key\", value) VALUES (?, '0') "
+                'ON CONFLICT ("key") DO NOTHING'
             )
-            await self.set_app_setting(_SESSION_FLOOR_KEY, str(floor))
-        await self._execute("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,))
-        await self._execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
+        greatest = "MAX" if self._dialect_name == "sqlite" else "GREATEST"
+        current = self._cast_sql("value", "int")
+        deleted = (
+            "COALESCE((SELECT session_version + 1 FROM dashboard_users "
+            "WHERE id = ?), 0)"
+        )
+        raise_floor = (
+            "UPDATE app_settings SET value = "  # noqa: S608 - fixed SQL fragments; values are bound
+            f"{self._cast_sql(f'{greatest}({current}, {deleted})', 'text')} "
+            "WHERE app_settings.key = ?"
+        )
+        statements: list[tuple[str, tuple[Any, ...]]] = [
+            (seed, (_SESSION_FLOOR_KEY,)),
+            (raise_floor, (user_id, _SESSION_FLOOR_KEY)),
+            ("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,)),
+            ("DELETE FROM dashboard_users WHERE id = ?", (user_id,)),
+        ]
+        sf = self._require_session_factory()
+        async with sf() as session, session.begin():
+            for sql, params in statements:
+                stmt, bind = qmark(sql, *_bind_params(params))
+                await session.execute(stmt, bind)
 
     async def count_dashboard_admins(self) -> int:
         """Administrators who can use the dashboard (approved accounts only)."""

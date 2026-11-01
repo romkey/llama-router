@@ -192,6 +192,20 @@ async def test_recreated_account_does_not_inherit_session(
     assert await _status(client, await _sign_in(client, "gone")) == 200
 
 
+async def test_session_floor_only_grows(db: Database) -> None:
+    high = await db.create_dashboard_user("high", hash_password(PASSWORD), True)
+    low = await db.create_dashboard_user("low", hash_password(PASSWORD), True)
+    for _ in range(5):
+        await db.bump_dashboard_user_session_version(high)
+    await db.delete_dashboard_user(high)
+    await db.delete_dashboard_user(low)
+    assert await db.get_app_setting("dashboard_session_version_floor") == "6"
+    uid = await db.create_dashboard_user("new", hash_password(PASSWORD), True)
+    row = await db.get_dashboard_user_by_id(uid)
+    assert row is not None
+    assert row["session_version"] == 6
+
+
 async def test_pending_admin_is_not_counted_as_an_admin(db: Database) -> None:
     await db.create_dashboard_user("root", hash_password(PASSWORD), True)
     pending = await db.create_oidc_dashboard_user(
