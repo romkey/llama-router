@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -24,7 +24,11 @@ from llama_router.request_logger import (
     log_request_background,
 )
 from llama_router.router import Router, RouteResult, RoutingPreferences
-from llama_router.spend import SpendTracker, tracker_for
+from llama_router.spend import (
+    SpendReservationMiddleware,
+    SpendTracker,
+    tracker_for,
+)
 
 CHAT = "/v1/chat/completions"
 IMAGES = "/v1/images/generations"
@@ -235,12 +239,12 @@ async def test_the_log_settles_the_reservation(db: Database) -> None:
         )
         assert req.state.spend_reservation is None
         for _ in range(50):
-            if held.done:
+            if held.charged:
                 break
             await asyncio.sleep(0.01)
     finally:
         attach_pricer(None)
-    assert held.done
+    assert held.charged
     assert await t.committed_today(5) == pytest.approx(0.001)
 
 
@@ -271,8 +275,11 @@ def test_usage_chunk_filter_drops_only_the_usage_event() -> None:
     out = b"".join(f.feed(raw[i : i + 7]) for i in range(0, len(raw), 7))
     out += f.flush()
     assert out == CONTENT + DONE
+    crlf_raw = raw.replace(b"\n", b"\r\n")
     crlf = _UsageChunkFilter()
-    assert crlf.feed(USAGE.replace(b"\n", b"\r\n")) == b""
+    out = b"".join(crlf.feed(crlf_raw[i : i + 5]) for i in range(0, len(crlf_raw), 5))
+    out += crlf.flush()
+    assert out == (CONTENT + DONE).replace(b"\n", b"\r\n")
 
 
 async def test_stream_logger_hides_usage_but_reads_it(db: Database) -> None:
@@ -301,3 +308,55 @@ async def test_stream_logger_hides_usage_but_reads_it(db: Database) -> None:
         await asyncio.sleep(0.01)
     (entry,) = logs
     assert (entry.prompt_tokens, entry.completion_tokens) == (3, 1)
+
+
+async def test_a_released_reservation_is_still_charged_once(db: Database) -> None:
+    t = SpendTracker(db)
+    held = await t.reserve(1, 1.0, 0.5)
+    assert held is not None
+    held.release()
+    held.release()
+    assert await t.committed_today(1) == 0
+    t.settle(held, 0.2)
+    t.settle(held, 0.2)
+    assert await t.committed_today(1) == pytest.approx(0.2)
+
+
+async def test_an_error_logged_with_the_request_releases_the_hold(
+    db: Database,
+) -> None:
+    # The API's HTTP exception handler logs with log_request directly.
+    t = tracker_for(db)
+    held = await t.reserve(5, 1.0, 0.5)
+    assert held is not None
+    req = _request()
+    req.state.spend_reservation = held
+    await log_request(
+        db,
+        provider=None,
+        protocol="ollama",
+        endpoint=CHAT,
+        request=req,
+        model=None,
+        duration_ms=0,
+        status="error",
+        error_detail="HTTP 400: bad",
+    )
+    assert held.released
+    assert await t.committed_today(5) == 0
+
+
+async def test_middleware_releases_an_unsettled_reservation(db: Database) -> None:
+    t = tracker_for(db)
+    held = await t.reserve(5, 1.0, 0.5)
+    assert held is not None
+
+    async def failing_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        scope.setdefault("state", {})["spend_reservation"] = held
+        raise RuntimeError("handler failed before logging")
+
+    app = SpendReservationMiddleware(failing_app)
+    with pytest.raises(RuntimeError):
+        await app({"type": "http"}, None, None)
+    assert held.released
+    assert await t.committed_today(5) == 0

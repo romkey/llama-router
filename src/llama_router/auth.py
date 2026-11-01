@@ -18,7 +18,7 @@ from .decision_policy import DecisionPolicy, parse_policy
 from .pricing import estimate_tokens
 from .router import ROUTING_MODES, Router, RouteResult, RoutingPreferences
 from .routing_table import DEFAULT_MODE
-from .spend import tracker_for
+from .spend import RESERVATION_STATE, tracker_for
 from .upstream_url import LOCALITIES
 from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
 
@@ -289,7 +289,7 @@ async def route_within_cap(
             return result
         held = await tracker_for(db).reserve(prefs.key_id, cap, estimate)
         if held is not None:
-            request.state.spend_reservation = held
+            setattr(request.state, RESERVATION_STATE, held)
             return result
         status = 429
         reason = f"daily spend cap of ${cap:.2f} reached for this API key"

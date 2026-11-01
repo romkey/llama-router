@@ -22,7 +22,7 @@ from .httpx_errors import describe_httpx_error, forward_upstream_http_error
 from .models import Provider, RequestLog
 from .pricing import Price, estimate_tokens
 from .routing_stats import ProviderStats
-from .spend import Reservation, tracker_for
+from .spend import RESERVATION_STATE, Reservation, tracker_for
 from .timing import received_at
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,18 @@ def _is_usage_only_event(event: bytes) -> bool:
     )
 
 
+# The blank line that ends an SSE event, with LF or CRLF line endings.
+_EVENT_END_RE = re.compile(rb"\r?\n\r?\n")
+
+
+def _take_reservation(request: Request) -> Reservation | None:
+    """The request's spend reservation, which only its first log entry after
+    routing (the one for the request itself) settles."""
+    held = getattr(request.state, RESERVATION_STATE, None)
+    setattr(request.state, RESERVATION_STATE, None)
+    return held if isinstance(held, Reservation) else None
+
+
 class _UsageChunkFilter:
     """Drops the usage-only event from an SSE byte stream. Chunks need not
     line up with events; whole events are passed on as they complete."""
@@ -160,10 +172,10 @@ class _UsageChunkFilter:
         self._buf += chunk
         out: list[bytes] = []
         while True:
-            cut = self._buf.find(b"\n\n")
-            if cut < 0:
+            m = _EVENT_END_RE.search(self._buf)
+            if m is None:
                 break
-            event, self._buf = self._buf[: cut + 2], self._buf[cut + 2 :]
+            event, self._buf = self._buf[: m.end()], self._buf[m.end() :]
             if not _is_usage_only_event(event.replace(b"\r", b"")):
                 out.append(event)
         return b"".join(out)
@@ -387,6 +399,8 @@ async def log_request(
     ip = source_ip or (_client_ip(request) if request else "internal")
     if api_key_id is None and request is not None:
         api_key_id = getattr(request.state, "api_key_id", None)
+    if spend_reservation is None and request is not None:
+        spend_reservation = _take_reservation(request)
     if prompt_tokens is None and completion_tokens is None:
         prompt_tokens, completion_tokens = usage_from_body(response_body)
     cost = None
@@ -458,13 +472,8 @@ def log_request_background(
         kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
         if kwargs.get("api_key_id") is None:
             kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
-        # The request's spend reservation is settled by its first log entry
-        # after routing (the one for the request itself).
         if kwargs.get("spend_reservation") is None:
-            kwargs["spend_reservation"] = getattr(
-                request.state, "spend_reservation", None
-            )
-            request.state.spend_reservation = None
+            kwargs["spend_reservation"] = _take_reservation(request)
         if kwargs.get("router_ms") is None:
             kwargs["router_ms"] = _router_ms(
                 request, dispatched_at, kwargs.get("duration_ms", 0.0)
