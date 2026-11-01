@@ -10,6 +10,7 @@ no price set costs nothing.
 from __future__ import annotations
 
 import fnmatch
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -21,9 +22,12 @@ NOMINAL_PROMPT_TOKENS = 1000
 NOMINAL_COMPLETION_TOKENS = 256
 # Estimating a request's size from its body: characters per prompt token (on
 # the low side, so the estimate errs high), and the tokens an inline image or
-# audio clip (a data: URL) is taken to cost rather than its base64 length.
+# audio clip (a data: URL, or bare base64 such as Ollama's ``images`` and
+# OpenAI's ``input_audio.data``) is taken to cost rather than its length.
 _CHARS_PER_TOKEN = 3
 _INLINE_MEDIA_TOKENS = 2000
+# A string at least this long made only of base64 characters is media.
+_BASE64_RE = re.compile(r"[A-Za-z0-9+/=\r\n]{512,}")
 # Request fields that bound the output, in the order they are looked for.
 _MAX_OUTPUT_FIELDS = ("max_completion_tokens", "max_tokens", "max_output_tokens")
 
@@ -49,7 +53,7 @@ FREE = Price(0.0, 0.0, "free")
 
 def _prompt_tokens(node: Any) -> int:
     if isinstance(node, str):
-        if node.startswith("data:"):
+        if node.startswith("data:") or _BASE64_RE.fullmatch(node):
             return _INLINE_MEDIA_TOKENS
         return -(-len(node) // _CHARS_PER_TOKEN)
     if isinstance(node, Mapping):

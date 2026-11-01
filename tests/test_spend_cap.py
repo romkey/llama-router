@@ -93,6 +93,12 @@ def test_estimate_tokens() -> None:
     # An inline image counts as a fixed number of tokens, not its base64 size.
     image = {"image_url": "data:image/png;base64," + "A" * 1_000_000}
     assert estimate_tokens(image, 0)[0] < 5000
+    # So does bare base64 (Ollama images, OpenAI input_audio.data).
+    assert estimate_tokens({"images": ["QUJD" * 250_000]}, 0)[0] < 5000
+    audio = {"input_audio": {"data": "QUJD" * 250_000, "format": "wav"}}
+    assert estimate_tokens(audio, 0)[0] < 5000
+    # Long ordinary text is still counted as text.
+    assert estimate_tokens({"prompt": "word " * 3000}, 0)[0] >= 5000
     assert estimate_tokens(None, 9) == (0, 9)
 
 
