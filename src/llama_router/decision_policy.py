@@ -11,14 +11,18 @@ An API key may carry a policy that asks decision questions (see
 
 All of a policy's questions go in one decision request, so they cost one
 round trip, answered in parallel on the provider the router picks for the
-policy's decision model. A key without a policy pays nothing. The policy
-never fails a request on its own account: when the decision cannot be made
-in time, the request goes on with the model it asked for and no gate.
+policy's decision model. A key without a policy pays nothing.
+
+When the decision cannot be made (no provider, an error, a timeout), a policy
+with gates refuses the request with 503, since an unchecked request is what the
+gates are there to stop; ``decision_policy_fail_open`` lets it through instead.
+A policy with only a tier goes on with the model the request asked for.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -43,8 +47,11 @@ logger = logging.getLogger(__name__)
 DECISION_PATH = "/v1/decisions"
 TIER_ID = "tier"
 GATE_PREFIX = "gate:"
-# Most user text sent as a request's state; the newest is kept.
+# Most request text sent as a request's state; the newest is kept.
 MAX_STATE_CHARS = 16_000
+# Characters a turn costs in the rendered state beyond its text ("[12] " and
+# the blank line between turns).
+_TURN_OVERHEAD = 8
 # request.state attribute the request log reads the outcome from.
 STATE_ATTR = "decision_policy"
 
@@ -102,8 +109,10 @@ class DecisionPolicy(BaseModel):
     def _gates(cls, v: dict[str, Gate]) -> dict[str, Gate]:
         if any(not k.strip() for k in v):
             raise ValueError("gate names must not be blank")
-        if len(v) >= d.MAX_QUESTIONS:
-            raise ValueError(f"at most {d.MAX_QUESTIONS - 1} gates")
+        # One question is left for the tier.
+        most = settings.decision_max_questions - 1
+        if len(v) > most:
+            raise ValueError(f"at most {most} gates")
         return v
 
     @model_validator(mode="after")
@@ -131,20 +140,80 @@ def parse_policy(raw: Any) -> DecisionPolicy:
 # --- The state of a request ---
 
 
+def _arguments(value: Any) -> str | None:
+    """Tool-call arguments as text: a JSON string as sent, or an object."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return None
+
+
+def _part_text(part: Any) -> str | None:
+    if not isinstance(part, dict):
+        return None
+    text = part.get("text")
+    if isinstance(text, str):
+        return text
+    kind = part.get("type")
+    if kind == "tool_use":  # Anthropic: a call the assistant made
+        return _call_text(part.get("name"), part.get("input"))
+    if kind == "tool_result":  # Anthropic: what the tool returned
+        return _text(part.get("content"))
+    return None
+
+
 def _text(content: Any) -> str | None:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = [
-            p["text"]
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str)
-        ]
+        parts = [t for t in map(_part_text, content) if t is not None]
         return "\n".join(parts) if parts else None
     return None
 
 
-def _user_turns(body: dict[str, Any]) -> list[str]:
+def _call_text(name: Any, arguments: Any) -> str | None:
+    args = _arguments(arguments)
+    if args is None and not isinstance(name, str):
+        return None
+    return f"call {name if isinstance(name, str) else ''}({args or ''})"
+
+
+def _calls(m: dict[str, Any]) -> list[str]:
+    """A message's tool calls as text: chat ``tool_calls`` (OpenAI, Ollama),
+    the older ``function_call`` and a Responses ``function_call`` item.
+    Their arguments are text a client or a model wrote, so gates read them.
+    """
+    calls: list[Any] = []
+    tool_calls = m.get("tool_calls")
+    if isinstance(tool_calls, list):
+        calls += [c.get("function", c) for c in tool_calls if isinstance(c, dict)]
+    calls.append(m.get("function_call"))
+    if m.get("type") == "function_call":
+        calls.append(m)
+    out = []
+    for c in calls:
+        if isinstance(c, dict):
+            text = _call_text(c.get("name"), c.get("arguments"))
+            if text is not None:
+                out.append(text)
+    return out
+
+
+def _turns(body: dict[str, Any]) -> list[str]:
+    """Every turn's text, oldest first, from messages of any role.
+
+    A user turn is its text alone; any other is prefixed with its role
+    (lower-cased), so the decision model can tell a system prompt or a tool
+    result from what the user wrote. A gate has to see them all: text meant
+    to get past it can sit in a system prompt, an assistant turn or a tool
+    result as well as in a user message.
+    """
+    turns: list[str] = []
+    for field in ("system", "instructions"):  # Ollama, Anthropic; Responses
+        text = _text(body.get(field))
+        if text is not None and text.strip():
+            turns.append(f"system: {text}")
     messages = body.get("messages")
     inp = body.get("input")
     prompt = body.get("prompt")
@@ -153,43 +222,55 @@ def _user_turns(body: dict[str, Any]) -> list[str]:
     elif isinstance(inp, list):
         items = inp
     elif isinstance(inp, str):
-        return [inp]
+        return [*turns, inp]
     elif isinstance(prompt, str):
-        return [prompt]
+        return [*turns, prompt]
     elif isinstance(prompt, list):
-        return [p for p in prompt if isinstance(p, str)]
+        return turns + [p for p in prompt if isinstance(p, str)]
     else:
-        return []
-    turns = []
+        return turns
     for m in items:
-        if isinstance(m, dict) and m.get("role") == "user":
-            text = _text(m.get("content"))
-            if text is not None:
-                turns.append(text)
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        label = role.strip().lower() if isinstance(role, str) else ""
+        text = _text(m.get("content"))
+        if text is None:
+            # Responses API tool results: {"type": "function_call_output", ...}
+            text = _text(m.get("output"))
+        text = "\n".join(t for t in (text, *_calls(m)) if t)
+        if not text.strip():
+            continue
+        if label != "user":
+            kind = m.get("type")
+            label = label or (kind if isinstance(kind, str) else "") or "message"
+            text = f"{label}: {text}"
+        turns.append(text)
     return turns
 
 
 def request_text(body: Any) -> str | list[str] | None:
-    """The user text of a generation request: every user message, or its
-    prompt or input, oldest first.
+    """The text of a generation request: every message of any role, or its
+    system prompt and prompt or input, oldest first.
 
-    Every user turn goes in, not just the last, so a gate also sees text
-    placed in an earlier turn. Past MAX_STATE_CHARS the oldest text is
-    dropped. One turn is returned as a string, several as a list. Covers
-    chat messages (OpenAI and Ollama), completion and generate prompts, and
-    Responses API input.
+    Every turn goes in, not just the last user message, so a gate also sees
+    text placed in an earlier turn, a system prompt or a tool result. Past
+    MAX_STATE_CHARS (or half the decision request limit, if lower) the
+    oldest text is dropped. One turn is returned as a string, several as a
+    list. Covers chat messages (OpenAI, Ollama and Anthropic), completion
+    and generate prompts, and Responses API input.
     """
     if not isinstance(body, dict):
         return None
     kept: list[str] = []
-    budget = MAX_STATE_CHARS
-    for turn in reversed(_user_turns(body)):
+    budget = min(MAX_STATE_CHARS, settings.decision_max_state_chars // 2)
+    for turn in reversed(_turns(body)):
         if not turn.strip():
             continue
         if budget <= 0:
             break
         kept.append(turn[-budget:])
-        budget -= len(kept[-1])
+        budget -= len(kept[-1]) + _TURN_OVERHEAD
     if not kept:
         return None
     kept.reverse()
@@ -225,6 +306,8 @@ async def _decide(
             raise _FailedError(
                 f"no available provider for decision model {req.model!r}"
             )
+        # Raises 429, which the caller passes on rather than failing over.
+        await svc.check_spend_cap(db, rt, prefs, result, req)
         provider = result.provider
         provider_id = provider.require_id()
         start = time.monotonic()
@@ -326,8 +409,9 @@ async def apply_decision_policy(
     """Run the key's decision policy on a generation request.
 
     Returns the model to route (the tier's target, or *model*), or raises
-    403 when a gate rejects the request. Without a policy it returns
-    *model* at once.
+    403 when a gate rejects the request, 503 when gates could not decide
+    (unless ``decision_policy_fail_open``) and 429 when the decision would
+    pass the key's spend cap. Without a policy it returns *model* at once.
     """
     policy: DecisionPolicy | None = prefs.decision_policy if prefs else None
     if policy is None:
@@ -337,18 +421,21 @@ async def apply_decision_policy(
         return model
     state = request_text(body)
     if state is None:
-        _note(request, "policy: skipped, no user text")
+        _note(request, "policy: skipped, no text")
         return model
 
     start = time.monotonic()
-    req = d.DecisionRequest(model=policy.model, state=state, questions=questions)
+    req: d.DecisionRequest | None = None
     timeout = settings.decision_policy_timeout_seconds
     try:
+        req = d.DecisionRequest(model=policy.model, state=state, questions=questions)
         answers, log = await asyncio.wait_for(
             _decide(rt, pm, db, prefs, request, req), timeout
         )
         gates = {name: _noul(answers, GATE_PREFIX + name) for name in policy.gates}
         level = _level(answers) if TIER_ID in questions else None
+    except HTTPException:
+        raise  # the key's spend cap
     except Exception as exc:
         ms = (time.monotonic() - start) * 1000
         if isinstance(exc, asyncio.TimeoutError):
@@ -360,7 +447,7 @@ async def apply_decision_policy(
                 endpoint=DECISION_PATH,
                 request=request,
                 model=policy.model,
-                request_body=req.model_dump(exclude_none=True),
+                request_body=req.model_dump(exclude_none=True) if req else None,
                 duration_ms=ms,
                 status="error",
                 error_detail=f"decision policy: {reason}",
@@ -371,6 +458,22 @@ async def apply_decision_policy(
         else:
             logger.exception("Decision policy failed")
             reason = f"{type(exc).__name__}: {exc}"
+        if policy.gates and not settings.decision_policy_fail_open:
+            logger.warning(
+                "Decision policy (key %s) failed after %.0f ms, refusing the "
+                "request its gates could not check: %s",
+                prefs.key_id if prefs else None,
+                ms,
+                reason,
+            )
+            _note(request, f"policy: failed in {ms:.0f}ms, refused")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "the API key's decision policy could not be "
+                    "evaluated, so the request was refused",
+                },
+            ) from None
         logger.warning(
             "Decision policy (key %s) failed after %.0f ms, routing %r as asked: %s",
             prefs.key_id if prefs else None,
