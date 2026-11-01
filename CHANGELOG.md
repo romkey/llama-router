@@ -28,6 +28,27 @@ described in their git tags and GitHub Releases.
   `LLAMA_ROUTER_WORKER_MAX_SHARED_PROVIDERS` (256), and deletes providers a
   worker stopped sharing after `LLAMA_ROUTER_WORKER_UNSHARED_PURGE_HOURS`
   (24; `0` keeps them), or at once when they would go over the cap.
+- **Dashboard escapes server and user data.** Model names, provider names,
+  addresses, pull and benchmark progress and error messages are HTML-escaped
+  wherever the dashboard and provider pages build HTML in JavaScript, and
+  names passed to button handlers can no longer break out of them. Pinned
+  route model names must be printable and at most 255 characters.
+- **Chat follows the self-service limits.** A non-admin's chats may use only
+  the providers that keys they issue themselves may use (the locality an
+  admin sets under API Keys). Chat spend isn't tracked against a cap, so
+  while a daily spend cap is set non-admins chat on local providers only.
+  Choosing a provider of another locality is refused.
+- **Per-user limits.** `LLAMA_ROUTER_MAX_API_KEYS_PER_USER` (default 20)
+  caps the keys a user issues themselves; `LLAMA_ROUTER_MAX_CHAT_CONVERSATIONS_PER_USER`
+  (default 500) caps the conversations a user keeps. 0 turns either off.
+- **Hugging Face environment is admin-only.** `GET /api/hf/env` now needs an
+  admin, and hides `user:password@` in proxy URLs.
+- **No cloud metadata addresses.** Provider URLs (add, address add and edit,
+  and the probe) that are or resolve to `169.254.0.0/16` or `fd00:ec2::254`
+  are refused. Private and loopback addresses are still allowed.
+- **Addresses hidden from non-admins.** `/api/status`, the dashboard and the
+  provider page show `(hidden)` instead of provider address URLs to users
+  who aren't admins, and leave out a worker's remote address.
 - **Decision requests are bounded.** A decision request may now ask at most 8
   questions (was 32) about a state of at most 32,000 characters (was 128,000),
   set with `LLAMA_ROUTER_DECISION_MAX_QUESTIONS` and
