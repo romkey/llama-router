@@ -1958,9 +1958,7 @@ class ProviderManager:
             for child, name in retry:
                 if await self._name_free(name, child.id):
                     await self._rename(child, name)
-            gone, purge = self._purge_unshared(
-                list(existing.values()), len(catalog)
-            )
+            gone, purge = self._purge_unshared(list(existing.values()), len(catalog))
         for child in purge:
             logger.info(
                 "Worker %s: deleting %s, no longer shared by the worker",

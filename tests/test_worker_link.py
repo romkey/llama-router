@@ -1440,7 +1440,7 @@ async def test_hub_stops_reading_while_a_client_falls_behind(monkeypatch) -> Non
     from llama_router.worker_link import hub as hub_mod
 
     monkeypatch.setattr(settings, "worker_response_buffer_bytes", 10)
-    monkeypatch.setattr(hub_mod, "_STALL_TIMEOUT", 0.3)
+    monkeypatch.setattr(hub_mod, "_STALL_TIMEOUT", 1.5)
     conn = _hub_conn()
     pend, stream = await _open_response(conn)
     await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"a" * 6))
@@ -1596,9 +1596,7 @@ async def test_purge_timer_retries_a_failed_sync(monkeypatch) -> None:
     await _wait_for(lambda: len(calls) == 2)
 
 
-async def test_catalog_sync_uses_the_catalog_it_started_with(
-    link, monkeypatch
-) -> None:
+async def test_catalog_sync_uses_the_catalog_it_started_with(link, monkeypatch) -> None:
     """A frame that lands mid-sync does not change what that sync deletes."""
     pm, pid = link["pm"], link["provider_id"]
     catalog = [

@@ -118,7 +118,9 @@ example two routers that are each other's hub. Three things stop that:
    carries `X-Llama-Router-Path`: the IDs of the routers it has passed
    through, this one last. A worker relays the header unchanged. A router
    that receives a request whose path holds its own ID, or eight IDs or
-   more, answers `508 Loop Detected` without routing it. The caller sees
+   more, answers `508 Loop Detected` without routing it. Entries that are
+   not router IDs are dropped, and a header over 512 characters is refused
+   the same way. The caller sees
    the 508 as an upstream error from that provider. This catches loops
    through three or more routers and loops through plain HTTP providers that
    point at another router.
