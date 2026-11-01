@@ -55,6 +55,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A failed sync from the purge timer is tried again after this long.
+_PURGE_RETRY_S = 60.0
+
 # Reachability probes must be quick: one black-holed address must not stall the
 # health cycle for every other provider.
 # Request log retention runs at most this often.
@@ -2013,8 +2016,11 @@ class ProviderManager:
         for child in gone:
             self.worker_hub.remove_child(child.require_id())
             await self._take_child_offline(child, "no longer shared by the worker")
-        if gone:
-            self._schedule_purge(conn)
+        grace = settings.worker_unshared_purge_hours * 3600.0
+        if gone and grace > 0:
+            # Due when the longest unshared one reaches the grace period.
+            oldest = min(self._unshared_since[c.require_id()] for c in gone)
+            self._schedule_purge(conn, oldest + grace - time.monotonic())
         for child in wanted:
             async with self._worker_lock(child.require_id()):
                 if self.worker_hub.get(child.require_id()) is conn:
@@ -2043,18 +2049,20 @@ class ProviderManager:
                 keep.append(child)
         return keep, purge
 
-    def _schedule_purge(self, conn: WorkerConnection) -> None:
-        """Sync the worker's catalog again once its unshared providers are
-        due for deletion. One timer per worker; it uses whichever socket is
-        current when it fires, so a reconnect in between does not lose it."""
-        grace = settings.worker_unshared_purge_hours * 3600.0
+    def _schedule_purge(self, conn: WorkerConnection, delay: float) -> None:
+        """Sync the worker's catalog again in *delay* seconds, when its
+        longest unshared provider is due for deletion. That sync deletes it
+        and schedules the next. One timer per worker (a running one is due no
+        later, as providers unshared since are due after it); it uses
+        whichever socket is current when it fires, so a reconnect in between
+        does not lose it."""
         parent_id = conn.provider_id
         timer = self._purge_timers.get(parent_id)
-        if grace <= 0 or (timer is not None and not timer.done()):
+        if timer is not None and not timer.done():
             return
 
         async def later() -> None:
-            await asyncio.sleep(grace + 1.0)
+            await asyncio.sleep(max(0.0, delay) + 1.0)
             if self._purge_timers.get(parent_id) is asyncio.current_task():
                 del self._purge_timers[parent_id]
             current = self.worker_hub.get(parent_id)
@@ -2067,7 +2075,7 @@ class ProviderManager:
                 logger.exception(
                     "Could not delete unshared providers of worker %d", parent_id
                 )
-                self._schedule_purge(current)
+                self._schedule_purge(current, _PURGE_RETRY_S)
 
         self._purge_timers[parent_id] = asyncio.create_task(
             later(), name=f"purge-unshared-{parent_id}"

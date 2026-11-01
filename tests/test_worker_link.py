@@ -15,6 +15,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from llama_router import provider_manager as pm_mod
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
 from llama_router.config import settings
@@ -1570,11 +1571,11 @@ async def test_purge_timer_survives_a_reconnect(monkeypatch) -> None:
 
     monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
     pm.worker_hub._conns[1] = old
-    pm._schedule_purge(old)
+    pm._schedule_purge(old, 0.0)
     # The worker reconnects before the timer fires; the new socket's sync
     # finds a timer already running and leaves it be.
     pm.worker_hub._conns[1] = new
-    pm._schedule_purge(new)
+    pm._schedule_purge(new, 0.0)
     await _wait_for(lambda: synced)
     assert synced == [new]
 
@@ -1591,8 +1592,9 @@ async def test_purge_timer_retries_a_failed_sync(monkeypatch) -> None:
             raise RuntimeError("database busy")
 
     monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
+    monkeypatch.setattr(pm_mod, "_PURGE_RETRY_S", 0.0)
     pm.worker_hub._conns[1] = conn
-    pm._schedule_purge(conn)
+    pm._schedule_purge(conn, 0.0)
     await _wait_for(lambda: len(calls) == 2)
 
 
@@ -1622,3 +1624,32 @@ async def test_catalog_sync_uses_the_catalog_it_started_with(link, monkeypatch) 
     await pm._sync_catalog(conn)
     # One shared plus one unshared is within the cap: 8 is kept.
     assert {c.worker_remote_id for c in (await _children(link)).values()} == {7, 8}
+
+
+async def test_purge_timer_waits_only_for_the_longest_unshared(
+    link, monkeypatch
+) -> None:
+    """A provider unshared earlier is deleted when its own grace is up, not
+    a whole grace period after the last sync."""
+    pm, pid = link["pm"], link["provider_id"]
+    catalog = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+    ]
+    await _individual_worker(link, monkeypatch, catalog)
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 1.0)
+    delays: list[float] = []
+    monkeypatch.setattr(pm, "_schedule_purge", lambda conn, d: delays.append(d))
+    conn = pm.worker_hub.get(pid)
+    api = (await _children(link))["alice-gpu/api"]
+    conn.catalog = [catalog[0]]
+    # Unshared half an hour ago (by the hub's reckoning).
+    pm._unshared_since[api.require_id()] = time.monotonic() - 1800.0
+    await pm._on_worker_catalog(conn)
+    assert len(delays) == 1
+    assert 1700.0 < delays[0] <= 1800.0
