@@ -96,8 +96,12 @@ def validate_repo(repo: str) -> str:
 
 def validate_pattern(pattern: str | None) -> str:
     pattern = (pattern or "").strip() or "*.gguf"
-    if not _PATTERN_RE.fullmatch(pattern) or ".." in pattern:
-        raise ValueError("file pattern may use letters, digits, . _ - / * ? [ ]")
+    # A leading "-" would read as an option to hf.
+    if not _PATTERN_RE.fullmatch(pattern) or ".." in pattern or pattern[0] == "-":
+        raise ValueError(
+            "file pattern may use letters, digits, . _ - / * ? [ ] "
+            "and may not start with -"
+        )
     return pattern
 
 
@@ -105,8 +109,10 @@ def validate_revision(revision: str | None) -> str | None:
     revision = (revision or "").strip()
     if not revision:
         return None
-    if not _REVISION_RE.fullmatch(revision) or ".." in revision:
-        raise ValueError("revision may use letters, digits, . _ - /")
+    if not _REVISION_RE.fullmatch(revision) or ".." in revision or revision[0] == "-":
+        raise ValueError(
+            "revision may use letters, digits, . _ - / and may not start with -"
+        )
     return revision
 
 
@@ -250,9 +256,9 @@ def _error_from(stderr: str) -> str:
 
 async def plan(repo: str, pattern: str, revision: str | None) -> list[dict[str, Any]]:
     """Files *pattern* selects in *repo*, from ``hf download --dry-run --json``."""
-    args = ["download", repo, "--include", pattern, "--dry-run", "--json"]
+    args = ["download", repo, f"--include={pattern}", "--dry-run", "--json"]
     if revision:
-        args += ["--revision", revision]
+        args.append(f"--revision={revision}")
     code, out, err = await _run(args)
     if code != 0:
         raise HfError(_error_from(err))
@@ -311,9 +317,11 @@ async def download(
     """Download the matching files and return their local paths."""
     target = local_dir_for(repo)
     target.mkdir(parents=True, exist_ok=True)
-    args = ["download", repo, "--include", pattern, "--local-dir", str(target)]
+    # Values ride in the same argument as their option, so none can be
+    # mistaken for an option of its own.
+    args = ["download", repo, f"--include={pattern}", f"--local-dir={target}"]
     if revision:
-        args += ["--revision", revision]
+        args.append(f"--revision={revision}")
 
     def progress(line: str) -> None:
         m = _PERCENT_RE.search(line)
