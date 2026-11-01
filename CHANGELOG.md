@@ -11,9 +11,10 @@ described in their git tags and GitHub Releases.
 
 - **Hub headers from clients are ignored.** `X-Llama-Router-Via` and
   `X-Llama-Router-Provider` now count only on jobs relayed by the router's
-  own worker link, proven by a per-process secret in `X-Llama-Router-Relay`
-  that is only sent to upstreams on the same machine. The router strips all
-  three from every request. A job the hub sends to one provider still obeys
+  own worker link, proven by the per-process token in `X-Llama-Router-Relay`
+  (sent only to the default upstreams, accepted only from a loopback
+  address). One middleware checks it for both uses (hub narrowing and
+  keyless relayed jobs) and strips all three headers from every request. A job the hub sends to one provider still obeys
   the worker key's model pins.
 - **Worker links are bounded.** A worker refuses (503) new jobs while more
   than four times its concurrency are pending, and caps request bodies held
@@ -131,8 +132,35 @@ described in their git tags and GitHub Releases.
   ping, traceroute, ip and ps are gone from the released image (the
   development image keeps them). The README shows Python one-liners and a
   sidecar container for checking reachability instead.
+- **The first dashboard administrator comes from the environment.** With no
+  dashboard accounts the dashboard used to be open to anyone, and whoever
+  reached it first could create the administrator. Now it is locked and only
+  shows how to set `LLAMA_ROUTER_ADMIN_USERNAME` and
+  `LLAMA_ROUTER_ADMIN_PASSWORD`; llama-router creates that account at startup
+  while there are none. SSO can create the first account only for a member of
+  `LLAMA_ROUTER_OIDC_ADMIN_GROUP`. **Breaking:** set the variables before
+  starting a new install, or after clearing the accounts.
+- **New installs require API keys.** Requests without a key are refused unless
+  *Accept requests without an API key* is turned on (llama-router warns at
+  startup while it is). Routers that already have providers, API keys or
+  dashboard accounts keep their setting. A missing setting now means "refuse".
+- **A wrong API key is always refused.** A request that sends a key that does
+  not resolve gets 401 even when requests without a key are accepted, instead
+  of quietly being served as anonymous.
 
 ### Fixed
+
+- **Daily spend caps hold under concurrency and unknown usage.** A request to
+  a priced cloud model now holds its estimated cost against the key's cap
+  while it runs, so simultaneous requests can no longer all pass a cap they
+  exceed together; the hold becomes the actual cost when the request is
+  logged, or is released if it failed. A priced cloud response that reports
+  no usage is charged an estimate (prompt size plus `max_tokens`, or
+  `LLAMA_ROUTER_SPEND_ESTIMATE_COMPLETION_TOKENS`) instead of nothing.
+  Streamed `/v1/chat/completions` and `/v1/completions` requests to cloud
+  providers ask for usage, and the extra usage event is hidden from clients
+  that did not ask for it. Capped keys can no longer send image or audio
+  requests to unpriced cloud models.
 
 - **Readable error rows in the request log.** Error highlights use soft burgundy
   with blue links and neutral details, keeping timestamps, model names, metadata

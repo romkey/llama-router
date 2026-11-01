@@ -1,52 +1,50 @@
-"""Telling jobs relayed by this router's own worker link from client requests.
+"""Proof that an API request was relayed by this process's own worker link.
 
-A worker relays the hub's jobs to its upstream, usually this router's own API
-on 127.0.0.1, marked with ``HUB_HEADER`` (and ``PROVIDER_HEADER``). Anyone
-who can reach the API could send those headers too, so they count only when
-they come with ``RELAY_HEADER`` holding a secret made fresh in each process,
-which only the worker link in this same process knows.
+A worker replays hub jobs to its router's API ports on 127.0.0.1, without the
+hub client's credentials, marked with ``HUB_HEADER`` (and ``PROVIDER_HEADER``
+for a provider shared individually). Anyone who can reach the API could send
+those headers too, and with anonymous access off (the default for new
+installs) the jobs would be refused for want of a key. So the worker adds
+``RELAY_HEADER`` with a token made fresh in each process, sent only to this
+router's own default upstreams.
 
-:class:`HubRelayMiddleware` checks that, records the result in the ASGI scope
-under ``SCOPE_KEY`` and strips all three headers from every request, so the
-routes never see them and the secret is never logged.
+:class:`HubRelayMiddleware` accepts the token only from a loopback peer,
+records the result in the ASGI scope under ``SCOPE_KEY`` and strips all three
+headers from every request, so the routes never see them and the token is
+never logged. :func:`is_own_relay` and ``auth.from_hub`` read the scope.
 """
 
 from __future__ import annotations
 
 import hmac
-import ipaddress
 import secrets
-from urllib.parse import urlsplit
 
+from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
 
 RELAY_HEADER = "X-Llama-Router-Relay"
 # Set in the scope of a request this process's worker link relayed: a dict
-# with "provider", the one provider the job is for, or None.
+# with "hub" (it carried HUB_HEADER, so routing is limited to the providers
+# shared with the hub) and "provider" (the one provider it is for, or None).
 SCOPE_KEY = "llama_router.hub_relay"
 
-_SECRET = secrets.token_urlsafe(32)
+_TOKEN = secrets.token_urlsafe(32)
+_LOOPBACK = frozenset({"127.0.0.1", "::1"})
 _STRIP = frozenset(
     h.lower().encode("latin-1") for h in (HUB_HEADER, PROVIDER_HEADER, RELAY_HEADER)
 )
 
 
-def relay_secret() -> str:
-    """The secret the worker link sends in ``RELAY_HEADER``."""
-    return _SECRET
+def relay_token() -> str:
+    """The token the worker link sends in ``RELAY_HEADER``."""
+    return _TOKEN
 
 
-def is_loopback_url(url: str) -> bool:
-    """*url* points at this machine, where the secret may be sent."""
-    host = (urlsplit(url).hostname or "").lower()
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
+def is_own_relay(request: Request) -> bool:
+    """True for a request this process's worker relayed to itself."""
+    return isinstance(request.scope.get(SCOPE_KEY), dict)
 
 
 class HubRelayMiddleware:
@@ -59,7 +57,7 @@ class HubRelayMiddleware:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
-        via = provider = relay = ""
+        via = provider = token = ""
         kept: list[tuple[bytes, bytes]] = []
         for k, v in scope.get("headers") or ():
             name = k.lower()
@@ -72,16 +70,22 @@ class HubRelayMiddleware:
             elif name == PROVIDER_HEADER.lower().encode():
                 provider = value
             else:
-                relay = value
+                token = value
         scope = dict(scope)
         scope["headers"] = kept
         scope.pop(SCOPE_KEY, None)
+        client = scope.get("client")
+        peer = client[0] if client else None
         if (
-            relay
-            and hmac.compare_digest(relay.encode(), _SECRET.encode())
-            and via.lower() == HUB_HEADER_VALUE
+            token
+            and peer in _LOOPBACK
+            and hmac.compare_digest(token.encode(), _TOKEN.encode())
         ):
-            scope[SCOPE_KEY] = {"provider": _provider_id(provider)}
+            hub = via.lower() == HUB_HEADER_VALUE
+            scope[SCOPE_KEY] = {
+                "hub": hub,
+                "provider": _provider_id(provider) if hub else None,
+            }
         await self.app(scope, receive, send)
 
 

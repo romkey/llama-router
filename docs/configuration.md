@@ -41,6 +41,8 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_SECRET` | *(empty)* | Secret for signing session cookies, encrypting stored provider keys and the worker hub token, and peppering client API key hashes. Empty: cookies use a random secret kept in the database; the rest use a random secret kept in `SECRET_KEY_PATH` |
 | `SECRET_KEY_PATH` | *(empty)* | File holding the generated secret when `SESSION_SECRET` is empty, created with mode 0600 and never stored in the database. Empty: `secret.key` beside the SQLite database (`/app/data/secret.key` in the Docker image). Back it up with the database: without it stored provider keys must be entered again and client API keys reissued |
 | `DASHBOARD_COOKIE_SECURE` | `false` | Send session cookies over HTTPS only. Set `true` behind TLS |
+| `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
+| `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
 | `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `OIDC_ISSUER` | *(empty)* | OpenID Connect issuer URL. Empty turns single sign-on off |
@@ -52,7 +54,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `OIDC_ALLOWED_GROUP` | *(empty)* | If set, only members (and admins) may sign in |
 | `OIDC_REDIRECT_BASE_URL` | *(empty)* | External dashboard URL, e.g. `https://llm.example.org`; the callback is `{base}/login/oidc/callback`. Empty uses the request's host and `X-Forwarded-*` headers |
 | `OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with …" |
-| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in |
+| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. Ignored without `OIDC_ADMIN_GROUP` |
 | `OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the identity provider on logout |
 | `OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only |
 
@@ -71,6 +73,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
+| `SPEND_ESTIMATE_COMPLETION_TOKENS` | `4096` | Output tokens assumed for a priced cloud request that sets no `max_tokens`. On a key with a daily spend cap, the estimated cost is held against the cap while the request runs; a response that reports no usage is charged the estimate |
 | `SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` | `200` | Most sessions one API key (or one client address, for requests without a key) may hold; its least recently used go first |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
 | `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
@@ -116,7 +119,7 @@ together pins the link and locks the dashboard form.
 | `WORKER_TOKEN` | *(empty)* | Worker token issued by the hub's Workers tab |
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
 | `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
-| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one |
+| `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one. Not needed for the default upstreams (this router's own ports): the worker proves to them with a per-process token that it relayed the job |
 | `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest. The worker refuses (503) new jobs while more than four times this many are pending |
 | `WORKER_MAX_BODY_BYTES_IN_FLIGHT` | `268435456` (256 MiB) | Request bodies the worker buffers at once across all jobs; a job that would go over is refused with 503 |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |

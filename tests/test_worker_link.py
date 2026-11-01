@@ -32,7 +32,7 @@ from llama_router.worker_link.hub import (
     worker_token_hash,
     worker_token_prefix,
 )
-from llama_router.worker_link.relay import RELAY_HEADER, relay_secret
+from llama_router.worker_link.relay import RELAY_HEADER, relay_token
 from llama_router.worker_link.worker import (
     WorkerClient,
     normalize_hub_url,
@@ -122,12 +122,11 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
         "chat_bodies": [],
         "stream_cancelled": False,
         "api_keys": [],
+        "relay": [],
         "v1_chat_bodies": [],
         "systemone_bodies": [],
         "serve_systemone": True,
         "via": [],
-        # X-Llama-Router-Relay of each tags request.
-        "relay": [],
         # X-Llama-Router-Provider of each chat, and models per provider id.
         "chat_providers": [],
         "provider_models": {},
@@ -136,12 +135,12 @@ def _fake_ollama() -> tuple[FastAPI, dict]:
     @app.get("/api/version")
     async def version(request: Request):
         seen["api_keys"].append(request.headers.get("api-key"))
+        seen["relay"].append(request.headers.get("x-llama-router-relay"))
         return {"version": "0.0-test"}
 
     @app.get("/api/tags")
     async def tags(request: Request):
         seen["via"].append(request.headers.get("x-llama-router-via"))
-        seen["relay"].append(request.headers.get("x-llama-router-relay"))
         pid = request.headers.get("x-llama-router-provider")
         if pid is not None:
             names = seen["provider_models"].get(int(pid), [])
@@ -386,8 +385,6 @@ async def test_worker_marks_relayed_jobs_as_from_the_hub(link) -> None:
     await _connected_worker(link)
     assert link["seen"]["via"]
     assert link["seen"]["via"][-1] == "hub"
-    # With the secret that proves it, since the upstream is on this machine.
-    assert link["seen"]["relay"][-1] == relay_secret()
 
 
 async def test_upstream_api_key_is_added_by_worker(link) -> None:
@@ -395,6 +392,22 @@ async def test_upstream_api_key_is_added_by_worker(link) -> None:
     client = link["pm"].get_ollama_client(link["provider_id"])
     assert await client.is_reachable()
     assert "local-key" in link["seen"]["api_keys"]
+
+
+async def test_relay_token_goes_only_to_this_router(link) -> None:
+    """The in-process token is sent to the default loopback upstreams only."""
+    await _connected_worker(link)
+    client = link["pm"].get_ollama_client(link["provider_id"])
+    assert await client.is_reachable()
+    assert link["seen"]["relay"]
+    assert set(link["seen"]["relay"]) == {None}
+
+
+async def test_relay_token_added_for_own_router(link) -> None:
+    await _connected_worker(link, relay_targets=frozenset({"ollama"}))
+    client = link["pm"].get_ollama_client(link["provider_id"])
+    assert await client.is_reachable()
+    assert link["seen"]["relay"][-1] == relay_token()
 
 
 async def test_abandoned_stream_cancels_upstream(link) -> None:
@@ -975,7 +988,7 @@ async def test_remotes_from_our_hub_are_not_shared_back(link, two_routers) -> No
     assert rt.table.ranked_for("tiny:1b", "/api/chat", "balanced")
 
     async with httpx.AsyncClient(base_url=link["hub_url"]) as c:
-        via = {p.HUB_HEADER: p.HUB_HEADER_VALUE, RELAY_HEADER: relay_secret()}
+        via = {p.HUB_HEADER: p.HUB_HEADER_VALUE, RELAY_HEADER: relay_token()}
         tags = await c.get("/api/tags", headers=via)
         ps = await c.get("/api/ps", headers=via)
     assert tags.json()["models"] == []

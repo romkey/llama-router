@@ -18,6 +18,7 @@ from .auto_benchmark import AutoBenchmarker
 from .config import settings
 from .dashboard import deps as dash_deps
 from .dashboard.app import app as dash_app
+from .dashboard.initial_admin import ensure_initial_admin
 from .dashboard.oidc import CALLBACK_PATH, OIDCConfig
 from .database import Database
 from .llamacpp_api import deps as lcpp_deps
@@ -85,6 +86,11 @@ def _log_oidc_config() -> None:
                 "password sign-in stays enabled"
             )
         return
+    if cfg.only and not cfg.admin_group:
+        logger.error(
+            "LLAMA_ROUTER_OIDC_ONLY is ignored without LLAMA_ROUTER_OIDC_ADMIN_GROUP; "
+            "password sign-in stays enabled so an administrator can sign in"
+        )
     callback = (
         cfg.redirect_base_url + CALLBACK_PATH
         if cfg.redirect_base_url
@@ -95,8 +101,17 @@ def _log_oidc_config() -> None:
         cfg.issuer,
         callback,
         repr(cfg.admin_group) if cfg.admin_group else "(none)",
-        ", password sign-in disabled" if cfg.only else "",
+        ", password sign-in disabled" if not cfg.password_login_enabled else "",
     )
+
+
+async def _warn_if_anonymous(db: Database) -> None:
+    if await db.get_allow_unauthenticated():
+        logger.warning(
+            "Unauthenticated API access is ON: anyone who can reach the API "
+            "ports can use every provider. Turn it off on the dashboard's "
+            "API Keys tab once clients have keys."
+        )
 
 
 async def run() -> None:
@@ -108,6 +123,8 @@ async def run() -> None:
     # Before any provider is contacted: relayed requests carry the ID.
     rid = await router_identity.load(db)
     logger.info("Router ID %s", rid)
+    await ensure_initial_admin(db, settings.admin_username, settings.admin_password)
+    await _warn_if_anonymous(db)
 
     pm = ProviderManager(db)
     await pm.start()

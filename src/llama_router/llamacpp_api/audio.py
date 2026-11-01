@@ -9,7 +9,12 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..auth import from_hub, hub_provider, routing_preferences_from_request
+from ..auth import (
+    from_hub,
+    hub_provider,
+    route_within_cap,
+    routing_preferences_from_request,
+)
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_body import json_object
 from ..request_logger import StreamLogger, log_request_background, stream_response
@@ -38,7 +43,7 @@ async def audio_speech(request: Request) -> Response:
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -102,7 +107,7 @@ async def audio_transcriptions(request: Request) -> Response:
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, log_body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"

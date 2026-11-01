@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     sends the whole state again."""
     decision_max_concurrency: int = 4
     """Questions of one decision request asked of the backend at once."""
+    # Spend caps: output tokens assumed for a priced cloud request that sets no
+    # max_tokens. The estimate is held against the key's cap while the request
+    # runs, and charged when the response reports no usage.
+    spend_estimate_completion_tokens: int = 4096
     # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
     # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
     # needs a dashboard sign-in like the rest of the dashboard.
@@ -143,6 +147,11 @@ class Settings(BaseSettings):
     secret_key_path: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
+    # The first dashboard administrator, created at startup when there are no
+    # dashboard accounts yet; ignored once any account exists. There is no way
+    # to create the first account from the web.
+    admin_username: str = ""
+    admin_password: str = ""
     # Most API keys one dashboard user may issue themselves on /my-keys
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20

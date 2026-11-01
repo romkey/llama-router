@@ -27,7 +27,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketExce
 from .. import __version__, router_identity
 from ..provider_secrets import ApiKeyUnavailableError, decrypt_setting, encrypt_setting
 from . import protocol as p
-from .relay import RELAY_HEADER, is_loopback_url, relay_secret
+from .relay import RELAY_HEADER, relay_token
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,7 @@ class WorkerClient:
         upstream_api_key: str = "",
         catalog: CatalogSource | None = None,
         max_body_bytes_in_flight: int = 256 * 1024 * 1024,
+        relay_targets: frozenset[str] = frozenset(),
     ) -> None:
         self.hub_url = hub_url
         self._token = token
@@ -147,6 +148,9 @@ class WorkerClient:
         self._max_concurrency = max(1, max_concurrency)
         self._allow_admin = allow_admin
         self._upstream_api_key = upstream_api_key.strip()
+        # Upstreams that are this router itself (the default 127.0.0.1
+        # ports): jobs to them carry the in-process relay token.
+        self._relay_targets = relay_targets
         # Set when this worker shares its providers individually.
         self._catalog = catalog
         self._sent_catalog: list[dict[str, Any]] | None = None
@@ -548,16 +552,14 @@ class WorkerClient:
         # Tells this router (the usual upstream) to use only the providers
         # shared with the hub; any other upstream ignores it.
         headers.append([p.HUB_HEADER, p.HUB_HEADER_VALUE])
-        if is_loopback_url(base):
-            # Proves to this router that the job really came over the link;
-            # never sent off this machine.
-            headers.append([RELAY_HEADER, relay_secret()])
         provider = meta.get("provider")
         if self._catalog is not None and isinstance(provider, int):
             # A job for one of the providers shared individually.
             headers.append([p.PROVIDER_HEADER, str(provider)])
         if self._upstream_api_key:
             headers.append(["API-KEY", self._upstream_api_key])
+        if target in self._relay_targets:
+            headers.append([RELAY_HEADER, relay_token()])
 
         request = self._http.build_request(
             method,
@@ -710,6 +712,14 @@ class WorkerLinkManager:
             self.source = source
             if source == "none":
                 return
+            relay_targets = frozenset(
+                target
+                for target, url in (
+                    ("ollama", settings.worker_ollama_url),
+                    ("llamacpp", settings.worker_llamacpp_url),
+                )
+                if not url.strip()
+            )
             ollama = settings.worker_ollama_url.strip() or (
                 f"http://127.0.0.1:{settings.api_port}"
             )
@@ -729,6 +739,7 @@ class WorkerLinkManager:
                 allow_admin=settings.worker_allow_admin,
                 upstream_api_key=settings.worker_upstream_api_key,
                 max_body_bytes_in_flight=settings.worker_max_body_bytes_in_flight,
+                relay_targets=relay_targets,
                 catalog=(
                     self.hub_catalog
                     if await self.resolved_expose() == p.EXPOSE_INDIVIDUAL

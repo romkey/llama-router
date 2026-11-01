@@ -27,12 +27,12 @@ from llama_router.worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE
 from llama_router.worker_link.relay import (
     RELAY_HEADER,
     HubRelayMiddleware,
-    relay_secret,
+    relay_token,
 )
 
 CHAT = "/v1/chat/completions"
 # What this router's own worker link sends with a relayed job.
-VIA = {HUB_HEADER: HUB_HEADER_VALUE, RELAY_HEADER: relay_secret()}
+VIA = {HUB_HEADER: HUB_HEADER_VALUE, RELAY_HEADER: relay_token()}
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ def _pid(result: RouteResult | None) -> int | None:
     return result.provider.id if result is not None else None
 
 
-async def _request(headers: dict[str, str]) -> Request:
+async def _request(headers: dict[str, str], host: str = "127.0.0.1") -> Request:
     """A request as the routes see it, after HubRelayMiddleware."""
     raw = [(k.lower().encode(), v.encode()) for k, v in headers.items()]
     seen: list[Any] = []
@@ -82,7 +82,13 @@ async def _request(headers: dict[str, str]) -> Request:
     async def app(scope: Any, receive: Any, send: Any) -> None:
         seen.append(scope)
 
-    scope = {"type": "http", "headers": raw, "method": "GET", "path": "/"}
+    scope = {
+        "type": "http",
+        "headers": raw,
+        "method": "GET",
+        "path": "/",
+        "client": (host, 50000),
+    }
     await HubRelayMiddleware(app)(scope, None, None)  # type: ignore[arg-type]
     return Request(seen[0])
 
@@ -314,6 +320,11 @@ async def test_hub_headers_from_clients_count_for_nothing(
         assert PROVIDER_HEADER not in req.headers
         assert RELAY_HEADER not in req.headers
 
+    # The token counts only from this machine.
+    remote = await _request({**VIA, PROVIDER_HEADER: "1"}, host="192.0.2.7")
+    assert not from_hub(remote)
+    assert hub_provider(remote) is None
+
     genuine = await _request({**VIA, PROVIDER_HEADER: "1"})
     assert from_hub(genuine)
     assert hub_provider(genuine) == 1
@@ -364,21 +375,3 @@ async def test_hub_provider_jobs_keep_the_keys_pins(
         pinned_providers={"m": slow.require_id()},
     )
     assert _pid(await rt.route("m", CHAT, pinned_here)) == slow.id
-
-
-@pytest.mark.parametrize(
-    ("url", "ok"),
-    [
-        ("http://127.0.0.1:11434", True),
-        ("http://localhost:8080", True),
-        ("http://[::1]:8080", True),
-        ("http://router.localhost", True),
-        ("http://192.168.1.5:11434", False),
-        ("https://ollama.example.org", False),
-        ("not a url", False),
-    ],
-)
-def test_relay_secret_only_goes_to_this_machine(url: str, ok: bool) -> None:
-    from llama_router.worker_link.relay import is_loopback_url
-
-    assert is_loopback_url(url) is ok

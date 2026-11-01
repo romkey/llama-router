@@ -163,14 +163,12 @@ async def authenticate(db: Database, token: str) -> ManagementKey | None:
 router = APIRouter()
 
 
-def _require_admin_user(request: Request) -> str | None:
-    """Return the administrator's username (None in bootstrap mode).
+def _require_admin_user(request: Request) -> str:
+    """Return the administrator's username.
 
     Management keys are refused even though the middleware already keeps
     them away from these paths.
     """
-    if getattr(request.state, "auth_bootstrap", False):
-        return None
     user = getattr(request.state, "dashboard_user", None)
     if user is None or not user.is_admin or user.auth_source == AUTH_SOURCE:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -220,7 +218,7 @@ async def api_create_management_key(request: Request) -> JSONResponse:
         "Management key %d (%s) issued by %s with %s",
         key_id,
         name,
-        admin or "bootstrap",
+        admin,
         " ".join(privileges),
     )
     return JSONResponse(
@@ -240,7 +238,7 @@ async def api_delete_management_key(key_id: int, request: Request) -> JSONRespon
     if not await deps.get_db().delete_management_key(key_id):
         raise HTTPException(status_code=404, detail="Management key not found")
     _touched.pop(key_id, None)
-    logger.info("Management key %d revoked by %s", key_id, admin or "bootstrap")
+    logger.info("Management key %d revoked by %s", key_id, admin)
     return JSONResponse({"ok": True})
 
 
