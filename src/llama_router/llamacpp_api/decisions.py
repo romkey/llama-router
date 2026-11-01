@@ -85,6 +85,9 @@ async def serve(
                 status_code=404,
                 detail=f"No available provider for model '{req.model}'",
             )
+        # One request is a call per question: refuse it whole when its
+        # estimated cost would pass the key's daily spend cap.
+        await svc.check_spend_cap(db, rt, prefs, result, req)
         provider = result.provider
         provider_id = provider.require_id()
         start = time.monotonic()
