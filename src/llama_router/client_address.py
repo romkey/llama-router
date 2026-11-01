@@ -39,9 +39,14 @@ def parse_trusted_proxies(value: str) -> tuple[Network, ...]:
 
 def _ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     try:
-        return ipaddress.ip_address(value.strip())
+        addr = ipaddress.ip_address(value.strip())
     except ValueError:
         return None
+    # A dual-stack socket reports IPv4 peers as ::ffff:a.b.c.d; compare and
+    # log them as the IPv4 address they are.
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
 
 
 def _trusted(
@@ -57,7 +62,7 @@ def client_ip(request: HTTPConnection) -> str:
     peer_addr = _ip(peer)
     forwarded = request.headers.get("x-forwarded-for")
     if not forwarded or not nets or peer_addr is None or not _trusted(peer_addr, nets):
-        return peer or "unknown"
+        return str(peer_addr) if peer_addr is not None else (peer or "unknown")
     for hop in reversed(forwarded.split(",")):
         addr = _ip(hop)
         if addr is None:

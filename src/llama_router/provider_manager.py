@@ -41,6 +41,7 @@ from .provider_secrets import (
     decrypt_api_key,
     encrypt_api_key,
     normalize_header,
+    reencrypt_legacy,
 )
 from .routing_stats import ProviderStats, retry_after_seconds
 from .upstream_url import guess_locality, split_api_base
@@ -311,9 +312,24 @@ class ProviderManager:
             out.append(provider)
         return out
 
+    async def _reencrypt_legacy_keys(self, providers: list[Provider]) -> None:
+        """Move keys stored under the old fixed development key to the current one."""
+        for prov in providers:
+            if not prov.api_key_enc:
+                continue
+            fresh = reencrypt_legacy(prov.api_key_enc)
+            if fresh is None:
+                continue
+            await self._db.set_provider_api_key(
+                prov.require_id(), fresh, prov.api_key_header
+            )
+            prov.api_key_enc = fresh
+            logger.info("Provider %s: re-encrypted its stored API key", prov.name)
+
     async def start(self) -> None:
         await self.provision_from_env()
         providers = await self._db.list_providers()
+        await self._reencrypt_legacy_keys(providers)
         http_providers: list[Provider] = []
         for p in providers:
             p_id = p.require_id()

@@ -121,6 +121,10 @@ class Settings(BaseSettings):
     hf_models_dir: str = "./hf_models"
     # If set, signs dashboard session cookies; otherwise persisted in app_settings.
     session_secret: str = ""
+    # Without session_secret, a random secret is generated and kept in this
+    # file (mode 0600) to encrypt provider keys and pepper client key hashes.
+    # Empty: secret.key in the directory holding database_path.
+    secret_key_path: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
     # Most API keys one dashboard user may issue themselves on /my-keys

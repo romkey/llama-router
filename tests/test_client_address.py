@@ -53,6 +53,14 @@ def test_ipv6(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client_ip(_request("::1", "2001:db8::5")) == "2001:db8::5"
 
 
+def test_ipv4_mapped_peer_matches_ipv4_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "trusted_proxies", "10.0.0.0/8")
+    assert client_ip(_request("::ffff:10.0.0.1", "198.51.100.7")) == "198.51.100.7"
+    assert client_ip(_request("::ffff:203.0.113.9", "1.2.3.4")) == "203.0.113.9"
+    req = _request("10.0.0.1", "::ffff:198.51.100.7")
+    assert client_ip(req) == "198.51.100.7"
+
+
 def test_invalid_entries_are_skipped() -> None:
     nets = parse_trusted_proxies("10.0.0.0/8,nonsense 192.168.1.1")
     assert [str(n) for n in nets] == ["10.0.0.0/8", "192.168.1.1/32"]
