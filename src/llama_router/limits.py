@@ -143,30 +143,31 @@ def clamp_generation_params(body: Any) -> None:
     """Cap ``n``/``best_of`` at ``max_n`` and output tokens at
     ``max_tokens_cap``, in place. Ollama's ``options.num_predict`` counts as
     output tokens; a negative one (unlimited) is capped too. Fields that are
-    absent or not integers are left alone."""
+    absent or not numbers are left alone; a float over a cap (``1e9``) is
+    capped too."""
     if not isinstance(body, dict):
         return
     if settings.max_n > 0:
         for field in _CHOICE_FIELDS:
             value = body.get(field)
-            if _is_int(value) and value > settings.max_n:
+            if _is_number(value) and value > settings.max_n:
                 body[field] = settings.max_n
     cap = settings.max_tokens_cap
     if cap <= 0:
         return
     for field in _TOKEN_FIELDS:
         value = body.get(field)
-        if _is_int(value) and value > cap:
+        if _is_number(value) and value > cap:
             body[field] = cap
     options = body.get("options")
     if isinstance(options, dict):
         value = options.get("num_predict")
-        if _is_int(value) and (value > cap or value < 0):
+        if _is_number(value) and (value > cap or value < 0):
             options["num_predict"] = cap
 
 
-def _is_int(value: object) -> TypeGuard[int]:
-    return isinstance(value, int) and not isinstance(value, bool)
+def _is_number(value: object) -> TypeGuard[int | float]:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def request_deadline(request: Request) -> float | None:

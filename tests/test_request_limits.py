@@ -168,6 +168,20 @@ def test_clamp_generation_params() -> None:
     }
 
 
+def test_clamp_caps_json_floats() -> None:
+    body: dict[str, Any] = {
+        "n": 100.0,
+        "max_tokens": 1e9,
+        "options": {"num_predict": -1.0},
+    }
+    clamp_generation_params(body)
+    assert body == {
+        "n": settings.max_n,
+        "max_tokens": settings.max_tokens_cap,
+        "options": {"num_predict": settings.max_tokens_cap},
+    }
+
+
 def test_clamp_leaves_absent_and_odd_fields_alone() -> None:
     body: dict[str, Any] = {"n": True, "max_tokens": "lots", "options": None}
     clamp_generation_params(body)
