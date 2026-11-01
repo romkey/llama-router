@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from ..auth import route_within_cap, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..request_body import json_object
 from ..request_logger import log_request_background
 from . import deps
 
@@ -19,7 +20,7 @@ router = APIRouter()
 async def _handle_embedding(
     request: Request, endpoint: str, method: str
 ) -> JSONResponse:
-    body = await request.json()
+    body = await json_object(request)
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")

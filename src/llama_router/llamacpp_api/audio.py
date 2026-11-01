@@ -16,6 +16,7 @@ from ..auth import (
     routing_preferences_from_request,
 )
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..request_body import json_object
 from ..request_logger import StreamLogger, log_request_background, stream_response
 from ..v1_client import get_v1_client
 from . import deps
@@ -27,7 +28,7 @@ router = APIRouter()
 @router.post("/v1/audio/speech")
 async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
-    body = await request.json()
+    body = await json_object(request)
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")

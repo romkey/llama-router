@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -220,6 +221,47 @@ async def test_json_route_validates_model(
     assert "nope" in unknown.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "path",
+    [*IDS, "/v1/audio/speech", "/v1/systemone"],
+)
+async def test_json_route_rejects_bad_bodies(provider: Provider, path: str) -> None:
+    app = ollama_app if path.startswith("/api/") else v1_app
+    async with _client(app) as c:
+        not_json = await c.post(
+            path, content=b"{nope", headers={"content-type": "application/json"}
+        )
+        not_object = await c.post(path, json=["model", MODEL])
+        bad_model = await c.post(path, json={"model": ["m"]})
+    for resp in (not_json, not_object, bad_model):
+        assert resp.status_code == 400, resp.text
+    assert "string" in bad_model.json()["detail"]
+
+
+async def test_v1_passthrough_strips_router_only_fields(
+    provider: Provider, httpx_mock: HTTPXMock
+) -> None:
+    httpx_mock.add_response(url=BASE + "/v1/chat/completions", json={"choices": []})
+    body = {
+        "model": MODEL,
+        "messages": [],
+        "stream": False,
+        "temperature": 0.5,
+        "provider": {"order": ["x"]},
+        "models": ["a", "b"],
+        "route": "fallback",
+        "transforms": ["middle-out"],
+        "extra_body": {"x": 1},
+        "base_url": "http://evil.test",
+        "api_key": "sk-other",
+    }
+    async with _client(v1_app) as c:
+        resp = await c.post("/v1/chat/completions", json=body)
+    assert resp.status_code == 200
+    sent = json.loads(httpx_mock.get_requests()[0].content)
+    assert sent == {"model": MODEL, "messages": [], "stream": False, "temperature": 0.5}
+
+
 STREAM_ROUTES = [
     (ollama_app, "/api/chat", "/api/chat", {"model": MODEL, "messages": []}),
     (ollama_app, "/api/generate", "/api/generate", {"model": MODEL, "prompt": "p"}),
@@ -329,7 +371,7 @@ async def test_audio_transcriptions_errors(
     assert no_model.status_code == 400
     assert unknown.status_code == 404
     assert upstream.status_code == 500
-    assert upstream.json() == {"error": "bad"}
+    assert upstream.json() == {"error": "upstream service returned an error"}
     assert down.status_code == 500
 
 
