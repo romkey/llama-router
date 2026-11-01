@@ -15,10 +15,11 @@ from .background import spawn
 from .config import settings
 from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
+from .pricing import estimate_tokens
 from .provider_secrets import server_secret
-from .router import ROUTING_MODES, RoutingPreferences
+from .router import ROUTING_MODES, Router, RouteResult, RoutingPreferences
 from .routing_table import DEFAULT_MODE
-from .spend import cap_reached, tracker_for
+from .spend import RESERVATION_STATE, cap_reached, tracker_for
 from .upstream_url import LOCALITIES
 from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
 
@@ -265,12 +266,78 @@ async def _apply_spend_cap(
     cap = prefs.daily_spend_cap_usd
     if cap is None or prefs.key_id is None:
         return prefs
-    spent = await tracker_for(db).spent_today(prefs.key_id)
+    spent = await tracker_for(db).committed_today(prefs.key_id)
     if spent < cap:
         return prefs
     if prefs.locality == "cloud":
         raise cap_reached(cap)
     return replace(prefs, locality="local", spend_capped=True)
+
+
+def _is_media_endpoint(path: str) -> bool:
+    return "/images/" in path or "/audio/" in path
+
+
+async def route_within_cap(
+    rt: Router,
+    db: Database,
+    request: Request,
+    model: str,
+    prefs: RoutingPreferences | None,
+    body: Any,
+    *,
+    session: str | None = None,
+) -> RouteResult | None:
+    """Route the request, holding its estimated cost against the key's cap.
+
+    On a key with a daily spend cap, a request routed to a priced cloud model
+    reserves its estimated cost (see spend.py); the request log settles the
+    reservation (``request.state.spend_reservation``). If the estimate does
+    not fit under the cap, or an image or audio request lands on a cloud model
+    with no price (its cost could not be counted), the request is routed to
+    local providers instead, or refused (HTTP 429 over the cap, 403 for an
+    unpriced model) when that is not possible.
+    """
+    path = request.url.path
+    result = await rt.route(model, path, prefs, session=session)
+    if (
+        result is None
+        or prefs is None
+        or prefs.key_id is None
+        or prefs.daily_spend_cap_usd is None
+        or not result.provider.is_cloud
+    ):
+        return result
+    cap = prefs.daily_spend_cap_usd
+    price = rt.price_for(result.provider.require_id(), result.model_key)
+    if price is None:
+        if not _is_media_endpoint(path):
+            return result  # unknown cost, as without a cap
+        status = 403
+        reason = f"model '{model}' has no price, so its cost cannot be capped"
+    else:
+        estimate = price.cost(
+            *estimate_tokens(body, settings.spend_estimate_completion_tokens)
+        )
+        if estimate <= 0:
+            return result
+        held = await tracker_for(db).reserve(prefs.key_id, cap, estimate)
+        if held is not None:
+            setattr(request.state, RESERVATION_STATE, held)
+            return result
+        status = 429
+        reason = f"daily spend cap of ${cap:.2f} reached for this API key"
+    local = None
+    if prefs.locality != "cloud":
+        local = await rt.route(
+            model,
+            path,
+            replace(prefs, locality="local", spend_capped=True),
+            session=session,
+        )
+    if local is None:
+        raise HTTPException(status_code=status, detail=reason)
+    return local
 
 
 def client_api_key(request: Request) -> str:
