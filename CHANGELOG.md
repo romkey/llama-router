@@ -19,6 +19,16 @@ described in their git tags and GitHub Releases.
   within `LLAMA_ROUTER_REQUEST_DEADLINE_SECONDS` (1800 s): 504, or a stream is
   ended. The API key is now checked before the body is parsed, so a request
   with a bad key and a bad body gets 401. See docs/configuration.md.
+- **Signed release images.** The release workflow signs each image with
+  cosign keyless signing (by digest, every platform); the README shows how to
+  verify one with `cosign verify`.
+- **GitHub Actions pinned to commit SHAs.** Every action in the workflows is
+  pinned to a full commit SHA with its version in a comment, and Renovate
+  keeps the digests current.
+- **No network tools in the production image.** curl, wget, nc, dig, host,
+  ping, traceroute, ip and ps are gone from the released image (the
+  development image keeps them). The README shows Python one-liners and a
+  sidecar container for checking reachability instead.
 
 ### Fixed
 
