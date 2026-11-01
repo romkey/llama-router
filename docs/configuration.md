@@ -51,7 +51,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `OIDC_ALLOWED_GROUP` | *(empty)* | If set, only members (and admins) may sign in |
 | `OIDC_REDIRECT_BASE_URL` | *(empty)* | External dashboard URL, e.g. `https://llm.example.org`; the callback is `{base}/login/oidc/callback`. Empty uses the request's host and `X-Forwarded-*` headers |
 | `OIDC_DISPLAY_NAME` | `single sign-on` | Button text: "Sign in with …" |
-| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in |
+| `OIDC_ONLY` | `false` | Hide the password form and refuse password sign-in. Ignored without `OIDC_ADMIN_GROUP` |
 | `OIDC_LOGOUT_AT_IDP` | `false` | Also end the session at the identity provider on logout |
 | `OIDC_ALLOW_INSECURE` | `false` | Allow an `http://` issuer, for local testing only |
 

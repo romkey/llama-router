@@ -86,6 +86,11 @@ def _log_oidc_config() -> None:
                 "password sign-in stays enabled"
             )
         return
+    if cfg.only and not cfg.admin_group:
+        logger.error(
+            "LLAMA_ROUTER_OIDC_ONLY is ignored without LLAMA_ROUTER_OIDC_ADMIN_GROUP; "
+            "password sign-in stays enabled so an administrator can sign in"
+        )
     callback = (
         cfg.redirect_base_url + CALLBACK_PATH
         if cfg.redirect_base_url

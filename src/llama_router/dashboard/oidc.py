@@ -107,8 +107,10 @@ class OIDCConfig:
     @property
     def password_login_enabled(self) -> bool:
         # OIDC_ONLY takes effect only while SSO actually works; a broken
-        # configuration must not lock out every account.
-        return not (self.usable and self.only)
+        # configuration must not lock out every account. Nor without an
+        # admin group: SSO then makes no administrators, and the local one
+        # from LLAMA_ROUTER_ADMIN_* is the only way to manage the router.
+        return not (self.usable and self.only and self.admin_group)
 
     def problems(self) -> list[str]:
         """Configuration errors that stop OIDC from working at all."""

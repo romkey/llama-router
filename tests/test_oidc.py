@@ -248,6 +248,8 @@ def test_config_problems() -> None:
     # A broken configuration must not lock everyone out.
     assert _cfg(client_secret="", only=True).password_login_enabled is True
     assert _cfg(issuer="http://idp", only=True).password_login_enabled is True
+    # Without an admin group only a local account can administer.
+    assert _cfg(admin_group="", only=True).password_login_enabled is True
 
 
 def test_state_cookie_round_trip_and_tampering() -> None:

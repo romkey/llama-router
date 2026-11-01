@@ -41,7 +41,14 @@ async def ensure_initial_admin(db: Database, username: str, password: str) -> bo
             "no administrator created"
         )
         return False
-    await db.create_dashboard_user(name, hash_password(password), True)
+    try:
+        await db.create_dashboard_user(name, hash_password(password), True)
+    except Exception:
+        # Another replica sharing the database created it first.
+        if await db.count_dashboard_users() > 0:
+            logger.info("Dashboard administrator already created elsewhere")
+            return False
+        raise
     logger.info(
         "Created dashboard administrator %s from LLAMA_ROUTER_ADMIN_USERNAME; "
         "the variables are ignored from now on",
