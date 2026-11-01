@@ -66,7 +66,11 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
-| `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take; after that the request is routed as asked |
+| `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
+| `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
+| `DECISION_MAX_QUESTIONS` | `8` | Most questions in one decision request (each is one backend call); a policy may have one gate fewer |
+| `DECISION_MAX_STATE_CHARS` | `32000` | Longest decision request state, in characters |
+| `DECISION_MAX_CONCURRENCY` | `4` | Questions of one decision request asked of the backend at once |
 
 ## Benchmarks
 

@@ -18,7 +18,7 @@ from .decision_policy import DecisionPolicy, parse_policy
 from .provider_secrets import server_secret
 from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
-from .spend import tracker_for
+from .spend import cap_reached, tracker_for
 from .upstream_url import LOCALITIES
 from .worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE, PROVIDER_HEADER
 
@@ -256,10 +256,7 @@ async def _apply_spend_cap(
     if spent < cap:
         return prefs
     if prefs.locality == "cloud":
-        raise HTTPException(
-            status_code=429,
-            detail=f"daily spend cap of ${cap:.2f} reached for this API key",
-        )
+        raise cap_reached(cap)
     return replace(prefs, locality="local", spend_capped=True)
 
 
