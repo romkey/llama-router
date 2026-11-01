@@ -132,6 +132,16 @@ def default_ollama_name(repo: str, filename: str) -> str:
     return validate_ollama_name(f"{base[:80]}:{tag}")
 
 
+# Greedy up to the last "@" before the path, so a raw "@" in a password
+# cannot leave part of it showing.
+_USERINFO_RE = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/\s]*@")
+
+
+def mask_userinfo(value: str) -> str:
+    """Hide ``user:password@`` in any URL in *value* (proxy URLs carry it)."""
+    return _USERINFO_RE.sub(r"\g<scheme>***@", value)
+
+
 def env_summary() -> list[dict[str, str | bool]]:
     """Which Hugging Face variables are set, with secrets masked."""
     out: list[dict[str, str | bool]] = []
@@ -142,7 +152,7 @@ def env_summary() -> list[dict[str, str | bool]]:
         elif var in _SECRET_VARS:
             out.append({"name": var, "set": True, "value": "set (hidden)"})
         else:
-            out.append({"name": var, "set": True, "value": val})
+            out.append({"name": var, "set": True, "value": mask_userinfo(val)})
     return out
 
 

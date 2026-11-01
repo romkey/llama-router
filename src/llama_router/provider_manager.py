@@ -33,7 +33,7 @@ from .models import (
     measured_cold_start,
 )
 from .ollama_client import OllamaClient
-from .probe import merge_results, probe_url
+from .probe import check_not_metadata, merge_results, probe_url
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailableError,
@@ -471,6 +471,7 @@ class ProviderManager:
         *provider_settings* are optional columns (preset, extra_headers,
         manual_models, ...) written before the first check.
         """
+        await check_not_metadata(url)
         header = normalize_header(api_key_header) if api_key else None
         provider_settings = dict(provider_settings or {})
         if not provider_settings.get("locality"):
@@ -630,6 +631,7 @@ class ProviderManager:
         url: str,
         is_preferred: bool = False,
     ) -> ProviderAddress:
+        await check_not_metadata(url)
         addr = await self._db.add_address(provider_id, url, is_preferred)
         provider = await self._db.get_provider(provider_id)
         if provider:
@@ -646,6 +648,7 @@ class ProviderManager:
         addr = await self._db.get_address(address_id)
         if not addr:
             return
+        await check_not_metadata(url)
         await self._db.update_address(address_id, url, is_preferred)
         provider = await self._db.get_provider(addr.provider_id)
         if provider:
