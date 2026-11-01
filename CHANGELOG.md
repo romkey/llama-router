@@ -22,6 +22,16 @@ described in their git tags and GitHub Releases.
 - **Sentry scrubbing.** Events no longer include local variables, request
   bodies, headers, cookies or query strings, and values under keys that look
   like keys, tokens, secrets or passwords are masked.
+- **Signed release images.** The release workflow signs each image with
+  cosign keyless signing (by digest, every platform); the README shows how to
+  verify one with `cosign verify`.
+- **GitHub Actions pinned to commit SHAs.** Every action in the workflows is
+  pinned to a full commit SHA with its version in a comment, and Renovate
+  keeps the digests current.
+- **No network tools in the production image.** curl, wget, nc, dig, host,
+  ping, traceroute, ip and ps are gone from the released image (the
+  development image keeps them). The README shows Python one-liners and a
+  sidecar container for checking reachability instead.
 
 ### Fixed
 
