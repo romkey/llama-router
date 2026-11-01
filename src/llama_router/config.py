@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
+    # The first dashboard administrator, created at startup when there are no
+    # dashboard accounts yet; ignored once any account exists. There is no way
+    # to create the first account from the web.
+    admin_username: str = ""
+    admin_password: str = ""
     # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.
     oidc_issuer: str = ""
     oidc_client_id: str = ""

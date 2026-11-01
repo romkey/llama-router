@@ -18,6 +18,7 @@ from .auto_benchmark import AutoBenchmarker
 from .config import settings
 from .dashboard import deps as dash_deps
 from .dashboard.app import app as dash_app
+from .dashboard.initial_admin import ensure_initial_admin
 from .dashboard.oidc import CALLBACK_PATH, OIDCConfig
 from .database import Database
 from .llamacpp_api import deps as lcpp_deps
@@ -99,6 +100,15 @@ def _log_oidc_config() -> None:
     )
 
 
+async def _warn_if_anonymous(db: Database) -> None:
+    if await db.get_allow_unauthenticated():
+        logger.warning(
+            "Unauthenticated API access is ON: anyone who can reach the API "
+            "ports can use every provider. Turn it off on the dashboard's "
+            "API Keys tab once clients have keys."
+        )
+
+
 async def run() -> None:
     init_sentry()
     _log_oidc_config()
@@ -108,6 +118,8 @@ async def run() -> None:
     # Before any provider is contacted: relayed requests carry the ID.
     rid = await router_identity.load(db)
     logger.info("Router ID %s", rid)
+    await ensure_initial_admin(db, settings.admin_username, settings.admin_password)
+    await _warn_if_anonymous(db)
 
     pm = ProviderManager(db)
     await pm.start()

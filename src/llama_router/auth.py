@@ -280,8 +280,8 @@ async def _key_preferences(db: Database, request: Request) -> RoutingPreferences
     generation = cache.generation
     resolved = await _resolve_key(db, key, fingerprint)
     if resolved is None:
-        if await _allow_unauthenticated(db, cache):
-            return None
+        # Even with anonymous access on: a client that sends a wrong or
+        # revoked key should find out rather than silently lose its limits.
         raise HTTPException(status_code=401, detail="Invalid API-KEY")
     prefs, key_id = resolved
     # lookup_api_key just wrote last_used_at.

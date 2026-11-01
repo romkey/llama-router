@@ -24,13 +24,6 @@
 <div class="alert alert-warning py-2">{{ query_error }}</div>
 {% endif %}
 
-{% if not users_exist %}
-<div class="alert alert-info">
-    <i class="bi bi-info-circle me-2"></i>
-    No dashboard accounts yet. Create the first user below (they will be an administrator){% if oidc and not oidc_problems %}, or <a href="/login/oidc?next=/users">sign in with {{ oidc.display_name }}</a>{% if oidc.admin_group %} as a member of <code>{{ oidc.admin_group }}</code>{% endif %}{% endif %}. After that, sign-in is required.
-</div>
-{% endif %}
-
 {% if oidc %}
 <div class="card mb-4">
     <div class="card-header"><h5 class="mb-0"><i class="bi bi-box-arrow-in-right me-2"></i>Single sign-on</h5></div>
@@ -57,7 +50,7 @@
     <div class="col-lg-5">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0">{% if users_exist %}Add user{% else %}Create first user{% endif %}</h5>
+                <h5 class="mb-0">Add user</h5>
             </div>
             <div class="card-body">
                 <form method="post" action="/users/add">
@@ -70,13 +63,11 @@
                         <label class="form-label" for="new-password">Password</label>
                         <input type="password" class="form-control" id="new-password" name="password" required minlength="8" autocomplete="new-password">
                     </div>
-                    {% if users_exist %}
                     <div class="form-check mb-3">
                         <input class="form-check-input" type="checkbox" name="is_admin" value="1" id="new-is-admin">
                         <label class="form-check-label" for="new-is-admin">Administrator (full access)</label>
                     </div>
-                    {% endif %}
-                    <button type="submit" class="btn btn-primary">{% if users_exist %}Add user{% else %}Create account{% endif %}</button>
+                    <button type="submit" class="btn btn-primary">Add user</button>
                 </form>
             </div>
         </div>

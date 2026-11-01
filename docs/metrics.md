@@ -19,8 +19,7 @@ scrape_configs:
 ```
 
 Without a token the endpoint is protected like the rest of the dashboard:
-open until the first dashboard user exists, then only with a dashboard
-session. `LLAMA_ROUTER_METRICS_ENABLED=false` turns the endpoint off (404).
+it needs a dashboard session. `LLAMA_ROUTER_METRICS_ENABLED=false` turns the endpoint off (404).
 
 ## Metrics
 

@@ -113,6 +113,7 @@ async def test_stream_logs_first_byte_and_overhead(db: Database):
 
 
 async def test_proxied_request_records_latency_end_to_end(db: Database, httpx_mock):
+    await db.set_allow_unauthenticated(True)
     p = await db.add_provider("srv", ProviderProtocol.OLLAMA)
     await db.add_address(p.id, "http://backend.test:11434", is_preferred=True)
     await db.update_provider_status(p.id, ProviderStatus.IDLE)

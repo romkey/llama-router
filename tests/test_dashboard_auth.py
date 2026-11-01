@@ -102,17 +102,26 @@ async def test_healthz_public_after_users_exist(dash_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_no_users_dashboard_and_api_status_open(dash_client) -> None:
+@pytest.mark.no_accounts_locked
+async def test_no_users_dashboard_is_locked_with_setup_page(dash_client) -> None:
     client, _db = dash_client
     r = await client.get("/")
-    assert r.status_code == 200
-    assert "Dashboard" in r.text or "llama-router" in r.text
+    assert r.status_code == 503
+    assert "LLAMA_ROUTER_ADMIN_USERNAME" in r.text
+    assert "LLAMA_ROUTER_ADMIN_PASSWORD" in r.text
+    assert "<form" not in r.text
 
     r2 = await client.get("/api/status")
-    assert r2.status_code == 200
-    body = r2.json()
-    assert "workers" in body
-    assert "cache" in body
+    assert r2.status_code == 503
+    assert "LLAMA_ROUTER_ADMIN_USERNAME" in r2.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.no_accounts_locked
+async def test_no_users_management_key_is_refused(dash_client) -> None:
+    client, _db = dash_client
+    r = await client.get("/api/keys", headers={"Authorization": "Bearer lrm_whatever"})
+    assert r.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -125,20 +134,21 @@ async def test_bootstrap_login_page_redirects_home(dash_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_can_create_first_user_via_form(dash_client) -> None:
+@pytest.mark.no_accounts_locked
+async def test_no_users_first_user_cannot_be_created_from_the_web(
+    dash_client,
+) -> None:
     client, db = dash_client
     r = await client.post(
         "/users/add",
         data={
             "username": "firstadmin",
             "password": "first-pass-8chars",
+            "is_admin": "1",
         },
     )
-    assert r.status_code == 303
-    assert await db.count_dashboard_users() == 1
-    row = await db.get_dashboard_user_by_username("firstadmin")
-    assert row is not None
-    assert row["is_admin"] is True
+    assert r.status_code == 503
+    assert await db.count_dashboard_users() == 0
 
 
 @pytest.mark.asyncio
@@ -435,8 +445,9 @@ async def test_session_for_deleted_user_rejected_when_accounts_remain(
 
 
 @pytest.mark.asyncio
-async def test_deleting_last_dashboard_user_reopens_bootstrap(dash_client) -> None:
-    """With zero users the dashboard is intentionally open (initial setup)."""
+@pytest.mark.no_accounts_locked
+async def test_deleting_last_dashboard_user_locks_the_dashboard(dash_client) -> None:
+    """With zero users nothing is served, not even to an old session."""
     client, db = dash_client
     uid = await db.create_dashboard_user("only", hash_password("password-12345"), True)
     invalidate_dashboard_user_count_cache()
@@ -445,8 +456,7 @@ async def test_deleting_last_dashboard_user_reopens_bootstrap(dash_client) -> No
     invalidate_dashboard_user_count_cache()
 
     r = await client.get("/api/status", headers={"Cookie": f"{AUTH_COOKIE}={token}"})
-    assert r.status_code == 200
-    assert "workers" in r.json()
+    assert r.status_code == 503
 
 
 @pytest.mark.asyncio

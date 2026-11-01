@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from llama_router.auth import key_hash
 from llama_router.config import settings
@@ -124,8 +125,9 @@ async def test_deleting_user_deletes_their_keys(dash_client: DashClient) -> None
     assert await db.lookup_api_key(key_hash(key["api_key"])) is None
 
 
+@pytest.mark.no_accounts_locked
 async def test_needs_a_signed_in_user(dash_client: DashClient) -> None:
     c, _ = dash_client
-    # No users yet: the dashboard is open, but keys need an owner.
+    # No users yet: the dashboard is locked until an administrator exists.
     resp = await c.post("/api/my-keys", json={})
-    assert resp.status_code == 403
+    assert resp.status_code == 503

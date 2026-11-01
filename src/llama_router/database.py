@@ -1619,7 +1619,8 @@ class Database:
             "WHERE app_settings.key = 'allow_unauthenticated'"
         )
         if not row:
-            return True
+            # Fail closed: anonymous access is something to opt into.
+            return False
         return str(row["value"]).lower() in ("1", "true", "yes", "on")
 
     @_notifies(CHANGE_AUTH_SETTINGS)

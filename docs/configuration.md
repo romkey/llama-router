@@ -40,6 +40,8 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `SESSION_SECRET` | *(empty)* | Secret for signing session cookies. Empty: a random one is generated and kept in the database |
 | `DASHBOARD_COOKIE_SECURE` | `false` | Send session cookies over HTTPS only. Set `true` behind TLS |
+| `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
+| `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `OIDC_ISSUER` | *(empty)* | OpenID Connect issuer URL. Empty turns single sign-on off |
 | `OIDC_CLIENT_ID` | *(empty)* | Client ID |
 | `OIDC_CLIENT_SECRET` | *(empty)* | Client secret |

@@ -552,14 +552,11 @@ async def sign_in(
         )
         return _existing(await db.get_dashboard_user_by_id(row["id"]))
 
-    if await db.count_dashboard_users() == 0:
-        if not cfg.admin_group:
-            # Same rule as local accounts: the first account administers.
-            is_admin = True
-        elif not is_admin:
-            # A non-admin first account would close the open bootstrap
-            # dashboard with nobody able to manage it.
-            raise OIDCError("first_admin", "first sign-in is not an administrator")
+    if await db.count_dashboard_users() == 0 and not is_admin:
+        # Only the admin group may create the first account: without one,
+        # whoever signed in first would claim the router, and a non-admin
+        # first account would leave nobody able to manage it.
+        raise OIDCError("first_admin", "first sign-in is not an administrator")
 
     base = base_username(claims)
     for n in range(1, 1000):
