@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from ..auth import from_hub, hub_provider, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
+from ..request_body import json_object
 from ..request_logger import StreamLogger, log_request_background, stream_response
 from ..v1_client import get_v1_client
 from . import deps
@@ -25,7 +26,7 @@ async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
-    body = await request.json()
+    body = await json_object(request)
     model = body.get("model")
     if not model:
         raise HTTPException(status_code=400, detail="model is required")

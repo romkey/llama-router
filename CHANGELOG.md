@@ -20,6 +20,34 @@ described in their git tags and GitHub Releases.
   ended. The API key is now checked before the body is parsed, so a request
   with a bad key and a bad body gets 401. See docs/configuration.md.
 
+- **No more fixed fallback secret.** Without `LLAMA_ROUTER_SESSION_SECRET`,
+  provider API keys were encrypted, and client API keys peppered, with a key
+  written in the source. A random secret is now generated once into
+  `secret.key` beside the database (mode 0600, `LLAMA_ROUTER_SECRET_KEY_PATH`
+  to move it) and reused on later starts. Existing provider keys are
+  re-encrypted at startup and existing client keys re-hashed on first use, so
+  nothing needs to be re-entered. Back up `secret.key` with the database.
+- **Worker hub token encrypted at rest.** A token saved in the dashboard is
+  stored encrypted; a plain one from an older release is encrypted on first
+  read.
+- **Sentry scrubbing.** Events no longer include local variables, request
+  bodies, headers, cookies or query strings, and values under keys that look
+  like keys, tokens, secrets or passwords are masked.
+- **Upstream errors are sanitised before they reach the client.** For 400,
+  404, 422 and 429 only the error's type, code and message are passed on
+  (and `Retry-After` on a 429); other upstream errors get a generic body. An
+  upstream 401 or 403, meaning a provider refused the router's own key, is
+  now answered with 502 so it is not mistaken for a problem with the client's
+  key.
+- **Router-only request fields are not forwarded.** `provider`, `models`,
+  `route`, `transforms`, `extra_body`, `base_url` and `api_key` are removed
+  from `/v1/*` request bodies before they go upstream.
+- **Malformed request bodies get 400.** The `/api/*` and `/v1/*` inference
+  routes answer 400 for a body that is not JSON, not a JSON object, or has a
+  `model` that is not a string, instead of failing with 500.
+- **`X-Llama-Router-Path` is checked.** Only well-formed router IDs are kept
+  from it and passed on, and a header longer than 512 characters is refused
+  with 508.
 - **Dashboard escapes server and user data.** Model names, provider names,
   addresses, pull and benchmark progress and error messages are HTML-escaped
   wherever the dashboard and provider pages build HTML in JavaScript, and

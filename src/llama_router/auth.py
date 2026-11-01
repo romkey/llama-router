@@ -15,6 +15,7 @@ from .background import spawn
 from .config import settings
 from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
+from .provider_secrets import server_secret
 from .router import ROUTING_MODES, RoutingPreferences
 from .routing_table import DEFAULT_MODE
 from .spend import cap_reached, tracker_for
@@ -46,18 +47,32 @@ def key_hash_legacy(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-def key_hash(key: str) -> str:
-    """Fingerprint for API key storage using PBKDF2-HMAC-SHA256."""
-    pepper_src = (settings.session_secret or "").strip()
-    pepper = (
-        pepper_src.encode("utf-8") if pepper_src else b"llama-router-api-key-pepper-dev"
-    )
+# The fixed pepper older releases used without a session secret. Keys
+# hashed with it still match and are re-hashed with the current pepper.
+_LEGACY_DEV_PEPPER = b"llama-router-api-key-pepper-dev"
+
+
+def _pbkdf2(key: str, pepper: bytes) -> str:
     return hashlib.pbkdf2_hmac(
         "sha256",
         key.encode("utf-8"),
         pepper,
         _PBKDF2_ROUNDS,
     ).hex()
+
+
+def key_hash(key: str) -> str:
+    """Fingerprint for API key storage using PBKDF2-HMAC-SHA256.
+
+    The pepper is ``LLAMA_ROUTER_SESSION_SECRET``, or the generated secret
+    file's value when that is not set.
+    """
+    return _pbkdf2(key, server_secret())
+
+
+def key_hash_legacy_pepper(key: str) -> str:
+    """PBKDF2 fingerprint with the old fixed development pepper."""
+    return _pbkdf2(key, _LEGACY_DEV_PEPPER)
 
 
 class _AuthCache:
@@ -127,6 +142,15 @@ async def _resolve_key(
         modern = await asyncio.to_thread(key_hash, key)
         if modern != legacy:
             record = await db.lookup_api_key(modern)
+        if not record and not settings.session_secret.strip():
+            # Created before the generated secret replaced the fixed pepper.
+            old = await asyncio.to_thread(key_hash_legacy_pepper, key)
+            record = await db.lookup_api_key(old)
+            if record:
+                await db.set_api_key_hash(int(record["id"]), modern)
+            else:
+                # A concurrent request may have just re-hashed it.
+                record = await db.lookup_api_key(modern)
     if not record:
         return None
     mode = str(record["routing_mode"]).lower()

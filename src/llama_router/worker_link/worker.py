@@ -25,6 +25,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
 from .. import __version__, router_identity
+from ..provider_secrets import ApiKeyUnavailableError, decrypt_setting, encrypt_setting
 from . import protocol as p
 
 logger = logging.getLogger(__name__)
@@ -578,10 +579,28 @@ class WorkerLinkManager:
         if self.env_configured():
             return settings.worker_hub_url.strip(), settings.worker_token.strip(), "env"
         url = (await self._db.get_app_setting(self.DB_HUB_URL) or "").strip()
-        token = (await self._db.get_app_setting(self.DB_TOKEN) or "").strip()
+        token = await self._saved_token()
         if url and token:
             return url, token, "dashboard"
         return url, token, "none"
+
+    async def _saved_token(self) -> str:
+        """The dashboard-saved hub token, decrypted.
+
+        Older releases stored it in plain text; such a value is used as it
+        is and saved again encrypted.
+        """
+        stored = (await self._db.get_app_setting(self.DB_TOKEN) or "").strip()
+        if not stored:
+            return ""
+        try:
+            token, resave = decrypt_setting(stored)
+        except ApiKeyUnavailableError as exc:
+            logger.warning("Saved worker hub token: %s", exc)
+            return ""
+        if resave:
+            await self._db.set_app_setting(self.DB_TOKEN, encrypt_setting(token))
+        return token
 
     @staticmethod
     def expose_env_locked() -> bool:
@@ -658,7 +677,10 @@ class WorkerLinkManager:
     async def save(self, hub_url: str, token: str | None) -> None:
         await self._db.set_app_setting(self.DB_HUB_URL, hub_url.strip())
         if token is not None:
-            await self._db.set_app_setting(self.DB_TOKEN, token.strip())
+            token = token.strip()
+            await self._db.set_app_setting(
+                self.DB_TOKEN, encrypt_setting(token) if token else ""
+            )
         await self.reload()
 
     async def status(self) -> dict[str, Any]:

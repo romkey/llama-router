@@ -25,6 +25,11 @@ PATH_HEADER = "X-Llama-Router-Path"
 # A path this long is a loop through routers that do not add their IDs, or a
 # setup nobody means to build.
 MAX_HOPS = 8
+# MAX_HOPS IDs of 36 characters, their commas, and room for spaces. Routers
+# cannot prove to each other who they are over a plain HTTP link, so the
+# header is accepted from anyone; it can only get the sender's own request
+# refused, and only router IDs from it are passed on.
+MAX_PATH_HEADER_CHARS = 512
 LOOP_STATUS = 508
 
 
@@ -106,7 +111,15 @@ def remove_hub_listener(listener: Callable[[], None]) -> None:
 
 
 def parse_path(value: str | None) -> tuple[str, ...]:
-    return tuple(part.strip() for part in (value or "").split(",") if part.strip())
+    """The router IDs in a path header, in canonical form.
+
+    Anything that is not a router ID is dropped, so a client cannot use the
+    header to pass arbitrary text on to the routers and providers after this
+    one.
+    """
+    return tuple(
+        rid for part in (value or "").split(",") if (rid := parse_id(part)) is not None
+    )
 
 
 def loop_reason(path: tuple[str, ...]) -> str | None:
@@ -147,8 +160,13 @@ class LoopGuardMiddleware:
             for k, v in scope.get("headers") or ()
             if k == PATH_HEADER.lower().encode()
         )
-        path = parse_path(raw.decode("latin-1"))
-        reason = loop_reason(path)
+        path: tuple[str, ...] = ()
+        if len(raw) > MAX_PATH_HEADER_CHARS:
+            # Longer than any real path; refused rather than parsed.
+            reason: str | None = f"{PATH_HEADER} header is too long"
+        else:
+            path = parse_path(raw.decode("latin-1"))
+            reason = loop_reason(path)
         if reason is not None:
             logger.warning(
                 "Refused %s %s: routing loop (%s; path %s)",
