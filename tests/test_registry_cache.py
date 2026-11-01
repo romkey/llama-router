@@ -51,7 +51,73 @@ def test_blob_and_manifest_paths_stay_under_root(tmp_path):
     assert cache.blob_path(GOOD_DIGEST).is_relative_to(root / "blobs" / "sha256")
     cache.save_manifest("library/llama3.2", "latest", b"{}")
     assert cache.get_manifest("library/llama3.2", "latest") == b"{}"
-    assert (root / "manifests" / "library_llama3.2" / "latest").is_file()
+    assert (root / "manifests" / "library" / "llama3.2" / "_refs" / "latest").is_file()
+
+
+def test_nested_names_and_tags_do_not_collide(tmp_path):
+    cache = BlobCache(str(tmp_path / "cache"))
+    cache.save_manifest("a", "b", b'{"n": 1}')
+    cache.save_manifest("a/b", "latest", b'{"n": 2}')
+    cache.save_manifest("a_b", "latest", b'{"n": 3}')
+    assert cache.get_manifest("a", "b") == b'{"n": 1}'
+    assert cache.get_manifest("a/b", "latest") == b'{"n": 2}'
+    assert cache.get_manifest("a_b", "latest") == b'{"n": 3}'
+    assert cache.stats()["manifest_count"] == 3
+
+
+def test_legacy_flat_manifests_are_migrated(tmp_path):
+    manifests = tmp_path / "cache" / "manifests"
+    (manifests / "library_llama3.2").mkdir(parents=True)
+    (manifests / "library_llama3.2" / "latest").write_bytes(b"{}")
+    (manifests / "myorg_model").mkdir()
+    (manifests / "myorg_model" / "7b").write_bytes(b"{}")
+    cache = BlobCache(str(tmp_path / "cache"))
+    assert cache.get_manifest("library/llama3.2", "latest") == b"{}"
+    assert not (manifests / "library_llama3.2").exists()
+    # Ambiguous legacy names are dropped and refetched on the next pull.
+    assert not (manifests / "myorg_model").exists()
+    assert cache.stats()["manifest_count"] == 1
+
+
+def _put_blob(cache, data, mtime):
+    import hashlib
+    import os
+
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    cache.temp_blob_path(digest).write_bytes(data)
+    cache.commit_blob(digest, digest)
+    os.utime(cache.blob_path(digest), (mtime, mtime))
+    return digest
+
+
+def test_commit_blob_refuses_digest_mismatch(tmp_path):
+    from llama_router.registry_cache.cache import DigestMismatchError
+
+    cache = BlobCache(str(tmp_path / "cache"))
+    cache.temp_blob_path(GOOD_DIGEST).write_bytes(b"not it")
+    with pytest.raises(DigestMismatchError):
+        cache.commit_blob(GOOD_DIGEST, "sha256:" + "00" * 32)
+    assert not cache.has_blob(GOOD_DIGEST)
+    assert not cache.temp_blob_path(GOOD_DIGEST).exists()
+
+
+def test_lru_eviction_keeps_cache_under_max_bytes(tmp_path):
+    cache = BlobCache(str(tmp_path / "cache"), max_bytes=250)
+    old = _put_blob(cache, b"a" * 100, 1000)
+    used = _put_blob(cache, b"b" * 100, 2000)
+    cache.touch_blob(old)  # now the most recently used
+    new = _put_blob(cache, b"c" * 100, 3000)
+    assert cache.has_blob(old)
+    assert not cache.has_blob(used)
+    assert cache.has_blob(new)
+    assert cache.stats()["blob_bytes"] <= 250
+
+
+def test_eviction_never_drops_the_new_blob(tmp_path):
+    cache = BlobCache(str(tmp_path / "cache"), max_bytes=10)
+    big = _put_blob(cache, b"z" * 100, 1)
+    assert cache.has_blob(big)
+    assert BlobCache(str(tmp_path / "other")).evict() == []
 
 
 def test_cache_rejects_traversal_inputs(tmp_path):
@@ -89,17 +155,18 @@ def test_listings_survive_stray_files_and_odd_digests(tmp_path):
     # A manifest whose layer digest is not sha256 and a stray file whose
     # name is not a valid tag; neither may abort the listing helpers.
     odd = {"config": {"digest": "md5:" + "a" * 32, "size": 1}, "layers": []}
-    (manifests / "library_odd").mkdir(parents=True)
-    (manifests / "library_odd" / "latest").write_bytes(json.dumps(odd).encode())
-    (manifests / "library_odd" / ".stray tag").write_bytes(b"{}")
-    (manifests / "bad name!").mkdir()
-    (manifests / "bad name!" / "latest").write_bytes(b"{}")
+    refs = manifests / "library" / "odd" / "_refs"
+    refs.mkdir(parents=True)
+    (refs / "latest").write_bytes(json.dumps(odd).encode())
+    (refs / ".stray tag").write_bytes(b"{}")
+    (manifests / "bad name!" / "_refs").mkdir(parents=True)
+    (manifests / "bad name!" / "_refs" / "latest").write_bytes(b"{}")
 
     assert cache.cached_models() == set()
     details = cache.cached_model_details()
     assert any(d["name"] == "odd:latest" and not d["fully_cached"] for d in details)
     stats = cache.stats()
-    assert stats["manifest_count"] == 3
+    assert stats["manifest_count"] == 2
 
 
 def test_path_under_accepts_base_with_parent_segments(tmp_path):

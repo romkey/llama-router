@@ -680,7 +680,9 @@ Set `LLAMA_ROUTER_CACHE_EXTERNAL_HOST` to the host or IP your Ollama backends re
 
 #### Requirements
 
-- The cache runs as an HTTP server on port 9200 (configurable). This port does **not** need to be exposed externally — it only needs to be reachable from the Ollama backends on your LAN.
+- The cache runs as an HTTP server on port 9200 (configurable). It has no authentication of its own, so by default it binds `127.0.0.1` and `docker-compose.prod.yaml` does not publish the port. To serve Ollama backends on your LAN, set `LLAMA_ROUTER_CACHE_HOST=0.0.0.0`, publish `9200:9200` (for example in a `docker-compose.override.yaml`) and firewall it to the LAN; never expose it to the internet. `LLAMA_ROUTER_CACHE_TOKEN` can require a bearer token, but stock Ollama cannot send one, so it only helps behind a reverse proxy that adds the header.
+- Every blob is checked against its sha256 digest while it downloads and discarded on a mismatch. `LLAMA_ROUTER_CACHE_MAX_BYTES` caps the blob store, evicting least recently used blobs.
+- Manifests are stored as `manifests/<name>/_refs/<tag>` (for example `manifests/library/llama3.2/_refs/latest`). Older versions used a flat `library_llama3.2` directory; `library/` manifests are moved over at startup, others are dropped and fetched again on the next pull. Blobs are kept.
 - In Docker, the cache directory should be on a persistent volume with enough space for the models you pull (models range from ~2 GB to ~200+ GB).
 
 #### Disabling the cache

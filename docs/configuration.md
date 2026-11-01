@@ -87,9 +87,11 @@ values once saved.
 |----------|---------|---------|
 | `CACHE_ENABLED` | `true` | Run the pull-through cache for Ollama model downloads |
 | `CACHE_DIR` | `./model_cache` (Docker: `/app/data/model_cache`) | Where cached blobs and manifests are stored |
-| `CACHE_HOST` | `0.0.0.0` | Cache bind address |
+| `CACHE_HOST` | `127.0.0.1` | Cache bind address. Set `0.0.0.0` (and publish port 9200) so Ollama backends on the LAN can reach it |
 | `CACHE_PORT` | `9200` | Cache port |
-| `CACHE_EXTERNAL_HOST` | *(empty)* | Host or IP Ollama backends use to reach the cache, e.g. `192.168.1.50`. Empty means `127.0.0.1`, which only works when Ollama runs on the same machine |
+| `CACHE_EXTERNAL_HOST` | *(empty)* | Host or IP Ollama backends use to reach the cache, e.g. `192.168.1.50`. Empty means `127.0.0.1`, which only works when Ollama runs on the same machine. Also used for the blob `Location` header (relative when empty) |
+| `CACHE_TOKEN` | *(empty)* | When set, every cache request must send `Authorization: Bearer <token>`, else 401. Stock Ollama cannot send it, so use it only behind a reverse proxy that adds the header |
+| `CACHE_MAX_BYTES` | `0` | Cap on cached blob bytes; least recently used blobs are evicted after each download to stay under it. `0` is unlimited |
 | `CACHE_MANIFEST_TTL_HOURS` | `240` | Hours before a cached manifest is fetched again |
 | `CACHE_MAX_CONCURRENT_BLOBS` | `4` | Parallel blob downloads when pre-caching a model from the dashboard |
 

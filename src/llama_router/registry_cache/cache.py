@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -48,14 +50,35 @@ def validate_digest(digest: str) -> str:
     return digest
 
 
+class DigestMismatchError(ValueError):
+    """Downloaded content whose sha256 does not match the digest it was fetched by."""
+
+
+# Manifests live at manifests/<name components...>/_refs/<reference>.  Name
+# components cannot start with "_", so "_refs" never collides with a name.
+_REFS_DIR = "_refs"
+
+
+def sha256_digest(data: bytes) -> str:
+    """Return the ``sha256:<hex>`` digest of *data*."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
 class BlobCache:
-    def __init__(self, cache_dir: str, manifest_ttl_hours: int = 240):
+    def __init__(
+        self,
+        cache_dir: str,
+        manifest_ttl_hours: int = 240,
+        max_bytes: int = 0,
+    ):
         self._root = Path(os.path.normpath(Path(cache_dir).absolute()))
         self._blobs_dir = self._root / "blobs" / "sha256"
         self._manifests_dir = self._root / "manifests"
         self._manifest_ttl_seconds = manifest_ttl_hours * 3600
+        self._max_bytes = max_bytes
         self._blobs_dir.mkdir(parents=True, exist_ok=True)
         self._manifests_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_manifests()
         self.blob_hits: int = 0
         self.blob_misses: int = 0
         self.manifest_hits: int = 0
@@ -80,10 +103,65 @@ class BlobCache:
         return self._path_under(self._blobs_dir, short)
 
     def _manifest_path(self, name: str, reference: str) -> Path:
-        safe_name = validate_name(name).replace("/", "_")
+        """library/llama3.2, latest -> manifests/library/llama3.2/_refs/latest"""
+        components = validate_name(name).split("/")
         return self._path_under(
-            self._manifests_dir, safe_name, validate_reference(reference)
+            self._manifests_dir,
+            *components,
+            _REFS_DIR,
+            validate_reference(reference),
         )
+
+    def _migrate_legacy_manifests(self) -> None:
+        """Move manifests from the old flat layout into the nested one.
+
+        Older versions stored ``library/llama3.2`` as
+        ``manifests/library_llama3.2/<tag>``.  Only ``library_*`` maps back
+        unambiguously ("_" is also allowed inside names); other legacy
+        directories are dropped and their manifests are fetched again on the
+        next pull.  Blobs are not affected.
+        """
+        for d in list(self._manifests_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            files = [f for f in d.iterdir() if f.is_file()]
+            if not files:
+                continue
+            name = None
+            if d.name.startswith("library_"):
+                name = "library/" + d.name.removeprefix("library_")
+            for f in files:
+                target = None
+                if name is not None:
+                    with contextlib.suppress(InvalidCacheKeyError):
+                        target = self._manifest_path(name, f.name)
+                if target is not None and not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    f.replace(target)
+                else:
+                    f.unlink(missing_ok=True)
+            with contextlib.suppress(OSError):
+                d.rmdir()
+            logger.info("Migrated legacy manifest directory %s", d.name)
+
+    def _iter_manifest_files(self) -> Iterator[tuple[str, str, Path]]:
+        """Yield (name, reference, path) for every stored manifest file."""
+        for refs in sorted(self._manifests_dir.rglob(_REFS_DIR)):
+            if not refs.is_dir():
+                continue
+            name = refs.parent.relative_to(self._manifests_dir).as_posix()
+            if not _NAME_RE.fullmatch(name):
+                continue
+            for f in sorted(refs.iterdir(), key=lambda p: p.name):
+                if f.is_file():
+                    yield name, f.name, f
+
+    def _is_expired(self, path: Path) -> bool:
+        return time.time() - path.stat().st_mtime > self._manifest_ttl_seconds
+
+    @staticmethod
+    def _display_name(name: str) -> str:
+        return name.removeprefix("library/")
 
     # --- Blobs ---
 
@@ -108,21 +186,72 @@ class BlobCache:
     def blob_path(self, digest: str) -> Path:
         return self._blob_path(digest)
 
+    def touch_blob(self, digest: str) -> None:
+        """Mark a blob as recently used for LRU eviction (atime is unreliable)."""
+        with contextlib.suppress(OSError, InvalidCacheKeyError):
+            os.utime(self._blob_path(digest))
+
     def temp_blob_path(self, digest: str) -> Path:
         """Return a temp path for writing a blob atomically."""
         p = self._blob_path(digest)
         return p.with_suffix(".tmp")
 
-    def commit_blob(self, digest: str) -> None:
-        """Rename temp blob to final location after download completes."""
+    def commit_blob(self, digest: str, computed_digest: str) -> None:
+        """Rename temp blob to final location after download completes.
+
+        *computed_digest* is the sha256 of the bytes actually written, hashed
+        while streaming.  On a mismatch the temp file is discarded and
+        :class:`DigestMismatchError` raised, so the cache never serves bytes
+        under a digest they don't have.
+        """
         tmp = self.temp_blob_path(digest)
         final = self._blob_path(digest)
+        if computed_digest != digest:
+            tmp.unlink(missing_ok=True)
+            raise DigestMismatchError(
+                f"blob digest mismatch: expected {digest}, got {computed_digest}"
+            )
         if tmp.is_file():
             tmp.rename(final)
+            self.evict(keep=digest)
 
     def remove_temp_blob(self, digest: str) -> None:
         tmp = self.temp_blob_path(digest)
         tmp.unlink(missing_ok=True)
+
+    def evict(self, keep: str | None = None) -> list[str]:
+        """Delete least recently used blobs until the cache fits ``max_bytes``.
+
+        *keep* (the blob just committed) is never evicted.  Returns the
+        evicted digests; a ``max_bytes`` of 0 means unlimited.
+        """
+        if self._max_bytes <= 0:
+            return []
+        blobs: list[tuple[float, int, Path]] = []
+        total = 0
+        for f in self._blobs_dir.iterdir():
+            if not f.is_file() or f.name.endswith(".tmp"):
+                continue
+            st = f.stat()
+            total += st.st_size
+            blobs.append((st.st_mtime, st.st_size, f))
+        keep_name = keep.removeprefix("sha256:") if keep else None
+        evicted: list[str] = []
+        for _mtime, size, f in sorted(blobs, key=lambda b: b[0]):
+            if total <= self._max_bytes:
+                break
+            if f.name == keep_name:
+                continue
+            f.unlink(missing_ok=True)
+            total -= size
+            evicted.append(f"sha256:{f.name}")
+        if evicted:
+            logger.info(
+                "Evicted %d blob(s) to keep the cache under %d bytes",
+                len(evicted),
+                self._max_bytes,
+            )
+        return evicted
 
     # --- Manifests ---
 
@@ -134,8 +263,7 @@ class BlobCache:
             return False
         if not p.is_file():
             return False
-        age = time.time() - p.stat().st_mtime
-        if age > self._manifest_ttl_seconds:
+        if self._is_expired(p):
             p.unlink(missing_ok=True)
             return False
         return True
@@ -152,17 +280,8 @@ class BlobCache:
 
     def all_cached_manifests(self) -> Iterator[bytes]:
         """Yield raw bytes of every non-expired cached manifest."""
-        if not self._manifests_dir.exists():
-            return
-        for d in self._manifests_dir.iterdir():
-            if not d.is_dir():
-                continue
-            for f in d.iterdir():
-                if not f.is_file():
-                    continue
-                age = time.time() - f.stat().st_mtime
-                if age > self._manifest_ttl_seconds:
-                    continue
+        for _name, _ref, f in self._iter_manifest_files():
+            if not self._is_expired(f):
                 yield f.read_bytes()
 
     def _manifest_blob_digests(self, manifest_bytes: bytes) -> list[str]:
@@ -193,26 +312,11 @@ class BlobCache:
     def cached_models(self) -> set[str]:
         """Return model names where the manifest AND all blobs are cached."""
         result: set[str] = set()
-        if not self._manifests_dir.exists():
-            return result
-        for d in self._manifests_dir.iterdir():
-            if not d.is_dir():
+        for name, tag, f in self._iter_manifest_files():
+            if self._is_expired(f):
                 continue
-            oci_name = d.name.replace("_", "/", 1)
-            display_name = d.name
-            if display_name.startswith("library_"):
-                display_name = display_name[len("library_") :]
-            else:
-                display_name = display_name.replace("_", "/", 1)
-            for f in d.iterdir():
-                if not f.is_file():
-                    continue
-                tag = f.name
-                age = time.time() - f.stat().st_mtime
-                if age > self._manifest_ttl_seconds:
-                    continue
-                if self.is_model_fully_cached(oci_name, tag):
-                    result.add(f"{display_name}:{tag}")
+            if self.is_model_fully_cached(name, tag):
+                result.add(f"{self._display_name(name)}:{tag}")
         return result
 
     def cached_model_details(self) -> list[dict[str, Any]]:
@@ -221,59 +325,45 @@ class BlobCache:
         Each entry: {name, fully_cached, blobs: [{digest, size, cached}, ...]}
         """
         results: list[dict[str, Any]] = []
-        if not self._manifests_dir.exists():
-            return results
-        for d in sorted(self._manifests_dir.iterdir(), key=lambda p: p.name):
-            if not d.is_dir():
+        for name, tag, f in self._iter_manifest_files():
+            if self._is_expired(f):
                 continue
-            display_name = d.name
-            if display_name.startswith("library_"):
-                display_name = display_name[len("library_") :]
-            else:
-                display_name = display_name.replace("_", "/", 1)
-            for f in sorted(d.iterdir(), key=lambda p: p.name):
-                if not f.is_file():
-                    continue
-                tag = f.name
-                age = time.time() - f.stat().st_mtime
-                if age > self._manifest_ttl_seconds:
-                    continue
-                manifest_data = f.read_bytes()
-                try:
-                    manifest = json.loads(manifest_data)
-                except Exception:
-                    logger.debug("skipping unparseable manifest %s", f, exc_info=True)
-                    continue
-                blobs: list[dict[str, Any]] = []
-                all_cached = True
-                config = manifest.get("config", {})
-                entries = []
-                if config.get("digest"):
-                    entries.append((config["digest"], config.get("size", 0), "config"))
-                for layer in manifest.get("layers", []):
-                    if layer.get("digest"):
-                        media = layer.get("mediaType", "")
-                        label = media.rsplit(".", 1)[-1] if "." in media else "layer"
-                        entries.append((layer["digest"], layer.get("size", 0), label))
-                for digest, size, label in entries:
-                    cached = self.has_blob(digest)
-                    if not cached:
-                        all_cached = False
-                    blobs.append(
-                        {
-                            "digest": digest,
-                            "size": size,
-                            "cached": cached,
-                            "label": label,
-                        }
-                    )
-                results.append(
+            manifest_data = f.read_bytes()
+            try:
+                manifest = json.loads(manifest_data)
+            except Exception:
+                logger.debug("skipping unparseable manifest %s", f, exc_info=True)
+                continue
+            blobs: list[dict[str, Any]] = []
+            all_cached = True
+            config = manifest.get("config", {})
+            entries = []
+            if config.get("digest"):
+                entries.append((config["digest"], config.get("size", 0), "config"))
+            for layer in manifest.get("layers", []):
+                if layer.get("digest"):
+                    media = layer.get("mediaType", "")
+                    label = media.rsplit(".", 1)[-1] if "." in media else "layer"
+                    entries.append((layer["digest"], layer.get("size", 0), label))
+            for digest, size, label in entries:
+                cached = self.has_blob(digest)
+                if not cached:
+                    all_cached = False
+                blobs.append(
                     {
-                        "name": f"{display_name}:{tag}",
-                        "fully_cached": all_cached,
-                        "blobs": blobs,
+                        "digest": digest,
+                        "size": size,
+                        "cached": cached,
+                        "label": label,
                     }
                 )
+            results.append(
+                {
+                    "name": f"{self._display_name(name)}:{tag}",
+                    "fully_cached": all_cached,
+                    "blobs": blobs,
+                }
+            )
         return results
 
     # --- Stats ---
@@ -286,14 +376,12 @@ class BlobCache:
                 blob_count += 1
                 blob_bytes += f.stat().st_size
 
-        manifest_count = 0
-        for d in self._manifests_dir.iterdir():
-            if d.is_dir():
-                manifest_count += sum(1 for f in d.iterdir() if f.is_file())
+        manifest_count = sum(1 for _ in self._iter_manifest_files())
 
         return {
             "blob_count": blob_count,
             "blob_bytes": blob_bytes,
+            "max_bytes": self._max_bytes,
             "manifest_count": manifest_count,
             "cache_dir": str(self._root),
             "blob_hits": self.blob_hits,

@@ -7,6 +7,20 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Security
+
+- **Registry cache hardening.** The cache now binds `127.0.0.1` by default and
+  `docker-compose.prod.yaml` no longer publishes port 9200; set
+  `LLAMA_ROUTER_CACHE_HOST=0.0.0.0` and publish the port to serve LAN Ollama
+  backends. Optional `LLAMA_ROUTER_CACHE_TOKEN` requires a bearer token,
+  `LLAMA_ROUTER_CACHE_MAX_BYTES` evicts least recently used blobs, and the
+  cache answers 503 while toggled off in the dashboard. Blobs are hashed while
+  streaming and never committed on a digest mismatch; manifests fetched by
+  digest are verified. The blob `Location` header no longer trusts the Host
+  header, pre-cache names are validated, and the cache's OpenAPI docs are off.
+  Manifests move to `manifests/<name>/_refs/<tag>`: `library/` models migrate
+  at startup, others are fetched again on the next pull.
+
 ### Fixed
 
 - **Readable error rows in the request log.** Error highlights use soft burgundy

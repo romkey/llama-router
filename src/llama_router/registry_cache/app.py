@@ -34,6 +34,8 @@ Performance:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -42,7 +44,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.responses import FileResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -51,6 +53,7 @@ from ..config import settings
 from .cache import (
     BlobCache,
     InvalidCacheKeyError,
+    sha256_digest,
     validate_digest,
     validate_name,
     validate_reference,
@@ -82,11 +85,54 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _blob_semaphore = None
 
 
+async def _require_enabled_and_token(request: Request) -> None:
+    """Refuse every request while the cache is toggled off or lacks the token."""
+    if not settings.cache_enabled:
+        raise HTTPException(status_code=503, detail="Registry cache is disabled")
+    token = settings.cache_token
+    if not token:
+        return
+    scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(
+        supplied.strip().encode(), token.encode()
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid cache token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 app = FastAPI(
     title="llama-router Registry Cache",
     redirect_slashes=False,
     lifespan=_lifespan,
+    dependencies=[Depends(_require_enabled_and_token)],
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
+
+
+def _blob_location(digest: str) -> str:
+    """Where Ollama should fetch a cached blob from.
+
+    Never derived from the request's Host header: an absolute URL on
+    ``cache_external_host`` when set, otherwise a relative one, which Go's
+    ``resp.Location()`` resolves against the URL Ollama requested.
+    """
+    path = f"/cache/blobs/{digest}"
+    host = settings.cache_external_host.strip()
+    if host:
+        return f"http://{host}:{settings.cache_port}{path}"
+    return path
+
+
+def _verify_manifest(reference: str, data: bytes) -> None:
+    """A manifest fetched by digest must hash to that digest."""
+    if reference.startswith("sha256:") and sha256_digest(data) != reference:
+        logger.error("Manifest digest mismatch for %s", reference)
+        raise HTTPException(status_code=502, detail="Upstream manifest digest mismatch")
 
 
 @app.exception_handler(InvalidCacheKeyError)
@@ -218,6 +264,7 @@ async def get_manifest(name: str, reference: str) -> Response:
         raise HTTPException(status_code=status, detail="Upstream error")
 
     data = resp.content
+    _verify_manifest(reference, data)
     cache.save_manifest(name, reference, data)
     _extract_blob_sizes(data)
     logger.info(
@@ -292,19 +339,19 @@ async def head_blob(name: str, digest: str) -> Response:
 
 
 @app.get("/v2/{name:path}/blobs/{digest}")
-async def get_blob(name: str, digest: str, request: Request) -> Response:
+async def get_blob(name: str, digest: str) -> Response:
     """Serve blob downloads: hit → Location to local file; miss → stream-through."""
     name = validate_name(name)
     digest = validate_digest(digest)
     cache = _get_cache()
-    base = str(request.base_url).rstrip("/")
-    hit_headers = {"Docker-Content-Digest": digest}
+    location = _blob_location(digest)
+    hit_headers = {"Docker-Content-Digest": digest, "Location": location}
 
     if cache.has_blob(digest):
         cache.blob_hits += 1
+        cache.touch_blob(digest)
         size = cache.blob_size(digest)
         logger.info("Blob cache HIT: %s (%s)", digest[:24], _human_bytes(size))
-        hit_headers["Location"] = f"{base}/cache/blobs/{digest}"
         return Response(status_code=200, content=b"", headers=hit_headers)
 
     if digest in _active_downloads:
@@ -318,7 +365,6 @@ async def get_blob(name: str, digest: str, request: Request) -> Response:
                 digest[:24],
                 _human_bytes(size),
             )
-            hit_headers["Location"] = f"{base}/cache/blobs/{digest}"
             return Response(status_code=200, content=b"", headers=hit_headers)
         logger.error("Blob wait finished but cache still missing: %s", digest[:24])
         raise HTTPException(status_code=502, detail="Upstream blob download failed")
@@ -333,6 +379,7 @@ async def get_blob(name: str, digest: str, request: Request) -> Response:
     async def stream_and_cache() -> AsyncIterator[bytes]:
         try:
             client = _upstream()
+            hasher = hashlib.sha256()
             async with client.stream(
                 "GET",
                 upstream_url,
@@ -342,12 +389,15 @@ async def get_blob(name: str, digest: str, request: Request) -> Response:
                 with tmp.open("wb") as f:
                     async for chunk in resp.aiter_bytes(CHUNK_SIZE):
                         f.write(chunk)
+                        hasher.update(chunk)
                         yield chunk
-            cache.commit_blob(digest)
+            # A mismatch raises, which aborts the response mid-stream.
+            cache.commit_blob(digest, f"sha256:{hasher.hexdigest()}")
             logger.info("Streamed and cached blob: %s", digest[:24])
-        except Exception as exc:
+        except BaseException as exc:
+            # BaseException: a client disconnect cancels the generator.
             cache.remove_temp_blob(digest)
-            logger.error("Stream-and-cache failed for %s: %s", digest[:24], exc)
+            logger.error("Stream-and-cache failed for %s: %r", digest[:24], exc)
             raise
         finally:
             event.set()
@@ -356,10 +406,7 @@ async def get_blob(name: str, digest: str, request: Request) -> Response:
     return StreamingResponse(
         stream_and_cache(),
         media_type="application/octet-stream",
-        headers={
-            "Docker-Content-Digest": digest,
-            "Location": f"{base}/cache/blobs/{digest}",
-        },
+        headers=hit_headers,
     )
 
 
@@ -373,6 +420,7 @@ async def serve_cached_blob(digest: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Blob not in cache")
 
     path = cache.blob_path(digest)
+    cache.touch_blob(digest)
     size = cache.blob_size(digest)
     logger.info("Serving cached blob: %s (%s)", digest[:24], _human_bytes(size))
     return FileResponse(
@@ -397,6 +445,9 @@ async def precache_model(
         name_part, tag = model, "latest"
 
     oci_name = f"library/{name_part}" if "/" not in name_part else name_part
+    # Validate before the name and tag go into an upstream URL.
+    oci_name = validate_name(oci_name)
+    tag = validate_reference(tag)
 
     if progress_callback:
         progress_callback(f"fetching manifest for {model}")
@@ -408,6 +459,7 @@ async def precache_model(
         raise RuntimeError(f"Manifest fetch failed: HTTP {resp.status_code}")
 
     manifest_data = resp.content
+    _verify_manifest(tag, manifest_data)
     cache.save_manifest(oci_name, tag, manifest_data)
     _extract_blob_sizes(manifest_data)
 
@@ -446,10 +498,12 @@ async def precache_model(
                 progress_callback(
                     f"downloading blob {i}/{total} ({_human_bytes(size)})"
                 )
+            digest = validate_digest(digest)
             blob_url = f"{UPSTREAM}/v2/{oci_name}/blobs/{digest}"
             tmp = cache.temp_blob_path(digest)
             total_bytes = 0
             blob_start = time.monotonic()
+            hasher = hashlib.sha256()
             try:
                 async with client.stream(
                     "GET",
@@ -460,6 +514,7 @@ async def precache_model(
                     with tmp.open("wb") as f:
                         async for chunk in blob_resp.aiter_bytes(CHUNK_SIZE):
                             f.write(chunk)
+                            hasher.update(chunk)
                             total_bytes += len(chunk)
                             if progress_callback and size > 0:
                                 pct = int(total_bytes * 100 / size)
@@ -472,7 +527,7 @@ async def precache_model(
                                     f"downloading blob {i}/{total} {pct}% "
                                     f"({_human_bytes(total_bytes)}/{_human_bytes(size)}){speed_str}"
                                 )
-                cache.commit_blob(digest)
+                cache.commit_blob(digest, f"sha256:{hasher.hexdigest()}")
                 if not cache.has_blob(digest):
                     raise RuntimeError(
                         "Blob commit failed — file not found after rename"
@@ -488,6 +543,10 @@ async def precache_model(
                 raise RuntimeError(
                     f"Blob download failed ({digest[:24]}): {exc}"
                 ) from exc
+            except BaseException:
+                # Cancellation (e.g. shutdown) must not leave a .tmp behind.
+                cache.remove_temp_blob(digest)
+                raise
 
     await asyncio.gather(
         *[_fetch_one_blob(i, layer) for i, layer in enumerate(layers, 1)]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -9,12 +10,14 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+from llama_router.config import settings
 from llama_router.registry_cache import app as rc
-from llama_router.registry_cache.cache import BlobCache
+from llama_router.registry_cache.cache import BlobCache, InvalidCacheKeyError
 
 BLOB = b"x" * 1000
-DIGEST = "sha256:" + "ab" * 32
-CFG_DIGEST = "sha256:" + "cd" * 32
+CFG = b"y" * 10
+DIGEST = "sha256:" + hashlib.sha256(BLOB).hexdigest()
+CFG_DIGEST = "sha256:" + hashlib.sha256(CFG).hexdigest()
 MANIFEST = json.dumps(
     {
         "config": {"digest": CFG_DIGEST, "size": 10},
@@ -35,6 +38,9 @@ async def env(
     monkeypatch.setattr(rc, "_blob_semaphore", asyncio.Semaphore(2))
     monkeypatch.setattr(rc, "_blob_sizes", {})
     monkeypatch.setattr(rc, "_active_downloads", {})
+    monkeypatch.setattr(settings, "cache_enabled", True)
+    monkeypatch.setattr(settings, "cache_token", "")
+    monkeypatch.setattr(settings, "cache_external_host", "")
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=rc.app), base_url="http://cache"
     )
@@ -45,7 +51,7 @@ async def env(
 
 def _commit(cache: BlobCache, digest: str, data: bytes) -> None:
     cache.temp_blob_path(digest).write_bytes(data)
-    cache.commit_blob(digest)
+    cache.commit_blob(digest, "sha256:" + hashlib.sha256(data).hexdigest())
 
 
 def test_human_bytes_units() -> None:
@@ -168,7 +174,7 @@ async def test_get_blob_miss_streams_and_caches(
     hit = await client.get(f"/v2/library/m/blobs/{DIGEST}")
     assert hit.status_code == 200
     assert hit.content == b""
-    assert hit.headers["location"] == f"http://cache/cache/blobs/{DIGEST}"
+    assert hit.headers["location"] == f"/cache/blobs/{DIGEST}"
     assert cache.blob_hits == 1
 
 
@@ -230,7 +236,7 @@ async def test_precache_model_downloads_all_blobs(
     )
     httpx_mock.add_response(url=f"{UP}/v2/library/llama3/blobs/{DIGEST}", content=BLOB)
     httpx_mock.add_response(
-        url=f"{UP}/v2/library/llama3/blobs/{CFG_DIGEST}", content=b"y" * 10
+        url=f"{UP}/v2/library/llama3/blobs/{CFG_DIGEST}", content=CFG
     )
     messages: list[str] = []
     await rc.precache_model(cache, "llama3", messages.append)
@@ -262,9 +268,7 @@ async def test_precache_blob_failure_removes_temp(
     cache, _ = env
     httpx_mock.add_response(url=f"{UP}/v2/org/model/manifests/7b", content=MANIFEST)
     httpx_mock.add_response(url=f"{UP}/v2/org/model/blobs/{DIGEST}", status_code=500)
-    httpx_mock.add_response(
-        url=f"{UP}/v2/org/model/blobs/{CFG_DIGEST}", content=b"y" * 10
-    )
+    httpx_mock.add_response(url=f"{UP}/v2/org/model/blobs/{CFG_DIGEST}", content=CFG)
     with pytest.raises(RuntimeError, match="Blob download failed"):
         await rc.precache_model(cache, "org/model:7b")
     assert not cache.has_blob(DIGEST)
@@ -275,3 +279,128 @@ async def test_lifespan_sets_and_clears_clients() -> None:
         assert rc._upstream_client is not None
         assert rc._blob_semaphore is not None
     assert rc._upstream_client is None
+
+
+async def test_disabled_cache_returns_503(
+    env: tuple[BlobCache, httpx.AsyncClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, client = env
+    monkeypatch.setattr(settings, "cache_enabled", False)
+    assert (await client.get("/v2/")).status_code == 503
+    assert (await client.get(f"/cache/blobs/{DIGEST}")).status_code == 503
+
+
+async def test_cache_token_required_when_set(
+    env: tuple[BlobCache, httpx.AsyncClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache, client = env
+    _commit(cache, DIGEST, BLOB)
+    monkeypatch.setattr(settings, "cache_token", "s3cret")
+    resp = await client.get("/v2/")
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"] == "Bearer"
+    bad = {"Authorization": "Bearer nope"}
+    assert (await client.get(f"/cache/blobs/{DIGEST}", headers=bad)).status_code == 401
+    good = {"Authorization": "Bearer s3cret"}
+    assert (await client.get("/v2/", headers=good)).status_code == 200
+    resp = await client.get(f"/cache/blobs/{DIGEST}", headers=good)
+    assert resp.content == BLOB
+
+
+async def test_openapi_and_docs_are_disabled(
+    env: tuple[BlobCache, httpx.AsyncClient],
+) -> None:
+    _, client = env
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert (await client.get(path)).status_code == 404
+
+
+async def test_blob_location_uses_external_host_not_host_header(
+    env: tuple[BlobCache, httpx.AsyncClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache, client = env
+    _commit(cache, DIGEST, BLOB)
+    headers = {"Host": "evil.example"}
+    resp = await client.get(f"/v2/library/m/blobs/{DIGEST}", headers=headers)
+    assert resp.headers["location"] == f"/cache/blobs/{DIGEST}"
+    monkeypatch.setattr(settings, "cache_external_host", "192.168.1.50")
+    resp = await client.get(f"/v2/library/m/blobs/{DIGEST}", headers=headers)
+    assert resp.headers["location"] == (
+        f"http://192.168.1.50:{settings.cache_port}/cache/blobs/{DIGEST}"
+    )
+
+
+async def test_get_blob_digest_mismatch_is_not_cached(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
+    cache, client = env
+    httpx_mock.add_response(url=f"{UP}/v2/library/m/blobs/{DIGEST}", content=b"evil")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        await client.get(f"/v2/library/m/blobs/{DIGEST}")
+    assert not cache.has_blob(DIGEST)
+    assert not cache.temp_blob_path(DIGEST).exists()
+    assert rc._active_downloads == {}
+
+
+async def test_manifest_by_digest_is_verified(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
+    cache, client = env
+    ref = "sha256:" + hashlib.sha256(MANIFEST).hexdigest()
+    httpx_mock.add_response(url=f"{UP}/v2/library/m/manifests/{ref}", content=MANIFEST)
+    assert (await client.get(f"/v2/library/m/manifests/{ref}")).status_code == 200
+
+    wrong = "sha256:" + "00" * 32
+    httpx_mock.add_response(
+        url=f"{UP}/v2/library/m/manifests/{wrong}", content=MANIFEST
+    )
+    assert (await client.get(f"/v2/library/m/manifests/{wrong}")).status_code == 502
+    assert cache.get_manifest("library/m", wrong) is None
+
+
+async def test_precache_validates_name_before_fetching(
+    env: tuple[BlobCache, httpx.AsyncClient],
+) -> None:
+    cache, _ = env
+    # No upstream response registered: any request would fail the test.
+    with pytest.raises(InvalidCacheKeyError):
+        await rc.precache_model(cache, "../../evil:latest")
+    with pytest.raises(InvalidCacheKeyError):
+        await rc.precache_model(cache, "llama3:bad/tag")
+
+
+async def test_precache_digest_mismatch_fails(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
+    cache, _ = env
+    httpx_mock.add_response(url=f"{UP}/v2/org/model/manifests/7b", content=MANIFEST)
+    httpx_mock.add_response(url=f"{UP}/v2/org/model/blobs/{DIGEST}", content=b"evil")
+    httpx_mock.add_response(url=f"{UP}/v2/org/model/blobs/{CFG_DIGEST}", content=CFG)
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        await rc.precache_model(cache, "org/model:7b")
+    assert not cache.has_blob(DIGEST)
+    assert not cache.temp_blob_path(DIGEST).exists()
+
+
+class _Stop(BaseException):
+    pass
+
+
+async def test_precache_cancellation_removes_temp(
+    env: tuple[BlobCache, httpx.AsyncClient], httpx_mock: HTTPXMock
+) -> None:
+    cache, _ = env
+    manifest = json.dumps({"layers": [{"digest": DIGEST, "size": len(BLOB)}]})
+    httpx_mock.add_response(
+        url=f"{UP}/v2/library/m/manifests/latest", content=manifest.encode()
+    )
+    httpx_mock.add_response(url=f"{UP}/v2/library/m/blobs/{DIGEST}", content=BLOB)
+
+    def _progress(msg: str) -> None:
+        if "%" in msg:
+            raise _Stop
+
+    with pytest.raises(_Stop):
+        await rc.precache_model(cache, "m", _progress)
+    assert not cache.temp_blob_path(DIGEST).exists()
+    assert not cache.has_blob(DIGEST)
