@@ -13,23 +13,10 @@
 # pyproject.toml; change all three together.
 
 FROM python:3.14-slim-trixie AS base
-# Network and process debugging tools for use with `docker compose exec`:
-# ping, host, dig/nslookup, nc, curl, wget, ip/ss, traceroute, ps/top.
-# Unpinned: Debian's stable repo only ships security fixes for these.
-# hadolint ignore=DL3008
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-        bind9-dnsutils \
-        bind9-host \
-        ca-certificates \
-        curl \
-        iproute2 \
-        iputils-ping \
-        netcat-openbsd \
-        procps \
-        traceroute \
-        wget \
- && rm -rf /var/lib/apt/lists/*
+# No extra OS packages: the python image already has ca-certificates, and
+# the production image deliberately carries no network tools (curl, wget,
+# nc, dig, ping...) for an attacker to use. The dev stage adds them.
+
 # Everything the app keeps (database, registry cache, Hugging Face cache and
 # downloads) lives on the /app/data volume.
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -58,6 +45,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --all-extras --no-editable
 
 FROM build AS dev
+# Network and process debugging tools for use with `docker compose exec`:
+# ping, host, dig/nslookup, nc, curl, wget, ip/ss, traceroute, ps/top.
+# Unpinned: Debian's stable repo only ships security fixes for these.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        bind9-dnsutils \
+        bind9-host \
+        curl \
+        iproute2 \
+        iputils-ping \
+        netcat-openbsd \
+        procps \
+        traceroute \
+        wget \
+ && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --all-extras
 EXPOSE 80 8080 9200 11434
