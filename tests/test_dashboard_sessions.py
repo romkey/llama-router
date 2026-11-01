@@ -207,6 +207,25 @@ async def test_pending_admin_is_not_counted_as_an_admin(db: Database) -> None:
     assert await db.count_dashboard_admins() == 2
 
 
+async def test_pending_admin_can_be_deleted(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db, "root")
+    pending = await db.create_oidc_dashboard_user(
+        "sso",
+        "https://idp",
+        "s1",
+        email=None,
+        display_name=None,
+        is_admin=True,
+        approved=False,
+    )
+    root = await _sign_in(client, "root")
+    r = await client.post(f"/users/{pending}/delete", headers=_cookie(root))
+    assert r.status_code == 303
+    assert r.headers["location"] == "/users"
+    assert await db.get_dashboard_user_by_id(pending) is None
+
+
 # --- Sign-in throttling ---
 
 

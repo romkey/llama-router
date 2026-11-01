@@ -765,7 +765,10 @@ async def users_delete(request: Request, user_id: int):
     target = await db.get_dashboard_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if target["is_admin"] and await db.count_dashboard_admins() <= 1:
+    # Pending admins can't use the dashboard, so they aren't counted and may
+    # always be removed.
+    usable_admin = target["is_admin"] and target.get("approved", True)
+    if usable_admin and await db.count_dashboard_admins() <= 1:
         return RedirectResponse(url="/users?error=last-admin", status_code=303)
     await db.delete_dashboard_user(user_id)
     invalidate_dashboard_user_count_cache()
