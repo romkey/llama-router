@@ -1577,3 +1577,50 @@ async def test_purge_timer_survives_a_reconnect(monkeypatch) -> None:
     pm._schedule_purge(new)
     await _wait_for(lambda: synced)
     assert synced == [new]
+
+
+async def test_purge_timer_retries_a_failed_sync(monkeypatch) -> None:
+    pm = ProviderManager(None)  # type: ignore[arg-type]
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.00001)
+    conn = _hub_conn()
+    calls: list[Any] = []
+
+    async def on_catalog(c) -> None:
+        calls.append(c)
+        if len(calls) == 1:
+            raise RuntimeError("database busy")
+
+    monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
+    pm.worker_hub._conns[1] = conn
+    pm._schedule_purge(conn)
+    await _wait_for(lambda: len(calls) == 2)
+
+
+async def test_catalog_sync_uses_the_catalog_it_started_with(
+    link, monkeypatch
+) -> None:
+    """A frame that lands mid-sync does not change what that sync deletes."""
+    pm, pid = link["pm"], link["provider_id"]
+    catalog = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+    ]
+    await _individual_worker(link, monkeypatch, catalog)
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    monkeypatch.setattr(settings, "worker_max_shared_providers", 2)
+    conn = pm.worker_hub.get(pid)
+    original = pm._sync_child
+
+    async def sync_child_while_a_frame_lands(*args, **kw):
+        conn.catalog = [*catalog, {"id": 9, "name": "npu", "locality": "local"}]
+        return await original(*args, **kw)
+
+    monkeypatch.setattr(pm, "_sync_child", sync_child_while_a_frame_lands)
+    conn.catalog = [catalog[0]]
+    await pm._sync_catalog(conn)
+    # One shared plus one unshared is within the cap: 8 is kept.
+    assert {c.worker_remote_id for c in (await _children(link)).values()} == {7, 8}

@@ -1907,7 +1907,10 @@ class ProviderManager:
     async def _sync_catalog(self, conn: WorkerConnection) -> None:
         parent_id = conn.provider_id
         async with self._worker_lock(parent_id):
-            if not self._is_current_worker(conn) or conn.catalog is None:
+            # A newer frame replaces conn.catalog; this sync works from the
+            # list it started with throughout (the next sync applies the new).
+            catalog = conn.catalog
+            if not self._is_current_worker(conn) or catalog is None:
                 return
             parent = await self._db.get_provider(parent_id)
             if parent is None or not parent.is_worker or parent.worker_name is None:
@@ -1918,7 +1921,7 @@ class ProviderManager:
             }
             # Providers the worker no longer shares give up their names first,
             # so one shared in their place can have <worker>/<provider>.
-            shared = {int(e["id"]) for e in conn.catalog}
+            shared = {int(e["id"]) for e in catalog}
             for rid, old in existing.items():
                 if rid in shared or old.name.endswith(f"#{rid}"):
                     continue
@@ -1929,7 +1932,7 @@ class ProviderManager:
             # Children that could not take their name yet (another provider
             # had it, maybe a sibling renamed later in this same catalog).
             retry: list[tuple[Provider, str]] = []
-            for entry in conn.catalog:
+            for entry in catalog:
                 rid = int(entry["id"])
                 name = f"{parent.name}/{entry['name']}"
                 try:
@@ -1956,7 +1959,7 @@ class ProviderManager:
                 if await self._name_free(name, child.id):
                     await self._rename(child, name)
             gone, purge = self._purge_unshared(
-                list(existing.values()), len(conn.catalog)
+                list(existing.values()), len(catalog)
             )
         for child in purge:
             logger.info(
@@ -2013,8 +2016,16 @@ class ProviderManager:
             if self._purge_timers.get(parent_id) is asyncio.current_task():
                 del self._purge_timers[parent_id]
             current = self.worker_hub.get(parent_id)
-            if current is not None and self._is_current_worker(current):
+            if current is None or not self._is_current_worker(current):
+                return
+            try:
                 await self._on_worker_catalog(current)
+            except Exception:
+                # The worker may not send its catalog again; try later.
+                logger.exception(
+                    "Could not delete unshared providers of worker %d", parent_id
+                )
+                self._schedule_purge(current)
 
         self._purge_timers[parent_id] = asyncio.create_task(
             later(), name=f"purge-unshared-{parent_id}"
