@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     sends the whole state again."""
     decision_max_concurrency: int = 4
     """Questions of one decision request asked of the backend at once."""
+    # Spend caps: output tokens assumed for a priced cloud request that sets no
+    # max_tokens. The estimate is held against the key's cap while the request
+    # runs, and charged when the response reports no usage.
+    spend_estimate_completion_tokens: int = 4096
     # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
     # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
     # needs a dashboard sign-in like the rest of the dashboard.
