@@ -28,6 +28,7 @@ from .. import decisions as d
 from ..auth import routing_preferences_from_request
 from ..endpoints import normalize_endpoint
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import log_request_background
 from ..router import RoutingPreferences
@@ -49,9 +50,11 @@ def _validation_detail(exc: ValidationError) -> list[dict[str, Any]]:
 @router.post("/v1/decisions")
 @router.post("/decisions")
 async def decide(request: Request) -> Response:
-    body = await json_object(request)
     prefs = await routing_preferences_from_request(deps.get_db(), request)
-    return await serve(request, body, request.url.path, prefs)
+    body = await json_object(request)
+    slot = await upstream_slot(request, prefs)
+    async with slot:
+        return await serve(request, body, request.url.path, prefs)
 
 
 async def serve(

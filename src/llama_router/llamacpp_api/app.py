@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
 from ..spend import SpendReservationMiddleware
@@ -33,6 +34,7 @@ app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
 app.add_middleware(HubRelayMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.get("/health")
@@ -60,7 +62,11 @@ async def http_exception_handler(
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
 
 
 app.include_router(audio_router)
