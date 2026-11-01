@@ -19,6 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from ..auth import generate_api_key, key_hash, key_prefix
+from ..config import settings
 from ..database import Database
 from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
@@ -102,6 +103,12 @@ async def issue_my_key(request: Request) -> JSONResponse:
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
     db = deps.get_db()
+    limit = settings.max_api_keys_per_user
+    if limit > 0 and len(await db.list_api_keys(owner_user_id=owner)) >= limit:
+        raise HTTPException(
+            status_code=409,
+            detail=f"You already have {limit} API keys; revoke one to issue another",
+        )
     defaults = await self_service_defaults(db)
     # PBKDF2 is slow; keep it off the event loop.
     plaintext = generate_api_key()
