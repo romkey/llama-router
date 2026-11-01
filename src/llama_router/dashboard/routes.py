@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
 import re
@@ -28,6 +29,7 @@ from .. import metrics as metrics_mod
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
 from ..background import spawn
+from ..client_address import client_ip
 from ..cloud_presets import PRESETS, get_preset
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
@@ -493,14 +495,6 @@ def _set_session_cookie(
     )
 
 
-def _client_ip(request: Request) -> str:
-    # The TCP peer, never X-Forwarded-For: a client can put anything there and
-    # would rotate it to dodge the per-address limit. Behind a reverse proxy
-    # every client shares the proxy's address until trusted proxies are
-    # configurable; the per-username limit still applies to each account.
-    return request.client.host if request.client else "unknown"
-
-
 def _external_origin(request: Request) -> tuple[str, str]:
     """Scheme and host the browser used, honoring a reverse proxy's headers."""
     proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
@@ -546,7 +540,9 @@ async def login_submit(
     db = deps.get_db()
     if await db.count_dashboard_users() == 0:
         return RedirectResponse(url="/", status_code=302)
-    ip = _client_ip(request)
+    # X-Forwarded-For counts only from LLAMA_ROUTER_TRUSTED_PROXIES; a client
+    # can't rotate it to dodge the per-address limit.
+    ip = client_ip(request) or "unknown"
     try:
         un = normalize_username(username)
     except ValueError:
@@ -1296,7 +1292,8 @@ async def api_explain_routing(request: Request):
     ``allow_fallback`` and ``session_affinity``, or ``key_id`` to use an API
     key's mode, fallback, session affinity setting and pins (admins only).
     ``session_id`` shows how a client sending that ``X-Session-ID`` would be
-    routed, including its current binding.
+    routed, including its current binding. Without ``key_id``, ``client_ip``
+    names the client address, which scopes anonymous sessions.
     """
     q = request.query_params
     model = (q.get("model") or "").strip()
@@ -1358,8 +1355,16 @@ async def api_explain_routing(request: Request):
             locality=_key_locality(q.get("locality")),
         )
     session_id = (q.get("session_id") or "").strip()
+    client = (q.get("client_ip") or "").strip() or None
+    if client is not None:
+        try:
+            client = str(ipaddress.ip_address(client))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="client_ip must be an IP address"
+            ) from exc
     session = (
-        session_key({"x-session-id": session_id}, {"model": model}, key_id)
+        session_key({"x-session-id": session_id}, {"model": model}, key_id, client)
         if session_id
         else None
     )
@@ -2228,9 +2233,7 @@ async def api_pull_model(request: Request):
 
     cache_url = _cache_registry_url()
     db = deps.get_db()
-    source_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
-        request.client.host if request.client else "unknown"
-    )
+    source_ip = client_ip(request)
 
     progress_lock = asyncio.Lock()
 

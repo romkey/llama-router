@@ -38,7 +38,8 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `SESSION_SECRET` | *(empty)* | Secret for signing session cookies. Empty: a random one is generated and kept in the database |
+| `SESSION_SECRET` | *(empty)* | Secret for signing session cookies, encrypting stored provider keys and the worker hub token, and peppering client API key hashes. Empty: cookies use a random secret kept in the database; the rest use a random secret kept in `SECRET_KEY_PATH` |
+| `SECRET_KEY_PATH` | *(empty)* | File holding the generated secret when `SESSION_SECRET` is empty, created with mode 0600 and never stored in the database. Empty: `secret.key` beside the SQLite database (`/app/data/secret.key` in the Docker image). Back it up with the database: without it stored provider keys must be entered again and client API keys reissued |
 | `DASHBOARD_COOKIE_SECURE` | `false` | Always send session cookies over HTTPS only. Without it they are Secure whenever the request came over HTTPS or with `X-Forwarded-Proto: https` |
 | `DASHBOARD_TRUSTED_ORIGINS` | *(empty)* | Comma-separated extra origins (`https://llm.example.org`) allowed to POST to the dashboard. The dashboard refuses state-changing requests whose `Sec-Fetch-Site` or `Origin` says they come from another site; needed only behind a plain-HTTP proxy that rewrites `Host` without setting `X-Forwarded-Host`. `OIDC_REDIRECT_BASE_URL` is always trusted |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
@@ -63,12 +64,16 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Seconds between provider health checks |
 | `QUIET_HEALTH_CHECKS` | `false` | Leave successful `GET /healthz` and `GET /health` requests out of the access log. Failed ones are still logged |
+| `TRUSTED_PROXIES` | (empty) | Reverse proxies whose `X-Forwarded-For` header is believed, as IPs or CIDRs separated by commas (e.g. `127.0.0.1,10.0.0.0/8`). Empty ignores the header: the TCP peer is the client in the request log and for anonymous session affinity |
+| `REQUEST_LOG_RETENTION_DAYS` | `30` | Delete request log rows older than this, checked hourly; `0` keeps them forever |
+| `CIRCUIT_TIMEOUT_MAX_TOKENS` | `4096` | A read timeout on a request asking for more output tokens than this (`max_tokens`, `num_predict`...) is blamed on the request and does not count toward the provider's circuit breaker |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |
 | `OLLAMA_API_TRANSLATION` | `true` | Serve Ollama API requests from OpenAI-compatible providers too, translating both ways |
 | `SESSION_AFFINITY_ENABLED` | `true` | Keep each conversation on one provider. An API key can override this |
 | `SESSION_AFFINITY_TTL_SECONDS` | `1800` | A session forgets its provider after this long without a request |
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
+| `SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` | `200` | Most sessions one API key (or one client address, for requests without a key) may hold; its least recently used go first |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
 | `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
 | `DECISION_MAX_QUESTIONS` | `8` | Most questions in one decision request (each is one backend call); a policy may have one gate fewer |

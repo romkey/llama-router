@@ -27,6 +27,46 @@ described in their git tags and GitHub Releases.
   `LLAMA_ROUTER_DASHBOARD_TRUSTED_ORIGINS` lists exceptions.
 - **Secure cookies behind HTTPS proxies.** Session cookies are marked Secure
   whenever the request came over HTTPS or with `X-Forwarded-Proto: https`.
+- **X-Forwarded-For is only believed from trusted proxies.** The request log
+  (and the dashboard's pull log) used the header from anyone. Set
+  `LLAMA_ROUTER_TRUSTED_PROXIES` (IPs or CIDRs) to the reverse proxies in
+  front of the router; until then the TCP peer is logged. Values that are not
+  IP addresses are ignored.
+- **Request log retention.** Rows older than
+  `LLAMA_ROUTER_REQUEST_LOG_RETENTION_DAYS` (default 30; `0` keeps them) are
+  deleted hourly. Upgrades with an older log lose rows past that age.
+- **404s without an API key are no longer logged**, so scanners probing random
+  paths cannot fill the request log.
+- **Anonymous session affinity is scoped by client address**, and each API key
+  (or anonymous client) holds at most
+  `LLAMA_ROUTER_SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` sessions (default 200).
+- **`GET /v1/audio/voices` needs an API key** like the other endpoints, and its
+  answer is cached for 30 seconds.
+- **Client disconnects and long-answer timeouts no longer trip the circuit
+  breaker.** A stream the client abandons is logged as `cancelled` and not
+  sampled; a read timeout on a request asking for more than
+  `LLAMA_ROUTER_CIRCUIT_TIMEOUT_MAX_TOKENS` output tokens (default 4096) is
+  blamed on the request.
+- **Legacy SHA-256 API key hashes are upgraded to PBKDF2** the next time the key
+  is used.
+- **Hugging Face download values cannot become `hf` options:** patterns and
+  revisions starting with `-` are refused, and values are passed as
+  `--include=...` / `--revision=...`.
+- **No `/docs`, `/redoc` or `/openapi.json` on the Ollama and OpenAI API
+  ports.** The dashboard keeps its own.
+- **No more fixed fallback secret.** Without `LLAMA_ROUTER_SESSION_SECRET`,
+  provider API keys were encrypted, and client API keys peppered, with a key
+  written in the source. A random secret is now generated once into
+  `secret.key` beside the database (mode 0600, `LLAMA_ROUTER_SECRET_KEY_PATH`
+  to move it) and reused on later starts. Existing provider keys are
+  re-encrypted at startup and existing client keys re-hashed on first use, so
+  nothing needs to be re-entered. Back up `secret.key` with the database.
+- **Worker hub token encrypted at rest.** A token saved in the dashboard is
+  stored encrypted; a plain one from an older release is encrypted on first
+  read.
+- **Sentry scrubbing.** Events no longer include local variables, request
+  bodies, headers, cookies or query strings, and values under keys that look
+  like keys, tokens, secrets or passwords are masked.
 - **Upstream errors are sanitised before they reach the client.** For 400,
   404, 422 and 429 only the error's type, code and message are passed on
   (and `Retry-After` on a 429); other upstream errors get a generic body. An

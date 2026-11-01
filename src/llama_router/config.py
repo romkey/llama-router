@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     # log, so a container or load-balancer health check polling every few
     # seconds does not fill it. Failures are still logged.
     quiet_health_checks: bool = False
+    # Proxies whose X-Forwarded-For header is believed, as IPs or CIDRs
+    # separated by commas. Empty: the header is ignored and the TCP peer is
+    # the client.
+    trusted_proxies: str = ""
+    # Request log rows older than this many days are deleted (0 keeps them all).
+    request_log_retention_days: float = 30.0
+    # A read timeout on a request that asked for more output tokens than this
+    # is blamed on the request, not the provider, so it does not count
+    # toward the provider's circuit breaker.
+    circuit_timeout_max_tokens: int = 4096
     # Re-probe a provider's endpoints when the last probe is older than this
     # (0 turns periodic re-probing off; probes on add, edit and recovery stay).
     probe_max_age_hours: float = 24.0
@@ -53,6 +63,9 @@ class Settings(BaseSettings):
     session_affinity_ttl_seconds: int = 1800
     # Most sessions remembered at once; the least recently used go first.
     session_affinity_max_sessions: int = 1000
+    # Most sessions one API key (or one client address, without a key) may
+    # hold, so one client cannot push everyone else's sessions out.
+    session_affinity_max_sessions_per_key: int = 200
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0
@@ -108,6 +121,10 @@ class Settings(BaseSettings):
     hf_models_dir: str = "./hf_models"
     # If set, signs dashboard session cookies; otherwise persisted in app_settings.
     session_secret: str = ""
+    # Without session_secret, a random secret is generated and kept in this
+    # file (mode 0600) to encrypt provider keys and pepper client key hashes.
+    # Empty: secret.key in the directory holding database_path.
+    secret_key_path: str = ""
     # Always mark session cookies Secure (sent over TLS only). Without it they
     # are Secure whenever the request came over HTTPS, directly or through a
     # proxy that sets X-Forwarded-Proto: https.

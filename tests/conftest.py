@@ -19,7 +19,7 @@ from llama_router.dashboard.decisions import router as dash_decisions_router
 from llama_router.dashboard.login_throttle import throttle as login_throttle
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
-from llama_router.llamacpp_api import deps
+from llama_router.llamacpp_api import audio, deps
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.routing_stats import ProviderStats
@@ -46,6 +46,18 @@ def _no_background_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Background endpoint probes would hit every fake upstream; tests that
     exercise them turn them back on."""
     monkeypatch.setattr(settings, "auto_probe_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_voices_cache() -> None:
+    """Each test fetches /v1/audio/voices afresh."""
+    audio._voices_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_secret_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the generated secret (used without a session secret) per test."""
+    monkeypatch.setattr(settings, "secret_key_path", str(tmp_path / "secret.key"))
 
 
 @pytest_asyncio.fixture

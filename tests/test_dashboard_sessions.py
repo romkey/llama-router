@@ -317,6 +317,28 @@ async def test_forged_forwarded_for_does_not_dodge_the_address_limit(
     assert r.status_code == 429
 
 
+async def test_trusted_proxy_forwarded_for_separates_clients(
+    dash_client: DashClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, db = dash_client
+    monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1")
+    await _user(db)
+    for i in range(login_throttle.FREE_ATTEMPTS):
+        r = await client.post(
+            "/login",
+            data={"username": f"guess{i}", "password": "x-wrong-1", "next": "/"},
+            headers={"X-Forwarded-For": "203.0.113.9"},
+        )
+        assert r.status_code == 303
+    # Another client behind the same proxy is not locked out.
+    r = await client.post(
+        "/login",
+        data={"username": "alice", "password": PASSWORD, "next": "/"},
+        headers={"X-Forwarded-For": "198.51.100.7"},
+    )
+    assert r.status_code == 303
+
+
 async def test_unknown_user_costs_a_password_check(
     dash_client: DashClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
