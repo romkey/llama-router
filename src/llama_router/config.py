@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     session_secret: str = ""
     # Set true behind HTTPS so session cookies are only sent over TLS.
     dashboard_cookie_secure: bool = False
+    # Most API keys one dashboard user may issue themselves on /my-keys
+    # (0: no limit). Keys an admin issues on the API Keys tab don't count.
+    max_api_keys_per_user: int = 20
+    # Most chat conversations one dashboard user may keep (0: no limit).
+    max_chat_conversations_per_user: int = 500
     # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.
     oidc_issuer: str = ""
     oidc_client_id: str = ""
