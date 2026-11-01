@@ -47,6 +47,12 @@ def _no_background_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "auto_probe_enabled", False)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_secret_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the generated secret (used without a session secret) per test."""
+    monkeypatch.setattr(settings, "secret_key_path", str(tmp_path / "secret.key"))
+
+
 @pytest_asyncio.fixture
 async def db(tmp_path: Path) -> AsyncIterator[Database]:
     if _TEST_DATABASE_URL:
