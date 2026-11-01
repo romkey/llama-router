@@ -36,6 +36,7 @@ from . import decisions as d
 from .config import settings
 from .database import Database
 from .httpx_errors import describe_httpx_error
+from .limits import upstream_slot
 from .provider_manager import ProviderManager
 from .request_logger import log_request_background
 
@@ -288,6 +289,20 @@ def _note(request: Request, note: str) -> None:
     setattr(request.state, STATE_ATTR, note)
 
 
+async def _decide_in_slot(
+    rt: Router,
+    pm: ProviderManager,
+    db: Database,
+    prefs: RoutingPreferences | None,
+    request: Request,
+    req: d.DecisionRequest,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``_decide`` holding an upstream slot, like any other upstream call."""
+    slot = await upstream_slot(request, prefs)
+    async with slot:
+        return await _decide(rt, pm, db, prefs, request, req)
+
+
 async def _decide(
     rt: Router,
     pm: ProviderManager,
@@ -430,12 +445,12 @@ async def apply_decision_policy(
     try:
         req = d.DecisionRequest(model=policy.model, state=state, questions=questions)
         answers, log = await asyncio.wait_for(
-            _decide(rt, pm, db, prefs, request, req), timeout
+            _decide_in_slot(rt, pm, db, prefs, request, req), timeout
         )
         gates = {name: _noul(answers, GATE_PREFIX + name) for name in policy.gates}
         level = _level(answers) if TIER_ID in questions else None
     except HTTPException:
-        raise  # the key's spend cap
+        raise  # the key's spend cap, or no free upstream slot (429)
     except Exception as exc:
         ms = (time.monotonic() - start) * 1000
         if isinstance(exc, asyncio.TimeoutError):
