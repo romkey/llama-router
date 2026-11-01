@@ -1,50 +1,172 @@
-"""Encryption at rest for provider API keys.
+"""Encryption at rest for provider API keys and other stored secrets.
 
 Keys must be recoverable (they are sent upstream), so they are encrypted with
 Fernet rather than hashed. The encryption key derives from
-``LLAMA_ROUTER_SESSION_SECRET``. Without that setting a fixed development
-key is used, which only obscures the value in the database; set the secret
-in production. Changing the secret makes stored keys undecryptable, and the
-affected providers report that their key must be entered again.
+``LLAMA_ROUTER_SESSION_SECRET``. Without that setting a random secret is
+generated on first use and kept in a file beside the database
+(``LLAMA_ROUTER_SECRET_KEY_PATH``, default ``secret.key`` in the database
+directory: ``/app/data/secret.key`` in the Docker image), readable only by
+the router and never stored in the database itself. Changing the secret, or
+losing that file, makes stored keys undecryptable, and the affected providers
+report that their key must be entered again.
+
+Before that file existed a fixed, public development key was used; values
+encrypted with it still decrypt, and :func:`reencrypt_legacy` moves them to
+the current key.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import logging
+import os
+import secrets
+import threading
+from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import settings
 
-_DEV_SECRET = b"llama-router-provider-key-dev"
+logger = logging.getLogger(__name__)
+
+# The fixed key older releases used without a session secret. Only read
+# so existing values can be decrypted and re-encrypted; never used to encrypt.
+_LEGACY_DEV_SECRET = b"llama-router-provider-key-dev"
 _CONTEXT = b"llama-router provider api key v1\x00"
 
 DEFAULT_HEADER = "Authorization"
+SECRET_FILE_NAME = "secret.key"  # noqa: S105  # a file name, not a secret
+
+_local_secrets: dict[Path, bytes] = {}
+_local_lock = threading.Lock()
 
 
 class ApiKeyUnavailableError(Exception):
     """A stored provider API key could not be decrypted."""
 
 
-def _fernet() -> Fernet:
-    secret = (settings.session_secret or "").strip().encode("utf-8") or _DEV_SECRET
+def secret_key_path() -> Path:
+    """Where the generated secret lives when no session secret is set."""
+    configured = settings.secret_key_path.strip()
+    if configured:
+        return Path(configured).expanduser()
+    db_dir = Path(settings.database_path).expanduser().resolve().parent
+    return db_dir / SECRET_FILE_NAME
+
+
+def _read_secret(path: Path) -> bytes:
+    value = path.read_bytes().strip()
+    if not value:
+        raise RuntimeError(f"secret key file {path} is empty; delete it or fill it")
+    return value
+
+
+def _local_secret() -> bytes:
+    """The generated secret, created (mode 0600) the first time it is needed."""
+    path = secret_key_path()
+    with _local_lock:
+        cached = _local_secrets.get(path)
+        if cached is not None:
+            return cached
+        try:
+            value = _read_secret(path)
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            value = secrets.token_urlsafe(48).encode("ascii")
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                # Another process created it first; use theirs.
+                value = _read_secret(path)
+            else:
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(value + b"\n")
+                logger.warning(
+                    "LLAMA_ROUTER_SESSION_SECRET is not set: generated a secret "
+                    "in %s. Keep that file (and back it up with the database); "
+                    "without it stored provider keys and client API keys stop "
+                    "working.",
+                    path,
+                )
+        _local_secrets[path] = value
+        return value
+
+
+def server_secret() -> bytes:
+    """``LLAMA_ROUTER_SESSION_SECRET``, or the generated secret file's value."""
+    configured = (settings.session_secret or "").strip()
+    if configured:
+        return configured.encode("utf-8")
+    return _local_secret()
+
+
+def _fernet_for(secret: bytes) -> Fernet:
     digest = hashlib.sha256(_CONTEXT + secret).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _fernet() -> Fernet:
+    return _fernet_for(server_secret())
 
 
 def encrypt_api_key(plaintext: str) -> str:
     return _fernet().encrypt(plaintext.encode("utf-8")).decode("ascii")
 
 
-def decrypt_api_key(token: str) -> str:
+def _decrypt(token: str) -> tuple[str, bool]:
+    """Plaintext, and whether only the legacy development key opened it."""
     try:
-        return _fernet().decrypt(token.encode("ascii")).decode("utf-8")
+        return _fernet().decrypt(token.encode("ascii")).decode("utf-8"), False
+    except InvalidToken, ValueError:
+        pass
+    try:
+        legacy = _fernet_for(_LEGACY_DEV_SECRET).decrypt(token.encode("ascii"))
     except (InvalidToken, ValueError) as exc:
         raise ApiKeyUnavailableError(
             "stored API key cannot be decrypted (was LLAMA_ROUTER_SESSION_SECRET "
-            "changed?); enter the key again"
+            "changed, or the secret key file lost?); enter the key again"
         ) from exc
+    return legacy.decode("utf-8"), True
+
+
+def decrypt_api_key(token: str) -> str:
+    return _decrypt(token)[0]
+
+
+def reencrypt_legacy(token: str) -> str | None:
+    """*token* re-encrypted with the current key if it used the legacy one.
+
+    None when it already uses the current key or cannot be decrypted at all.
+    """
+    try:
+        plaintext, legacy = _decrypt(token)
+    except ApiKeyUnavailableError:
+        return None
+    return encrypt_api_key(plaintext) if legacy else None
+
+
+# Marks encrypted values in app_settings; older releases stored them plain.
+ENCRYPTED_SETTING_PREFIX = "enc:v1:"
+
+
+def encrypt_setting(plaintext: str) -> str:
+    """Encrypt a secret for a text column that may also hold plain values."""
+    return ENCRYPTED_SETTING_PREFIX + encrypt_api_key(plaintext)
+
+
+def decrypt_setting(stored: str) -> tuple[str, bool]:
+    """Plaintext of a value from :func:`encrypt_setting`, and whether to re-save it.
+
+    Values without the prefix are plain text from an older release; they are
+    returned as they are, flagged for re-saving encrypted. Raises
+    :class:`ApiKeyUnavailableError` if an encrypted value cannot be decrypted.
+    """
+    if not stored.startswith(ENCRYPTED_SETTING_PREFIX):
+        return stored, bool(stored)
+    plaintext, legacy = _decrypt(stored[len(ENCRYPTED_SETTING_PREFIX) :])
+    return plaintext, legacy
 
 
 def _header_names(name: str | None) -> list[str]:
