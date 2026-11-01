@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -339,6 +340,18 @@ async def test_trusted_proxy_forwarded_for_separates_clients(
     assert r.status_code == 303
 
 
+async def test_parallel_guesses_hit_the_cap(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db)
+    bad = {"username": "alice", "password": "wrong-password", "next": "/"}
+    results = await asyncio.gather(
+        *(client.post("/login", data=bad) for _ in range(12))
+    )
+    codes = [r.status_code for r in results]
+    assert codes.count(303) <= login_throttle.FREE_ATTEMPTS
+    assert codes.count(429) >= 12 - login_throttle.FREE_ATTEMPTS
+
+
 async def test_unknown_user_costs_a_password_check(
     dash_client: DashClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -439,6 +452,21 @@ async def test_cookie_secure_behind_https_proxy(dash_client: DashClient) -> None
     assert "secure" not in r.headers["set-cookie"].lower()
     r = await client.post("/login", data=data, headers={"X-Forwarded-Proto": "https"})
     assert "secure" in r.headers["set-cookie"].lower()
+
+
+async def test_logout_over_https_expires_a_secure_cookie(
+    dash_client: DashClient,
+) -> None:
+    client, db = dash_client
+    await _user(db)
+    token = await _sign_in(client)
+    r = await client.post(
+        "/logout", headers={**_cookie(token), "X-Forwarded-Proto": "https"}
+    )
+    cookie = r.headers["set-cookie"].lower()
+    assert cookie.startswith(f"{AUTH_COOKIE}=")
+    assert "max-age=0" in cookie
+    assert "secure" in cookie
 
 
 async def test_cookie_secure_when_configured(

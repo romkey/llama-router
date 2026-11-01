@@ -552,8 +552,10 @@ async def login_submit(
     if wait > 0:
         logger.warning("Password sign-in for %r from %s throttled", un, ip)
         return _login_throttled(request, next, wait)
+    # Counted as a failure before the password is checked and cleared on
+    # success, so parallel attempts can't all slip in before any is recorded.
+    login_throttle.throttle.failure(keys)
     if un is None:
-        login_throttle.throttle.failure(keys)
         return RedirectResponse(url="/login?error=invalid", status_code=303)
     row = await db.get_dashboard_user_by_username(un)
     if row and row.get("auth_source", "local") == "local":
@@ -563,7 +565,6 @@ async def login_submit(
         await asyncio.to_thread(burn_password_check, password)
         ok = False
     if not ok or row is None:
-        login_throttle.throttle.failure(keys)
         return RedirectResponse(url="/login?error=invalid", status_code=303)
     login_throttle.throttle.success(keys)
     await db.touch_dashboard_user_login(row["id"])
@@ -643,13 +644,26 @@ async def login_oidc_callback(request: Request):
         level = logging.WARNING if exc.code in ("provider", "token") else logging.INFO
         logger.log(level, "OIDC sign-in failed: %s", exc)
         resp = RedirectResponse(url=f"/login?error=oidc_{exc.code}", status_code=303)
-        resp.delete_cookie(oidc.STATE_COOKIE, path="/login/oidc")
+        _clear_cookie(request, resp, oidc.STATE_COOKIE, path="/login/oidc")
         return resp
     invalidate_dashboard_user_count_cache()
     resp = RedirectResponse(url=_safe_next_url(next_url), status_code=303)
-    resp.delete_cookie(oidc.STATE_COOKIE, path="/login/oidc")
+    _clear_cookie(request, resp, oidc.STATE_COOKIE, path="/login/oidc")
     _set_session_cookie(request, resp, user, secret)
     return resp
+
+
+def _clear_cookie(
+    request: Request, resp: RedirectResponse, name: str, path: str = "/"
+) -> None:
+    """Expire a cookie with the attributes it was set with.
+
+    Browsers may ignore a deletion that lacks ``Secure`` for a cookie that
+    was set Secure, which would leave the session in place.
+    """
+    resp.delete_cookie(
+        name, path=path, secure=_cookie_secure(request), httponly=True, samesite="lax"
+    )
 
 
 @router.post("/logout")
@@ -666,7 +680,7 @@ async def logout_post(request: Request):
         except oidc.OIDCError as exc:
             logger.warning("OIDC logout at the provider skipped: %s", exc)
     resp = RedirectResponse(url=dest, status_code=303)
-    resp.delete_cookie(AUTH_COOKIE)
+    _clear_cookie(request, resp, AUTH_COOKIE)
     return resp
 
 
@@ -833,7 +847,7 @@ async def users_sign_out(request: Request, user_id: int):
     resp = RedirectResponse(url="/users?signed_out=1", status_code=303)
     if user is not None and user.id == user_id:
         resp = RedirectResponse(url="/login", status_code=303)
-        resp.delete_cookie(AUTH_COOKIE)
+        _clear_cookie(request, resp, AUTH_COOKIE)
     return resp
 
 
