@@ -6,7 +6,8 @@ import logging
 
 import pytest
 
-from llama_router.__main__ import _warn_if_anonymous
+from llama_router.__main__ import _log_oidc_config, _warn_if_anonymous
+from llama_router.config import settings
 from llama_router.dashboard.auth_core import hash_password, verify_password
 from llama_router.dashboard.initial_admin import ensure_initial_admin
 from llama_router.database import Database
@@ -91,3 +92,22 @@ async def test_other_insert_errors_are_raised(
     monkeypatch.setattr(db, "create_dashboard_user", broken)
     with pytest.raises(RuntimeError):
         await ensure_initial_admin(db, "root", "a-long-password")
+
+
+@pytest.mark.parametrize(("admin_group", "disabled"), [("admins", True), ("", False)])
+def test_oidc_only_startup_log_matches_password_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    admin_group: str,
+    disabled: bool,
+) -> None:
+    """OIDC_ONLY without an admin group keeps password sign-in; the log says so."""
+    monkeypatch.setattr(settings, "oidc_issuer", "https://idp.example.org")
+    monkeypatch.setattr(settings, "oidc_client_id", "router")
+    monkeypatch.setattr(settings, "oidc_client_secret", "secret")
+    monkeypatch.setattr(settings, "oidc_admin_group", admin_group)
+    monkeypatch.setattr(settings, "oidc_only", True)
+    with caplog.at_level(logging.INFO):
+        _log_oidc_config()
+    assert ("password sign-in disabled" in caplog.text) is disabled
+    assert ("password sign-in stays enabled" in caplog.text) is not disabled

@@ -101,7 +101,7 @@ def _log_oidc_config() -> None:
         cfg.issuer,
         callback,
         repr(cfg.admin_group) if cfg.admin_group else "(none)",
-        ", password sign-in disabled" if cfg.only else "",
+        ", password sign-in disabled" if not cfg.password_login_enabled else "",
     )
 
 
