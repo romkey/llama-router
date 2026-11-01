@@ -27,6 +27,26 @@ described in their git tags and GitHub Releases.
   `LLAMA_ROUTER_DASHBOARD_TRUSTED_ORIGINS` lists exceptions.
 - **Secure cookies behind HTTPS proxies.** Session cookies are marked Secure
   whenever the request came over HTTPS or with `X-Forwarded-Proto: https`.
+- **Hub headers from clients are ignored.** `X-Llama-Router-Via` and
+  `X-Llama-Router-Provider` now count only on jobs relayed by the router's
+  own worker link, proven by the per-process token in `X-Llama-Router-Relay`
+  (sent only to the default upstreams, accepted only from a loopback
+  address). One middleware checks it for both uses (hub narrowing and
+  keyless relayed jobs) and strips all three headers from every request. A job the hub sends to one provider still obeys
+  the worker key's model pins.
+- **Worker links are bounded.** A worker refuses (503) new jobs while more
+  than four times its concurrency are pending, and caps request bodies held
+  at once (`LLAMA_ROUTER_WORKER_MAX_BODY_BYTES_IN_FLIGHT`, 256 MiB). The hub
+  buffers at most `LLAMA_ROUTER_WORKER_RESPONSE_BUFFER_BYTES` (16 MiB) per
+  job, stops reading from the worker while a client falls behind and fails a
+  job whose client stops reading for 30 seconds, and cuts off responses over
+  `LLAMA_ROUTER_WORKER_MAX_RESPONSE_BYTES` (1 GiB).
+- **Worker provider lists are bounded.** The hub applies a worker's catalog
+  at most every `LLAMA_ROUTER_WORKER_CATALOG_MIN_INTERVAL_SECONDS` (5),
+  using only the latest, caps shared providers per worker at
+  `LLAMA_ROUTER_WORKER_MAX_SHARED_PROVIDERS` (256), and deletes providers a
+  worker stopped sharing after `LLAMA_ROUTER_WORKER_UNSHARED_PURGE_HOURS`
+  (24; `0` keeps them), or at once when they would go over the cap.
 - **Request limits.** Request bodies over `LLAMA_ROUTER_MAX_BODY_BYTES`
   (10 MiB; `LLAMA_ROUTER_MAX_MEDIA_BODY_BYTES`, 50 MiB, for `/v1/audio/` and
   `/v1/images/`) get 413 on the API and dashboard ports, including chunked

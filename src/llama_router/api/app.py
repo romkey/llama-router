@@ -24,6 +24,7 @@ from ..router_identity import LoopGuardMiddleware
 from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
 from ..worker_link.protocol import WS_PATH
+from ..worker_link.relay import HubRelayMiddleware
 from . import deps
 from .chat import router as chat_router
 from .embeddings import router as embeddings_router
@@ -38,6 +39,7 @@ app = FastAPI(
 app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(HubRelayMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 
 

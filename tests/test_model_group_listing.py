@@ -27,6 +27,7 @@ from llama_router.models import (
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.worker_link.protocol import HUB_HEADER, HUB_HEADER_VALUE
+from llama_router.worker_link.relay import RELAY_HEADER, relay_token
 
 FAST = "http://fast.test:8080"
 SLOW = "http://slow.test:8080"
@@ -112,7 +113,7 @@ async def test_tags_and_v1_models_list_usable_groups(
 async def test_hub_lists_a_group_only_through_shared_providers(
     setup: tuple[Router, Provider, Provider], db: Database
 ) -> None:
-    hub = {HUB_HEADER: HUB_HEADER_VALUE}
+    hub = {HUB_HEADER: HUB_HEADER_VALUE, RELAY_HEADER: relay_token()}
     async with _client(ollama_app) as c:
         tags = (await c.get("/api/tags", headers=hub)).json()["models"]
     assert [m["name"] for m in tags] == ["big-coder", "coding"]

@@ -23,14 +23,16 @@ import httpx
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from .. import router_identity
+from ..config import settings
 from . import protocol as p
 
 logger = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "lrw_"  # noqa: S105  # public prefix, not a secret
 _HELLO_TIMEOUT = 15.0
-# Providers one worker may share individually.
-_MAX_CATALOG = 256
+# A job whose response buffer stays full this long (its client is not
+# reading) is failed, so one slow client cannot stall the whole socket.
+_STALL_TIMEOUT = 30.0
 
 
 def generate_worker_token() -> str:
@@ -54,7 +56,7 @@ def _bearer(websocket: WebSocket) -> str:
 
 
 class _Pending:
-    __slots__ = ("finished", "id", "queue", "started")
+    __slots__ = ("buffered", "finished", "id", "queue", "received", "room", "started")
 
     def __init__(self, req_id: int) -> None:
         self.id = req_id
@@ -62,6 +64,30 @@ class _Pending:
         self.started: asyncio.Future[tuple[int, list[list[str]]]] = loop.create_future()
         self.queue: asyncio.Queue[bytes | BaseException | None] = asyncio.Queue()
         self.finished = False
+        # Body bytes queued and not yet read, and received in all.
+        self.buffered = 0
+        self.received = 0
+        # Set while the queue has room for more body bytes.
+        self.room = asyncio.Event()
+        self.room.set()
+
+    def take(self, item: bytes) -> None:
+        """The reader took *item* off the queue."""
+        self.buffered -= len(item)
+        if self.buffered < settings.worker_response_buffer_bytes:
+            self.room.set()
+
+    def fail(self, exc: BaseException) -> None:
+        """End the response with *exc*, dropping whatever is still queued."""
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        self.buffered = 0
+        self.room.set()
+        if not self.started.done():
+            self.started.set_exception(exc)
+            self.started.exception()
+        else:
+            self.queue.put_nowait(exc)
 
 
 def _error_from_worker(kind: str, message: str, request: httpx.Request) -> Exception:
@@ -160,6 +186,7 @@ class WorkerConnection:
         self._requests.pop(req_id, None)
         if pend is not None and not pend.finished:
             pend.finished = True
+            pend.room.set()
             self._slots.release()
 
     async def cancel(self, req_id: int) -> None:
@@ -280,7 +307,7 @@ class WorkerConnection:
             return
         entries: list[dict[str, Any]] = []
         seen: set[int] = set()
-        for item in raw[:_MAX_CATALOG]:
+        for item in raw[: max(0, settings.worker_max_shared_providers)]:
             if not isinstance(item, dict):
                 continue
             rid, name = item.get("id"), item.get("name")
@@ -301,16 +328,47 @@ class WorkerConnection:
         if self._on_catalog is not None:
             self._on_catalog(self)
 
-    def _on_bytes(self, data: bytes) -> None:
+    async def _on_bytes(self, data: bytes) -> None:
         kind, req_id, payload = p.decode_binary(data)
         pend = self._pending.get(req_id)
         if pend is None:
             return
         if kind == p.RESP_BODY:
+            pend.received += len(payload)
+            if pend.received > settings.worker_max_response_bytes:
+                await self._abort(
+                    pend,
+                    f"response from worker {self.name!r} is over "
+                    f"{settings.worker_max_response_bytes} bytes",
+                )
+                return
+            if pend.buffered >= settings.worker_response_buffer_bytes:
+                # Backpressure: stop reading from the socket until the client
+                # catches up (TCP slows the worker down meanwhile).
+                pend.room.clear()
+                try:
+                    await asyncio.wait_for(pend.room.wait(), _STALL_TIMEOUT)
+                except TimeoutError:
+                    await self._abort(
+                        pend, "client stopped reading the worker's response"
+                    )
+                    return
+                if pend.finished:
+                    return
+            pend.buffered += len(payload)
             pend.queue.put_nowait(payload)
         elif kind == p.RESP_END:
             pend.queue.put_nowait(None)
             self._finish(req_id)
+
+    async def _abort(self, pend: _Pending, reason: str) -> None:
+        """Fail one response and tell the worker to stop sending it."""
+        logger.warning("Worker %s: %s", self.name, reason)
+        request = self._requests.get(pend.id) or httpx.Request(
+            "GET", "worker://unknown"
+        )
+        pend.fail(httpx.RemoteProtocolError(reason, request=request))
+        await self.cancel(pend.id)
 
     async def read_loop(self) -> None:
         while True:
@@ -327,7 +385,7 @@ class WorkerConnection:
                     )
             elif message.get("bytes") is not None:
                 try:
-                    self._on_bytes(message["bytes"])
+                    await self._on_bytes(message["bytes"])
                 except ValueError as exc:
                     logger.warning("Worker %s sent bad data frame: %s", self.name, exc)
 
@@ -383,6 +441,8 @@ class _WorkerStream(httpx.AsyncByteStream):
             if item is None:
                 self._eof = True
                 return
+            if isinstance(item, bytes):
+                self._pend.take(item)
             if isinstance(item, BaseException):
                 self._eof = True
                 if isinstance(item, httpx.HTTPError):
@@ -438,6 +498,12 @@ class WorkerHub:
         # Jobs dispatched per provider since start-up, counted as they are
         # sent so the total never dips while a socket is being replaced.
         self._jobs: dict[int, int] = {}
+        # Catalog syncs, per worker provider: the connection whose latest
+        # catalog still has to be applied, the task applying them, and when
+        # the last one started.
+        self._catalog_due: dict[int, WorkerConnection] = {}
+        self._catalog_tasks: dict[int, asyncio.Task[None]] = {}
+        self._catalog_at: dict[int, float] = {}
 
     def set_callbacks(
         self,
@@ -505,8 +571,41 @@ class WorkerHub:
             await conn.close(1001, "hub shutting down")
 
     def _catalog_received(self, conn: WorkerConnection) -> None:
-        if self._on_catalog is not None:
-            self._spawn(self._on_catalog(conn))
+        """Apply *conn*'s catalog soon: at most once per
+        ``worker_catalog_min_interval_seconds`` per worker, and only the
+        latest of the catalogs that arrive in between."""
+        if self._on_catalog is None:
+            return
+        pid = conn.provider_id
+        self._catalog_due[pid] = conn
+        task = self._catalog_tasks.get(pid)
+        if task is None or task.done():
+            task = asyncio.ensure_future(self._apply_catalogs(pid))
+            self._catalog_tasks[pid] = task
+            self._bg.add(task)
+            task.add_done_callback(self._bg.discard)
+
+    async def _apply_catalogs(self, pid: int) -> None:
+        while pid in self._catalog_due:
+            interval = max(0.0, settings.worker_catalog_min_interval_seconds)
+            last = self._catalog_at.get(pid)
+            if last is not None:
+                wait = last + interval - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            # The newest catalog, which may have come in while we waited.
+            conn = self._catalog_due.pop(pid)
+            self._catalog_at[pid] = time.monotonic()
+            if conn.closed or self._on_catalog is None:
+                continue
+            try:
+                await self._on_catalog(conn)
+            except Exception:
+                logger.exception("Worker %s: provider list sync failed", conn.name)
+        # Checked and dropped with no await in between, so a catalog that
+        # arrives later starts a new task.
+        if self._catalog_tasks.get(pid) is asyncio.current_task():
+            del self._catalog_tasks[pid]
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)

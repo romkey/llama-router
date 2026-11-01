@@ -135,6 +135,22 @@ class Settings(BaseSettings):
     # Sent as API-KEY to the local upstream when it requires one.
     worker_upstream_api_key: str = ""
     worker_max_concurrency: int = 4
+    # Worker: request bodies buffered at once across all jobs from the hub.
+    # Jobs whose bodies would go over it are refused with 503.
+    worker_max_body_bytes_in_flight: int = 256 * 1024 * 1024
+    # Hub: response bytes held per job waiting for the client to read them.
+    # When full the hub stops reading from that worker until there is room;
+    # a job that stays full for 30 seconds is failed.
+    worker_response_buffer_bytes: int = 16 * 1024 * 1024
+    # Hub: largest response one job may send back from a worker.
+    worker_max_response_bytes: int = 1024 * 1024 * 1024
+    # Hub: providers one worker may share individually.
+    worker_max_shared_providers: int = 256
+    # Hub: provider lists from one worker are applied at most this often.
+    worker_catalog_min_interval_seconds: float = 5.0
+    # Hub: providers a worker stopped sharing are deleted after this long
+    # (0 keeps them until removed by hand).
+    worker_unshared_purge_hours: float = 24.0
     # Allow the hub to pull and delete models on this worker.
     worker_allow_admin: bool = False
     # How the hub sees this worker's providers: "combined" (one provider) or

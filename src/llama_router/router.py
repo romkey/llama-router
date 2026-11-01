@@ -392,6 +392,7 @@ class Router:
                 preferences.allow_fallback,
                 mode,
                 locality,
+                pins,
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
@@ -870,10 +871,24 @@ class Router:
         allow_fallback: bool,
         mode: str,
         locality: str | None,
+        pins: dict[str, int] | None = None,
     ) -> RouteResult | None:
-        """Route to the one provider the hub asked for, or nowhere."""
+        """Route to the one provider the hub asked for, or nowhere.
+
+        The worker's API key still has its say: a model it pins to another
+        provider is not served by this one.
+        """
         chain = table.chain(model_name) if allow_fallback else (model_name,)
         for candidate_model in chain:
+            pinned = pins.get(candidate_model) if pins else None
+            if pinned is not None and pinned != pid:
+                logger.warning(
+                    "Hub asked for provider %d, but the key pins %s to provider %d",
+                    pid,
+                    candidate_model,
+                    pinned,
+                )
+                continue
             c = self._pinned(table, candidate_model, path, pid, mode)
             if c is None or not _eligible(c.provider, locality, hub_only=True):
                 continue

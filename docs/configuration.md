@@ -139,9 +139,15 @@ together pins the link and locks the dashboard form.
 | `WORKER_OLLAMA_URL` | *(this router)* | Ollama API the worker relays jobs to; `none` disables Ollama jobs |
 | `WORKER_LLAMACPP_URL` | *(this router)* | OpenAI-style API the worker relays jobs to; `none` disables those jobs |
 | `WORKER_UPSTREAM_API_KEY` | *(empty)* | `API-KEY` the worker sends to its upstream when that requires one. Not needed for the default upstreams (this router's own ports): the worker proves to them with a per-process token that it relayed the job |
-| `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest |
+| `WORKER_MAX_CONCURRENCY` | `4` | Jobs the worker runs at once; the hub queues the rest. The worker refuses (503) new jobs while more than four times this many are pending |
+| `WORKER_MAX_BODY_BYTES_IN_FLIGHT` | `268435456` (256 MiB) | Request bodies the worker buffers at once across all jobs; a job that would go over is refused with 503 |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
 | `WORKER_EXPOSE` | *(dashboard; `combined`)* | `combined`: the hub sees this worker as one provider. `individual`: each shared provider on its own |
+| `WORKER_RESPONSE_BUFFER_BYTES` | `16777216` (16 MiB) | Hub: response bytes held per job for a slow client. When full the hub stops reading from that worker; a job still full after 30 s is failed |
+| `WORKER_MAX_RESPONSE_BYTES` | `1073741824` (1 GiB) | Hub: largest response one job may send back; a larger one is cut off with an error |
+| `WORKER_MAX_SHARED_PROVIDERS` | `256` | Hub: providers one worker may share individually, counting ones it stopped sharing that are not yet deleted |
+| `WORKER_CATALOG_MIN_INTERVAL_SECONDS` | `5` | Hub: a worker's provider list is applied at most this often; only the latest list in between is used |
+| `WORKER_UNSHARED_PURGE_HOURS` | `24` | Hub: providers a worker stopped sharing are deleted after this long; `0` keeps them |
 
 ## Cloud providers
 

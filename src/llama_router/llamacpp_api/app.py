@@ -14,6 +14,7 @@ from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
 from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
+from ..worker_link.relay import HubRelayMiddleware
 from . import deps
 from .audio import router as audio_router
 from .chat import router as chat_router
@@ -32,6 +33,7 @@ app = FastAPI(
 app.add_middleware(SpendReservationMiddleware)
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(HubRelayMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 
 
