@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request
 from ..router_identity import LoopGuardMiddleware
 from ..timing import RequestTimingMiddleware
@@ -25,6 +26,7 @@ from .responses import router as responses_router
 app = FastAPI(title="llama-router OpenAI API")
 app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.get("/health")

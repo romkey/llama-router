@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ..auth import from_hub, hub_provider, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
+from ..limits import upstream_slot
 from ..request_logger import StreamLogger, log_request_background, stream_response
 from ..v1_client import get_v1_client
 from . import deps
@@ -22,6 +23,8 @@ router = APIRouter()
 @router.post("/v1/audio/speech")
 async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     body = await request.json()
     model = body.get("model")
     if not model:
@@ -29,8 +32,6 @@ async def audio_speech(request: Request) -> Response:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
     result = await rt.route(model, request.url.path, prefs)
     if not result:
@@ -48,9 +49,11 @@ async def audio_speech(request: Request) -> Response:
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
 
+    slot = await upstream_slot(request, prefs, stream=True)
+
     async def generate() -> AsyncIterator[bytes]:
-        async with pm.acquire_provider(provider_id):
-            async for chunk in client.audio_speech(body):
+        async with slot, pm.acquire_provider(provider_id):
+            async for chunk in slot.stream(client.audio_speech(body)):
                 yield chunk
 
     response_format = body.get("response_format", "mp3")
@@ -82,6 +85,8 @@ async def audio_speech(request: Request) -> Response:
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(request: Request) -> Response:
     """Speech-to-text: multipart audio file in, JSON transcript out."""
+    db = deps.get_db()
+    prefs = await routing_preferences_from_request(db, request)
     content_type = request.headers.get("content-type", "")
     raw_body = await request.body()
     log_body = {"audio": True, "attachments": True, "content_type": content_type}
@@ -93,8 +98,6 @@ async def audio_transcriptions(request: Request) -> Response:
 
     rt = deps.get_router()
     pm = deps.get_pm()
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
 
     result = await rt.route(model, request.url.path, prefs)
     if not result:
@@ -107,8 +110,9 @@ async def audio_transcriptions(request: Request) -> Response:
     provider_id = provider.require_id()
     client = get_v1_client(pm, provider_id)
     start = time.monotonic()
+    slot = await upstream_slot(request, prefs)
     try:
-        async with pm.acquire_provider(provider_id):
+        async with slot, pm.acquire_provider(provider_id):
             resp = await client.audio_transcriptions(raw_body, content_type)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

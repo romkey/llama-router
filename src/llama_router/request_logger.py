@@ -18,6 +18,7 @@ from .background import spawn
 from .database import Database
 from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
+from .limits import DeadlineExceeded
 from .models import Provider, RequestLog
 from .pricing import Price
 from .routing_stats import ProviderStats
@@ -532,6 +533,10 @@ async def stream_response(logged: StreamLogger, media_type: str) -> Response:
             yield first
             async for chunk in stream:
                 yield chunk
+        except DeadlineExceeded:
+            # Already logged as the request's error; end the body rather than
+            # abort the connection.
+            logger.warning("Stream ended at the request deadline")
         finally:
             await stream.aclose()
 

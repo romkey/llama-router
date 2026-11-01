@@ -56,6 +56,27 @@ class Settings(BaseSettings):
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0
+    # Request limits (see limits.py). For the sizes and counts, 0 means no limit.
+    max_body_bytes: int = 10 * 1024 * 1024
+    """Largest request body on the API and dashboard ports; larger gets 413."""
+    max_media_body_bytes: int = 50 * 1024 * 1024
+    """Largest request body for the /v1/audio/ and /v1/images/ endpoints."""
+    max_n: int = 4
+    """``n`` and ``best_of`` on chat and completion requests are capped at this."""
+    max_tokens_cap: int = 32768
+    """Output-token fields (``max_tokens``, ``max_completion_tokens``,
+    ``max_output_tokens``, Ollama's ``num_predict``) are capped at this."""
+    upstream_max_concurrency: int = 256
+    """Upstream calls in flight at once across all clients."""
+    upstream_max_concurrency_per_key: int = 32
+    """Upstream calls in flight at once for one API key."""
+    upstream_queue_timeout_seconds: float = 30.0
+    """How long a request waits for a free upstream slot before 429."""
+    max_streams_per_key: int = 16
+    """Streamed responses open at once for one API key; more get 429."""
+    request_deadline_seconds: float = 1800.0
+    """A proxied request, streamed or not, must finish within this long of
+    arriving: 504 before the response starts, or the stream is ended."""
     # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
     # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
     # needs a dashboard sign-in like the rest of the dashboard.

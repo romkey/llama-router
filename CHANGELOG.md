@@ -7,6 +7,19 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Security
+
+- **Request limits.** Request bodies over `LLAMA_ROUTER_MAX_BODY_BYTES`
+  (10 MiB; `LLAMA_ROUTER_MAX_MEDIA_BODY_BYTES`, 50 MiB, for `/v1/audio/` and
+  `/v1/images/`) get 413 on the API and dashboard ports, including chunked
+  bodies. `n`/`best_of` are capped at 4 and output-token fields at
+  `LLAMA_ROUTER_MAX_TOKENS_CAP` (32768). Upstream calls are limited globally
+  (256) and per API key (32); a request waits up to 30 s for a slot, then gets
+  429. Each key may hold 16 streams at once. Every proxied request must finish
+  within `LLAMA_ROUTER_REQUEST_DEADLINE_SECONDS` (1800 s): 504, or a stream is
+  ended. The API key is now checked before the body is parsed, so a request
+  with a bad key and a bad body gets 401. See docs/configuration.md.
+
 ### Fixed
 
 - **Readable error rows in the request log.** Error highlights use soft burgundy

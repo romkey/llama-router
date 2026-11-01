@@ -67,6 +67,23 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_AFFINITY_MAX_SESSIONS` | `1000` | Most sessions remembered at once; the least recently used are dropped first |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take; after that the request is routed as asked |
 
+## Request limits
+
+Limits on what one client can make the router do. For sizes and counts, `0`
+turns the limit off.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `MAX_BODY_BYTES` | `10485760` (10 MiB) | Largest request body on the API and dashboard ports. A larger one gets 413, whether declared in `Content-Length` or sent chunked |
+| `MAX_MEDIA_BODY_BYTES` | `52428800` (50 MiB) | The same for `/v1/audio/` and `/v1/images/` |
+| `MAX_N` | `4` | `n` and `best_of` on chat and completion requests are lowered to this |
+| `MAX_TOKENS_CAP` | `32768` | `max_tokens`, `max_completion_tokens`, `max_output_tokens` and Ollama's `options.num_predict` are lowered to this (a negative, unlimited `num_predict` too). Absent fields are left absent |
+| `UPSTREAM_MAX_CONCURRENCY` | `256` | Upstream calls in flight at once across all clients |
+| `UPSTREAM_MAX_CONCURRENCY_PER_KEY` | `32` | Upstream calls in flight at once for one API key. Requests without a key share only the global limit |
+| `UPSTREAM_QUEUE_TIMEOUT_SECONDS` | `30` | When those are full, a request waits this long (never past its deadline) for a slot, then gets 429 with `Retry-After` |
+| `MAX_STREAMS_PER_KEY` | `16` | Streamed responses open at once for one API key; one more gets 429 straight away |
+| `REQUEST_DEADLINE_SECONDS` | `1800` | A proxied request must finish this long after it arrives. Before the response starts it gets 504; a stream already under way is ended |
+
 ## Benchmarks
 
 The dashboard's **Auto-benchmark** card overrides the `AUTO_BENCHMARK_*`

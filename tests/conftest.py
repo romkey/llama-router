@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import httpx
@@ -18,6 +18,7 @@ from llama_router.dashboard.app import app as dashboard_app
 from llama_router.dashboard.decisions import router as dash_decisions_router
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
+from llama_router.limits import limiter
 from llama_router.llamacpp_api import deps
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
@@ -45,6 +46,14 @@ def _no_background_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Background endpoint probes would hit every fake upstream; tests that
     exercise them turn them back on."""
     monkeypatch.setattr(settings, "auto_probe_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_upstream_limiter() -> Iterator[None]:
+    """Each test gets new upstream semaphores (they bind to one event loop)."""
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 @pytest_asyncio.fixture

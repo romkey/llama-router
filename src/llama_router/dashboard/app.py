@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request
 from . import deps
 from .chat import router as chat_router
@@ -20,6 +21,7 @@ from .routes import router
 
 app = FastAPI(title="llama-router Dashboard")
 app.add_middleware(DashboardAuthMiddleware)
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.exception_handler(StarletteHTTPException)
