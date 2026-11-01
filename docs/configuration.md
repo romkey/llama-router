@@ -40,6 +40,8 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 |----------|---------|---------|
 | `SESSION_SECRET` | *(empty)* | Secret for signing session cookies. Empty: a random one is generated and kept in the database |
 | `DASHBOARD_COOKIE_SECURE` | `false` | Send session cookies over HTTPS only. Set `true` behind TLS |
+| `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
+| `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `OIDC_ISSUER` | *(empty)* | OpenID Connect issuer URL. Empty turns single sign-on off |
 | `OIDC_CLIENT_ID` | *(empty)* | Client ID |
 | `OIDC_CLIENT_SECRET` | *(empty)* | Client secret |

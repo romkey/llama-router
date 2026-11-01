@@ -33,7 +33,7 @@ from ..cloud_presets import PRESETS, get_preset
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
 from ..models import ProviderProtocol, RequestLog
-from ..probe import FAMILY_LABELS, probe_url
+from ..probe import FAMILY_LABELS, BlockedAddressError, probe_url
 from ..provider_manager import preset_settings
 from ..provider_secrets import format_extra_headers, parse_extra_headers
 from ..router import (
@@ -893,7 +893,9 @@ async def dashboard(request: Request):
             request,
             {
                 "providers": infos,
-                "providers_seed": [_provider_status_payload(i) for i in infos],
+                "providers_seed": [
+                    _provider_status_payload(i, admin=not read_only) for i in infos
+                ],
                 "cloud_presets": [p.to_dict() for p in PRESETS],
                 "hf_models_dir": settings.hf_models_dir,
                 "models": all_models,
@@ -948,8 +950,23 @@ async def dashboard(request: Request):
     )
 
 
-def _provider_status_payload(info: Any) -> dict[str, Any]:
-    """One provider as the dashboard sees it; shared by the page and /api/status."""
+# Shown instead of a provider address to users who are not administrators:
+# addresses reveal internal hosts and ports.
+REDACTED_ADDRESS = "(hidden)"
+
+
+def _redacted_worker(worker: dict[str, Any] | None) -> dict[str, Any] | None:
+    if worker is None:
+        return None
+    return {k: v for k, v in worker.items() if k != "remote_addr"}
+
+
+def _provider_status_payload(info: Any, *, admin: bool = True) -> dict[str, Any]:
+    """One provider as the dashboard sees it; shared by the page and /api/status.
+
+    For non-admins (*admin* false) address URLs and a worker's remote address
+    are hidden.
+    """
     return {
         "id": info.provider.id,
         "name": info.provider.name,
@@ -963,11 +980,11 @@ def _provider_status_payload(info: Any) -> dict[str, Any]:
         "model_names": sorted({m.name for m in info.models}),
         "active_requests": info.active_requests,
         "hot_models": info.hot_models,
-        "worker": info.worker,
+        "worker": info.worker if admin else _redacted_worker(info.worker),
         "addresses": [
             {
                 "id": a.id,
-                "url": a.url,
+                "url": a.url if admin else REDACTED_ADDRESS,
                 "is_live": a.is_live,
                 "is_preferred": a.is_preferred,
             }
@@ -992,7 +1009,9 @@ async def api_status(request: Request):
     all_models = await db.list_all_models()
     log_total = await db.count_request_logs() if admin_payload else 0
 
-    providers_data = [_provider_status_payload(info) for info in infos]
+    providers_data = [
+        _provider_status_payload(info, admin=admin_payload) for info in infos
+    ]
 
     active_pulls = {
         pid: {
@@ -1423,19 +1442,46 @@ async def api_list_key_pins(key_id: int):
     return JSONResponse({"pins": pins})
 
 
+PIN_MODEL_NAME_MAX = 255
+
+
+def validate_pin_model_name(raw: object) -> str:
+    """Return a pinned route's model name, or raise 400.
+
+    The name is shown in the dashboard and used as a path segment, so it must
+    be printable (no control characters) and at most 255 characters.
+    """
+    name = str(raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="model_name is required")
+    if len(name) > PIN_MODEL_NAME_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model_name must be at most {PIN_MODEL_NAME_MAX} characters",
+        )
+    if not name.isprintable():
+        raise HTTPException(status_code=400, detail="model_name must be printable text")
+    return name
+
+
 @router.post("/api/keys/{key_id}/pins")
 async def api_set_key_pin(key_id: int, request: Request):
     db = deps.get_db()
     if not await _api_key_exists(db, key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     body = await request.json()
-    model_name = str(body.get("model_name") or "").strip()
     provider_id_raw = body.get("provider_id")
-    if not model_name or provider_id_raw is None:
+    if not body.get("model_name") or provider_id_raw is None:
         raise HTTPException(
             status_code=400, detail="model_name and provider_id are required"
         )
-    provider_id = int(provider_id_raw)
+    model_name = validate_pin_model_name(body.get("model_name"))
+    try:
+        provider_id = int(provider_id_raw)
+    except TypeError, ValueError:
+        raise HTTPException(
+            status_code=400, detail="provider_id must be an integer"
+        ) from None
     provider = await db.get_provider(provider_id)
     if provider is None:
         raise HTTPException(status_code=404, detail="Provider not found")
@@ -1640,6 +1686,8 @@ async def add_provider(
             api_key_header=api_key_header or None,
             provider_settings=settings_ or None,
         )
+    except BlockedAddressError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("add_provider failed")
         raise HTTPException(status_code=400, detail="Could not add provider") from exc
@@ -1945,6 +1993,8 @@ async def add_address(
     pm = deps.get_pm()
     try:
         await pm.add_address(provider_id, url, is_preferred=bool(is_preferred))
+    except BlockedAddressError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("add_address failed (provider_id=%s)", provider_id)
         raise HTTPException(status_code=400, detail="Could not add address") from exc
@@ -1974,6 +2024,8 @@ async def save_provider_address(
             await pm.update_address(aid, url, is_preferred=pref)
     except HTTPException:
         raise
+    except BlockedAddressError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid address") from exc
     except Exception as exc:
@@ -1996,6 +2048,8 @@ async def edit_address(
     pm = deps.get_pm()
     try:
         await pm.update_address(address_id, url, is_preferred=bool(is_preferred))
+    except BlockedAddressError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception(
             "update_address failed (provider_id=%s address_id=%s)",
@@ -2103,8 +2157,11 @@ async def api_pull_model(request: Request):
 
 
 @router.get("/api/hf/env")
-async def api_hf_env():
-    """Hugging Face settings the hf CLI will see (secrets masked)."""
+async def api_hf_env(request: Request):
+    """Hugging Face settings the hf CLI will see (secrets masked). Admins only:
+    it shows the router's environment (proxies, paths)."""
+    if not _is_admin(request):
+        raise HTTPException(status_code=403, detail="Forbidden")
     try:
         hf_download.hf_executable()
         available = True
