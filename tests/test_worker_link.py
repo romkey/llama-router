@@ -1555,3 +1555,25 @@ async def test_unshared_providers_beyond_the_cap_go_at_once(link, monkeypatch) -
     await pm._on_worker_catalog(conn)
     by_rid = {c.worker_remote_id for c in (await _children(link)).values()}
     assert by_rid == {7, 9}
+
+
+async def test_purge_timer_survives_a_reconnect(monkeypatch) -> None:
+    """The timer syncs through whichever socket is current when it fires,
+    not the one that scheduled it."""
+    pm = ProviderManager(None)  # type: ignore[arg-type]
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.00001)
+    old, new = _hub_conn(), _hub_conn()
+    synced: list[Any] = []
+
+    async def on_catalog(conn) -> None:
+        synced.append(conn)
+
+    monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
+    pm.worker_hub._conns[1] = old
+    pm._schedule_purge(old)
+    # The worker reconnects before the timer fires; the new socket's sync
+    # finds a timer already running and leaves it be.
+    pm.worker_hub._conns[1] = new
+    pm._schedule_purge(new)
+    await _wait_for(lambda: synced)
+    assert synced == [new]

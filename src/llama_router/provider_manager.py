@@ -1996,8 +1996,9 @@ class ProviderManager:
         return keep, purge
 
     def _schedule_purge(self, conn: WorkerConnection) -> None:
-        """Sync *conn*'s catalog again once its unshared providers are due
-        for deletion. One timer per worker."""
+        """Sync the worker's catalog again once its unshared providers are
+        due for deletion. One timer per worker; it uses whichever socket is
+        current when it fires, so a reconnect in between does not lose it."""
         grace = settings.worker_unshared_purge_hours * 3600.0
         parent_id = conn.provider_id
         timer = self._purge_timers.get(parent_id)
@@ -2008,8 +2009,9 @@ class ProviderManager:
             await asyncio.sleep(grace + 1.0)
             if self._purge_timers.get(parent_id) is asyncio.current_task():
                 del self._purge_timers[parent_id]
-            if self._is_current_worker(conn):
-                await self._on_worker_catalog(conn)
+            current = self.worker_hub.get(parent_id)
+            if current is not None and self._is_current_worker(current):
+                await self._on_worker_catalog(current)
 
         self._purge_timers[parent_id] = asyncio.create_task(
             later(), name=f"purge-unshared-{parent_id}"

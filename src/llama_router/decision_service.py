@@ -4,8 +4,9 @@
 distributions; this module does the I/O around it:
 
 - **emulated**: each question becomes a one-token chat completion with
-  logprobs. The questions of one request go to the same provider at once, one
-  backend slot each, and share the state as a prompt prefix.
+  logprobs. The questions of one request go to the same provider, up to
+  ``decision_max_concurrency`` at once, and share the state as a prompt
+  prefix.
 - **native**: an upstream that serves the decision route itself (LiteLLM in
   front of Jev, say) gets the request as it came, with the model renamed.
 
@@ -25,15 +26,18 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from . import decisions as d
+from .config import settings
 from .database import CHANGE_DECISIONS, Database
 from .provider_manager import ProviderManager
 from .routing_table import alias_groups, native_decision_path
+from .spend import cap_reached, tracker_for
 from .v1_client import get_v1_client
 from .worker_link.protocol import refused as worker_refused
 
 if TYPE_CHECKING:
     from .models import Provider
-    from .router import RouteResult
+    from .pricing import Price
+    from .router import Router, RouteResult, RoutingPreferences
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,11 @@ _SUMMARY_MAX = 240
 # Request fields a server may refuse, and the statuses it refuses them with.
 _LOGPROB_FIELDS = ("logprobs", "top_logprobs")
 _REJECTED = (400, 422)
+# Characters per token when estimating what a request will cost. Low on
+# purpose (English runs about four), so the estimate errs high.
+_CHARS_PER_TOKEN = 3
+# Tokens a chat template adds around each message.
+_TOKENS_PER_MESSAGE = 8
 
 
 class CalibrationStore:
@@ -216,10 +225,12 @@ async def emulate(
     """
     asker = Asker(pm, provider_id, backend_model, acquire=acquire)
     calibration = calibration or {}
+    slots = asyncio.Semaphore(max(1, settings.decision_max_concurrency))
 
     async def one(qid: str, q: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
-            dist, resp = await asker.ask(request.state, q)
+            async with slots:
+                dist, resp = await asker.ask(request.state, q)
         except d.NoLogprobsError:
             raise
         except d.DecisionError as exc:
@@ -239,6 +250,56 @@ async def emulate(
         "answers": {qid: a for (qid, _q), (a, _r) in zip(items, done, strict=False)},
         "usage": d.usage_from_responses([r for _a, r in done]),
     }
+
+
+def estimated_cost(price: Price | None, request: d.DecisionRequest) -> float:
+    """An upper estimate of what answering *request* costs in USD: every
+    question's prompt, state included, and one completion token each."""
+    if price is None:
+        return 0.0
+    prompt_tokens = 0
+    for q in request.questions.values():
+        for m in d.build_prompt(request.state, q).messages:
+            prompt_tokens += len(m["content"]) // _CHARS_PER_TOKEN + 1
+            prompt_tokens += _TOKENS_PER_MESSAGE
+    return price.cost(prompt_tokens, len(request.questions))
+
+
+async def check_spend_cap(
+    db: Database,
+    rt: Router,
+    prefs: RoutingPreferences | None,
+    result: RouteResult,
+    request: d.DecisionRequest,
+) -> None:
+    """Refuse *request* (429, as a key past its cap is) when its estimated
+    cost on the routed provider would take the key past its daily spend cap.
+
+    A request fans out into one call per question, so it is checked as a
+    whole before any of them is sent.
+    """
+    if prefs is None or prefs.key_id is None:
+        return
+    cap = prefs.daily_spend_cap_usd
+    if cap is None:
+        return
+    price = rt.price_for(
+        result.provider.require_id(), result.model_key or request.model
+    )
+    estimate = estimated_cost(price, request)
+    if estimate <= 0:
+        return
+    spent = await tracker_for(db).spent_today(prefs.key_id)
+    if spent + estimate > cap:
+        logger.info(
+            "Refusing a decision request from key %s: $%.4f spent, about $%.4f "
+            "more would pass the $%.2f cap",
+            prefs.key_id,
+            spent,
+            estimate,
+            cap,
+        )
+        raise cap_reached(cap)
 
 
 async def native(
