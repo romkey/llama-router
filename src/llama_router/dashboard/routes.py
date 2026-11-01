@@ -353,6 +353,7 @@ def template_auth_ctx(request: Request) -> dict[str, Any]:
 def merge_dash_template_ctx(request: Request, ctx: dict[str, Any]) -> dict[str, Any]:
     merged = template_auth_ctx(request)
     merged.update(ctx)
+    merged["show_cache"] = merged["show_cache"] and deps.get_cache() is not None
     return merged
 
 

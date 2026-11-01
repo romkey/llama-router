@@ -1,0 +1,27 @@
+{# All dashboard pages share this order and the same permission flags. #}
+{% macro pane(name, label, icon, badge=false) %}
+<li class="nav-item" role="presentation">
+    {% if request.url.path == '/' %}
+    <button class="nav-link{{ ' active' if name == 'providers' else '' }}" id="{{ name }}-tab" data-bs-toggle="tab" data-bs-target="#{{ name }}-pane" type="button" role="tab" aria-controls="{{ name }}-pane" aria-selected="{{ 'true' if name == 'providers' else 'false' }}">
+        <i class="bi bi-{{ icon }} me-1"></i>{{ label }}
+        {% if badge %}<span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>{% endif %}
+    </button>
+    {% else %}
+    <a class="nav-link" href="/#{{ name }}-pane"><i class="bi bi-{{ icon }} me-1"></i>{{ label }}</a>
+    {% endif %}
+</li>
+{% endmacro %}
+{% macro page_link(path, label, icon) %}
+<li class="nav-item">
+    <a class="nav-link{{ ' active' if request.url.path == path else '' }}" href="{{ path }}"{% if request.url.path == path %} aria-current="page"{% endif %}><i class="bi bi-{{ icon }} me-1"></i>{{ label }}</a>
+</li>
+{% endmacro %}
+{{ pane('providers', 'Providers', 'hdd-stack') }}
+{{ pane('benchmarks', 'Benchmarks', 'speedometer') }}
+{{ pane('models', 'Models', 'cpu') }}
+{{ page_link('/chat', 'Chat', 'chat-dots') }}
+{% if show_users_tab %}{{ page_link('/users', 'Users', 'people') }}{% endif %}
+{% if show_api_keys %}{{ pane('keys', 'API Keys', 'key') }}{% endif %}
+{% if show_workers %}{{ pane('workers', 'Workers', 'diagram-3') }}{% endif %}
+{% if show_log %}{{ pane('log', 'Log', 'journal-text', badge=true) }}{% endif %}
+{% if show_cache %}{{ pane('cache', 'Cache', 'archive') }}{% endif %}

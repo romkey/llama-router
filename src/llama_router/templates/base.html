@@ -13,6 +13,17 @@
         .status-unknown { color: #6c757d; }
         .provider-card { transition: transform 0.15s ease-in-out; }
         .provider-card:hover { transform: translateY(-2px); }
+        /* Keep request-log details neutral and reserve blue for links. */
+        #log-table code { color: #d6dce5; }
+        #log-table a { color: #8bb9ff; }
+        #log-table .table-danger {
+            --bs-table-bg: #3b1b20;
+            --bs-table-color: #dee2e6;
+            --bs-table-border-color: #65383f;
+            --bs-table-hover-bg: #452329;
+            --bs-table-hover-color: #dee2e6;
+        }
+        #log-table .table-danger .text-muted { color: #bfc0c3 !important; }
     </style>
 </head>
 <body>
@@ -54,14 +65,7 @@
     </nav>
     <div class="container mt-3">
         <ul class="nav nav-tabs mb-4" id="main-nav-tabs" role="tablist">
-            {% block nav_tabs %}
-            <li class="nav-item"><a class="nav-link" href="/#providers-pane"><i class="bi bi-hdd-stack me-1"></i>Providers</a></li>
-            <li class="nav-item"><a class="nav-link" href="/#benchmarks-pane"><i class="bi bi-speedometer me-1"></i>Benchmarks</a></li>
-            <li class="nav-item"><a class="nav-link" href="/#models-pane"><i class="bi bi-cpu me-1"></i>Models</a></li>
-            <li class="nav-item"><a class="nav-link" href="/chat"><i class="bi bi-chat-dots me-1"></i>Chat</a></li>
-            <li class="nav-item"><a class="nav-link" href="/#log-pane"><i class="bi bi-journal-text me-1"></i>Log</a></li>
-            <li class="nav-item"><a class="nav-link" href="/#cache-pane"><i class="bi bi-archive me-1"></i>Cache</a></li>
-            {% endblock %}
+            {% block nav_tabs %}{% include "main_nav.html" %}{% endblock %}
         </ul>
         {% block content %}{% endblock %}
     </div>

@@ -7,6 +7,17 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Readable error rows in the request log.** Error highlights use soft burgundy
+  with blue links and neutral details, keeping timestamps, model names, metadata
+  and expanded error details readable both normally and on hover.
+
+- **Consistent dashboard navigation.** Users stays after Chat on every page,
+  and Workers and Cache keep the same visibility and order across the dashboard,
+  Users, Chat, My API keys, Decisions and provider details. Cache is shown only
+  when a cache is available.
+
 ## [0.26.1] - 2026-10-31
 
 ### Fixed
