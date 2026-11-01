@@ -36,6 +36,21 @@ described in their git tags and GitHub Releases.
   `--include=...` / `--revision=...`.
 - **No `/docs`, `/redoc` or `/openapi.json` on the Ollama and OpenAI API
   ports.** The dashboard keeps its own.
+- **Upstream errors are sanitised before they reach the client.** For 400,
+  404, 422 and 429 only the error's type, code and message are passed on
+  (and `Retry-After` on a 429); other upstream errors get a generic body. An
+  upstream 401 or 403, meaning a provider refused the router's own key, is
+  now answered with 502 so it is not mistaken for a problem with the client's
+  key.
+- **Router-only request fields are not forwarded.** `provider`, `models`,
+  `route`, `transforms`, `extra_body`, `base_url` and `api_key` are removed
+  from `/v1/*` request bodies before they go upstream.
+- **Malformed request bodies get 400.** The `/api/*` and `/v1/*` inference
+  routes answer 400 for a body that is not JSON, not a JSON object, or has a
+  `model` that is not a string, instead of failing with 500.
+- **`X-Llama-Router-Path` is checked.** Only well-formed router IDs are kept
+  from it and passed on, and a header longer than 512 characters is refused
+  with 508.
 - **Dashboard escapes server and user data.** Model names, provider names,
   addresses, pull and benchmark progress and error messages are HTML-escaped
   wherever the dashboard and provider pages build HTML in JavaScript, and

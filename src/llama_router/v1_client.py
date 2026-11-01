@@ -18,6 +18,19 @@ if TYPE_CHECKING:
     from .ollama_client import OllamaClient
     from .provider_manager import ProviderManager
 
+# Request fields that steer a router or gateway (OpenRouter's provider, models,
+# route and transforms; SDK-only extra_body) or name an endpoint and its
+# credentials. The router has already picked the provider, so a client must
+# not be able to pass these on and redirect or re-key the upstream call.
+ROUTER_ONLY_FIELDS = frozenset(
+    {"provider", "models", "route", "transforms", "extra_body", "base_url", "api_key"}
+)
+
+
+def upstream_body(body: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a client's request *body* without ``ROUTER_ONLY_FIELDS``."""
+    return {k: v for k, v in body.items() if k not in ROUTER_ONLY_FIELDS}
+
 
 class V1Client:
     """Wraps either an OllamaClient or LlamaCppClient for v1/* calls."""
@@ -44,7 +57,7 @@ class V1Client:
         client = self._llamacpp or self._ollama
         if client is None:
             raise RuntimeError("V1Client has no upstream client")
-        resp = await client._post(path, op=op, json=body)
+        resp = await client._post(path, op=op, json=upstream_body(body))
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
         return out
@@ -55,65 +68,69 @@ class V1Client:
         self, body: dict[str, Any]
     ) -> AsyncIterator[bytes]:
         if self._llamacpp:
-            async for chunk in self._llamacpp.chat_completions_stream(body):
+            async for chunk in self._llamacpp.chat_completions_stream(
+                upstream_body(body)
+            ):
                 yield chunk
         elif self._ollama:
-            async for chunk in self._ollama.v1_chat_completions_stream(body):
+            async for chunk in self._ollama.v1_chat_completions_stream(
+                upstream_body(body)
+            ):
                 yield chunk
 
     async def chat_completions(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
-            return await self._llamacpp.chat_completions(body)
+            return await self._llamacpp.chat_completions(upstream_body(body))
         ollama = self._require_ollama()
-        return await ollama.v1_chat_completions(body)
+        return await ollama.v1_chat_completions(upstream_body(body))
 
     # --- completions ---
 
     async def completions_stream(self, body: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._llamacpp:
-            async for chunk in self._llamacpp.completions_stream(body):
+            async for chunk in self._llamacpp.completions_stream(upstream_body(body)):
                 yield chunk
         elif self._ollama:
-            async for chunk in self._ollama.v1_completions_stream(body):
+            async for chunk in self._ollama.v1_completions_stream(upstream_body(body)):
                 yield chunk
 
     async def completions(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
-            return await self._llamacpp.completions(body)
+            return await self._llamacpp.completions(upstream_body(body))
         ollama = self._require_ollama()
-        return await ollama.v1_completions(body)
+        return await ollama.v1_completions(upstream_body(body))
 
     # --- embeddings ---
 
     async def embeddings(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
-            return await self._llamacpp.embeddings(body)
+            return await self._llamacpp.embeddings(upstream_body(body))
         ollama = self._require_ollama()
-        return await ollama.v1_embeddings(body)
+        return await ollama.v1_embeddings(upstream_body(body))
 
     # --- responses ---
 
     async def responses_stream(self, body: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._llamacpp:
-            async for chunk in self._llamacpp.responses_stream(body):
+            async for chunk in self._llamacpp.responses_stream(upstream_body(body)):
                 yield chunk
         elif self._ollama:
-            async for chunk in self._ollama.v1_responses_stream(body):
+            async for chunk in self._ollama.v1_responses_stream(upstream_body(body)):
                 yield chunk
 
     async def responses(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
-            return await self._llamacpp.responses(body)
+            return await self._llamacpp.responses(upstream_body(body))
         ollama = self._require_ollama()
-        return await ollama.v1_responses(body)
+        return await ollama.v1_responses(upstream_body(body))
 
     # --- images ---
 
     async def images_generations(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._llamacpp:
-            return await self._llamacpp.images_generations(body)
+            return await self._llamacpp.images_generations(upstream_body(body))
         ollama = self._require_ollama()
-        return await ollama.v1_images_generations(body)
+        return await ollama.v1_images_generations(upstream_body(body))
 
     async def images_edits(self, data: bytes, content_type: str) -> httpx.Response:
         if self._llamacpp:
@@ -125,10 +142,10 @@ class V1Client:
 
     async def audio_speech(self, body: dict[str, Any]) -> AsyncIterator[bytes]:
         if self._llamacpp:
-            async for chunk in self._llamacpp.audio_speech(body):
+            async for chunk in self._llamacpp.audio_speech(upstream_body(body)):
                 yield chunk
         elif self._ollama:
-            async for chunk in self._ollama.v1_audio_speech(body):
+            async for chunk in self._ollama.v1_audio_speech(upstream_body(body)):
                 yield chunk
 
     async def audio_transcriptions(

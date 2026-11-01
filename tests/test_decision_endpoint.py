@@ -267,6 +267,22 @@ async def test_native_upstream_gets_the_request_as_sent(
     assert json.loads(sent.content) == body
 
 
+async def test_native_upstream_does_not_get_router_only_fields(
+    db: Database, pm: ProviderManager, router: Router, httpx_mock
+):
+    await _provider(db, pm, "lite", "http://lite.test:4000", _caps("/v1/systemone"))
+    httpx_mock.add_response(
+        url="http://lite.test:4000/v1/systemone",
+        method="POST",
+        json={"model": "jev-1.13.0", "answers": {}},
+    )
+    body = {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
+    extra = {"api_key": "sk-other", "base_url": "http://evil.test", "models": ["x"]}
+    await _post("/v1/systemone", {**body, **extra})
+    (sent,) = httpx_mock.get_requests()
+    assert json.loads(sent.content) == body
+
+
 async def test_no_logprobs_reroutes_to_a_provider_that_has_them(
     db: Database, pm: ProviderManager, router: Router, httpx_mock
 ):
@@ -338,7 +354,7 @@ async def test_upstream_http_error_is_forwarded(
     body = {**BODY, "questions": {"is_urgent": QUESTIONS["is_urgent"]}}
     resp = await _post("/v1/systemone", body)
     assert resp.status_code == 503
-    assert resp.json() == {"error": "loading model"}
+    assert resp.json() == {"error": "upstream service returned an error"}
 
 
 @pytest.mark.parametrize(
