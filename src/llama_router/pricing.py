@@ -19,6 +19,13 @@ from .models import Provider, ProviderModel
 # Typical request size used to compare candidates in "cheapest" routing.
 NOMINAL_PROMPT_TOKENS = 1000
 NOMINAL_COMPLETION_TOKENS = 256
+# Estimating a request's size from its body: characters per prompt token (on
+# the low side, so the estimate errs high), and the tokens an inline image or
+# audio clip (a data: URL) is taken to cost rather than its base64 length.
+_CHARS_PER_TOKEN = 3
+_INLINE_MEDIA_TOKENS = 2000
+# Request fields that bound the output, in the order they are looked for.
+_MAX_OUTPUT_FIELDS = ("max_completion_tokens", "max_tokens", "max_output_tokens")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +45,46 @@ class Price:
 
 
 FREE = Price(0.0, 0.0, "free")
+
+
+def _prompt_tokens(node: Any) -> int:
+    if isinstance(node, str):
+        if node.startswith("data:"):
+            return _INLINE_MEDIA_TOKENS
+        return -(-len(node) // _CHARS_PER_TOKEN)
+    if isinstance(node, Mapping):
+        return sum(_prompt_tokens(k) + _prompt_tokens(v) for k, v in node.items())
+    if isinstance(node, list):
+        return sum(_prompt_tokens(v) for v in node)
+    return 1 if node is not None else 0
+
+
+def _max_output_tokens(body: Mapping[str, Any]) -> int | None:
+    for name in _MAX_OUTPUT_FIELDS:
+        v = body.get(name)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    options = body.get("options")  # Ollama
+    if isinstance(options, Mapping):
+        v = options.get("num_predict")
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    return None
+
+
+def estimate_tokens(body: Any, default_completion_tokens: int) -> tuple[int, int]:
+    """(prompt, completion) tokens a request might use, erring high.
+
+    The prompt is sized from the body's text; the completion is the request's
+    own output limit (times ``n`` choices), else *default_completion_tokens*.
+    """
+    if not isinstance(body, Mapping):
+        return 0, default_completion_tokens
+    completion = _max_output_tokens(body) or default_completion_tokens
+    n = body.get("n")
+    if isinstance(n, int) and not isinstance(n, bool) and n > 1:
+        completion *= n
+    return _prompt_tokens(body), completion
 
 
 def listed_price(model: ProviderModel) -> Price | None:

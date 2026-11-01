@@ -8,10 +8,15 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..auth import routing_preferences_from_request
+from ..auth import route_within_cap, routing_preferences_from_request
 from ..decision_policy import apply_decision_policy
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..request_logger import StreamLogger, log_request_background, stream_response
+from ..request_logger import (
+    StreamLogger,
+    ask_stream_usage,
+    log_request_background,
+    stream_response,
+)
 from ..v1_client import get_v1_client
 from . import deps
 
@@ -35,7 +40,9 @@ async def completions(request: Request) -> Response:
     )
     session = rt.session_for(request.headers, body, prefs)
 
-    result = await rt.route(model, request.url.path, prefs, session=session)
+    result = await route_within_cap(
+        rt, db, request, model, prefs, body, session=session
+    )
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -53,6 +60,8 @@ async def completions(request: Request) -> Response:
     start = time.monotonic()
 
     if stream:
+        # Usage in the stream's last event lets the request be costed.
+        hide_usage = ask_stream_usage(body, provider)
 
         async def generate() -> AsyncIterator[bytes]:
             try:
@@ -74,6 +83,7 @@ async def completions(request: Request) -> Response:
             routed_model=routed,
             request_body=body,
             start_time=start,
+            hide_usage=hide_usage,
         )
         return await stream_response(logged, "text/event-stream")
 

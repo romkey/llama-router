@@ -15,13 +15,14 @@ from fastapi import Request
 from fastapi.responses import Response, StreamingResponse
 
 from .background import spawn
+from .config import settings
 from .database import Database
 from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
 from .models import Provider, RequestLog
-from .pricing import Price
+from .pricing import Price, estimate_tokens
 from .routing_stats import ProviderStats
-from .spend import tracker_for
+from .spend import Reservation, tracker_for
 from .timing import received_at
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,64 @@ def usage_from_tail(tail: bytes) -> tuple[int | None, int | None]:
         return None
 
     return last(_PROMPT_TOKEN_RES), last(_COMPLETION_TOKEN_RES)
+
+
+def ask_stream_usage(body: dict[str, Any], provider: Provider) -> bool:
+    """Ask a cloud provider to end an OpenAI-style stream with its usage, so
+    the request can be costed. True when the client did not ask for it
+    itself, and the usage-only chunk should be kept from the client."""
+    if not provider.is_cloud:
+        return False
+    options = body.get("stream_options")
+    if isinstance(options, dict) and options.get("include_usage"):
+        return False
+    body["stream_options"] = {
+        **(options if isinstance(options, dict) else {}),
+        "include_usage": True,
+    }
+    return True
+
+
+def _is_usage_only_event(event: bytes) -> bool:
+    """True for the SSE event ``include_usage`` adds: no choices, just usage."""
+    data = b"".join(
+        line[5:].strip() for line in event.splitlines() if line.startswith(b"data:")
+    )
+    if not data.startswith(b"{") or b'"usage"' not in data:
+        return False
+    try:
+        obj = json.loads(data)
+    except ValueError:
+        return False
+    return (
+        isinstance(obj, dict)
+        and obj.get("choices") == []
+        and isinstance(obj.get("usage"), dict)
+    )
+
+
+class _UsageChunkFilter:
+    """Drops the usage-only event from an SSE byte stream. Chunks need not
+    line up with events; whole events are passed on as they complete."""
+
+    def __init__(self) -> None:
+        self._buf = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        self._buf += chunk
+        out: list[bytes] = []
+        while True:
+            cut = self._buf.find(b"\n\n")
+            if cut < 0:
+                break
+            event, self._buf = self._buf[: cut + 2], self._buf[cut + 2 :]
+            if not _is_usage_only_event(event.replace(b"\r", b"")):
+                out.append(event)
+        return b"".join(out)
+
+    def flush(self) -> bytes:
+        rest, self._buf = self._buf, b""
+        return b"" if _is_usage_only_event(rest.replace(b"\r", b"")) else rest
 
 
 def _is_provider_failure(error_detail: str | None) -> bool:
@@ -298,6 +357,7 @@ async def log_request(
     completion_tokens: int | None = None,
     api_key_id: int | None = None,
     request_meta: str | None = None,
+    spend_reservation: Reservation | None = None,
 ) -> None:
     """Write one request to the log.
 
@@ -305,6 +365,10 @@ async def log_request(
     the handler, so serialising it again never delays the response.
     *sample* also feeds the outcome to the routing stats under *routed_model*.
     *request_meta* replaces the summary worked out from *request_body*.
+    *spend_reservation* (from the spend cap) is swapped for the actual cost.
+
+    A successful priced cloud request whose response reports no usage is
+    charged an estimate from *request_body* rather than nothing.
     """
     if response_body is not None and not response_size:
         response_size = _payload_size(response_body)
@@ -326,16 +390,24 @@ async def log_request(
     if prompt_tokens is None and completion_tokens is None:
         prompt_tokens, completion_tokens = usage_from_body(response_body)
     cost = None
-    if (
-        _pricer is not None
-        and provider is not None
-        and provider.id is not None
-        and (prompt_tokens is not None or completion_tokens is not None)
-    ):
+    price = None
+    if _pricer is not None and provider is not None and provider.id is not None:
         price = _pricer(provider.id, routed_model or model or "")
-        if price is not None:
+    if price is not None:
+        if prompt_tokens is not None or completion_tokens is not None:
             cost = price.cost(prompt_tokens, completion_tokens)
-    if cost and api_key_id is not None:
+        elif status == "ok" and provider is not None and provider.is_cloud:
+            if spend_reservation is not None:
+                cost = spend_reservation.amount
+            else:
+                cost = price.cost(
+                    *estimate_tokens(
+                        request_body, settings.spend_estimate_completion_tokens
+                    )
+                )
+    if spend_reservation is not None:
+        tracker_for(db).settle(spend_reservation, cost)
+    elif cost and api_key_id is not None:
         tracker_for(db).add(api_key_id, cost)
     entry = RequestLog(
         provider_id=provider.id if provider else None,
@@ -386,6 +458,13 @@ def log_request_background(
         kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
         if kwargs.get("api_key_id") is None:
             kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
+        # The request's spend reservation is settled by its first log entry
+        # after routing (the one for the request itself).
+        if kwargs.get("spend_reservation") is None:
+            kwargs["spend_reservation"] = getattr(
+                request.state, "spend_reservation", None
+            )
+            request.state.spend_reservation = None
         if kwargs.get("router_ms") is None:
             kwargs["router_ms"] = _router_ms(
                 request, dispatched_at, kwargs.get("duration_ms", 0.0)
@@ -422,6 +501,7 @@ class StreamLogger:
         request_body: Any,
         start_time: float,
         routed_model: str | None = None,
+        hide_usage: bool = False,
     ):
         self._inner = inner
         self._db = db
@@ -436,6 +516,9 @@ class StreamLogger:
         self._total_bytes = 0
         self._first_chunk_at: float | None = None
         self._tail: deque[bytes] = deque(maxlen=_TAIL_CHUNKS)
+        # Keep the usage-only event the router asked for from the client;
+        # it is still read for token counts (see ask_stream_usage).
+        self._filter = _UsageChunkFilter() if hide_usage else None
 
     async def __aiter__(self) -> AsyncGenerator[bytes]:
         status = "ok"
@@ -446,7 +529,16 @@ class StreamLogger:
                     self._first_chunk_at = time.monotonic()
                 self._total_bytes += len(chunk)
                 self._tail.append(chunk)
-                yield chunk
+                if self._filter is None:
+                    yield chunk
+                    continue
+                out = self._filter.feed(chunk)
+                if out:
+                    yield out
+            if self._filter is not None:
+                rest = self._filter.flush()
+                if rest:
+                    yield rest
         except Exception as exc:
             status = "error"
             if isinstance(exc, httpx.HTTPError):

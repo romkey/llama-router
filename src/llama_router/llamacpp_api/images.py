@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..auth import routing_preferences_from_request
+from ..auth import route_within_cap, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_logger import log_request_background
 from ..v1_client import get_v1_client
@@ -29,7 +29,7 @@ async def images_generations(request: Request) -> JSONResponse:
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"
@@ -130,7 +130,7 @@ async def images_edits(request: Request) -> Response:
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
 
-    result = await rt.route(model, request.url.path, prefs)
+    result = await route_within_cap(rt, db, request, model, prefs, log_body)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"No available provider for model '{model}'"

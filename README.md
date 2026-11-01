@@ -344,13 +344,13 @@ curl -X DELETE http://localhost/api/fallbacks/llama3:70b
 
 ## Cost
 
-The request log records each request's tokens in and out, the API key that made it, and its cost when the provider's price for the model is known. Tokens come from the response's `usage` (or Ollama's counts); a streamed OpenAI-style response carries usage only when the client sends `stream_options: {"include_usage": true}`.
+The request log records each request's tokens in and out, the API key that made it, and its cost when the provider's price for the model is known. Tokens come from the response's `usage` (or Ollama's counts); for a streamed `/v1/chat/completions` or `/v1/completions` request to a cloud provider the router asks for usage itself (`stream_options.include_usage`) and, if the client did not, keeps the extra usage-only event out of the stream it sends on. When a priced cloud model's response reports no usage at all, the request is charged an estimate: its prompt size plus its `max_tokens` (or `SPEND_ESTIMATE_COMPLETION_TOKENS`, 4096 by default, when it sets none).
 
 **Prices** are USD per million tokens, set per provider on its page: a model name, a pattern such as `gpt-4o*`, or `*` for every model. A price set by hand wins over one from the provider's own model list (OpenRouter lists one for every model). Local providers cost nothing unless priced; a cloud model with no price has an unknown cost.
 
 **Cheapest** routing ranks candidates by the price of a typical request (1,000 tokens in, 256 out), then by the balanced score. A cloud model with an unknown price comes last.
 
-**Daily spend caps.** An API key can have a cap in USD per UTC day. Once its logged spend reaches the cap, the key is limited to local providers until the next day; a cloud-only key is refused with HTTP 429. The key list shows each key's spend today.
+**Daily spend caps.** An API key can have a cap in USD per UTC day. Once its logged spend reaches the cap, the key is limited to local providers until the next day; a cloud-only key is refused with HTTP 429. While a request to a priced cloud model runs, its estimated cost is held against the cap, so requests sent at the same time cannot together run past it; a request whose estimate does not fit goes to a local provider (or is refused with 429). Once it finishes, the hold is replaced by the actual cost, or dropped if the request failed. A capped key cannot send image or audio requests to a cloud model with no price, since their cost could not be counted (HTTP 403 unless a local provider serves the model). The key list shows each key's spend today.
 
 **Usage by key and provider.** The Keys tab shows, for the last 24 hours, 7 days, 30 days or all time, how many requests each API key sent to each provider, how many failed, the tokens in and out, the cost and when the last one was. Requests without a key appear as *no key*. When a worker shares its providers one by one (see docs/workers.md), each of them shows up separately. Scripts can read the same report from `GET /api/keys/usage?period=7d` (`24h`, `7d`, `30d` or `all`; add `key_id=` for one key) with a dashboard sign-in or a management key with `keys:read`.
 

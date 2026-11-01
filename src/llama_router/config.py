@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0
+    # Spend caps: output tokens assumed for a priced cloud request that sets no
+    # max_tokens. The estimate is held against the key's cap while the request
+    # runs, and charged when the response reports no usage.
+    spend_estimate_completion_tokens: int = 4096
     # Prometheus metrics at GET /metrics on the dashboard port. Scrapers send
     # ``Authorization: Bearer <metrics_token>``; without a token the endpoint
     # needs a dashboard sign-in like the rest of the dashboard.
