@@ -494,11 +494,11 @@ def _set_session_cookie(
 
 
 def _client_ip(request: Request) -> str:
-    # Behind a reverse proxy every client shares the proxy's address, so the
-    # first X-Forwarded-For entry is used, as in the request log. A client
-    # can forge it to dodge the per-address limit, not the per-username one.
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    return forwarded or (request.client.host if request.client else "unknown")
+    # The TCP peer, never X-Forwarded-For: a client can put anything there and
+    # would rotate it to dodge the per-address limit. Behind a reverse proxy
+    # every client shares the proxy's address until trusted proxies are
+    # configurable; the per-username limit still applies to each account.
+    return request.client.host if request.client else "unknown"
 
 
 def _external_origin(request: Request) -> tuple[str, str]:
@@ -550,13 +550,15 @@ async def login_submit(
     try:
         un = normalize_username(username)
     except ValueError:
-        login_throttle.throttle.failure([f"ip:{ip}"])
-        return RedirectResponse(url="/login?error=invalid", status_code=303)
-    keys = login_throttle.keys_for(ip, un)
+        un = None
+    keys = login_throttle.keys_for(ip, un) if un else [f"ip:{ip}"]
     wait = login_throttle.throttle.retry_after(keys)
     if wait > 0:
         logger.warning("Password sign-in for %r from %s throttled", un, ip)
         return _login_throttled(request, next, wait)
+    if un is None:
+        login_throttle.throttle.failure(keys)
+        return RedirectResponse(url="/login?error=invalid", status_code=303)
     row = await db.get_dashboard_user_by_username(un)
     if row and row.get("auth_source", "local") == "local":
         # scrypt takes tens of milliseconds; keep it off the event loop.

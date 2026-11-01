@@ -22,6 +22,8 @@ FORGET_AFTER_S = 3600.0
 # Most keys remembered; beyond this the stalest are dropped, so a flood of
 # made-up usernames or addresses cannot grow memory without bound.
 MAX_KEYS = 10_000
+# 2**20 seconds is far beyond MAX_DELAY_S already.
+_MAX_DOUBLINGS = 20
 
 
 @dataclass
@@ -56,7 +58,9 @@ class LoginThrottle:
             e.last_failure = t
             over = e.failures - FREE_ATTEMPTS
             if over >= 0:
-                e.locked_until = t + min(MAX_DELAY_S, BASE_DELAY_S * 2**over)
+                # Capped exponent: 2**1024 overflows a float.
+                delay = BASE_DELAY_S * 2 ** min(over, _MAX_DOUBLINGS)
+                e.locked_until = t + min(MAX_DELAY_S, delay)
         if len(self._entries) > MAX_KEYS:
             self._prune(t)
 

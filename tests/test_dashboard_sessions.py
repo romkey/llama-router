@@ -176,6 +176,37 @@ async def test_reused_id_does_not_inherit_session(dash_client: DashClient) -> No
     assert await _status(client, token) == 401
 
 
+async def test_recreated_account_does_not_inherit_session(
+    dash_client: DashClient,
+) -> None:
+    """Same id and same username: the old cookie still must not work."""
+    client, db = dash_client
+    await _user(db, "root")
+    uid = await _user(db, "gone", admin=False)
+    token = await _sign_in(client, "gone")
+    await db.delete_dashboard_user(uid)
+    again = await _user(db, "gone", admin=False)
+    assert again == uid
+    assert await _status(client, token) == 401
+    assert await _status(client, await _sign_in(client, "gone")) == 200
+
+
+async def test_pending_admin_is_not_counted_as_an_admin(db: Database) -> None:
+    await db.create_dashboard_user("root", hash_password(PASSWORD), True)
+    pending = await db.create_oidc_dashboard_user(
+        "sso",
+        "https://idp",
+        "s1",
+        email=None,
+        display_name=None,
+        is_admin=True,
+        approved=False,
+    )
+    assert await db.count_dashboard_admins() == 1
+    await db.approve_dashboard_user(pending)
+    assert await db.count_dashboard_admins() == 2
+
+
 # --- Sign-in throttling ---
 
 
@@ -194,6 +225,22 @@ def test_throttle_backs_off_exponentially() -> None:
     assert t.retry_after(keys, now=29.0) <= login_throttle.MAX_DELAY_S
     t.success(keys)
     assert t.retry_after(keys, now=29.0) == 0
+
+
+def test_throttle_survives_thousands_of_failures() -> None:
+    t = LoginThrottle()
+    for _ in range(2000):
+        t.failure(["ip:x"], now=0.0)
+    assert t.retry_after(["ip:x"], now=0.0) == login_throttle.MAX_DELAY_S
+
+
+async def test_invalid_usernames_are_throttled_too(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db)
+    bad = {"username": "!", "password": "x", "next": "/"}
+    for _ in range(login_throttle.FREE_ATTEMPTS):
+        assert (await client.post("/login", data=bad)).status_code == 303
+    assert (await client.post("/login", data=bad)).status_code == 429
 
 
 def test_throttle_forgets_old_failures() -> None:
@@ -229,6 +276,26 @@ async def test_repeated_failures_get_429(dash_client: DashClient) -> None:
     assert (await client.post("/login", data=good)).status_code == 429
     login_throttle.throttle.clear()
     assert (await client.post("/login", data=good)).status_code == 303
+
+
+async def test_forged_forwarded_for_does_not_dodge_the_address_limit(
+    dash_client: DashClient,
+) -> None:
+    client, db = dash_client
+    await _user(db)
+    for i in range(login_throttle.FREE_ATTEMPTS):
+        r = await client.post(
+            "/login",
+            data={"username": f"guess{i}", "password": "x-wrong-1", "next": "/"},
+            headers={"X-Forwarded-For": f"203.0.113.{i}"},
+        )
+        assert r.status_code == 303
+    r = await client.post(
+        "/login",
+        data={"username": "alice", "password": PASSWORD, "next": "/"},
+        headers={"X-Forwarded-For": "198.51.100.7"},
+    )
+    assert r.status_code == 429
 
 
 async def test_unknown_user_costs_a_password_check(
@@ -298,7 +365,9 @@ async def test_cross_site_refused_on_dashboard_posts(dash_client: DashClient) ->
     assert r.status_code == 403
     assert await db.get_dashboard_user_by_id(uid) is not None
     # Reads are not affected.
-    r = await client.get("/", headers={**_cookie(token), "Sec-Fetch-Site": "cross-site"})
+    r = await client.get(
+        "/", headers={**_cookie(token), "Sec-Fetch-Site": "cross-site"}
+    )
     assert r.status_code == 200
 
 

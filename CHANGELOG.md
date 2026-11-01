@@ -27,6 +27,16 @@ described in their git tags and GitHub Releases.
   `LLAMA_ROUTER_DASHBOARD_TRUSTED_ORIGINS` lists exceptions.
 - **Secure cookies behind HTTPS proxies.** Session cookies are marked Secure
   whenever the request came over HTTPS or with `X-Forwarded-Proto: https`.
+- **Signed release images.** The release workflow signs each image with
+  cosign keyless signing (by digest, every platform); the README shows how to
+  verify one with `cosign verify`.
+- **GitHub Actions pinned to commit SHAs.** Every action in the workflows is
+  pinned to a full commit SHA with its version in a comment, and Renovate
+  keeps the digests current.
+- **No network tools in the production image.** curl, wget, nc, dig, host,
+  ping, traceroute, ip and ps are gone from the released image (the
+  development image keeps them). The README shows Python one-liners and a
+  sidecar container for checking reachability instead.
 
 ### Fixed
 
