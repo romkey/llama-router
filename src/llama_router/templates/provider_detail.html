@@ -87,7 +87,7 @@
                             <i class="bi bi-circle-fill text-danger" title="Not responding"></i>
                             {% endif %}
                         </td>
-                        <td class="small"><code>{{ addr.url }}</code></td>
+                        <td class="small"><code>{{ addr.url if not read_only else '(hidden)' }}</code></td>
                         <td>
                             {% if not read_only %}
                             <form method="post" action="/providers/{{ info.provider.id }}/addresses/{{ addr.id }}/toggle-preferred" class="d-inline">
@@ -164,7 +164,7 @@
                     {% for e in caps.endpoints if e.state != 'missing' %}
                     <tr>
                         <td class="text-nowrap">{{ e.method }}</td>
-                        <td><code>{{ e.path }}</code>{% if caps.base_urls | length > 1 %} <span class="text-muted">at {{ e.base_url }}</span>{% endif %}</td>
+                        <td><code>{{ e.path }}</code>{% if caps.base_urls | length > 1 %} <span class="text-muted">at {{ e.base_url if not read_only else '(hidden)' }}</span>{% endif %}</td>
                         <td class="text-muted">{{ e.purpose }}</td>
                         <td><span class="badge {% if e.state == 'available' %}bg-success{% elif e.state == 'exists' %}bg-info text-dark{% elif e.state == 'needs_key' %}bg-warning text-dark{% else %}bg-danger{% endif %}">{{ e.state | replace('_', ' ') }}</span></td>
                     </tr>
@@ -227,7 +227,7 @@
                                     </button>
                                     {% if info.provider.is_ollama and not info.provider.lacks('/api/delete') %}
                                     <form method="post" action="/providers/{{ info.provider.id }}/delete-model/{{ m.name }}" class="d-inline">
-                                        <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick="return confirm('Delete {{ m.name }} from this provider?')">
+                                        <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick='return confirm({{ ("Delete " ~ m.name ~ " from this provider?") | tojson }})'>
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </form>
@@ -620,6 +620,13 @@ const DASH_READ_ONLY = {{ read_only | tojson }};
 const PROVIDER_IS_CLOUD = {{ info.provider.is_cloud | tojson }};
 const PROVIDER_ID = {{ info.provider.id | tojson }};
 
+// HTML-escape a value before it goes into an innerHTML string.
+function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+    });
+}
+
 function loadPrices() {
     fetch('/api/providers/' + PROVIDER_ID + '/prices').then(function(r) { return r.json(); }).then(function(d) {
         var body = document.getElementById('prices-body');
@@ -804,15 +811,15 @@ function showPullBanner(pullId, model, status, completed, total, failed, progres
     }
     if (status === 'pulling') {
         el.className = 'alert alert-info d-flex align-items-center mb-2';
-        var prog = progress ? ' &mdash; ' + progress : '';
+        var prog = progress ? ' &mdash; ' + esc(progress) : '';
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span>Pulling <strong>' + model + '</strong>\u2026' + prog + '</span>';
+            '<span>Pulling <strong>' + esc(model) + '</strong>\u2026' + prog + '</span>';
     } else {
         var ok = failed === 0;
         el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
         el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
-            '<span><strong>' + model + '</strong> pull complete' +
-            (failed > 0 ? ' (' + failed + ' failed)' : '') +
+            '<span><strong>' + esc(model) + '</strong> pull complete' +
+            (failed > 0 ? ' (' + esc(failed) + ' failed)' : '') +
             '</span>';
         setTimeout(function() { el.remove(); }, 8000);
     }
@@ -851,23 +858,23 @@ function showBenchBanner(benchId, model, status, result, error, benchmarkApi) {
     }
     if (status === 'running') {
         el.className = 'alert alert-info d-flex align-items-center';
-        var apiHint = benchmarkApi && benchmarkApi !== 'auto' ? ' via ' + benchmarkApi : '';
+        var apiHint = benchmarkApi && benchmarkApi !== 'auto' ? ' via ' + esc(benchmarkApi) : '';
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span>Benchmarking <strong>' + model + '</strong>' + apiHint + '\u2026</span>';
+            '<span>Benchmarking <strong>' + esc(model) + '</strong>' + apiHint + '\u2026</span>';
     } else if (status === 'done' && result) {
         el.className = 'alert alert-success d-flex align-items-center';
         el.innerHTML = '<i class="bi bi-check-circle-fill me-2"></i>' +
-            '<span><strong>' + model + '</strong> — ' +
-            result.tokens_per_second.toFixed(1) + ' tok/s, ' +
-            result.startup_time_ms.toFixed(0) + ' ms startup' +
-            (result.protocol ? ' (' + result.protocol + ')' : '') +
+            '<span><strong>' + esc(model) + '</strong> — ' +
+            esc(Number(result.tokens_per_second).toFixed(1)) + ' tok/s, ' +
+            esc(Number(result.startup_time_ms).toFixed(0)) + ' ms startup' +
+            (result.protocol ? ' (' + esc(result.protocol) + ')' : '') +
             '</span>';
         setTimeout(function() { el.remove(); }, 10000);
     } else {
         el.className = 'alert alert-danger d-flex align-items-center';
         el.innerHTML = '<i class="bi bi-x-circle-fill me-2"></i>' +
-            '<span><strong>' + model + '</strong> benchmark failed' +
-            (error ? ': ' + error : '') + '</span>';
+            '<span><strong>' + esc(model) + '</strong> benchmark failed' +
+            (error ? ': ' + esc(error) : '') + '</span>';
         setTimeout(function() { el.remove(); }, 10000);
     }
 }

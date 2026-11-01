@@ -128,7 +128,7 @@
                                     {% else %}
                                     <i class="bi bi-circle-fill text-danger me-1" style="font-size:.55rem" title="Not responding"></i>
                                     {% endif %}
-                                    {{ addr.url }}
+                                    {{ addr.url if not read_only else '(hidden)' }}
                                     {% if addr.is_preferred %}<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem" title="Preferred"></i>{% endif %}
                                 </div>
                                 {% endfor %}
@@ -220,7 +220,7 @@
                                 {% for addr in info.addresses %}
                                 <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
                                     <i class="bi bi-circle-fill {% if addr.is_live %}text-success{% else %}text-danger{% endif %}" style="font-size:.5rem"></i>
-                                    {{ addr.url }}{% if not loop.last %}, {% endif %}
+                                    {{ addr.url if not read_only else '(hidden)' }}{% if not loop.last %}, {% endif %}
                                 </span>
                                 {% endfor %}
                             </td>
@@ -324,7 +324,7 @@
                     <h5 class="mb-0"><code>{{ model_name }}</code></h5>
                     {% if not read_only %}
                     <form method="post" action="/benchmarks/delete-model/{{ model_name }}" class="d-inline">
-                        <button class="btn btn-sm btn-outline-danger" onclick="return confirm('Delete all benchmarks for {{ model_name }}?')" title="Delete all benchmarks for this model">
+                        <button class="btn btn-sm btn-outline-danger" onclick='return confirm({{ ("Delete all benchmarks for " ~ model_name ~ "?") | tojson }})' title="Delete all benchmarks for this model">
                             <i class="bi bi-trash"></i>
                         </button>
                     </form>
@@ -554,7 +554,7 @@
                             {% if model_fallbacks.get(m.name) %}
                             <code>{{ model_fallbacks[m.name] }}</code>
                             {% if not read_only %}
-                            <button class="btn btn-sm btn-link text-danger p-0 ms-1" title="Remove fallback" onclick="removeFallback('{{ m.name }}')">
+                            <button class="btn btn-sm btn-link text-danger p-0 ms-1" title="Remove fallback" onclick='removeFallback({{ m.name | tojson }})'>
                                 <i class="bi bi-x-circle"></i>
                             </button>
                             {% endif %}
@@ -578,7 +578,7 @@
                             </button>
                             <form method="post" action="/models/delete-all" class="d-inline">
                                 <input type="hidden" name="model" value="{{ m.name }}">
-                                <button class="btn btn-sm btn-outline-danger" title="Delete from all providers" onclick="return confirm('Delete {{ m.name }} from ALL providers?')">
+                                <button class="btn btn-sm btn-outline-danger" title="Delete from all providers" onclick='return confirm({{ ("Delete " ~ m.name ~ " from ALL providers?") | tojson }})'>
                                     <i class="bi bi-trash me-1"></i>Delete all
                                 </button>
                             </form>
@@ -632,7 +632,7 @@
                                 {% endfor %}
                             </td>
                             <td class="text-end">
-                                <button class="btn btn-sm btn-outline-danger" onclick="removeFallback('{{ model_name }}')">
+                                <button class="btn btn-sm btn-outline-danger" onclick='removeFallback({{ model_name | tojson }})'>
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </td>
@@ -1163,10 +1163,10 @@
                                         <td class="small text-muted">{{ k.created_at | localtime }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | localtime }}</td>
                                         <td class="text-end">
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick="openKeyPins({{ k.id }}, '{{ k.key_prefix }}')" title="Manage pinned routes">
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPins({{ k.id }}, {{ k.key_prefix | tojson }})' title="Manage pinned routes">
                                                 <i class="bi bi-diagram-3"></i>
                                             </button>
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick="openKeyPolicy({{ k.id }}, '{{ k.key_prefix }}')" title="Decision policy (tiered routing, gates)">
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPolicy({{ k.id }}, {{ k.key_prefix | tojson }})' title="Decision policy (tiered routing, gates)">
                                                 <i class="bi bi-signpost-split"></i>
                                             </button>
                                             <button class="btn btn-sm btn-outline-danger" onclick="deleteApiKey({{ k.id }})">
@@ -1349,9 +1349,9 @@
                                 <td class="small text-muted" data-worker-seen>{% if w.last_connected_at %}{{ w.last_connected_at | localtime }}{% if w.last_remote_addr %} from {{ w.last_remote_addr }}{% endif %}{% else %}never{% endif %}</td>
                                 <td><code class="small">{{ w.token_prefix }}</code></td>
                                 <td class="text-end text-nowrap">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerRotate({{ w.id }}, '{{ w.name }}')" title="Issue a new token and disconnect the old one"><i class="bi bi-arrow-repeat"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick='workerRotate({{ w.id }}, {{ w.name | tojson }})' title="Issue a new token and disconnect the old one"><i class="bi bi-arrow-repeat"></i></button>
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerSetEnabled({{ w.id }}, {{ 'false' if w.enabled else 'true' }})" title="{{ 'Disable' if w.enabled else 'Enable' }}"><i class="bi {{ 'bi-pause-circle' if w.enabled else 'bi-play-circle' }}"></i></button>
-                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="workerDelete({{ w.id }}, '{{ w.name }}')" title="Remove worker and its provider"><i class="bi bi-trash"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick='workerDelete({{ w.id }}, {{ w.name | tojson }})' title="Remove worker and its provider"><i class="bi bi-trash"></i></button>
                                 </td>
                             </tr>
                             {% else %}
@@ -2084,6 +2084,13 @@
 {% block scripts %}
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
+// HTML-escape a value before it goes into an innerHTML string. Everything
+// interpolated from the server or the user must pass through this.
+function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+    });
+}
 function dashRequireWrite() {
     return !DASH_READ_ONLY;
 }
@@ -2803,9 +2810,9 @@ function updateDashboard(data) {
         var sizeEl = document.getElementById('cache-size');
         if (sizeEl) sizeEl.textContent = formatBytes(data.cache.blob_bytes);
         var blobHM = document.getElementById('cache-blob-hits-misses');
-        if (blobHM) blobHM.innerHTML = '<span class="text-success">' + data.cache.blob_hits + '</span> / <span class="text-danger">' + data.cache.blob_misses + '</span>';
+        if (blobHM) blobHM.innerHTML = '<span class="text-success">' + esc(data.cache.blob_hits) + '</span> / <span class="text-danger">' + esc(data.cache.blob_misses) + '</span>';
         var maniHM = document.getElementById('cache-manifest-hits-misses');
-        if (maniHM) maniHM.innerHTML = '<span class="text-success">' + data.cache.manifest_hits + '</span> / <span class="text-danger">' + data.cache.manifest_misses + '</span>';
+        if (maniHM) maniHM.innerHTML = '<span class="text-success">' + esc(data.cache.manifest_hits) + '</span> / <span class="text-danger">' + esc(data.cache.manifest_misses) + '</span>';
         var cmList = document.getElementById('cache-models-list');
         if (cmList && data.cache.model_details) {
             if (data.cache.model_details.length > 0) {
@@ -2820,8 +2827,8 @@ function updateDashboard(data) {
                         '<h2 class="accordion-header">' +
                         '<button class="accordion-button collapsed py-2 px-3" type="button" data-bs-toggle="collapse" data-bs-target="#' + mid + '">' +
                         '<span class="me-2">' + icon + '</span>' +
-                        '<code>' + md.name + '</code>' +
-                        '<span class="text-muted small ms-2">(' + blobCached + '/' + md.blobs.length + ' blobs)</span>' +
+                        '<code>' + esc(md.name) + '</code>' +
+                        '<span class="text-muted small ms-2">(' + esc(blobCached) + '/' + esc(md.blobs.length) + ' blobs)</span>' +
                         '</button></h2>' +
                         '<div id="' + mid + '" class="accordion-collapse collapse" data-bs-parent="#cache-model-accordion">' +
                         '<div class="accordion-body p-0">' +
@@ -2835,9 +2842,9 @@ function updateDashboard(data) {
                         var cachedIcon = b.cached
                             ? '<i class="bi bi-check-circle-fill text-success"></i>'
                             : '<i class="bi bi-x-circle text-danger"></i>';
-                        html += '<tr><td class="ps-3 text-muted">' + b.label + '</td>' +
-                            '<td><code class="text-muted">' + b.digest.substring(0, 19) + '\u2026</code></td>' +
-                            '<td>' + sizeStr + '</td>' +
+                        html += '<tr><td class="ps-3 text-muted">' + esc(b.label) + '</td>' +
+                            '<td><code class="text-muted">' + esc(String(b.digest || '').substring(0, 19)) + '\u2026</code></td>' +
+                            '<td>' + esc(sizeStr) + '</td>' +
                             '<td class="text-center">' + cachedIcon + '</td></tr>';
                     });
                     html += '</tbody></table></div></div></div>';
@@ -2875,7 +2882,7 @@ function updateDashboard(data) {
         if (addrEl) addrEl.innerHTML = renderCardAddresses(p.addresses);
 
         const modelsEl = card.querySelector('[data-card-models]');
-        if (modelsEl) modelsEl.innerHTML = '<i class="bi bi-cpu me-1"></i>' + p.model_count + ' model' + (p.model_count !== 1 ? 's' : '');
+        if (modelsEl) modelsEl.innerHTML = '<i class="bi bi-cpu me-1"></i>' + esc(p.model_count) + ' model' + (p.model_count !== 1 ? 's' : '');
 
         const hotEl = card.querySelector('[data-card-hot]');
         if (hotEl) {
@@ -2893,7 +2900,7 @@ function updateDashboard(data) {
         if (activeEl) {
             if (p.active_requests > 0) {
                 activeEl.style.display = '';
-                activeEl.innerHTML = '<i class="bi bi-activity me-1"></i><span>' + p.active_requests + '</span> active request' + (p.active_requests !== 1 ? 's' : '');
+                activeEl.innerHTML = '<i class="bi bi-activity me-1"></i><span>' + esc(p.active_requests) + '</span> active request' + (p.active_requests !== 1 ? 's' : '');
             } else {
                 activeEl.style.display = 'none';
             }
@@ -2908,7 +2915,7 @@ function updateDashboard(data) {
 
         const statusEl = row.querySelector('[data-list-status]');
         if (statusEl) {
-            statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + p.status + '</span>';
+            statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + esc(p.status) + '</span>';
             statusEl.firstChild.title = p.status_detail || '';
         }
 
@@ -2922,13 +2929,13 @@ function updateDashboard(data) {
         if (hotEl) {
             var hotCount = p.hot_models ? p.hot_models.length : 0;
             hotEl.innerHTML = hotCount > 0
-                ? '<span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i>' + hotCount + '</span>'
+                ? '<span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i>' + esc(hotCount) + '</span>'
                 : '0';
         }
 
         const activeEl = row.querySelector('[data-list-active]');
         if (activeEl) activeEl.innerHTML = p.active_requests > 0
-            ? '<span class="text-warning">' + p.active_requests + '</span>'
+            ? '<span class="text-warning">' + esc(p.active_requests) + '</span>'
             : '0';
     });
 }
@@ -2937,7 +2944,7 @@ function renderCardAddresses(addrs) {
     return addrs.map(a =>
         '<div class="text-muted">' +
         '<i class="bi bi-circle-fill ' + (a.is_live ? 'text-success' : 'text-danger') + ' me-1" style="font-size:.55rem"></i>' +
-        a.url +
+        esc(a.url) +
         (a.is_preferred ? '<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem"></i>' : '') +
         '</div>'
     ).join('');
@@ -2947,7 +2954,7 @@ function renderListAddresses(addrs) {
     return addrs.map((a, i) =>
         '<span title="' + (a.is_live ? 'Live' : 'Not responding') + '">' +
         '<i class="bi bi-circle-fill ' + (a.is_live ? 'text-success' : 'text-danger') + '" style="font-size:.5rem"></i> ' +
-        a.url + (i < addrs.length - 1 ? ', ' : '') +
+        esc(a.url) + (i < addrs.length - 1 ? ', ' : '') +
         '</span>'
     ).join('');
 }
@@ -3142,7 +3149,7 @@ function loadKeyPins() {
         .then(function(data) { renderKeyPins(data.pins || []); })
         .catch(function(err) {
             var tbody = document.getElementById('pins-table-body');
-            if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-danger text-center">' + (err.message || 'Failed') + '</td></tr>';
+            if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-danger text-center">' + esc(err.message || 'Failed') + '</td></tr>';
         });
 }
 
@@ -3155,10 +3162,12 @@ function renderKeyPins(pins) {
     }
     tbody.innerHTML = pins.map(function(p) {
         return '<tr>' +
-            '<td><code>' + p.model_name + '</code></td>' +
-            '<td>' + p.provider_name + '</td>' +
+            '<td><code>' + esc(p.model_name) + '</code></td>' +
+            '<td>' + esc(p.provider_name) + '</td>' +
             '<td class="text-end">' +
-            '<button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="deleteKeyPin(\'' + encodeURIComponent(p.model_name) + '\')" title="Remove pin">' +
+            // The model name rides in a data attribute, never inside the JS of
+            // the onclick handler, so a quote in it cannot break out.
+            '<button class="btn btn-sm btn-outline-danger py-0 px-1" data-model="' + esc(p.model_name) + '" onclick="deleteKeyPin(encodeURIComponent(this.dataset.model))" title="Remove pin">' +
             '<i class="bi bi-x-lg"></i></button></td></tr>';
     }).join('');
 }
@@ -3278,14 +3287,14 @@ function showBulkPullStatus(data) {
     if (data.status === 'running') {
         el.className = 'alert alert-info d-flex align-items-center mb-2';
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span><strong>Pull missing models</strong> — ' + (data.progress || '') +
-            ' (' + data.completed + '/' + data.total + ' complete)</span>';
+            '<span><strong>Pull missing models</strong> — ' + esc(data.progress || '') +
+            ' (' + esc(data.completed) + '/' + esc(data.total) + ' complete)</span>';
     } else {
         var ok = data.failed === 0;
         el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
         el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
-            '<span><strong>Pull missing models</strong> done — ' + data.completed + '/' + data.total +
-            ' complete' + (data.failed > 0 ? ', ' + data.failed + ' failed' : '') + '</span>';
+            '<span><strong>Pull missing models</strong> done — ' + esc(data.completed) + '/' + esc(data.total) +
+            ' complete' + (data.failed > 0 ? ', ' + esc(data.failed) + ' failed' : '') + '</span>';
         setTimeout(function() { el.remove(); }, 12000);
     }
 }
@@ -3313,8 +3322,8 @@ function renderAutoBenchmark(data) {
     (data.running || []).forEach(function (j) {
         html += '<div><span class="spinner-border spinner-border-sm me-1"></span>Benchmarking <code>' + _abEsc(j.model) + '</code> on ' + _abEsc(j.provider_name) + ' (' + _abEsc(j.api) + ')</div>';
     });
-    html += '<div class="text-muted">' + data.pending + ' due' + (data.backed_off ? ', ' + data.backed_off + ' paused after failing' : '') +
-        '. Done ' + data.completed + ', failed ' + data.failed + ', interrupted by traffic ' + data.interrupted + ' since start.</div>';
+    html += '<div class="text-muted">' + _abEsc(data.pending) + ' due' + (data.backed_off ? ', ' + _abEsc(data.backed_off) + ' paused after failing' : '') +
+        '. Done ' + _abEsc(data.completed) + ', failed ' + _abEsc(data.failed) + ', interrupted by traffic ' + _abEsc(data.interrupted) + ' since start.</div>';
     if (data.next && data.next.length) {
         html += '<div class="mt-1">Next: ' + data.next.slice(0, 5).map(function (j) {
             return '<code>' + _abEsc(j.model) + '</code> on ' + _abEsc(j.provider_name) + ' (' + _abEsc(j.api) + ', ' + (j.reason === 'missing' ? 'never run' : Math.round(j.age_days) + ' days old') + ')';
@@ -3412,14 +3421,14 @@ function showBulkBenchmarkStatus(data) {
     if (data.status === 'running') {
         el.className = 'alert alert-info d-flex align-items-center mb-2';
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span><strong>Run missing benchmarks</strong> — ' + (data.progress || '') +
-            ' (' + data.completed + '/' + data.total + ' complete)</span>';
+            '<span><strong>Run missing benchmarks</strong> — ' + esc(data.progress || '') +
+            ' (' + esc(data.completed) + '/' + esc(data.total) + ' complete)</span>';
     } else {
         var ok = data.failed === 0;
         el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
         el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
-            '<span><strong>Run missing benchmarks</strong> done — ' + data.completed + '/' + data.total +
-            ' complete' + (data.failed > 0 ? ', ' + data.failed + ' failed' : '') + '</span>';
+            '<span><strong>Run missing benchmarks</strong> done — ' + esc(data.completed) + '/' + esc(data.total) +
+            ' complete' + (data.failed > 0 ? ', ' + esc(data.failed) + ' failed' : '') + '</span>';
         setTimeout(function() { el.remove(); }, 12000);
     }
 }
@@ -3463,16 +3472,16 @@ function showPullBanner(pullId, model, status, completed, total, failed, progres
         el.className = 'alert alert-info d-flex align-items-center mb-2';
         var detail = progress || (total > 0 ? completed + '/' + total + ' providers' : '');
         el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' +
-            '<span>Pulling <strong>' + model + '</strong>' +
-            (detail ? ' &mdash; ' + detail : '') +
+            '<span>Pulling <strong>' + esc(model) + '</strong>' +
+            (detail ? ' &mdash; ' + esc(detail) : '') +
             '</span>';
     } else {
         var ok = failed === 0;
         el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' d-flex align-items-center mb-2';
         el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
-            '<span><strong>' + model + '</strong> pull complete' +
-            (total > 0 ? ' &mdash; ' + completed + '/' + total + ' succeeded' : '') +
-            (failed > 0 ? ', ' + failed + ' failed' : '') +
+            '<span><strong>' + esc(model) + '</strong> pull complete' +
+            (total > 0 ? ' &mdash; ' + esc(completed) + '/' + esc(total) + ' succeeded' : '') +
+            (failed > 0 ? ', ' + esc(failed) + ' failed' : '') +
             '</span>';
         if (failed > 0 && progress) {
             var why = document.createElement('span');
@@ -3619,7 +3628,7 @@ function cacheModelManual() {
             var el = document.createElement('div');
             el.id = 'cache-manual-banner-' + data.pull_id;
             el.className = 'alert alert-info py-2 px-3 small d-flex align-items-center mb-1';
-            el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Caching <strong class="ms-1">' + model + '</strong>';
+            el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Caching <strong class="ms-1">' + esc(model) + '</strong>';
             area.prepend(el);
         }
         pollCacheManual(data.pull_id, model);
@@ -3642,13 +3651,13 @@ function pollCacheManual(pullId, model) {
             if (data.status === 'pulling') {
                 el.className = 'alert alert-info py-2 px-3 small d-flex align-items-center mb-1';
                 var progress = data.progress || 'caching\u2026';
-                el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span><span>Caching <strong>' + model + '</strong> &mdash; ' + progress + '</span>';
+                el.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span><span>Caching <strong>' + esc(model) + '</strong> &mdash; ' + esc(progress) + '</span>';
                 setTimeout(function() { pollCacheManual(pullId, model); }, 2000);
             } else {
                 var ok = data.failed === 0;
                 el.className = 'alert ' + (ok ? 'alert-success' : 'alert-warning') + ' py-2 px-3 small d-flex align-items-center mb-1';
                 el.innerHTML = '<i class="bi ' + (ok ? 'bi-check-circle-fill' : 'bi-exclamation-triangle-fill') + ' me-2"></i>' +
-                    '<strong>' + model + '</strong>&nbsp;' + (ok ? 'cached successfully' : 'cache failed');
+                    '<strong>' + esc(model) + '</strong>&nbsp;' + (ok ? 'cached successfully' : 'cache failed');
                 setTimeout(function() { el.remove(); }, 10000);
                 refreshStatus();
             }
@@ -3679,7 +3688,7 @@ function cacheAllModels() {
             return;
         }
         var model = models[idx++];
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching ' + (idx) + '/' + models.length;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Caching ' + esc(idx) + '/' + esc(models.length);
         fetch('/api/cache/model', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -4110,7 +4119,7 @@ function renderWorkers(workers, link) {
         if (st) {
             if (!w.enabled) st.innerHTML = '<span class="badge bg-secondary">disabled</span>';
             else if (w.connected) st.innerHTML = '<span class="badge bg-success">connected</span>' +
-                (w.live ? ' <span class="small text-muted">' + workerAgo(w.live.connected_at) + '</span>' : '');
+                (w.live ? ' <span class="small text-muted">' + esc(workerAgo(w.live.connected_at)) + '</span>' : '');
             else st.innerHTML = '<span class="badge bg-danger">offline</span>';
         }
         var jobs = row.querySelector('[data-worker-jobs]');
@@ -4131,8 +4140,8 @@ function renderWorkers(workers, link) {
         if (det) {
             var parts = [];
             if (link.state === 'connected') {
-                parts.push('Connected as <strong>' + workerEsc(link.worker_name || '?') + '</strong> for ' + workerAgo(link.connected_since));
-                parts.push('Jobs in flight: ' + (link.in_flight || 0) + ', served: ' + (link.jobs_total || 0));
+                parts.push('Connected as <strong>' + workerEsc(link.worker_name || '?') + '</strong> for ' + esc(workerAgo(link.connected_since)));
+                parts.push('Jobs in flight: ' + esc(link.in_flight || 0) + ', served: ' + esc(link.jobs_total || 0));
                 if (link.protocols) parts.push('Serving: ' + workerEsc(link.protocols.join(', ')));
             } else if (link.configured) {
                 if (link.last_error) parts.push('Last error: ' + workerEsc(link.last_error));
@@ -4193,14 +4202,14 @@ function renderHubProviders(providers) {
         var members = providers.filter(function(p) { return p.kind === kind; });
         html += '<div class="col-md-4"><div class="border rounded p-2 h-100">' +
             '<div class="d-flex justify-content-between align-items-baseline">' +
-            '<span class="fw-semibold">' + title + ' <span class="text-muted fw-normal small">(' + members.length + ')</span></span>' +
+            '<span class="fw-semibold">' + esc(title) + ' <span class="text-muted fw-normal small">(' + esc(members.length) + ')</span></span>' +
             '<span class="small"><a href="#" data-hub-pick="' + kind + '" data-hub-on="1">all</a> · <a href="#" data-hub-pick="' + kind + '" data-hub-on="0">none</a></span>' +
             '</div><div class="small text-muted mb-1">' + hint + '</div>';
         if (!members.length) html += '<div class="small text-muted fst-italic">none</div>';
         members.forEach(function(p) {
             var off = p.status === 'offline' ? ' <span class="badge bg-secondary">offline</span>' : '';
-            html += '<div class="form-check"><input class="form-check-input" type="checkbox" id="hub-p-' + p.id + '" data-hub-provider="' + p.id + '" data-hub-kind="' + kind + '"' + (p.hub_shared ? ' checked' : '') + '>' +
-                '<label class="form-check-label" for="hub-p-' + p.id + '"><a href="/providers/' + p.id + '" class="text-decoration-none">' + workerEsc(p.name) + '</a>' + off + '</label></div>';
+            html += '<div class="form-check"><input class="form-check-input" type="checkbox" id="hub-p-' + esc(p.id) + '" data-hub-provider="' + esc(p.id) + '" data-hub-kind="' + kind + '"' + (p.hub_shared ? ' checked' : '') + '>' +
+                '<label class="form-check-label" for="hub-p-' + esc(p.id) + '"><a href="/providers/' + esc(p.id) + '" class="text-decoration-none">' + workerEsc(p.name) + '</a>' + off + '</label></div>';
         });
         html += '</div></div>';
     });
@@ -4259,7 +4268,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 var empty = tb.querySelector('td[colspan]');
                 if (empty) empty.parentNode.remove();
                 tb.insertAdjacentHTML('beforeend',
-                    '<tr data-worker-id="' + res.id + '"><td><a href="/providers/' + res.provider_id + '">' + workerEsc(res.name) + '</a></td>' +
+                    '<tr data-worker-id="' + esc(res.id) + '"><td><a href="/providers/' + esc(res.provider_id) + '">' + workerEsc(res.name) + '</a></td>' +
                     '<td data-worker-status><span class="badge bg-danger">offline</span></td>' +
                     '<td class="small" data-worker-jobs>—</td><td class="small" data-worker-models>0</td>' +
                     '<td class="small text-muted">never</td><td><code class="small">' + workerEsc(res.token.slice(0, 12)) + '…</code></td>' +
