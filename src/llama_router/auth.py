@@ -137,9 +137,22 @@ async def _resolve_key(
     *legacy* is ``key_hash_legacy(key)``, already computed by the caller.
     """
     record = await db.lookup_api_key(legacy)
-    if not record:
-        # PBKDF2 takes tens of milliseconds; keep it off the event loop.
-        modern = await asyncio.to_thread(key_hash, key)
+    # PBKDF2 takes tens of milliseconds; keep it off the event loop.
+    modern = await asyncio.to_thread(key_hash, key)
+    if record:
+        # Stored in the old plain SHA-256 form: upgrade it now that we have
+        # the key. Lookups still try the legacy form first, then PBKDF2.
+        if modern != legacy:
+            try:
+                await db.set_api_key_hash(int(record["id"]), modern)
+                logger.info("Upgraded API key %s to a PBKDF2 hash", record["id"])
+            except Exception:
+                logger.warning(
+                    "Could not upgrade the hash of API key %s",
+                    record["id"],
+                    exc_info=True,
+                )
+    else:
         if modern != legacy:
             record = await db.lookup_api_key(modern)
         if not record and not settings.session_secret.strip():

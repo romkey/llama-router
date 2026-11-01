@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 
 # Reachability probes must be quick: one black-holed address must not stall the
 # health cycle for every other provider.
+# Request log retention runs at most this often.
+LOG_PURGE_INTERVAL_S = 3600.0
 _PROBE_TIMEOUT = httpx.Timeout(5.0)
 # Providers checked at once during startup and each health cycle.
 _CHECK_CONCURRENCY = 8
@@ -153,6 +155,8 @@ class ProviderManager:
         self._last_activity: dict[int, float] = {}
         self._activity_listeners: list[Callable[[int], None]] = []
         self._health_task: asyncio.Task[None] | None = None
+        # When request log retention last ran (monotonic); None: not yet.
+        self._last_log_purge: float | None = None
         # Why a provider with a reachable address is still not usable, shown in
         # the dashboard. Cleared once discovery succeeds.
         self._status_detail: dict[int, str] = {}
@@ -1652,6 +1656,30 @@ class ProviderManager:
                     else str(exc)
                 )
                 logger.error("Health check cycle failed: %s", detail)
+            try:
+                await self.purge_request_logs()
+            except Exception:
+                logger.exception("Request log retention failed")
+
+    async def purge_request_logs(self, *, force: bool = False) -> int:
+        """Delete request log rows older than LLAMA_ROUTER_REQUEST_LOG_RETENTION_DAYS.
+
+        Runs from the health-check loop at most once per hour (every call
+        with *force*). Returns the number of rows deleted.
+        """
+        days = settings.request_log_retention_days
+        if days <= 0:
+            return 0
+        now = time.monotonic()
+        last = self._last_log_purge
+        if not force and last is not None and now - last < LOG_PURGE_INTERVAL_S:
+            return 0
+        self._last_log_purge = now
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        deleted = await self._db.delete_request_logs_before(cutoff)
+        if deleted:
+            logger.info("Deleted %d request log rows older than %g days", deleted, days)
+        return deleted
 
     async def _run_health_checks(self) -> None:
         providers = await self._db.list_providers()

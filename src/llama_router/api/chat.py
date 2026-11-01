@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..auth import routing_preferences_from_request
+from ..client_address import client_ip
 from ..decision_policy import apply_decision_policy
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..request_body import json_object
@@ -33,7 +34,7 @@ async def chat(request: Request) -> Response:
     model = await apply_decision_policy(
         request, body, model, prefs, rt=rt, pm=pm, db=db
     )
-    session = rt.session_for(request.headers, body, prefs)
+    session = rt.session_for(request.headers, body, prefs, client_ip(request))
 
     result = await rt.route(model, request.url.path, prefs, session=session)
     if not result:

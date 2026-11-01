@@ -171,6 +171,49 @@ def test_store_expires_and_caps(clock):
     assert len(store) == 1  # "b" was swept as expired
 
 
+def test_anonymous_sessions_are_scoped_by_client():
+    body = _chat(prompt_cache_key="shared")
+    a = session_key({}, body, None, "198.51.100.1")
+    b = session_key({}, body, None, "198.51.100.2")
+    assert a is not None
+    assert b is not None
+    assert a != b
+    assert a == session_key({}, body, None, "198.51.100.1")
+    # The address is not stored in plain form, and IPv6 colons stay out of
+    # the scope.
+    v6 = session_key({}, body, None, "2001:db8::1")
+    assert v6 is not None
+    assert "198.51.100.1" not in a
+    assert "2001" not in v6
+    assert v6.split(":", 1)[1].startswith(MODEL)
+    # A key, when there is one, decides the scope; the address does not.
+    assert session_key({}, body, 7, "198.51.100.1") == session_key({}, body, 7)
+
+
+def test_store_caps_sessions_per_key(clock):
+    store = SessionAffinity(ttl_s=60, max_sessions=100, clock=clock, max_per_key=2)
+    store.bind("1:m:a", 1)
+    store.bind("2:m:x", 1)
+    store.bind("1:m:b", 1)
+    store.bind("1:m:a", 2)  # refresh: a is now newer than b
+    store.bind("1:m:c", 1)
+    assert store.get("1:m:b") is None  # key 1's least recently used
+    assert store.get("1:m:a") == Binding(2)
+    assert store.get("1:m:c") == Binding(1)
+    assert store.get("2:m:x") == Binding(1)  # other keys untouched
+    store.forget("1:m:a")
+    store.bind("1:m:d", 1)
+    assert store.get("1:m:c") is not None
+    assert store.stats()["max_sessions_per_key"] == 2
+
+
+def test_session_for_scopes_anonymous_by_client(db, pm, clock):
+    rt = _router(db, pm, clock)
+    one = rt.session_for({}, _chat(), None, "198.51.100.1")
+    two = rt.session_for({}, _chat(), None, "198.51.100.2")
+    assert one != two
+
+
 # --- Routing ---
 
 
