@@ -721,6 +721,14 @@ The container runs as user 10001 with a read-only root filesystem and no capabil
 docker compose -f docker-compose.prod.yaml run --rm --user root llama-router chown -R 10001:10001 /app/data
 ```
 
+Release images after 0.26.1 are signed with [cosign](https://docs.sigstore.dev/) keyless signing by the release workflow. To check one before running it:
+
+```bash
+cosign verify ghcr.io/romkey/llama-router:latest \
+  --certificate-identity-regexp '^https://github.com/romkey/llama-router/\.github/workflows/release\.yaml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ### With pip
 
 Python 3.14 or newer:
@@ -756,19 +764,15 @@ docker compose -f docker-compose.prod.yaml restart llama-router
 
 ### Debugging from inside the container
 
-The image includes basic network tools so you can check reachability from the
-router's own point of view, which is often different from your laptop's:
+The production image carries no network tools (no ping, dig, nc, curl or wget), to keep its attack surface small. Python is there, so a quick check of whether the router can reach a backend works:
 
 ```bash
-docker compose -f docker-compose.prod.yaml exec llama-router ping -c 3 192.168.1.100
-docker compose -f docker-compose.prod.yaml exec llama-router host gpu-server.local
-docker compose -f docker-compose.prod.yaml exec llama-router dig +short gpu-server.local
-docker compose -f docker-compose.prod.yaml exec llama-router nc -zv 192.168.1.100 11434
-docker compose -f docker-compose.prod.yaml exec llama-router curl -s http://192.168.1.100:11434/api/version
-docker compose -f docker-compose.prod.yaml exec llama-router wget -qO- http://192.168.1.100:8080/health
-docker compose -f docker-compose.prod.yaml exec llama-router ip route
-docker compose -f docker-compose.prod.yaml exec llama-router traceroute 192.168.1.100
+docker compose -f docker-compose.prod.yaml exec llama-router python -c "import socket; print(socket.getaddrinfo('gpu-server.local', None)[0][4])"
+docker compose -f docker-compose.prod.yaml exec llama-router python -c "import socket; socket.create_connection(('192.168.1.100', 11434), timeout=3); print('open')"
+docker compose -f docker-compose.prod.yaml exec llama-router python -c "import urllib.request; print(urllib.request.urlopen('http://192.168.1.100:11434/api/version', timeout=3).read().decode())"
 ```
+
+For anything more, attach a throwaway debugging container to the router's network namespace, e.g. `docker run --rm -it --network container:<router-container> nicolaka/netshoot`. The development image (`docker compose up`) still includes ping, dig, nc, curl, wget, ip and traceroute.
 
 ## Development
 

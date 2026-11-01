@@ -9,6 +9,16 @@ described in their git tags and GitHub Releases.
 
 ### Security
 
+- **Signed release images.** The release workflow signs each image with
+  cosign keyless signing (by digest, every platform); the README shows how to
+  verify one with `cosign verify`.
+- **GitHub Actions pinned to commit SHAs.** Every action in the workflows is
+  pinned to a full commit SHA with its version in a comment, and Renovate
+  keeps the digests current.
+- **No network tools in the production image.** curl, wget, nc, dig, host,
+  ping, traceroute, ip and ps are gone from the released image (the
+  development image keeps them). The README shows Python one-liners and a
+  sidecar container for checking reachability instead.
 - **The first dashboard administrator comes from the environment.** With no
   dashboard accounts the dashboard used to be open to anyone, and whoever
   reached it first could create the administrator. Now it is locked and only
@@ -17,12 +27,10 @@ described in their git tags and GitHub Releases.
   while there are none. SSO can create the first account only for a member of
   `LLAMA_ROUTER_OIDC_ADMIN_GROUP`. **Breaking:** set the variables before
   starting a new install, or after clearing the accounts.
-
 - **New installs require API keys.** Requests without a key are refused unless
   *Accept requests without an API key* is turned on (llama-router warns at
   startup while it is). Routers that already have providers, API keys or
   dashboard accounts keep their setting. A missing setting now means "refuse".
-
 - **A wrong API key is always refused.** A request that sends a key that does
   not resolve gets 401 even when requests without a key are accepted, instead
   of quietly being served as anonymous.
