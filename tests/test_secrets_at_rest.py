@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,23 @@ def test_secret_file_created_0600_and_reused(
     monkeypatch.setattr(ps, "_local_secrets", {})
     assert ps.decrypt_api_key(enc) == "sk-1"
     assert path.read_bytes() == first
+
+
+def test_secret_file_lost_race_uses_winners_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_session_secret: None
+) -> None:
+    path = tmp_path / "secret.key"
+    monkeypatch.setattr(settings, "secret_key_path", str(path))
+    real_link = os.link
+
+    def link_after_sibling(src: Path, dst: Path) -> None:
+        # A sibling process finished publishing its secret first.
+        dst.write_bytes(b"sibling-secret\n")
+        real_link(src, dst)
+
+    monkeypatch.setattr(os, "link", link_after_sibling)
+    assert ps.server_secret() == b"sibling-secret"
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_secret_file_not_used_with_session_secret(

@@ -22,6 +22,7 @@ import hashlib
 import logging
 import os
 import secrets
+import tempfile
 import threading
 from pathlib import Path
 
@@ -63,6 +64,30 @@ def _read_secret(path: Path) -> bytes:
     return value
 
 
+def _publish_secret(path: Path, value: bytes) -> bool:
+    """Create *path* holding *value* (mode 0600) unless it already exists.
+
+    The value is written to a temporary file first and hard-linked into
+    place, so another process never sees the file empty or half-written.
+    False if the file already existed.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".secret-", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(value + b"\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.chmod(0o600)
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _local_secret() -> bytes:
     """The generated secret, created (mode 0600) the first time it is needed."""
     path = secret_key_path()
@@ -75,14 +100,7 @@ def _local_secret() -> bytes:
         except FileNotFoundError:
             path.parent.mkdir(parents=True, exist_ok=True)
             value = secrets.token_urlsafe(48).encode("ascii")
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                # Another process created it first; use theirs.
-                value = _read_secret(path)
-            else:
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(value + b"\n")
+            if _publish_secret(path, value):
                 logger.warning(
                     "LLAMA_ROUTER_SESSION_SECRET is not set: generated a secret "
                     "in %s. Keep that file (and back it up with the database); "
@@ -90,6 +108,9 @@ def _local_secret() -> bytes:
                     "working.",
                     path,
                 )
+            else:
+                # Another process created it first; use theirs.
+                value = _read_secret(path)
         _local_secrets[path] = value
         return value
 
