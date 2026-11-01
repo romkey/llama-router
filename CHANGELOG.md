@@ -20,7 +20,7 @@ described in their git tags and GitHub Releases.
 
 - **Decision policy gates see the whole request and fail closed.** Gates (and
   tiers) now read messages of every role, system, assistant and tool included,
-  whatever their case, not only user messages. When a policy with gates cannot
+  whatever their case, and tool-call arguments, not only user messages. When a policy with gates cannot
   be decided (no provider, an error, a timeout), the request is refused with
   503 instead of passing unchecked; `LLAMA_ROUTER_DECISION_POLICY_FAIL_OPEN=true`
   restores the old behaviour. Tier-only policies still fall back to the

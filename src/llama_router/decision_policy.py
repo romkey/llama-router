@@ -22,6 +22,7 @@ A policy with only a tier goes on with the model the request asked for.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -139,17 +140,64 @@ def parse_policy(raw: Any) -> DecisionPolicy:
 # --- The state of a request ---
 
 
+def _arguments(value: Any) -> str | None:
+    """Tool-call arguments as text: a JSON string as sent, or an object."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return None
+
+
+def _part_text(part: Any) -> str | None:
+    if not isinstance(part, dict):
+        return None
+    text = part.get("text")
+    if isinstance(text, str):
+        return text
+    kind = part.get("type")
+    if kind == "tool_use":  # Anthropic: a call the assistant made
+        return _call_text(part.get("name"), part.get("input"))
+    if kind == "tool_result":  # Anthropic: what the tool returned
+        return _text(part.get("content"))
+    return None
+
+
 def _text(content: Any) -> str | None:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = [
-            p["text"]
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str)
-        ]
+        parts = [t for t in map(_part_text, content) if t is not None]
         return "\n".join(parts) if parts else None
     return None
+
+
+def _call_text(name: Any, arguments: Any) -> str | None:
+    args = _arguments(arguments)
+    if args is None and not isinstance(name, str):
+        return None
+    return f"call {name if isinstance(name, str) else ''}({args or ''})"
+
+
+def _calls(m: dict[str, Any]) -> list[str]:
+    """A message's tool calls as text: chat ``tool_calls`` (OpenAI, Ollama),
+    the older ``function_call`` and a Responses ``function_call`` item.
+    Their arguments are text a client or a model wrote, so gates read them.
+    """
+    calls: list[Any] = []
+    tool_calls = m.get("tool_calls")
+    if isinstance(tool_calls, list):
+        calls += [c.get("function", c) for c in tool_calls if isinstance(c, dict)]
+    calls.append(m.get("function_call"))
+    if m.get("type") == "function_call":
+        calls.append(m)
+    out = []
+    for c in calls:
+        if isinstance(c, dict):
+            text = _call_text(c.get("name"), c.get("arguments"))
+            if text is not None:
+                out.append(text)
+    return out
 
 
 def _turns(body: dict[str, Any]) -> list[str]:
@@ -190,7 +238,8 @@ def _turns(body: dict[str, Any]) -> list[str]:
         if text is None:
             # Responses API tool results: {"type": "function_call_output", ...}
             text = _text(m.get("output"))
-        if text is None or not text.strip():
+        text = "\n".join(t for t in (text, *_calls(m)) if t)
+        if not text.strip():
             continue
         if label != "user":
             kind = m.get("type")

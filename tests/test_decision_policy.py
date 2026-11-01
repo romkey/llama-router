@@ -208,6 +208,65 @@ def test_questions_follow_the_tier_models():
         ),
         ({"system": "be brief", "prompt": "p"}, ["system: be brief", "p"]),
         (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {"name": "f", "arguments": '{"x": "a"}'},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "tool_calls": [  # Ollama: arguments as an object
+                            {"function": {"name": "g", "arguments": {"y": "b"}}}
+                        ],
+                    },
+                    {"role": "assistant", "function_call": {"name": "h"}},
+                ]
+            },
+            [
+                'assistant: call f({"x": "a"})',
+                'assistant: call g({"y": "b"})',
+                "assistant: call h()",
+            ],
+        ),
+        (
+            {
+                "input": [
+                    {"type": "function_call", "name": "f", "arguments": "{}"},
+                    {"role": "user", "content": "q"},
+                ]
+            },
+            ["function_call: call f({})", "q"],
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "name": "f", "input": {"z": 1}}
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "content": [{"type": "text", "text": "res"}],
+                            }
+                        ],
+                    },
+                ]
+            },
+            ['assistant: call f({"z": 1})', "res"],
+        ),
+        (
             {"instructions": "be kind", "input": [{"role": "user", "content": "q"}]},
             ["system: be kind", "q"],
         ),
