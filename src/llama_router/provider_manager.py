@@ -55,6 +55,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# A failed sync from the purge timer is tried again after this long.
+_PURGE_RETRY_S = 60.0
+
 # Reachability probes must be quick: one black-holed address must not stall the
 # health cycle for every other provider.
 # Request log retention runs at most this often.
@@ -174,6 +177,11 @@ class ProviderManager:
         # One catalog sync at a time per worker, so an older one cannot undo
         # a newer one.
         self._catalog_locks: dict[int, asyncio.Lock] = {}
+        # When each provider a worker shared individually stopped being
+        # shared (monotonic), and the timers that delete them once
+        # worker_unshared_purge_hours have passed, one per worker.
+        self._unshared_since: dict[int, float] = {}
+        self._purge_timers: dict[int, asyncio.Task[None]] = {}
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -358,6 +366,9 @@ class ProviderManager:
             with suppress(asyncio.CancelledError, Exception):
                 await task
         self._probing.clear()
+        for timer in list(self._purge_timers.values()):
+            timer.cancel()
+        self._purge_timers.clear()
         for client in self._ollama_clients.values():
             await client.close()
         for lcpp_client in self._llamacpp_clients.values():
@@ -624,6 +635,10 @@ class ProviderManager:
         self._logged_detail.pop(provider_id, None)
         self._child_reasons.pop(provider_id, None)
         self._catalog_locks.pop(provider_id, None)
+        self._unshared_since.pop(provider_id, None)
+        timer = self._purge_timers.pop(provider_id, None)
+        if timer is not None and timer is not asyncio.current_task():
+            timer.cancel()
         self.stats.forget_provider(provider_id)
         await self._db.remove_provider(provider_id)
 
@@ -1939,7 +1954,10 @@ class ProviderManager:
     async def _sync_catalog(self, conn: WorkerConnection) -> None:
         parent_id = conn.provider_id
         async with self._worker_lock(parent_id):
-            if not self._is_current_worker(conn) or conn.catalog is None:
+            # A newer frame replaces conn.catalog; this sync works from the
+            # list it started with throughout (the next sync applies the new).
+            catalog = conn.catalog
+            if not self._is_current_worker(conn) or catalog is None:
                 return
             parent = await self._db.get_provider(parent_id)
             if parent is None or not parent.is_worker or parent.worker_name is None:
@@ -1950,7 +1968,7 @@ class ProviderManager:
             }
             # Providers the worker no longer shares give up their names first,
             # so one shared in their place can have <worker>/<provider>.
-            shared = {int(e["id"]) for e in conn.catalog}
+            shared = {int(e["id"]) for e in catalog}
             for rid, old in existing.items():
                 if rid in shared or old.name.endswith(f"#{rid}"):
                     continue
@@ -1961,7 +1979,7 @@ class ProviderManager:
             # Children that could not take their name yet (another provider
             # had it, maybe a sibling renamed later in this same catalog).
             retry: list[tuple[Provider, str]] = []
-            for entry in conn.catalog:
+            for entry in catalog:
                 rid = int(entry["id"])
                 name = f"{parent.name}/{entry['name']}"
                 try:
@@ -1978,6 +1996,7 @@ class ProviderManager:
                     continue
                 if child is None:
                     continue
+                self._unshared_since.pop(child.require_id(), None)
                 if child.name != name:
                     retry.append((child, name))
                 self._alias_child(child)
@@ -1986,14 +2005,81 @@ class ProviderManager:
             for child, name in retry:
                 if await self._name_free(name, child.id):
                     await self._rename(child, name)
-            gone = list(existing.values())
+            gone, purge = self._purge_unshared(list(existing.values()), len(catalog))
+        for child in purge:
+            logger.info(
+                "Worker %s: deleting %s, no longer shared by the worker",
+                parent.name,
+                child.name,
+            )
+            await self.remove_provider(child.require_id())
         for child in gone:
             self.worker_hub.remove_child(child.require_id())
             await self._take_child_offline(child, "no longer shared by the worker")
+        grace = settings.worker_unshared_purge_hours * 3600.0
+        if gone and grace > 0:
+            # Due when the longest unshared one reaches the grace period.
+            oldest = min(self._unshared_since[c.require_id()] for c in gone)
+            self._schedule_purge(conn, oldest + grace - time.monotonic())
         for child in wanted:
             async with self._worker_lock(child.require_id()):
                 if self.worker_hub.get(child.require_id()) is conn:
                     await self._bring_worker_online(conn, child)
+
+    def _purge_unshared(
+        self, unshared: list[Provider], shared: int
+    ) -> tuple[list[Provider], list[Provider]]:
+        """Split a worker's unshared providers into those to keep (offline)
+        and those to delete: unshared for longer than
+        worker_unshared_purge_hours, and the longest unshared beyond
+        worker_max_shared_providers, so a worker cannot pile up rows."""
+        now = time.monotonic()
+        for child in unshared:
+            self._unshared_since.setdefault(child.require_id(), now)
+        unshared.sort(key=lambda c: self._unshared_since[c.require_id()])
+        grace = settings.worker_unshared_purge_hours * 3600.0
+        excess = max(0, shared + len(unshared) - settings.worker_max_shared_providers)
+        keep: list[Provider] = []
+        purge: list[Provider] = []
+        for i, child in enumerate(unshared):
+            since = self._unshared_since[child.require_id()]
+            if i < excess or (grace > 0 and now - since >= grace):
+                purge.append(child)
+            else:
+                keep.append(child)
+        return keep, purge
+
+    def _schedule_purge(self, conn: WorkerConnection, delay: float) -> None:
+        """Sync the worker's catalog again in *delay* seconds, when its
+        longest unshared provider is due for deletion. That sync deletes it
+        and schedules the next. One timer per worker (a running one is due no
+        later, as providers unshared since are due after it); it uses
+        whichever socket is current when it fires, so a reconnect in between
+        does not lose it."""
+        parent_id = conn.provider_id
+        timer = self._purge_timers.get(parent_id)
+        if timer is not None and not timer.done():
+            return
+
+        async def later() -> None:
+            await asyncio.sleep(max(0.0, delay) + 1.0)
+            if self._purge_timers.get(parent_id) is asyncio.current_task():
+                del self._purge_timers[parent_id]
+            current = self.worker_hub.get(parent_id)
+            if current is None or not self._is_current_worker(current):
+                return
+            try:
+                await self._on_worker_catalog(current)
+            except Exception:
+                # The worker may not send its catalog again; try later.
+                logger.exception(
+                    "Could not delete unshared providers of worker %d", parent_id
+                )
+                self._schedule_purge(current, _PURGE_RETRY_S)
+
+        self._purge_timers[parent_id] = asyncio.create_task(
+            later(), name=f"purge-unshared-{parent_id}"
+        )
 
     async def _name_free(self, name: str, own_id: int | None) -> bool:
         holder = await self._db.get_provider_by_name(name)

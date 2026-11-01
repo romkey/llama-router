@@ -15,8 +15,10 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from llama_router import provider_manager as pm_mod
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
+from llama_router.config import settings
 from llama_router.database import Database
 from llama_router.llamacpp_api import deps as v1_deps
 from llama_router.models import ProviderProtocol, ProviderStatus
@@ -30,7 +32,7 @@ from llama_router.worker_link.hub import (
     worker_token_hash,
     worker_token_prefix,
 )
-from llama_router.worker_link.relay import relay_token
+from llama_router.worker_link.relay import RELAY_HEADER, relay_token
 from llama_router.worker_link.worker import (
     WorkerClient,
     normalize_hub_url,
@@ -986,8 +988,9 @@ async def test_remotes_from_our_hub_are_not_shared_back(link, two_routers) -> No
     assert rt.table.ranked_for("tiny:1b", "/api/chat", "balanced")
 
     async with httpx.AsyncClient(base_url=link["hub_url"]) as c:
-        tags = await c.get("/api/tags", headers={p.HUB_HEADER: p.HUB_HEADER_VALUE})
-        ps = await c.get("/api/ps", headers={p.HUB_HEADER: p.HUB_HEADER_VALUE})
+        via = {p.HUB_HEADER: p.HUB_HEADER_VALUE, RELAY_HEADER: relay_token()}
+        tags = await c.get("/api/tags", headers=via)
+        ps = await c.get("/api/ps", headers=via)
     assert tags.json()["models"] == []
     assert ps.status_code == 200
 
@@ -997,6 +1000,7 @@ async def test_remotes_from_our_hub_are_not_shared_back(link, two_routers) -> No
 
 async def _individual_worker(link, monkeypatch, catalog: list[dict]) -> WorkerClient:
     monkeypatch.setattr(worker_mod, "_CATALOG_INTERVAL", 0.05)
+    monkeypatch.setattr(settings, "worker_catalog_min_interval_seconds", 0.0)
     link["seen"]["provider_models"].update({7: ["seven:1b"], 8: ["eight:1b"]})
 
     async def source() -> list[dict]:
@@ -1300,3 +1304,365 @@ async def test_overlapping_catalogs_end_on_the_latest(link, monkeypatch) -> None
         return all(c.status == ProviderStatus.IDLE for c in kids.values())
 
     await _wait_for(back)
+
+
+# --- limits on what a hub or worker may send ---
+
+
+def _bare_worker(**kw: Any) -> WorkerClient:
+    return WorkerClient(
+        hub_url="ws://127.0.0.1:1/worker/ws",
+        token=generate_worker_token(),
+        ollama_url="http://127.0.0.1:1",
+        llamacpp_url=None,
+        **kw,
+    )
+
+
+def _request_frame(req_id: int) -> dict:
+    return {
+        "type": "request",
+        "id": req_id,
+        "target": "ollama",
+        "method": "POST",
+        "path": "/api/chat",
+        "headers": [],
+    }
+
+
+async def test_worker_refuses_jobs_past_four_times_its_concurrency(
+    monkeypatch,
+) -> None:
+    w = _bare_worker(max_concurrency=1)
+    replies: list[tuple[int, int]] = []
+
+    async def reply(req_id: int, status: int, body: dict) -> None:
+        replies.append((req_id, status))
+
+    release = asyncio.Event()
+
+    async def execute(job) -> None:
+        await release.wait()
+
+    monkeypatch.setattr(w, "_reply_json", reply)
+    monkeypatch.setattr(w, "_execute", execute)
+    for i in range(1, 7):
+        w._on_text(_request_frame(i))
+    await _wait_for(lambda: len(replies) == 2)
+    assert replies == [(5, 503), (6, 503)]
+    assert sorted(w._jobs) == [1, 2, 3, 4]
+    # Body frames for a refused job are dropped.
+    w._on_bytes(p.encode_binary(p.REQ_BODY, 5, b"x" * 10))
+    assert w._body_bytes == 0
+    release.set()
+    await _wait_for(lambda: not w._jobs)
+    await w.stop()
+
+
+async def test_worker_caps_request_bodies_held_at_once(monkeypatch) -> None:
+    w = _bare_worker(max_concurrency=4, max_body_bytes_in_flight=10)
+    replies: list[tuple[int, int]] = []
+
+    async def reply(req_id: int, status: int, body: dict) -> None:
+        replies.append((req_id, status))
+
+    monkeypatch.setattr(w, "_reply_json", reply)
+    hold = asyncio.Event()
+    real_execute = w._execute
+
+    async def execute(job) -> None:
+        if job.id == 1:
+            await hold.wait()
+            return
+        await real_execute(job)
+
+    monkeypatch.setattr(w, "_execute", execute)
+    w._on_text(_request_frame(1))
+    w._on_text(_request_frame(2))
+    w._on_bytes(p.encode_binary(p.REQ_BODY, 1, b"x" * 8))
+    w._on_bytes(p.encode_binary(p.REQ_BODY, 2, b"y" * 8))
+    assert w._body_bytes == 8
+    job2 = w._jobs[2]
+    assert job2.over_budget
+    assert job2.body == []
+    w._on_bytes(p.encode_binary(p.REQ_END, 2))
+    await _wait_for(lambda: replies == [(2, 503)])
+    # Finishing a job frees its share of the budget.
+    hold.set()
+    w._on_bytes(p.encode_binary(p.REQ_END, 1))
+    await _wait_for(lambda: not w._jobs)
+    assert w._body_bytes == 0
+    await w.stop()
+
+
+class _SentFrames:
+    """Stands in for the hub's side of a worker socket."""
+
+    def __init__(self) -> None:
+        self.text: list[dict] = []
+
+    async def send_text(self, data: str) -> None:
+        self.text.append(json.loads(data))
+
+    async def send_bytes(self, data: bytes) -> None:
+        pass
+
+
+def _hub_conn(**kw: Any):
+    from llama_router.worker_link.hub import WorkerConnection
+
+    return WorkerConnection(
+        _SentFrames(),
+        worker_id=1,
+        name="w",
+        provider_id=1,
+        protocols=["ollama"],
+        max_concurrency=2,
+        software_version=None,
+        remote_addr=None,
+        **kw,
+    )
+
+
+async def _open_response(conn, req_id: int = 1):
+    """A started response on *conn*, as ``open`` leaves it."""
+    from llama_router.worker_link.hub import _Pending, _WorkerStream
+
+    await conn._slots.acquire()
+    pend = _Pending(req_id)
+    conn._pending[req_id] = pend
+    request = httpx.Request("POST", "http://worker/api/chat")
+    conn._requests[req_id] = request
+    pend.started.set_result((200, []))
+    return pend, _WorkerStream(conn, pend, 5.0, request).__aiter__()
+
+
+async def test_hub_cuts_off_a_response_over_the_ceiling(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "worker_max_response_bytes", 10)
+    conn = _hub_conn()
+    _, stream = await _open_response(conn)
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"x" * 8))
+    assert await stream.__anext__() == b"x" * 8
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"x" * 8))
+    with pytest.raises(httpx.ReadError, match="over 10 bytes"):
+        await stream.__anext__()
+    assert conn.in_flight == 0
+    assert conn._ws.text[-1] == {"type": "cancel", "id": 1}
+
+
+async def test_hub_stops_reading_while_a_client_falls_behind(monkeypatch) -> None:
+    from llama_router.worker_link import hub as hub_mod
+
+    monkeypatch.setattr(settings, "worker_response_buffer_bytes", 10)
+    monkeypatch.setattr(hub_mod, "_STALL_TIMEOUT", 1.5)
+    conn = _hub_conn()
+    pend, stream = await _open_response(conn)
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"a" * 6))
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"b" * 6))
+    # Full: the next frame waits for the client to read.
+    blocked = asyncio.create_task(
+        conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"c" * 6))
+    )
+    await asyncio.sleep(0.05)
+    assert not blocked.done()
+    assert await stream.__anext__() == b"a" * 6
+    await asyncio.wait_for(blocked, 1)
+    assert pend.buffered == 12
+
+    # A client that stops reading altogether loses its response.
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"d" * 6))
+    with pytest.raises(httpx.ReadError, match="stopped reading"):
+        await stream.__anext__()
+    assert conn.in_flight == 0
+    assert pend.buffered == 0
+
+
+async def test_catalogs_are_applied_at_a_limited_rate_latest_first(
+    monkeypatch,
+) -> None:
+    from llama_router.worker_link.hub import WorkerHub
+
+    monkeypatch.setattr(settings, "worker_catalog_min_interval_seconds", 0.3)
+    hub = WorkerHub()
+    applied: list[tuple[float, list[int]]] = []
+
+    async def on_catalog(conn) -> None:
+        applied.append((time.monotonic(), [e["id"] for e in conn.catalog]))
+
+    hub.set_callbacks(None, None, on_catalog)
+    conn = _hub_conn(expose=p.EXPOSE_INDIVIDUAL, on_catalog=hub._catalog_received)
+
+    def send(*ids: int) -> None:
+        conn._on_text(
+            {"type": "catalog", "providers": [{"id": i, "name": str(i)} for i in ids]}
+        )
+
+    send(1)
+    await _wait_for(lambda: len(applied) == 1)
+    send(1, 2)
+    send(1, 2, 3)
+    send(1, 2, 3, 4)
+    await _wait_for(lambda: len(applied) == 2)
+    await asyncio.sleep(0.4)
+    # Only the newest of the three, and not before the interval was up.
+    assert [ids for _, ids in applied] == [[1], [1, 2, 3, 4]]
+    assert applied[1][0] - applied[0][0] >= 0.25
+
+
+async def test_catalog_is_capped(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "worker_max_shared_providers", 2)
+    conn = _hub_conn(expose=p.EXPOSE_INDIVIDUAL)
+    conn._on_text(
+        {
+            "type": "catalog",
+            "providers": [{"id": i, "name": f"p{i}"} for i in range(1, 6)],
+        }
+    )
+    assert [e["id"] for e in conn.catalog] == [1, 2]
+
+
+async def test_unshared_providers_are_deleted_after_a_while(link, monkeypatch) -> None:
+    db, pm, pid = link["db"], link["pm"], link["provider_id"]
+    catalog = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+    ]
+    await _individual_worker(link, monkeypatch, catalog)
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    conn = pm.worker_hub.get(pid)
+    # About a third of a second.
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.0001)
+    conn.catalog = [catalog[0]]
+    await pm._on_worker_catalog(conn)
+    kids = await _children(link)
+    assert set(kids) == {"alice-gpu/gpu", "alice-gpu/api#8"}
+    api = kids["alice-gpu/api#8"]
+
+    async def purged():
+        return await db.get_provider(api.id) is None
+
+    # The purge timer syncs again once the grace period is over.
+    await _wait_for(purged)
+    assert set(await _children(link)) == {"alice-gpu/gpu"}
+
+
+async def test_unshared_providers_beyond_the_cap_go_at_once(link, monkeypatch) -> None:
+    pm, pid = link["pm"], link["provider_id"]
+    link["seen"]["provider_models"][9] = ["nine:1b"]
+    catalog = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+    ]
+    await _individual_worker(link, monkeypatch, catalog)
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    monkeypatch.setattr(settings, "worker_max_shared_providers", 2)
+    conn = pm.worker_hub.get(pid)
+    conn.catalog = [catalog[0], {"id": 9, "name": "npu", "locality": "local"}]
+    await pm._on_worker_catalog(conn)
+    by_rid = {c.worker_remote_id for c in (await _children(link)).values()}
+    assert by_rid == {7, 9}
+
+
+async def test_purge_timer_survives_a_reconnect(monkeypatch) -> None:
+    """The timer syncs through whichever socket is current when it fires,
+    not the one that scheduled it."""
+    pm = ProviderManager(None)  # type: ignore[arg-type]
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.00001)
+    old, new = _hub_conn(), _hub_conn()
+    synced: list[Any] = []
+
+    async def on_catalog(conn) -> None:
+        synced.append(conn)
+
+    monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
+    pm.worker_hub._conns[1] = old
+    pm._schedule_purge(old, 0.0)
+    # The worker reconnects before the timer fires; the new socket's sync
+    # finds a timer already running and leaves it be.
+    pm.worker_hub._conns[1] = new
+    pm._schedule_purge(new, 0.0)
+    await _wait_for(lambda: synced)
+    assert synced == [new]
+
+
+async def test_purge_timer_retries_a_failed_sync(monkeypatch) -> None:
+    pm = ProviderManager(None)  # type: ignore[arg-type]
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.00001)
+    conn = _hub_conn()
+    calls: list[Any] = []
+
+    async def on_catalog(c) -> None:
+        calls.append(c)
+        if len(calls) == 1:
+            raise RuntimeError("database busy")
+
+    monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
+    monkeypatch.setattr(pm_mod, "_PURGE_RETRY_S", 0.0)
+    pm.worker_hub._conns[1] = conn
+    pm._schedule_purge(conn, 0.0)
+    await _wait_for(lambda: len(calls) == 2)
+
+
+async def test_catalog_sync_uses_the_catalog_it_started_with(link, monkeypatch) -> None:
+    """A frame that lands mid-sync does not change what that sync deletes."""
+    pm, pid = link["pm"], link["provider_id"]
+    catalog = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+    ]
+    await _individual_worker(link, monkeypatch, catalog)
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    monkeypatch.setattr(settings, "worker_max_shared_providers", 2)
+    conn = pm.worker_hub.get(pid)
+    original = pm._sync_child
+
+    async def sync_child_while_a_frame_lands(*args, **kw):
+        conn.catalog = [*catalog, {"id": 9, "name": "npu", "locality": "local"}]
+        return await original(*args, **kw)
+
+    monkeypatch.setattr(pm, "_sync_child", sync_child_while_a_frame_lands)
+    conn.catalog = [catalog[0]]
+    await pm._sync_catalog(conn)
+    # One shared plus one unshared is within the cap: 8 is kept.
+    assert {c.worker_remote_id for c in (await _children(link)).values()} == {7, 8}
+
+
+async def test_purge_timer_waits_only_for_the_longest_unshared(
+    link, monkeypatch
+) -> None:
+    """A provider unshared earlier is deleted when its own grace is up, not
+    a whole grace period after the last sync."""
+    pm, pid = link["pm"], link["provider_id"]
+    catalog = [
+        {"id": 7, "name": "gpu", "locality": "local"},
+        {"id": 8, "name": "api", "locality": "local"},
+    ]
+    await _individual_worker(link, monkeypatch, catalog)
+
+    async def two():
+        return len(await _children(link)) == 2
+
+    await _wait_for(two)
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 1.0)
+    delays: list[float] = []
+    monkeypatch.setattr(pm, "_schedule_purge", lambda conn, d: delays.append(d))
+    conn = pm.worker_hub.get(pid)
+    api = (await _children(link))["alice-gpu/api"]
+    conn.catalog = [catalog[0]]
+    # Unshared half an hour ago (by the hub's reckoning).
+    pm._unshared_since[api.require_id()] = time.monotonic() - 1800.0
+    await pm._on_worker_catalog(conn)
+    assert len(delays) == 1
+    assert 1700.0 < delays[0] <= 1800.0
