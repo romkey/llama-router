@@ -148,6 +148,9 @@ async def _resolve_key(
             record = await db.lookup_api_key(old)
             if record:
                 await db.set_api_key_hash(int(record["id"]), modern)
+            else:
+                # A concurrent request may have just re-hashed it.
+                record = await db.lookup_api_key(modern)
     if not record:
         return None
     mode = str(record["routing_mode"]).lower()

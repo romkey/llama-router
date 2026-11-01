@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import stat
 from pathlib import Path
+from typing import Any
 
 import pytest
-from cryptography.fernet import Fernet
 
 from llama_router import provider_secrets as ps
 from llama_router.auth import (
@@ -27,9 +25,7 @@ from llama_router.worker_link.worker import WorkerLinkManager
 
 
 def _legacy_encrypt(plaintext: str) -> str:
-    digest = hashlib.sha256(ps._CONTEXT + ps._LEGACY_DEV_SECRET).digest()
-    f = Fernet(base64.urlsafe_b64encode(digest))
-    return f.encrypt(plaintext.encode()).decode()
+    return ps._fernet_for(ps._LEGACY_DEV_SECRET).encrypt(plaintext.encode()).decode()
 
 
 @pytest.fixture
@@ -138,7 +134,7 @@ async def test_legacy_pepper_key_matches_and_is_rehashed(
         routing_mode="auto",
         allow_fallback=True,
     )
-    resolved = await _resolve_key(db, key, hashlib.sha256(key.encode()).hexdigest())
+    resolved = await _resolve_key(db, key, "no-plain-sha256-match")
     assert resolved is not None
     assert resolved[1] == key_id
     assert await db.lookup_api_key(key_hash(key)) is not None
@@ -169,3 +165,29 @@ def test_scrub_event_drops_request_parts_and_masks_secrets() -> None:
     assert out["extra"]["nested"][0]["X-Auth-Token"] == FILTERED
     assert out["extra"]["nested"][1] == {"password": FILTERED, "ok": 1}
     assert out["breadcrumbs"]["values"][0]["data"]["authorization"] == FILTERED
+
+
+async def test_legacy_pepper_rehash_race_still_authenticates(
+    db: Database, no_session_secret: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling request re-hashes the key between our two lookups."""
+    key = generate_api_key()
+    key_id = await db.create_api_key(
+        key_prefix=key_prefix(key),
+        key_hash=key_hash_legacy_pepper(key),
+        routing_mode="auto",
+        allow_fallback=True,
+    )
+    old_hash = key_hash_legacy_pepper(key)
+    real_lookup = db.lookup_api_key
+
+    async def lookup(fingerprint: str) -> dict[str, Any] | None:
+        if fingerprint == old_hash:
+            # The sibling's re-hash lands just before our legacy lookup.
+            await db.set_api_key_hash(key_id, key_hash(key))
+        return await real_lookup(fingerprint)
+
+    monkeypatch.setattr(db, "lookup_api_key", lookup)
+    resolved = await _resolve_key(db, key, "no-plain-sha256-match")
+    assert resolved is not None
+    assert resolved[1] == key_id
