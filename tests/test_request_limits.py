@@ -20,6 +20,7 @@ from llama_router.api.app import app as ollama_app
 from llama_router.config import settings
 from llama_router.dashboard.app import app as dashboard_app
 from llama_router.database import Database
+from llama_router.decision_policy import _decide_in_slot
 from llama_router.limits import (
     BodySizeLimitMiddleware,
     DeadlineExceeded,
@@ -403,3 +404,30 @@ async def test_stream_past_deadline_before_first_chunk_is_504(
 
     with pytest.raises(DeadlineExceeded):
         await stream_response(_Logged(gen()), "text/plain")  # type: ignore[arg-type]
+
+
+async def test_429_carries_retry_after(
+    provider: Provider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "upstream_max_concurrency", 1)
+    monkeypatch.setattr(settings, "upstream_queue_timeout_seconds", 0)
+    held = await upstream_slot(_request(), None)
+    body = {"model": MODEL, "messages": [], "stream": False}
+    async with _client(v1_app) as c:
+        resp = await c.post("/v1/chat/completions", json=body)
+    held.release()
+    assert resp.status_code == 429
+    assert resp.headers["retry-after"] == "1"
+
+
+async def test_decision_policy_call_takes_a_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "upstream_max_concurrency", 1)
+    monkeypatch.setattr(settings, "upstream_queue_timeout_seconds", 0)
+    held = await upstream_slot(_request(), None)
+    with pytest.raises(HTTPException) as exc:
+        # Refused before any of the other arguments are used.
+        await _decide_in_slot(None, None, None, None, _request(), None)  # type: ignore[arg-type]
+    held.release()
+    assert exc.value.status_code == 429

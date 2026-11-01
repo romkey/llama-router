@@ -44,7 +44,11 @@ async def http_exception_handler(
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=exc.headers,
+    )
 
 
 app.include_router(router)
