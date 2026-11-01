@@ -9,6 +9,19 @@ described in their git tags and GitHub Releases.
 
 ### Security
 
+- **No more fixed fallback secret.** Without `LLAMA_ROUTER_SESSION_SECRET`,
+  provider API keys were encrypted, and client API keys peppered, with a key
+  written in the source. A random secret is now generated once into
+  `secret.key` beside the database (mode 0600, `LLAMA_ROUTER_SECRET_KEY_PATH`
+  to move it) and reused on later starts. Existing provider keys are
+  re-encrypted at startup and existing client keys re-hashed on first use, so
+  nothing needs to be re-entered. Back up `secret.key` with the database.
+- **Worker hub token encrypted at rest.** A token saved in the dashboard is
+  stored encrypted; a plain one from an older release is encrypted on first
+  read.
+- **Sentry scrubbing.** Events no longer include local variables, request
+  bodies, headers, cookies or query strings, and values under keys that look
+  like keys, tokens, secrets or passwords are masked.
 - **Upstream errors are sanitised before they reach the client.** For 400,
   404, 422 and 429 only the error's type, code and message are passed on
   (and `Retry-After` on a 429); other upstream errors get a generic body. An

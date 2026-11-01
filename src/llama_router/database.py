@@ -1490,6 +1490,12 @@ class Database:
             )
         )
 
+    async def set_api_key_hash(self, key_id: int, key_hash: str) -> None:
+        """Replace a key's stored fingerprint (re-hashing with a new pepper)."""
+        await self._execute(
+            "UPDATE api_keys SET key_hash = ? WHERE id = ?", (key_hash, key_id)
+        )
+
     async def lookup_api_key(self, key_hash: str) -> dict | None:
         row = await self._select_one(
             "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
