@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -15,6 +16,8 @@ from fastapi import Request
 from fastapi.responses import Response, StreamingResponse
 
 from .background import spawn
+from .client_address import client_ip
+from .config import settings
 from .database import Database
 from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
@@ -61,6 +64,16 @@ _COMPLETION_TOKEN_RES = tuple(
 )
 # Chunks kept from the end of a stream to read those fields from.
 _TAIL_CHUNKS = 3
+# Request fields that cap the length of the answer.
+_MAX_TOKEN_FIELDS = (
+    "max_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "num_predict",
+)
+# Log status of a stream the client hung up on. Not an error, and not a
+# sample for the routing stats either way.
+STATUS_CANCELLED = "cancelled"
 
 
 def attach_stats(stats: ProviderStats | None) -> None:
@@ -112,6 +125,37 @@ def usage_from_tail(tail: bytes) -> tuple[int | None, int | None]:
         return None
 
     return last(_PROMPT_TOKEN_RES), last(_COMPLETION_TOKEN_RES)
+
+
+def _requested_max_tokens(body: Any) -> int | None:
+    """The output-token limit a request asked for; -1 for "no limit"."""
+    if not isinstance(body, dict):
+        return None
+    options = body.get("options")
+    values = [body.get(k) for k in _MAX_TOKEN_FIELDS]
+    if isinstance(options, dict):
+        values.append(options.get("num_predict"))
+    limits = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+    if not limits:
+        return None
+    if any(v < 0 for v in limits):
+        return -1  # Ollama's num_predict -1: generate until the model stops
+    return max(limits)
+
+
+def _timeout_from_request(error_detail: str | None, request_body: Any) -> bool:
+    """A read timeout on a request that asked for a very long answer.
+
+    The backend was busy generating what it was asked for; that says
+    nothing about its health, and counting it would let any client trip a
+    provider's circuit breaker on purpose.
+    """
+    if not (error_detail or "").startswith("ReadTimeout"):
+        return False
+    limit = _requested_max_tokens(request_body)
+    if limit is None:
+        return False
+    return limit < 0 or limit > settings.circuit_timeout_max_tokens
 
 
 def _is_provider_failure(error_detail: str | None) -> bool:
@@ -172,13 +216,18 @@ def _record_outcome(
     ttft_ms: float | None = None,
     tokens_per_second: float | None = None,
     duration_ms: float | None = None,
+    request_body: Any = None,
 ) -> None:
     stats = _stats
     if stats is None or provider is None or provider.id is None or not model:
         return
+    if status == STATUS_CANCELLED:
+        return  # the client went away; says nothing about the provider
     ok = status == "ok"
     if not ok and not _is_provider_failure(error_detail):
         return  # the client's request was bad; says nothing about the provider
+    if not ok and _timeout_from_request(error_detail, request_body):
+        return
     stats.record_request(
         provider.id,
         model,
@@ -190,11 +239,13 @@ def _record_outcome(
     )
 
 
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+def refusal_worth_logging(request: Request, status_code: int) -> bool:
+    """Whether an API refusal goes to the request log: 400, 401 and 403
+    always, 404 only with an API key, so scanners probing random paths
+    cannot fill the log."""
+    if status_code == 404:
+        return getattr(request.state, "api_key_id", None) is not None
+    return status_code in (400, 401, 403)
 
 
 def _payload_size(body: Any) -> int:
@@ -319,8 +370,9 @@ async def log_request(
                 _tps_from_body(response_body, duration_ms) if status == "ok" else None
             ),
             duration_ms=duration_ms,
+            request_body=request_body,
         )
-    ip = source_ip or (_client_ip(request) if request else "internal")
+    ip = source_ip or (client_ip(request) if request else "internal")
     if api_key_id is None and request is not None:
         api_key_id = getattr(request.state, "api_key_id", None)
     if prompt_tokens is None and completion_tokens is None:
@@ -383,7 +435,7 @@ def log_request_background(
                 f"{policy}; {summary}" if summary else str(policy)
             )[:240]
         # Resolve what is needed now; the request object is done after.
-        kwargs["source_ip"] = kwargs.get("source_ip") or _client_ip(request)
+        kwargs["source_ip"] = kwargs.get("source_ip") or client_ip(request)
         if kwargs.get("api_key_id") is None:
             kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
         if kwargs.get("router_ms") is None:
@@ -447,6 +499,11 @@ class StreamLogger:
                 self._total_bytes += len(chunk)
                 self._tail.append(chunk)
                 yield chunk
+        except asyncio.CancelledError, GeneratorExit:
+            # The client disconnected before the stream finished.
+            status = STATUS_CANCELLED
+            error_detail = "client disconnected before the response finished"
+            raise
         except Exception as exc:
             status = "error"
             if isinstance(exc, httpx.HTTPError):
@@ -482,6 +539,7 @@ class StreamLogger:
                 ttft_ms=ttft_ms,
                 tokens_per_second=tps,
                 duration_ms=duration,
+                request_body=self._request_body,
             )
             try:
                 log_request_background(

@@ -23,7 +23,7 @@ from llama_router.dashboard.middleware import (
     invalidate_dashboard_user_count_cache,
 )
 from llama_router.database import Database
-from llama_router.llamacpp_api import deps
+from llama_router.llamacpp_api import audio, deps
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.routing_stats import ProviderStats
@@ -77,6 +77,12 @@ def _dashboard_admin_without_accounts(
         return await call_next(req)
 
     monkeypatch.setattr(DashboardAuthMiddleware, "no_accounts", as_admin)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_voices_cache() -> None:
+    """Each test fetches /v1/audio/voices afresh."""
+    audio._voices_cache.clear()
 
 
 @pytest.fixture(autouse=True)
