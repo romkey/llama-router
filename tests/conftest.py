@@ -16,6 +16,7 @@ from llama_router.config import Settings, settings
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.app import app as dashboard_app
 from llama_router.dashboard.decisions import router as dash_decisions_router
+from llama_router.dashboard.login_throttle import throttle as login_throttle
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
 from llama_router.llamacpp_api import deps
@@ -75,6 +76,7 @@ async def dash_client(
     dash_deps.invalidate_dashboard_session_secret_cache()
     invalidate_dashboard_user_count_cache()
     dash_deps.init(db, pm)
+    login_throttle.clear()
 
     transport = ASGITransport(app=dashboard_app)
     async with AsyncClient(

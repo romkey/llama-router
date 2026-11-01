@@ -7,6 +7,27 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Security
+
+- **Password sign-in backs off.** After five failures in a row from one
+  address or for one username, sign-in answers HTTP 429 for a delay that
+  doubles each time, up to five minutes. Password checks run off the event
+  loop, and unknown usernames take as long as real ones.
+- **Sessions can be revoked.** Session cookies carry a per-account version.
+  Changing a password, a change of an SSO account's admin flag, **Sign out
+  everywhere** (next to Log out) and an administrator's **Sign out** on the
+  Users page end the account's existing sessions. SSO sessions last at most
+  12 hours. Existing cookies are not accepted after upgrading: everyone signs
+  in once more.
+- **SSO without group limits is flagged**, with an error at startup and a
+  warning on the Users page. The new `LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL`
+  creates new SSO accounts pending until an administrator approves them.
+- **Cross-site requests refused.** The dashboard rejects POSTs (sign-in
+  included) whose `Sec-Fetch-Site` or `Origin` names another site.
+  `LLAMA_ROUTER_DASHBOARD_TRUSTED_ORIGINS` lists exceptions.
+- **Secure cookies behind HTTPS proxies.** Session cookies are marked Secure
+  whenever the request came over HTTPS or with `X-Forwarded-Proto: https`.
+
 ### Fixed
 
 - **Readable error rows in the request log.** Error highlights use soft burgundy

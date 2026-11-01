@@ -53,6 +53,11 @@
                         <form method="post" action="/logout" class="d-inline">
                             <button type="submit" class="btn btn-sm btn-outline-secondary">Log out</button>
                         </form>
+                        {% if dash_user.id > 0 %}
+                        <form method="post" action="/logout/everywhere" class="d-inline" onsubmit="return confirm('Sign out of every browser and device?');">
+                            <button type="submit" class="btn btn-sm btn-link text-secondary" title="End every session of your account">Everywhere</button>
+                        </form>
+                        {% endif %}
                     </li>
                     {% elif auth_bootstrap %}
                     <li class="nav-item">

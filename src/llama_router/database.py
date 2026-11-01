@@ -1795,13 +1795,27 @@ class Database:
         email: str | None,
         display_name: str | None,
         is_admin: bool,
+        approved: bool = True,
     ) -> int:
-        """Create an account that signs in only through OpenID Connect."""
+        """Create an account that signs in only through OpenID Connect.
+
+        An unapproved account exists but cannot use the dashboard until an
+        administrator approves it.
+        """
         return await self._insert_get_id(
             "INSERT INTO dashboard_users (username, password_hash, is_admin, "
             "auth_source, oidc_issuer, oidc_subject, email, display_name, "
-            "last_login_at) VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (username.strip(), int(is_admin), issuer, subject, email, display_name),
+            "last_login_at, approved) "
+            "VALUES (?, NULL, ?, 'oidc', ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)",
+            (
+                username.strip(),
+                int(is_admin),
+                issuer,
+                subject,
+                email,
+                display_name,
+                int(approved),
+            ),
         )
 
     async def update_oidc_dashboard_user(
@@ -1812,11 +1826,19 @@ class Database:
         display_name: str | None,
         is_admin: bool,
     ) -> None:
-        """Refresh an OIDC account from the identity provider at sign-in."""
+        """Refresh an OIDC account from the identity provider at sign-in.
+
+        A change of the admin flag ends the account's other sessions.
+        """
+        # session_version is assigned before is_admin: MySQL evaluates SET
+        # left to right and would otherwise compare against the new value.
         await self._execute(
-            "UPDATE dashboard_users SET email = ?, display_name = ?, is_admin = ?, "
+            "UPDATE dashboard_users SET "
+            "session_version = session_version "
+            "+ CASE WHEN is_admin <> ? THEN 1 ELSE 0 END, "
+            "email = ?, display_name = ?, is_admin = ?, "
             "last_login_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (email, display_name, int(is_admin), user_id),
+            (int(is_admin), email, display_name, int(is_admin), user_id),
         )
 
     async def touch_dashboard_user_login(self, user_id: int) -> None:
@@ -1828,14 +1850,34 @@ class Database:
     async def update_dashboard_user_password(
         self, user_id: int, password_hash: str
     ) -> None:
+        """Set the password and end every session of the account."""
         await self._execute(
-            "UPDATE dashboard_users SET password_hash = ? WHERE id = ?",
+            "UPDATE dashboard_users SET password_hash = ?, "
+            "session_version = session_version + 1 WHERE id = ?",
             (password_hash, user_id),
+        )
+
+    async def bump_dashboard_user_session_version(self, user_id: int) -> None:
+        """Invalidate every session cookie issued to the account so far."""
+        await self._execute(
+            "UPDATE dashboard_users SET session_version = session_version + 1 "
+            "WHERE id = ?",
+            (user_id,),
+        )
+
+    async def approve_dashboard_user(self, user_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE dashboard_users SET approved = 1 WHERE id = ?", (user_id,)
+            )
         )
 
     @_notifies(CHANGE_API_KEYS)
     async def delete_dashboard_user(self, user_id: int) -> None:
         """Delete the user and the API keys they issued to themselves."""
+        # The row going away already ends its sessions; the cookie also
+        # carries the username, so a new account that reuses this id (SQLite
+        # can) does not inherit them.
         await self._execute("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,))
         await self._execute("DELETE FROM dashboard_users WHERE id = ?", (user_id,))
 
@@ -1867,7 +1909,8 @@ def _row_to_management_key(row: Mapping[str, Any]) -> dict:
 
 _DASHBOARD_USER_COLUMNS = (
     "id, username, password_hash, is_admin, created_at, auth_source, "
-    "oidc_issuer, oidc_subject, email, display_name, last_login_at"
+    "oidc_issuer, oidc_subject, email, display_name, last_login_at, "
+    "session_version, approved"
 )
 
 
@@ -1884,6 +1927,8 @@ def _row_to_dashboard_user(row: Mapping[str, Any]) -> dict:
         "email": row["email"],
         "display_name": row["display_name"],
         "last_login_at": row["last_login_at"],
+        "session_version": int(row["session_version"] or 0),
+        "approved": bool(row["approved"]),
     }
 
 

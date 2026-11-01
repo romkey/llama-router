@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 import uuid
@@ -48,12 +49,13 @@ from ..worker_link.hub import (
 )
 from ..worker_link.protocol import CLOSE_REVOKED, EXPOSE_INDIVIDUAL
 from ..worker_link.worker import normalize_hub_url
-from . import deps, management_keys, oidc
+from . import deps, login_throttle, management_keys, oidc
 from .auth_core import (
     AUTH_COOKIE,
-    SESSION_MAX_AGE,
+    burn_password_check,
     hash_password,
     normalize_username,
+    session_max_age,
     sign_session,
     verify_password,
 )
@@ -461,15 +463,42 @@ async def health():
     )
 
 
-def _set_session_cookie(resp: RedirectResponse, user_id: int, secret: str) -> None:
+def _cookie_secure(request: Request) -> bool:
+    """Mark cookies Secure when configured or when the browser used HTTPS.
+
+    A reverse proxy that terminates TLS says so with ``X-Forwarded-Proto``.
+    A client that fakes the header over plain HTTP only gets a cookie its
+    own browser will not send back.
+    """
+    if settings.dashboard_cookie_secure:
+        return True
+    return _external_origin(request)[0] == "https"
+
+
+def _set_session_cookie(
+    request: Request, resp: RedirectResponse, user: dict[str, Any], secret: str
+) -> None:
     resp.set_cookie(
         AUTH_COOKIE,
-        sign_session(user_id, secret),
+        sign_session(
+            user["id"],
+            secret,
+            version=user.get("session_version") or 0,
+            username=user["username"],
+        ),
         httponly=True,
         samesite="lax",
-        max_age=SESSION_MAX_AGE,
-        secure=settings.dashboard_cookie_secure,
+        max_age=session_max_age(user.get("auth_source") or "local"),
+        secure=_cookie_secure(request),
     )
+
+
+def _client_ip(request: Request) -> str:
+    # Behind a reverse proxy every client shares the proxy's address, so the
+    # first X-Forwarded-For entry is used, as in the request log. A client
+    # can forge it to dodge the per-address limit, not the per-username one.
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    return forwarded or (request.client.host if request.client else "unknown")
 
 
 def _external_origin(request: Request) -> tuple[str, str]:
@@ -517,22 +546,53 @@ async def login_submit(
     db = deps.get_db()
     if await db.count_dashboard_users() == 0:
         return RedirectResponse(url="/", status_code=302)
+    ip = _client_ip(request)
     try:
         un = normalize_username(username)
     except ValueError:
+        login_throttle.throttle.failure([f"ip:{ip}"])
         return RedirectResponse(url="/login?error=invalid", status_code=303)
+    keys = login_throttle.keys_for(ip, un)
+    wait = login_throttle.throttle.retry_after(keys)
+    if wait > 0:
+        logger.warning("Password sign-in for %r from %s throttled", un, ip)
+        return _login_throttled(request, next, wait)
     row = await db.get_dashboard_user_by_username(un)
-    if (
-        not row
-        or row.get("auth_source", "local") != "local"
-        or not verify_password(password, row["password_hash"])
-    ):
+    if row and row.get("auth_source", "local") == "local":
+        # scrypt takes tens of milliseconds; keep it off the event loop.
+        ok = await asyncio.to_thread(verify_password, password, row["password_hash"])
+    else:
+        await asyncio.to_thread(burn_password_check, password)
+        ok = False
+    if not ok or row is None:
+        login_throttle.throttle.failure(keys)
         return RedirectResponse(url="/login?error=invalid", status_code=303)
+    login_throttle.throttle.success(keys)
     await db.touch_dashboard_user_login(row["id"])
     secret = await deps.get_dashboard_session_secret()
     resp = RedirectResponse(url=_safe_next_url(next), status_code=303)
-    _set_session_cookie(resp, row["id"], secret)
+    _set_session_cookie(request, resp, row, secret)
     return resp
+
+
+def _login_throttled(request: Request, next_url: str, wait: float) -> HTMLResponse:
+    seconds = max(1, math.ceil(wait))
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "error": "throttled",
+            "retry_after": seconds,
+            "next_url": _safe_next_url(next_url),
+            "dash_user": None,
+            "show_users_tab": False,
+            "oidc_enabled": oidc.current_config().usable,
+            "oidc_display_name": oidc.current_config().display_name,
+            "password_login": True,
+        },
+        status_code=429,
+        headers={"Retry-After": str(seconds)},
+    )
 
 
 @router.get("/login/oidc")
@@ -561,7 +621,7 @@ async def login_oidc_start(request: Request):
         samesite="lax",
         max_age=oidc.STATE_MAX_AGE,
         path="/login/oidc",
-        secure=settings.dashboard_cookie_secure,
+        secure=_cookie_secure(request),
     )
     return resp
 
@@ -590,7 +650,7 @@ async def login_oidc_callback(request: Request):
     invalidate_dashboard_user_count_cache()
     resp = RedirectResponse(url=_safe_next_url(next_url), status_code=303)
     resp.delete_cookie(oidc.STATE_COOKIE, path="/login/oidc")
-    _set_session_cookie(resp, user["id"], secret)
+    _set_session_cookie(request, resp, user, secret)
     return resp
 
 
@@ -610,6 +670,16 @@ async def logout_post(request: Request):
     resp = RedirectResponse(url=dest, status_code=303)
     resp.delete_cookie(AUTH_COOKIE)
     return resp
+
+
+@router.post("/logout/everywhere")
+async def logout_everywhere(request: Request):
+    """Sign the current user out of every browser, this one included."""
+    user = getattr(request.state, "dashboard_user", None)
+    if user is not None and user.id > 0:
+        await deps.get_db().bump_dashboard_user_session_version(user.id)
+        logger.info("Dashboard user %s signed out everywhere", user.username)
+    return await logout_post(request)
 
 
 @router.get("/users", response_class=HTMLResponse)
@@ -641,10 +711,13 @@ async def users_page(request: Request):
                 "management_privileges": management_keys.PRIVILEGES,
                 "oidc": cfg if cfg.enabled else None,
                 "oidc_problems": cfg.problems(),
+                "oidc_warnings": cfg.warnings() if cfg.usable else [],
                 "oidc_callback": oidc.redirect_uri(cfg, scheme, host),
                 "query_error": request.query_params.get("error"),
                 "query_created": request.query_params.get("created"),
                 "query_updated": request.query_params.get("updated"),
+                "query_approved": request.query_params.get("approved"),
+                "query_signed_out": request.query_params.get("signed_out"),
             },
         ),
     )
@@ -716,8 +789,51 @@ async def users_set_password(
         return RedirectResponse(url="/users?error=sso-password", status_code=303)
     if len(new_password) < 8:
         return RedirectResponse(url="/users?error=password", status_code=303)
+    # Ends every session of the account; an administrator changing their
+    # own password keeps this one.
     await db.update_dashboard_user_password(user_id, hash_password(new_password))
-    return RedirectResponse(url="/users?updated=1", status_code=303)
+    resp = RedirectResponse(url="/users?updated=1", status_code=303)
+    if user is not None and user.id == user_id:
+        row = await db.get_dashboard_user_by_id(user_id)
+        if row is not None:
+            secret = await deps.get_dashboard_session_secret()
+            _set_session_cookie(request, resp, row, secret)
+    return resp
+
+
+def _require_admin(request: Request) -> None:
+    user = getattr(request.state, "dashboard_user", None)
+    if not getattr(request.state, "auth_bootstrap", False) and (
+        not user or not user.is_admin
+    ):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router.post("/users/{user_id}/approve")
+async def users_approve(request: Request, user_id: int):
+    """Let a single sign-on account that is waiting for approval in."""
+    _require_admin(request)
+    db = deps.get_db()
+    if not await db.approve_dashboard_user(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    logger.info("Dashboard user %d approved", user_id)
+    return RedirectResponse(url="/users?approved=1", status_code=303)
+
+
+@router.post("/users/{user_id}/sign-out")
+async def users_sign_out(request: Request, user_id: int):
+    """End every session of another account."""
+    _require_admin(request)
+    db = deps.get_db()
+    if await db.get_dashboard_user_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.bump_dashboard_user_session_version(user_id)
+    user = getattr(request.state, "dashboard_user", None)
+    resp = RedirectResponse(url="/users?signed_out=1", status_code=303)
+    if user is not None and user.id == user_id:
+        resp = RedirectResponse(url="/login", status_code=303)
+        resp.delete_cookie(AUTH_COOKIE)
+    return resp
 
 
 @router.get("/", response_class=HTMLResponse)

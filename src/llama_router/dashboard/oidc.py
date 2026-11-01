@@ -8,6 +8,8 @@ provider's published keys with ``joserfc``.
 
 Membership in ``LLAMA_ROUTER_OIDC_ADMIN_GROUP`` makes a user an administrator.
 The provider is authoritative: the flag is recomputed at every sign-in.
+With ``LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL`` new accounts are created pending
+and refused until an administrator approves them on the Users page.
 """
 
 from __future__ import annotations
@@ -81,6 +83,7 @@ class OIDCConfig:
     only: bool
     logout_at_idp: bool
     allow_insecure: bool
+    require_approval: bool = False
 
     @classmethod
     def from_settings(cls, s: Settings | None = None) -> OIDCConfig:
@@ -98,6 +101,7 @@ class OIDCConfig:
             only=s.oidc_only,
             logout_at_idp=s.oidc_logout_at_idp,
             allow_insecure=s.oidc_allow_insecure,
+            require_approval=s.oidc_require_approval,
         )
 
     @property
@@ -127,6 +131,18 @@ class OIDCConfig:
         if "openid" not in self.scopes.split():
             out.append("LLAMA_ROUTER_OIDC_SCOPES must include openid")
         return out
+
+    def warnings(self) -> list[str]:
+        """Working but risky configuration."""
+        if not self.enabled or self.allowed_group or self.admin_group:
+            return []
+        if self.require_approval:
+            return []
+        return [
+            "Neither LLAMA_ROUTER_OIDC_ALLOWED_GROUP nor LLAMA_ROUTER_OIDC_ADMIN_GROUP "
+            "is set: anyone the identity provider authenticates gets dashboard "
+            "access. Set a group or LLAMA_ROUTER_OIDC_REQUIRE_APPROVAL."
+        ]
 
     @property
     def usable(self) -> bool:
@@ -521,6 +537,12 @@ def _existing(user: dict[str, Any] | None) -> dict[str, Any]:
     return user
 
 
+def _approved(user: dict[str, Any]) -> dict[str, Any]:
+    if not user.get("approved", True):
+        raise OIDCError("pending", f"{user['username']} is waiting for approval")
+    return user
+
+
 async def sign_in(
     db: Database, cfg: OIDCConfig, claims: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -550,9 +572,12 @@ async def sign_in(
         await db.update_oidc_dashboard_user(
             row["id"], email=email, display_name=display, is_admin=is_admin
         )
-        return _existing(await db.get_dashboard_user_by_id(row["id"]))
+        return _approved(_existing(await db.get_dashboard_user_by_id(row["id"])))
 
+    # The first account is always approved: nobody could approve it.
+    approved = not cfg.require_approval
     if await db.count_dashboard_users() == 0:
+        approved = True
         if not cfg.admin_group:
             # Same rule as local accounts: the first account administers.
             is_admin = True
@@ -574,19 +599,21 @@ async def sign_in(
                 email=email,
                 display_name=display,
                 is_admin=is_admin,
+                approved=approved,
             )
         except Exception:
             # Lost a race for the name or identity; look again.
             again = await db.get_dashboard_user_by_oidc(issuer, subject)
             if again is not None:
-                return again
+                return _approved(again)
             continue
         logger.info(
-            "Created dashboard user %s from OIDC%s",
+            "Created dashboard user %s from OIDC%s%s",
             name,
             " (administrator)" if is_admin else "",
+            "" if approved else ", waiting for approval",
         )
-        return _existing(await db.get_dashboard_user_by_id(uid))
+        return _approved(_existing(await db.get_dashboard_user_by_id(uid)))
     raise OIDCError("token", "could not choose a free username")
 
 

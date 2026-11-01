@@ -97,8 +97,15 @@ class Settings(BaseSettings):
     hf_models_dir: str = "./hf_models"
     # If set, signs dashboard session cookies; otherwise persisted in app_settings.
     session_secret: str = ""
-    # Set true behind HTTPS so session cookies are only sent over TLS.
+    # Always mark session cookies Secure (sent over TLS only). Without it they
+    # are Secure whenever the request came over HTTPS, directly or through a
+    # proxy that sets X-Forwarded-Proto: https.
     dashboard_cookie_secure: bool = False
+    # Comma-separated extra origins (https://llm.example.org) allowed to send
+    # state-changing requests to the dashboard. Needed only behind a plain
+    # HTTP proxy that rewrites Host without setting X-Forwarded-Host; the
+    # OIDC redirect base URL is always trusted.
+    dashboard_trusted_origins: str = ""
     # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.
     oidc_issuer: str = ""
     oidc_client_id: str = ""
@@ -111,6 +118,9 @@ class Settings(BaseSettings):
     oidc_admin_group: str = ""
     # If set, only members of this group may sign in at all.
     oidc_allowed_group: str = ""
+    # New single sign-on accounts wait for an administrator to approve them
+    # on the Users page before they can use the dashboard.
+    oidc_require_approval: bool = False
     # External base URL of the dashboard, e.g. https://llm.example.org. The
     # callback is {base}/login/oidc/callback. Empty uses the request's host.
     oidc_redirect_base_url: str = ""

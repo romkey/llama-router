@@ -97,6 +97,8 @@ def _log_oidc_config() -> None:
         repr(cfg.admin_group) if cfg.admin_group else "(none)",
         ", password sign-in disabled" if cfg.only else "",
     )
+    for w in cfg.warnings():
+        logger.error("OIDC: %s", w)
 
 
 async def run() -> None:
