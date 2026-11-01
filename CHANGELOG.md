@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-01
+
 ### Security
 
 - **Registry cache hardening.** The cache now binds `127.0.0.1` by default and
