@@ -525,7 +525,8 @@ async def test_own_worker_relay_needs_no_key(db: Database):
 
 
 async def test_legacy_sha256_keys_still_work(db: Database):
-    key = generate_api_key()
+    # A fixed, well-formed test key (not a generated secret).
+    key = "lrk_" + "legacy" * 7 + "x"
     await db.create_api_key(
         "lrk_legacy", hashlib.sha256(key.encode()).hexdigest(), "latency", False
     )
