@@ -32,9 +32,21 @@ described in their git tags and GitHub Releases.
   counting the whole log on every refresh.
 - A request's logged size is the body the client sent, not the parsed body
   serialised again.
+- Test infrastructure: CI runs the whole suite against PostgreSQL and MySQL
+  as well as SQLite, checks there is a single Alembic head, and runs the
+  tests in parallel. Coverage now includes the Alembic migrations (floor
+  raised to 85%), new tests downgrade every migration and upgrade again, and
+  check that `llama-router-migrate-sqlite-pg` copies every table and column.
+  Tests start from a copy of one migrated database instead of migrating each
+  time, and the timer tests use a fake clock instead of waiting. The
+  `009_single_protocol_providers` and `010_provider_flavor` migration files
+  are renamed `010a_` and `010b_` so they sort in the order they run; their
+  revision ids are unchanged.
 
 ### Fixed
 
+- On PostgreSQL, request log retention no longer fails with "can't subtract
+  offset-naive and offset-aware datetimes", so old request logs are deleted.
 - The "accept requests without an API key" setting is re-read every five
   minutes, so routers sharing a database see a change made on another one.
 - If one of the router's servers cannot bind its port, the others are stopped

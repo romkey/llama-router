@@ -197,4 +197,4 @@ deprecated `HUGGING_FACE_HUB_TOKEN` and `HUGGINGFACE_HUB_CACHE`.
 |----------|---------|---------|
 | `TZ` | system | Timezone for dashboard timestamps, e.g. `America/New_York` |
 | `APP_VERSION` | `latest` | Image tag `docker-compose.prod.yaml` runs |
-| `LLAMA_ROUTER_TEST_DATABASE_URL` | *(empty)* | Tests only: run database tests against this server instead of a temporary SQLite file. It is emptied before every test |
+| `LLAMA_ROUTER_TEST_DATABASE_URL` | *(empty)* | Tests only: run database tests against this server instead of a temporary SQLite file. Its tables are emptied before every test |

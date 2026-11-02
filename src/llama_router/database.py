@@ -793,20 +793,24 @@ class Database:
         async with sf() as session, session.begin():
             await session.execute(stmt, rows)
 
+    def _log_time(self, when: datetime) -> Any:
+        """*when* bound for a comparison with ``request_log.created_at``: UTC
+        without a zone (asyncpg refuses an aware one), as text on SQLite."""
+        if when.tzinfo is not None:
+            when = when.astimezone(UTC).replace(tzinfo=None)
+        if self._dialect_name == "sqlite":
+            return when.strftime("%Y-%m-%d %H:%M:%S")
+        return when
+
     async def delete_request_logs_before(self, before: datetime) -> int:
         """Delete request log rows created before *before* (UTC); the count."""
-        when: Any = before
-        if self._dialect_name == "sqlite":
-            when = before.strftime("%Y-%m-%d %H:%M:%S")
         return await self._execute_rowcount(
-            "DELETE FROM request_log WHERE created_at < ?", (when,)
+            "DELETE FROM request_log WHERE created_at < ?", (self._log_time(before),)
         )
 
     async def spend_since(self, key_id: int, since: datetime) -> float:
         """USD a key has spent on requests logged since *since* (UTC)."""
-        when: Any = since
-        if self._dialect_name == "sqlite":
-            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        when = self._log_time(since)
         row = await self._select_one(
             "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
             "WHERE api_key_id = ? AND created_at >= ?",
@@ -815,9 +819,7 @@ class Database:
         return float(row["total"] or 0) if row else 0.0
 
     async def spend_by_key_since(self, since: datetime) -> dict[int, float]:
-        when: Any = since
-        if self._dialect_name == "sqlite":
-            when = since.strftime("%Y-%m-%d %H:%M:%S")
+        when = self._log_time(since)
         rows = await self._select_all(
             "SELECT api_key_id, COALESCE(SUM(cost_usd), 0) AS total FROM request_log "
             "WHERE api_key_id IS NOT NULL AND created_at >= ? GROUP BY api_key_id",
@@ -845,11 +847,7 @@ class Database:
         params: list[Any] = []
         if since is not None:
             where.append("r.created_at >= ?")
-            params.append(
-                since.strftime("%Y-%m-%d %H:%M:%S")
-                if self._dialect_name == "sqlite"
-                else since
-            )
+            params.append(self._log_time(since))
         if key_id is not None:
             where.append("r.api_key_id = ?")
             params.append(key_id)

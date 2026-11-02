@@ -11,6 +11,7 @@ from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_se
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
 from llama_router.models import RequestLog
+from tests.conftest import db_timestamp
 
 CHAT = "/v1/chat/completions"
 
@@ -144,7 +145,7 @@ async def test_usage_period(db: Database) -> None:
     ids = await _seed(db)
     await db._execute(
         "UPDATE request_log SET created_at = ? WHERE api_key_id = ?",
-        ("2000-01-01 00:00:00", ids["bob"]),
+        (db_timestamp(db, datetime(2000, 1, 1, tzinfo=UTC)), ids["bob"]),
     )
     since = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1)
     recent = await db.usage_by_key_and_provider(since)

@@ -167,6 +167,8 @@ async def test_viewer_cannot_sign_out_others(dash_client: DashClient) -> None:
 
 async def test_reused_id_does_not_inherit_session(dash_client: DashClient) -> None:
     client, db = dash_client
+    if db._dialect_name != "sqlite":
+        pytest.skip("only SQLite reuses a deleted row's id")
     await _user(db, "root")
     uid = await _user(db, "gone", admin=False)
     token = sign_session(uid, _secret(), username="gone")
@@ -182,6 +184,8 @@ async def test_recreated_account_does_not_inherit_session(
 ) -> None:
     """Same id and same username: the old cookie still must not work."""
     client, db = dash_client
+    if db._dialect_name != "sqlite":
+        pytest.skip("only SQLite reuses a deleted row's id")
     await _user(db, "root")
     uid = await _user(db, "gone", admin=False)
     token = await _sign_in(client, "gone")
