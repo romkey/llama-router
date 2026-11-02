@@ -12,7 +12,11 @@ from llama_router.affinity import (
     SessionAffinity,
     session_key,
 )
-from llama_router.auth import key_hash, routing_preferences_from_request
+from llama_router.auth import (
+    generate_api_key,
+    key_hash,
+    routing_preferences_from_request,
+)
 from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
@@ -340,7 +344,7 @@ def _key_request(key: str) -> Request:
 async def test_api_key_carries_affinity_flag_and_id(db: Database):
     await db.set_allow_unauthenticated(False)
     for flag in (None, True, False):
-        key = f"lrk_affinity-{flag}"
+        key = generate_api_key()
         key_id = await db.create_api_key(
             key[:10], key_hash(key), "balanced", True, flag
         )
