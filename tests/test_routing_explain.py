@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
 
 from llama_router.affinity import session_key
 from llama_router.auth import key_hash
@@ -21,6 +20,7 @@ from llama_router.router import (
     RoutingPreferences,
     protocol_for_endpoint,
 )
+from tests.conftest import asgi_client
 
 
 async def _provider(db: Database, name: str, models: list[str], **kw):
@@ -195,7 +195,7 @@ async def client(db: Database, pm: ProviderManager):
     rt = Router(db, pm)
     await rt.rebuild()
     dash_deps.init(db, pm)
-    with TestClient(dash_app) as c:
+    async with asgi_client(dash_app) as c:
         yield c
 
 
@@ -205,23 +205,29 @@ async def test_explain_api(db: Database, pm: ProviderManager, client):
     await _bench(db, a.id, "m", startup=100, tps=10)
     await _bench(db, b.id, "m", startup=900, tps=500)
 
-    data = client.get(
-        "/api/routing/explain", params={"model": "m", "mode": "latency"}
+    data = (
+        await client.get(
+            "/api/routing/explain", params={"model": "m", "mode": "latency"}
+        )
     ).json()
     assert data["chosen"]["provider"] == "a"
     assert data["request"]["endpoint"] == "/v1/chat/completions"
 
-    data = client.get(
-        "/api/routing/explain",
-        params={"model": "m", "mode": "throughput", "endpoint": "/api/chat"},
+    data = (
+        await client.get(
+            "/api/routing/explain",
+            params={"model": "m", "mode": "throughput", "endpoint": "/api/chat"},
+        )
     ).json()
     assert data["chosen"]["provider"] == "b"
     assert data["request"]["protocol"] == "ollama"
 
     key_id = await db.create_api_key("lrk_x", key_hash("lrk_x"), "latency", True)
     await db.set_api_key_model_pin(key_id, "m", b.id)
-    data = client.get(
-        "/api/routing/explain", params={"model": "m", "key_id": key_id}
+    data = (
+        await client.get(
+            "/api/routing/explain", params={"model": "m", "key_id": key_id}
+        )
     ).json()
     assert data["chosen"]["provider"] == "b"
     assert data["api_key"]["id"] == key_id
@@ -239,42 +245,41 @@ async def test_explain_api_shows_anonymous_binding_by_client(
     assert key is not None
     rt.affinity.bind(key, a.id, model="m")
     params = {"model": "m", "session_id": "s1"}
-    data = client.get(
-        "/api/routing/explain", params={**params, "client_ip": "198.51.100.1"}
+    data = (
+        await client.get(
+            "/api/routing/explain", params={**params, "client_ip": "198.51.100.1"}
+        )
     ).json()
     assert data["session"]["bound_provider_id"] == a.id
-    data = client.get(
-        "/api/routing/explain", params={**params, "client_ip": "198.51.100.2"}
+    data = (
+        await client.get(
+            "/api/routing/explain", params={**params, "client_ip": "198.51.100.2"}
+        )
     ).json()
     assert data["session"]["bound_provider_id"] is None
-    bad = client.get("/api/routing/explain", params={**params, "client_ip": "x"})
+    bad = await client.get("/api/routing/explain", params={**params, "client_ip": "x"})
     assert bad.status_code == 400
 
 
 async def test_explain_api_validation(client):
-    assert client.get("/api/routing/explain").status_code == 400
+    assert (await client.get("/api/routing/explain")).status_code == 400
     assert (
-        client.get(
+        await client.get(
             "/api/routing/explain", params={"model": "m", "endpoint": "/api/tags"}
-        ).status_code
-        == 400
-    )
+        )
+    ).status_code == 400
     assert (
-        client.get(
+        await client.get(
             "/api/routing/explain", params={"model": "m", "mode": "fastest"}
-        ).status_code
-        == 400
-    )
+        )
+    ).status_code == 400
     assert (
-        client.get(
-            "/api/routing/explain", params={"model": "m", "key_id": "999"}
-        ).status_code
-        == 404
-    )
+        await client.get("/api/routing/explain", params={"model": "m", "key_id": "999"})
+    ).status_code == 404
 
 
 async def test_dashboard_renders_explorer(db: Database, pm: ProviderManager, client):
     await _provider(db, "a", ["m"])
-    page = client.get("/").text
+    page = (await client.get("/")).text
     assert "Route Explorer" in page
     assert 'id="rx-models"' in page

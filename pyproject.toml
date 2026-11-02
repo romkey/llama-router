@@ -58,6 +58,7 @@ dev = [
   "pytest-asyncio>=1.4.1",
   "pytest-cov>=7.1.0",
   "pytest-httpx>=0.36.2",
+  "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -145,14 +146,17 @@ testpaths = ["tests"]
 xfail_strict = true
 markers = [
   "no_accounts_locked: keep the real locked dashboard when no accounts exist",
+  "allow_unauthenticated: the router fixture lets requests without a key in",
 ]
 
 [tool.coverage.run]
-source = ["llama_router"]
+# A path, not the package name, so the Alembic migrations (not imported as
+# part of the package) are measured too.
+source = ["src/llama_router"]
 branch = true
 
 [tool.coverage.report]
 # RULES.md §4 wants 80; raise this as coverage improves.
-fail_under = 80
+fail_under = 85
 skip_covered = true
 exclude_also = ['if __name__ == "__main__":']

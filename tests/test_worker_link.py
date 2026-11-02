@@ -38,6 +38,7 @@ from llama_router.worker_link.worker import (
     normalize_hub_url,
     path_allowed,
 )
+from tests.conftest import FakeClock
 
 # --- pure helpers ---
 
@@ -253,9 +254,21 @@ async def _wait_for(cond, timeout: float = 5.0) -> None:
     raise AssertionError("condition not met in time")
 
 
+def _fake_sleep(clock: FakeClock, slept: list[float] | None = None):
+    """An asyncio.sleep that moves *clock* on instead of waiting."""
+
+    async def sleep(seconds: float) -> None:
+        if slept is not None:
+            slept.append(seconds)
+        clock.t += seconds
+        await asyncio.sleep(0)
+
+    return sleep
+
+
 @pytest_asyncio.fixture
-async def link(tmp_path):
-    db = Database(str(tmp_path / "hub.db"))
+async def link(database_url):
+    db = Database(database_url)
     await db.connect()
     pm = ProviderManager(db)
     rt = Router(db, pm)
@@ -1478,16 +1491,19 @@ async def test_hub_stops_reading_while_a_client_falls_behind(monkeypatch) -> Non
 
 
 async def test_catalogs_are_applied_at_a_limited_rate_latest_first(
-    monkeypatch,
+    monkeypatch, clock
 ) -> None:
     from llama_router.worker_link.hub import WorkerHub
 
     monkeypatch.setattr(settings, "worker_catalog_min_interval_seconds", 0.3)
     hub = WorkerHub()
+    slept: list[float] = []
+    hub.clock = clock
+    hub.sleep = _fake_sleep(clock, slept)
     applied: list[tuple[float, list[int]]] = []
 
     async def on_catalog(conn) -> None:
-        applied.append((time.monotonic(), [e["id"] for e in conn.catalog]))
+        applied.append((clock(), [e["id"] for e in conn.catalog]))
 
     hub.set_callbacks(None, None, on_catalog)
     conn = _hub_conn(expose=p.EXPOSE_INDIVIDUAL, on_catalog=hub._catalog_received)
@@ -1503,10 +1519,12 @@ async def test_catalogs_are_applied_at_a_limited_rate_latest_first(
     send(1, 2, 3)
     send(1, 2, 3, 4)
     await _wait_for(lambda: len(applied) == 2)
-    await asyncio.sleep(0.4)
+    for _ in range(5):
+        await asyncio.sleep(0)
     # Only the newest of the three, and not before the interval was up.
     assert [ids for _, ids in applied] == [[1], [1, 2, 3, 4]]
-    assert applied[1][0] - applied[0][0] >= 0.25
+    assert [t for t, _ in applied] == [1000.0, pytest.approx(1000.3)]
+    assert slept == [pytest.approx(0.3)]
 
 
 async def test_catalog_is_capped(monkeypatch) -> None:
@@ -1534,8 +1552,10 @@ async def test_unshared_providers_are_deleted_after_a_while(link, monkeypatch) -
 
     await _wait_for(two)
     conn = pm.worker_hub.get(pid)
-    # About a third of a second.
-    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.0001)
+    clock = FakeClock()
+    pm.clock = clock
+    pm.sleep = _fake_sleep(clock)
+    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 1.0)
     conn.catalog = [catalog[0]]
     await pm._on_worker_catalog(conn)
     kids = await _children(link)
@@ -1547,6 +1567,7 @@ async def test_unshared_providers_are_deleted_after_a_while(link, monkeypatch) -
 
     # The purge timer syncs again once the grace period is over.
     await _wait_for(purged)
+    assert clock.t >= 1000.0 + 3600.0
     assert set(await _children(link)) == {"alice-gpu/gpu"}
 
 
@@ -1571,11 +1592,12 @@ async def test_unshared_providers_beyond_the_cap_go_at_once(link, monkeypatch) -
     assert by_rid == {7, 9}
 
 
-async def test_purge_timer_survives_a_reconnect(monkeypatch) -> None:
+async def test_purge_timer_survives_a_reconnect(monkeypatch, clock) -> None:
     """The timer syncs through whichever socket is current when it fires,
     not the one that scheduled it."""
     pm = ProviderManager(None)  # type: ignore[arg-type]
-    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.00001)
+    pm.clock = clock
+    pm.sleep = _fake_sleep(clock)
     old, new = _hub_conn(), _hub_conn()
     synced: list[Any] = []
 
@@ -1593,9 +1615,11 @@ async def test_purge_timer_survives_a_reconnect(monkeypatch) -> None:
     assert synced == [new]
 
 
-async def test_purge_timer_retries_a_failed_sync(monkeypatch) -> None:
+async def test_purge_timer_retries_a_failed_sync(monkeypatch, clock) -> None:
     pm = ProviderManager(None)  # type: ignore[arg-type]
-    monkeypatch.setattr(settings, "worker_unshared_purge_hours", 0.00001)
+    slept: list[float] = []
+    pm.clock = clock
+    pm.sleep = _fake_sleep(clock, slept)
     conn = _hub_conn()
     calls: list[Any] = []
 
@@ -1605,10 +1629,11 @@ async def test_purge_timer_retries_a_failed_sync(monkeypatch) -> None:
             raise RuntimeError("database busy")
 
     monkeypatch.setattr(pm, "_on_worker_catalog", on_catalog)
-    monkeypatch.setattr(pm_mod, "_PURGE_RETRY_S", 0.0)
     pm.worker_hub._conns[1] = conn
     pm._schedule_purge(conn, 0.0)
     await _wait_for(lambda: len(calls) == 2)
+    # The retry waits _PURGE_RETRY_S (plus the timer's second of slack).
+    assert slept == [1.0, pm_mod._PURGE_RETRY_S + 1.0]
 
 
 async def test_catalog_sync_uses_the_catalog_it_started_with(link, monkeypatch) -> None:
@@ -1656,13 +1681,14 @@ async def test_purge_timer_waits_only_for_the_longest_unshared(
 
     await _wait_for(two)
     monkeypatch.setattr(settings, "worker_unshared_purge_hours", 1.0)
+    clock = FakeClock()
+    pm.clock = clock
     delays: list[float] = []
     monkeypatch.setattr(pm, "_schedule_purge", lambda conn, d: delays.append(d))
     conn = pm.worker_hub.get(pid)
     api = (await _children(link))["alice-gpu/api"]
     conn.catalog = [catalog[0]]
     # Unshared half an hour ago (by the hub's reckoning).
-    pm._unshared_since[api.require_id()] = time.monotonic() - 1800.0
+    pm._unshared_since[api.require_id()] = clock.t - 1800.0
     await pm._on_worker_catalog(conn)
-    assert len(delays) == 1
-    assert 1700.0 < delays[0] <= 1800.0
+    assert delays == [1800.0]

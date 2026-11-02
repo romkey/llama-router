@@ -25,6 +25,7 @@ from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_stats import WARM_WINDOW_S, ProviderStats
 from llama_router.routing_table import fallback_chains
+from tests.conftest import asgi_client
 
 
 class FakeClock:
@@ -154,7 +155,9 @@ async def test_unchanged_status_does_not_dirty_table(db: Database, pm: ProviderM
 
 
 async def test_background_rebuild_coalesces_bursts(db: Database, pm: ProviderManager):
-    rt = Router(db, pm, debounce_s=0.05, min_interval_s=0.0)
+    # Wide enough that the writes below land in one window even on a busy
+    # machine running tests in parallel.
+    rt = Router(db, pm, debounce_s=0.5, min_interval_s=0.0)
     await rt.start()
     try:
         start_version = rt.table.version
@@ -163,7 +166,7 @@ async def test_background_rebuild_coalesces_bursts(db: Database, pm: ProviderMan
         for i in range(10):
             await db.set_model_fallback(f"a{i}", "m")
         await db.set_provider_models(p.id, [ProviderModel(provider_id=p.id, name="m")])
-        for _ in range(100):
+        for _ in range(250):
             await asyncio.sleep(0.02)
             if rt.table.version > start_version and not rt._wake.is_set():
                 r = rt.route_with(rt.table, "a3", "/v1/chat/completions")
@@ -333,8 +336,6 @@ async def test_chaos_uses_table(db: Database, pm: ProviderManager):
 
 
 async def test_dashboard_routing_table_endpoint(db: Database, pm: ProviderManager):
-    from fastapi.testclient import TestClient
-
     from llama_router.dashboard import deps as dash_deps
     from llama_router.dashboard.app import app as dash_app
 
@@ -343,8 +344,8 @@ async def test_dashboard_routing_table_endpoint(db: Database, pm: ProviderManage
     pm.attach_router(rt)
     await rt.rebuild()
     dash_deps.init(db, pm)
-    with TestClient(dash_app) as client:
-        data = client.get("/api/routing-table").json()
+    async with asgi_client(dash_app) as client:
+        data = (await client.get("/api/routing-table")).json()
     assert data["models"]["m"]["/v1/chat/completions"]["ranked"]["balanced"] == ["srv"]
 
 
