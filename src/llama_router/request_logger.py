@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -15,7 +16,8 @@ import httpx
 from fastapi import Request
 from fastapi.responses import Response, StreamingResponse
 
-from .background import spawn
+from . import metrics
+from .background import on_drain
 from .client_address import client_ip
 from .config import settings
 from .database import Database
@@ -319,8 +321,19 @@ def refusal_worth_logging(request: Request, status_code: int) -> bool:
     return status_code in (400, 401, 403)
 
 
+def _raw_body_size(request: Request) -> int | None:
+    """Bytes the client sent: the body Starlette already read (and cached),
+    else the Content-Length header."""
+    body = getattr(request, "_body", None)
+    if isinstance(body, bytes):
+        return len(body)
+    length = request.headers.get("content-length", "")
+    return int(length) if length.isdigit() else None
+
+
 def _payload_size(body: Any) -> int:
-    """Approximate size of the JSON request body in bytes."""
+    """Approximate size of a JSON body in bytes, for bodies the router has
+    only as parsed JSON (responses, internal requests)."""
     try:
         return len(json.dumps(body).encode())
     except Exception:
@@ -421,6 +434,7 @@ async def log_request(
     api_key_id: int | None = None,
     request_meta: str | None = None,
     spend_reservation: Reservation | None = None,
+    request_size: int | None = None,
 ) -> None:
     """Write one request to the log.
 
@@ -429,10 +443,71 @@ async def log_request(
     *sample* also feeds the outcome to the routing stats under *routed_model*.
     *request_meta* replaces the summary worked out from *request_body*.
     *spend_reservation* (from the spend cap) is swapped for the actual cost.
+    *request_size* is the raw body length; without it (and without
+    *request*) *request_body* is measured.
 
     A successful priced cloud request whose response reports no usage is
     charged an estimate from *request_body* rather than nothing.
     """
+    await db.save_request_log(
+        _build_entry(
+            db,
+            provider=provider,
+            protocol=protocol,
+            endpoint=endpoint,
+            request=request,
+            source_ip=source_ip,
+            model=model,
+            request_body=request_body,
+            response_size=response_size,
+            duration_ms=duration_ms,
+            streamed=streamed,
+            status=status,
+            error_detail=error_detail,
+            response_body=response_body,
+            routed_model=routed_model,
+            sample=sample,
+            ttfb_ms=ttfb_ms,
+            router_ms=router_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            api_key_id=api_key_id,
+            request_meta=request_meta,
+            spend_reservation=spend_reservation,
+            request_size=request_size,
+        )
+    )
+
+
+def _build_entry(
+    db: Database,
+    *,
+    provider: Provider | None,
+    protocol: str,
+    endpoint: str,
+    request: Request | None = None,
+    source_ip: str | None = None,
+    model: str | None,
+    request_body: Any = None,
+    response_size: int = 0,
+    duration_ms: float,
+    streamed: bool = False,
+    status: str = "ok",
+    error_detail: str | None = None,
+    response_body: Any = None,
+    routed_model: str | None = None,
+    sample: bool = False,
+    ttfb_ms: float | None = None,
+    router_ms: float | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    api_key_id: int | None = None,
+    request_meta: str | None = None,
+    spend_reservation: Reservation | None = None,
+    request_size: int | None = None,
+) -> RequestLog:
+    """The log row for one request (see log_request); records its outcome
+    and settles its spend on the way."""
     if response_body is not None and not response_size:
         response_size = _payload_size(response_body)
     if sample:
@@ -453,6 +528,10 @@ async def log_request(
         api_key_id = getattr(request.state, "api_key_id", None)
     if spend_reservation is None and request is not None:
         spend_reservation = _take_reservation(request)
+    if request_size is None and request is not None:
+        request_size = _raw_body_size(request)
+    if request_size is None:
+        request_size = _payload_size(request_body)
     if prompt_tokens is None and completion_tokens is None:
         prompt_tokens, completion_tokens = usage_from_body(response_body)
     cost = None
@@ -475,7 +554,7 @@ async def log_request(
         tracker_for(db).settle(spend_reservation, cost)
     elif cost and api_key_id is not None:
         tracker_for(db).add(api_key_id, cost)
-    entry = RequestLog(
+    return RequestLog(
         provider_id=provider.id if provider else None,
         provider_name=provider.name if provider else None,
         protocol=protocol,
@@ -483,7 +562,7 @@ async def log_request(
         source_ip=ip,
         model=model,
         routed_model=routed_model if routed_model != model else None,
-        request_size=_payload_size(request_body),
+        request_size=request_size,
         response_size=response_size,
         request_meta=request_meta or _request_meta_summary(request_body),
         duration_ms=duration_ms,
@@ -498,7 +577,6 @@ async def log_request(
         completion_tokens=completion_tokens,
         cost_usd=cost,
     )
-    await db.save_request_log(entry)
 
 
 def log_request_background(
@@ -530,8 +608,142 @@ def log_request_background(
             kwargs["router_ms"] = _router_ms(
                 request, dispatched_at, kwargs.get("duration_ms", 0.0)
             )
+        if kwargs.get("request_size") is None:
+            kwargs["request_size"] = _raw_body_size(request)
         kwargs["request"] = None
-    spawn(log_request(db, **kwargs), name="log-request")
+    _writer().put(db, kwargs)
+
+
+# The log writer's queue bound; past it rows are dropped, not buffered.
+QUEUE_MAX = 10_000
+# A batch is written when it has this many rows or is this old.
+BATCH_ROWS = 200
+BATCH_SECONDS = 0.1
+
+
+class _LogWriter:
+    """One task that writes queued log rows in batches.
+
+    Handlers only enqueue, so a burst of requests costs one insert per
+    batch instead of a task and a transaction per request. The queue is
+    bounded: when the database falls this far behind, rows are dropped
+    (and counted) rather than held in memory.
+    """
+
+    def __init__(self) -> None:
+        self.loop = asyncio.get_running_loop()
+        self._queue: asyncio.Queue[tuple[Database, dict[str, Any]]] = asyncio.Queue(
+            maxsize=QUEUE_MAX
+        )
+        self._wake = asyncio.Event()
+        self._flushing = 0
+        self._task = self.loop.create_task(self._run(), name="request-log-writer")
+
+    def put(self, db: Database, kwargs: dict[str, Any]) -> None:
+        try:
+            self._queue.put_nowait((db, kwargs))
+        except asyncio.QueueFull:
+            metrics.count_request_log_dropped()
+            dropped = metrics.request_log_dropped_total()
+            if dropped == 1 or dropped % 1000 == 0:
+                logger.warning("Request log writer is behind; %d rows dropped", dropped)
+            held = kwargs.get("spend_reservation")
+            if isinstance(held, Reservation):
+                # Charge the estimate so the cap still counts the request.
+                tracker_for(db).settle(held, held.amount)
+            return
+        self._wake.set()
+
+    async def flush(self) -> None:
+        """Wait until every row queued so far is written."""
+        self._flushing += 1
+        self._wake.set()
+        try:
+            await self._queue.join()
+        finally:
+            self._flushing -= 1
+
+    async def stop(self) -> None:
+        await self.flush()
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+    async def _run(self) -> None:
+        while True:
+            batch = await self._collect()
+            try:
+                await self._write(batch)
+            except Exception:
+                logger.exception("Could not write %d request log rows", len(batch))
+            finally:
+                for _ in batch:
+                    self._queue.task_done()
+
+    async def _collect(self) -> list[tuple[Database, dict[str, Any]]]:
+        batch = [await self._queue.get()]
+        deadline = self.loop.time() + BATCH_SECONDS
+        while len(batch) < BATCH_ROWS:
+            try:
+                batch.append(self._queue.get_nowait())
+                continue
+            except asyncio.QueueEmpty:
+                pass
+            remaining = deadline - self.loop.time()
+            if remaining <= 0 or self._flushing:
+                break
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(self._wake.wait(), remaining)
+            except TimeoutError:
+                break
+        return batch
+
+    async def _write(self, batch: list[tuple[Database, dict[str, Any]]]) -> None:
+        by_db: dict[Database, list[RequestLog]] = {}
+        for db, kwargs in batch:
+            try:
+                by_db.setdefault(db, []).append(_build_entry(db, **kwargs))
+            except Exception:
+                logger.exception("Could not build a request log row")
+        for db, entries in by_db.items():
+            await db.save_request_logs(entries)
+
+
+_log_writer: _LogWriter | None = None
+
+
+def _writer() -> _LogWriter:
+    """The writer for the running event loop, started on first use."""
+    global _log_writer
+    loop = asyncio.get_running_loop()
+    if _log_writer is None or _log_writer.loop is not loop:
+        _log_writer = _LogWriter()
+    return _log_writer
+
+
+def start_log_writer() -> None:
+    """Start the request log writer (at start-up, before requests arrive)."""
+    _writer()
+
+
+async def flush_request_log() -> None:
+    """Wait for queued request log rows to be written."""
+    writer = _log_writer
+    if writer is not None and writer.loop is asyncio.get_running_loop():
+        await writer.flush()
+
+
+async def stop_log_writer() -> None:
+    """Write what is queued and stop the writer (shutdown)."""
+    global _log_writer
+    writer = _log_writer
+    if writer is not None and writer.loop is asyncio.get_running_loop():
+        await writer.stop()
+    _log_writer = None
+
+
+on_drain(flush_request_log)
 
 
 def _router_ms(

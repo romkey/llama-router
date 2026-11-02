@@ -7,7 +7,26 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Changed
+
+- The request log is written by one background writer in batches (up to 200
+  rows or every 100 ms) instead of a task and a transaction per request. Its
+  queue holds 10,000 rows; when the database falls further behind, rows are
+  dropped and counted in the new `request_log_dropped_total` metric.
+  Shutdown writes what is queued before closing the database.
+- SQLite databases use WAL journaling with `synchronous=NORMAL` and a
+  five-second busy timeout, so dashboard reads no longer wait on log writes,
+  and skip the per-checkout connection ping.
+- An upgrade adds an index on the request log's model and time.
+- The dashboard's request log page count is cached for 30 seconds instead of
+  counting the whole log on every refresh.
+- A request's logged size is the body the client sent, not the parsed body
+  serialised again.
+
 ### Fixed
+
+- If one of the router's servers cannot bind its port, the others are stopped
+  and the router exits with an error instead of running without it.
 
 - Benchmarks of Ollama-style providers that leave out `eval_duration`, such as
   another llama-router in front of llama.cpp, no longer report billions of
