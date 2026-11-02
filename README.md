@@ -157,7 +157,7 @@ Every health check times each address. The router keeps a running tally per addr
 
 The table is rebuilt whenever one of its inputs changes: models are discovered or deleted, a provider changes status, an address goes up or down, a benchmark is added or removed, a fallback or provider is edited, a probe runs, the set of loaded models changes, or new round-trip and request measurements arrive. Changes within a quarter of a second are batched into one rebuild, and rebuilds run at most once a second. Measurement-only rebuilds reuse the last database read.
 
-Resolved API keys are cached for five minutes. Creating or deleting a key, editing its pins, or changing the authentication policy takes effect on the next request.
+Resolved API keys and the authentication policy are cached for five minutes, and keys the router does not know for 30 seconds. Creating or deleting a key, editing its pins, or changing the authentication policy takes effect on the next request; other routers sharing the database pick the change up when their cache expires.
 
 Inspect the current table, with each candidate's inputs and scores, or force a rebuild:
 

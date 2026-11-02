@@ -24,8 +24,18 @@ described in their git tags and GitHub Releases.
 - The router warns once when a sign-in arrives with `X-Forwarded-For` from a
   peer not in `LLAMA_ROUTER_TRUSTED_PROXIES`; the README now says the setting
   is required behind a reverse proxy.
+- `/api/tags`, `/api/version`, `/api/ps`, `/v1/models` and `/v1/models/{name}`
+  now need an API key, like every other API route, unless the authentication
+  policy accepts requests without one. `/health` stays public.
+- A request with an invalid API key no longer costs a PBKDF2 hash every time.
+  Keys not shaped like the router's own (`lrk_` and 43 characters) are refused
+  without hashing, keys the database does not know are remembered and refused
+  for 30 seconds, and at most four hashes run at once.
 
 ### Fixed
+
+- The "accept requests without an API key" setting is re-read every five
+  minutes, so routers sharing a database see a change made on another one.
 
 - Benchmarks of Ollama-style providers that leave out `eval_duration`, such as
   another llama-router in front of llama.cpp, no longer report billions of
