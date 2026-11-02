@@ -19,7 +19,7 @@ from llama_router.models import (
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
-from llama_router.routing_stats import ProviderStats
+from llama_router.routing_stats import WARM_WINDOW_S, ProviderStats
 
 ENDPOINT = "/v1/chat/completions"
 
@@ -220,3 +220,37 @@ async def test_locality_and_hub_rankings_are_built_on_first_lookup(
     assert table.ranked_for("nope", ENDPOINT, "balanced", locality="cloud") == ()
     assert table.ranked_for("m", ENDPOINT, "nope", locality="cloud") == ()
     assert ("nope", ENDPOINT, "balanced", "cloud") not in table.ranked_by_locality
+
+
+def test_health_checks_notice_what_time_alone_changed() -> None:
+    clock = FakeClock()
+    stats = ProviderStats(clock=clock)
+    fired: list[str] = []
+    stats.add_listener(fired.append)
+
+    for _ in range(5):
+        stats.record_request(1, "m", ok=False)
+    assert stats.provider_health(1).circuit_open
+    stats.mark_built()
+    fired.clear()
+
+    stats.record_check(1, ok=True)
+    assert fired == []
+    # Failures decay with no traffic: the circuit closes by the next check.
+    clock.t += 3600.0
+    stats.record_check(1, ok=True)
+    assert fired == ["health check"]
+
+
+def test_health_checks_notice_a_model_going_cold() -> None:
+    clock = FakeClock()
+    stats = ProviderStats(clock=clock)
+    fired: list[str] = []
+    stats.add_listener(fired.append)
+    stats.record_request(1, "m", ok=True, tokens_per_second=50.0)
+    stats.mark_built()
+    fired.clear()
+
+    clock.t += WARM_WINDOW_S + 1
+    stats.record_check(1, ok=True)
+    assert fired == ["health check"]

@@ -51,6 +51,7 @@ MODEL_CIRCUIT_MIN_SAMPLES = 3
 SIGNIFICANT_MOVE = 0.10
 MIN_MOVE = 1.0
 RATE_MOVE = 0.10
+_RATES = frozenset({"requests", "probes", "failures"})
 
 
 @dataclass(slots=True)
@@ -276,16 +277,48 @@ class ProviderStats:
             ):
                 if ewma.value is not None:
                     built[(name, *key)] = ewma.value
-            built[("failures", *key)] = s.failures.current(now)
-        for pid, rate in list(self._requests.items()):
-            built[("requests", pid)] = rate.current(now)
-        for pid, rate in list(self._probes.items()):
-            built[("probes", pid)] = rate.current(now)
         for pid, per_addr in list(self._tallies.items()):
             for aid, t in list(per_addr.items()):
                 if t.ewma.value is not None:
                     built[("rtt", pid, aid)] = t.ewma.value
+        for pid in {*self._requests, *self._probes, *self._no_logprobs} | {
+            k[0] for k in list(self._models)
+        }:
+            built.update(self._decaying(pid, now))
         self._built = built
+
+    def _decaying(self, provider_id: int, now: float) -> dict[tuple[Any, ...], float]:
+        """The provider's signals that change with time alone, flags as 0 or 1.
+
+        Failure rates decay, warm models go cold and the logprobs verdict
+        expires without any new sample arriving.
+        """
+        out: dict[tuple[Any, ...], float] = {}
+        req = self._requests.get(provider_id)
+        if req is not None:
+            out[("requests", provider_id)] = req.current(now)
+            out[("provider circuit", provider_id)] = float(_provider_circuit(req, now))
+        probe = self._probes.get(provider_id)
+        if probe is not None:
+            out[("probes", provider_id)] = probe.current(now)
+        out[("no logprobs", provider_id)] = float(self.lacks_logprobs(provider_id, now))
+        for key, s in list(self._models.items()):
+            if key[0] != provider_id:
+                continue
+            out[("failures", *key)] = s.failures.current(now)
+            out[("circuit", *key)] = float(model_circuit_open(s, now))
+            out[("warm", *key[:2])] = float(self.is_warm(provider_id, key[1], now))
+        return out
+
+    def _drifted(self, provider_id: int, now: float) -> bool:
+        """Time alone moved one of the provider's signals enough to matter."""
+        return any(
+            self._rate_moved(key, value)
+            if key[0] in _RATES
+            # A flag: a flip matters.
+            else value != self._built.get(key, 0.0)
+            for key, value in self._decaying(provider_id, now).items()
+        )
 
     def _moved(self, key: tuple[Any, ...], value: float | None) -> bool:
         """A moving average moved enough since the build to matter."""
@@ -328,7 +361,9 @@ class ProviderStats:
         now = self._clock()
         rate = self._probes.setdefault(provider_id, DecayingRate())
         rate.add(not ok, now)
-        if self._rate_moved(("probes", provider_id), rate.current(now)):
+        # Health checks come every cycle, so they also notice what time
+        # alone changed: a circuit closing, a model going cold.
+        if self._drifted(provider_id, now):
             self._changed("health check")
 
     def record_rtt(self, provider_id: int, address_id: int, ms: float) -> None:

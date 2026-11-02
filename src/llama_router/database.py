@@ -415,10 +415,13 @@ class Database:
             # the same status every cycle.
             self._changed(CHANGE_STATUS)
         else:
+            # Record a busy/idle flip quietly, in one statement, so a
+            # concurrent change to offline is never overwritten.
             await self._execute(
-                "UPDATE providers SET status = ?, updated_at = CURRENT_TIMESTAMP "
-                "WHERE id = ?",
-                (status.value, provider_id),
+                "UPDATE providers SET status = CASE WHEN status IN (?, ?) "
+                "AND ? IN (?, ?) THEN ? ELSE status END, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (*online, status.value, *online, status.value, provider_id),
             )
 
     async def get_providers_for_model(
