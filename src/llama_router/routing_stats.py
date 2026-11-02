@@ -287,6 +287,10 @@ class ProviderStats:
             built.update(self._decaying(pid, now))
         self._built = built
 
+    def forget_built(self) -> None:
+        """The build mark_built was taken for failed: every sample matters."""
+        self._built = {}
+
     def _decaying(self, provider_id: int, now: float) -> dict[tuple[Any, ...], float]:
         """The provider's signals that change with time alone, flags as 0 or 1.
 

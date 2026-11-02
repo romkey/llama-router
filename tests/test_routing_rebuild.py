@@ -254,3 +254,30 @@ def test_health_checks_notice_a_model_going_cold() -> None:
     clock.t += WARM_WINDOW_S + 1
     stats.record_check(1, ok=True)
     assert fired == ["health check"]
+
+
+@pytest.mark.asyncio
+async def test_failed_rebuild_lets_the_next_sample_retry(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = await _provider(db, "a", ["m"])
+    pid = p.require_id()
+    pm = ProviderManager(db)
+    pm.stats.record_request(pid, "m", ok=True, tokens_per_second=50.0)
+    rt = Router(db, pm)
+    await rt.rebuild()
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+    real = routing_table.rescore
+    monkeypatch.setattr(routing_table, "rescore", broken)
+    rt.mark_dirty("test", reload=False)
+    with pytest.raises(RuntimeError):
+        await rt.rebuild()
+    monkeypatch.setattr(routing_table, "rescore", real)
+    rt._wake.clear()
+
+    # A sample too small to matter after a good build still wakes the router.
+    pm.stats.record_request(pid, "m", ok=True, tokens_per_second=50.0)
+    assert rt._wake.is_set()

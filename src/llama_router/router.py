@@ -237,6 +237,9 @@ class Router:
                 if reload:
                     self._need_reload = True
                 self._need_rescore = True
+                # Nothing was built from that snapshot: let the next sample
+                # count as a change, so it brings another attempt.
+                self._pm.stats.forget_built()
                 raise
             self._table = table
             if reload:
