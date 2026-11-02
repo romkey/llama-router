@@ -22,9 +22,8 @@ described in their git tags and GitHub Releases.
 
 ### Fixed
 
-- On PostgreSQL, request log retention, spend caps and key usage since a
-  date no longer fail with "can't subtract offset-naive and offset-aware
-  datetimes".
+- On PostgreSQL, request log retention no longer fails with "can't subtract
+  offset-naive and offset-aware datetimes", so old request logs are deleted.
 - Benchmarks of Ollama-style providers that leave out `eval_duration`, such as
   another llama-router in front of llama.cpp, no longer report billions of
   tokens per second. The benchmark falls back to the reported or measured
