@@ -56,7 +56,16 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --locked
-      - run: uv run --locked pytest
+      # One chain of migrations: two heads means two branches each added one.
+      - name: Check for a single Alembic head
+        run: |
+          heads=$(uv run --locked alembic -c src/llama_router/alembic.ini heads)
+          echo "$heads"
+          if [ "$(echo "$heads" | wc -l)" -ne 1 ]; then
+            echo "::error::Alembic has more than one head; chain the migrations"
+            exit 1
+          fi
+      - run: uv run --locked pytest -n auto
       # The sdist and wheel build, and pip can install the wheel and run it:
       # what `pip install` users and the PyPI release get.
       - name: Build and pip-install the package
@@ -65,6 +74,55 @@ jobs:
           uv venv --seed "$RUNNER_TEMP/pip-test"
           "$RUNNER_TEMP/pip-test/bin/pip" install dist/*.whl
           "$RUNNER_TEMP/pip-test/bin/llama-router" --version
+
+  # The suite again against each server database the router supports. The
+  # tests share the one database, so they run one at a time; the SQLite job
+  # above checks coverage.
+  databases:
+    name: Tests (${{ matrix.db }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db: postgres
+            image: postgres:17-alpine
+            port: 5432
+            health: pg_isready -U postgres
+            url: postgresql+asyncpg://postgres:ci@127.0.0.1:5432/llama_router
+          - db: mysql
+            image: mysql:8.4
+            port: 3306
+            health: mysqladmin ping -h 127.0.0.1 -pci
+            url: mysql+asyncmy://root:ci@127.0.0.1:3306/llama_router
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: llama_router
+          MYSQL_ROOT_PASSWORD: ci
+          MYSQL_DATABASE: llama_router
+        ports:
+          - ${{ matrix.port }}:${{ matrix.port }}
+        options: >-
+          --health-cmd "${{ matrix.health }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      LLAMA_ROUTER_TEST_DATABASE_URL: ${{ matrix.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --extra ${{ matrix.db }}
+      - run: uv run --locked --extra ${{ matrix.db }} pytest --no-cov
 
   image:
     name: Production image
@@ -96,7 +154,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [changes, tests, image]
+    needs: [changes, tests, databases, image]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

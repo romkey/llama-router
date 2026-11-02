@@ -20,6 +20,9 @@ from llama_router.routing_stats import NO_LOGPROBS_TTL_S
 from llama_router.routing_table import TIER_MISSING, TIER_OK
 from tests.conftest import FakeClock
 
+# These send their requests without an API key.
+pytestmark = pytest.mark.allow_unauthenticated
+
 MODEL = "m"
 QUESTIONS = {
     "department": {

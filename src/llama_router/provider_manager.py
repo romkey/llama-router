@@ -196,6 +196,9 @@ class ProviderManager:
         # worker_unshared_purge_hours have passed, one per worker.
         self._unshared_since: dict[int, float] = {}
         self._purge_timers: dict[int, asyncio.Task[None]] = {}
+        # What those use to tell and wait for the time; replaced in tests.
+        self.clock: Callable[[], float] = time.monotonic
+        self.sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     def attach_router(self, router: Router) -> None:
         self._router = router
@@ -2036,7 +2039,7 @@ class ProviderManager:
         if gone and grace > 0:
             # Due when the longest unshared one reaches the grace period.
             oldest = min(self._unshared_since[c.require_id()] for c in gone)
-            self._schedule_purge(conn, oldest + grace - time.monotonic())
+            self._schedule_purge(conn, oldest + grace - self.clock())
         for child in wanted:
             async with self._worker_lock(child.require_id()):
                 if self.worker_hub.get(child.require_id()) is conn:
@@ -2049,7 +2052,7 @@ class ProviderManager:
         and those to delete: unshared for longer than
         worker_unshared_purge_hours, and the longest unshared beyond
         worker_max_shared_providers, so a worker cannot pile up rows."""
-        now = time.monotonic()
+        now = self.clock()
         for child in unshared:
             self._unshared_since.setdefault(child.require_id(), now)
         unshared.sort(key=lambda c: self._unshared_since[c.require_id()])
@@ -2078,7 +2081,7 @@ class ProviderManager:
             return
 
         async def later() -> None:
-            await asyncio.sleep(max(0.0, delay) + 1.0)
+            await self.sleep(max(0.0, delay) + 1.0)
             if self._purge_timers.get(parent_id) is asyncio.current_task():
                 del self._purge_timers[parent_id]
             current = self.worker_hub.get(parent_id)
