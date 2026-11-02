@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-02
+
 ### Added
 
 - Non-admin dashboard users can view request logs and counts for their own
