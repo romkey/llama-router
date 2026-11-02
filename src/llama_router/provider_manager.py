@@ -86,13 +86,18 @@ def _failure_reason(exc: BaseException) -> str:
     if isinstance(exc, httpx.RequestError):
         # The path only: the full URL can carry credentials and internal
         # hostnames, and this text reaches non-admins on the dashboard.
+        # TLS and transport errors often repeat the host, so drop it too.
         try:
-            path = exc.request.url.path
+            url = exc.request.url
         except RuntimeError:
-            return f"{type(exc).__name__}: {exc}"
-        return f"{type(exc).__name__} for {path}: {exc}"
+            return type(exc).__name__
+        text = str(exc)
+        for secret in (str(url), url.netloc.decode("ascii", "replace"), url.host):
+            if secret:
+                text = text.replace(secret, "(provider)")
+        return f"{type(exc).__name__} for {url.path}: {text}".rstrip(": ")
     if isinstance(exc, httpx.HTTPError):
-        return f"{type(exc).__name__}: {exc}"
+        return type(exc).__name__
     return str(exc) or type(exc).__name__
 
 

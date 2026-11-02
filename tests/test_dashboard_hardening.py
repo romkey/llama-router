@@ -366,6 +366,11 @@ async def test_status_detail_never_carries_the_provider_url(
     req = httpx.Request("GET", "http://user:pw@secret-host.lan:11434/api/tags")
     detail = _failure_reason(httpx.ConnectError("Connection refused", request=req))
     assert detail == "ConnectError for /api/tags: Connection refused"
+    tls = httpx.ConnectError(
+        "hostname 'secret-host.lan' doesn't match certificate", request=req
+    )
+    assert "secret-host" not in _failure_reason(tls)
+    assert _failure_reason(httpx.ConnectError("secret-host.lan")) == "ConnectError"
     dash_deps.get_pm()._status_detail[pid] = detail
 
     seen = json.dumps((await c.get("/api/status", headers=_as(ann))).json())
