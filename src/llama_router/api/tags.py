@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ..auth import from_hub, hub_provider
+from ..auth import from_hub, hub_provider, routing_preferences_from_request
 from ..model_listing import listed_models
 from . import deps
 
@@ -14,6 +14,7 @@ router = APIRouter()
 async def list_tags(request: Request) -> JSONResponse:
     """Aggregate models from all online providers, plus model groups (a hub
     sees only the providers shared with it)."""
+    await routing_preferences_from_request(deps.get_db(), request)
     models = await listed_models(
         deps.get_db(),
         deps.get_router(),
@@ -24,9 +25,10 @@ async def list_tags(request: Request) -> JSONResponse:
 
 
 @router.get("/api/version")
-async def version() -> JSONResponse:
+async def version(request: Request) -> JSONResponse:
     from .. import __version__
 
+    await routing_preferences_from_request(deps.get_db(), request)
     return JSONResponse(content={"version": __version__})
 
 
@@ -34,6 +36,7 @@ async def version() -> JSONResponse:
 async def ps(request: Request) -> JSONResponse:
     """Show which models are being served across providers (a hub sees only
     the providers shared with it)."""
+    await routing_preferences_from_request(deps.get_db(), request)
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
     hub = from_hub(request)

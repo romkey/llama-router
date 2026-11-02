@@ -8,7 +8,11 @@ import pytest
 from starlette.requests import Request
 
 from llama_router import request_logger
-from llama_router.auth import key_hash, routing_preferences_from_request
+from llama_router.auth import (
+    generate_api_key,
+    key_hash,
+    routing_preferences_from_request,
+)
 from llama_router.background import drain
 from llama_router.database import Database
 from llama_router.models import (
@@ -437,7 +441,7 @@ def _key_request(key: str) -> Request:
 
 
 async def test_api_key_is_cached_and_invalidated(db: Database, monkeypatch):
-    key = "lrk_test-key-value"
+    key = generate_api_key()
     key_id = await db.create_api_key("lrk_test", key_hash(key), "throughput", True)
     await db.set_allow_unauthenticated(False)
 
@@ -521,7 +525,7 @@ async def test_own_worker_relay_needs_no_key(db: Database):
 
 
 async def test_legacy_sha256_keys_still_work(db: Database):
-    key = "lrk_legacy"
+    key = generate_api_key()
     await db.create_api_key(
         "lrk_legacy", hashlib.sha256(key.encode()).hexdigest(), "latency", False
     )
@@ -561,7 +565,7 @@ async def test_raw_name_requests_use_discovered_name_for_stats(
 
 
 async def test_key_deleted_during_lookup_is_not_cached(db: Database, monkeypatch):
-    key = "lrk_racing"
+    key = generate_api_key()
     key_id = await db.create_api_key("lrk_racing", key_hash(key), "latency", True)
     await db.set_allow_unauthenticated(False)
     orig = db.lookup_api_key
