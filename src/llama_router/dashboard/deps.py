@@ -99,7 +99,8 @@ async def get_dashboard_session_secret() -> str:
     key = "dashboard_session_secret"
     val = await db.get_app_setting(key)
     if not val:
-        val = secrets.token_urlsafe(48)
-        await db.set_app_setting(key, val)
+        # Another router on the same database may be generating one too:
+        # both keep whichever was stored first, so cookies work on either.
+        val = await db.add_app_setting(key, secrets.token_urlsafe(48))
     _dashboard_session_secret_cache = val
     return val

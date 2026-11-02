@@ -53,6 +53,7 @@ llama-router-migrate-sqlite-pg = "llama_router.migrate_sqlite_to_postgres:main"
 
 [dependency-groups]
 dev = [
+  "hypothesis>=6.170.14",
   "mypy>=2.4.0",
   "pytest>=9.1.1",
   "pytest-asyncio>=1.4.1",

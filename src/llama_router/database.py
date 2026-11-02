@@ -1705,6 +1705,26 @@ class Database:
                 (key, value),
             )
 
+    async def add_app_setting(self, key: str, value: str) -> str:
+        """Store *value* unless *key* already has one; return the stored value."""
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT IGNORE INTO app_settings (`key`, value) VALUES (?, ?)",
+                (key, value),
+            )
+        else:
+            await self._execute(
+                'INSERT INTO app_settings ("key", value) VALUES (?, ?) '
+                'ON CONFLICT ("key") DO NOTHING',
+                (key, value),
+            )
+        stored = await self.get_app_setting(key)
+        if stored:
+            return stored
+        # An empty value was stored before: replace it.
+        await self.set_app_setting(key, value)
+        return value
+
     # --- Management keys ---
 
     async def create_management_key(

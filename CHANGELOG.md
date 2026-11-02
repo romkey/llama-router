@@ -16,9 +16,27 @@ described in their git tags and GitHub Releases.
   Keys not shaped like the router's own (`lrk_` and 43 characters) are refused
   without hashing, keys the database does not know are remembered and refused
   for 30 seconds, and at most four hashes run at once.
+- A `Referer` with a port that is not a number no longer makes "run
+  benchmarks" fail with a server error; it redirects to the fallback page.
+
+### Fixed
+
+- Two routers sharing a database that both start without
+  `LLAMA_ROUTER_SESSION_SECRET` now keep the same generated dashboard session
+  secret, instead of the later one overwriting the earlier one's (which
+  signed out everyone signed in through the other).
+- Cancelling a job on a worker whose socket has stalled no longer waits
+  forever; the cancel message is given up on after 5 seconds.
 
 ### Changed
 
+- More tests at security edges and failure paths: hostile `Referer`
+  headers, WebAuthn sign-count replay, worker sockets that stall, drop or
+  send garbage, a failed routing-table build, a client disconnecting
+  mid-stream (stream counts, provider slots and the upstream are all
+  released), `run()` under several settings, health checks surviving a
+  crashing probe, and Hypothesis round trips of the Ollama/OpenAI
+  translation. Hypothesis is a new dev dependency.
 - Test infrastructure: CI runs the whole suite against PostgreSQL and MySQL
   as well as SQLite, checks there is a single Alembic head, and runs the
   tests in parallel. Coverage now includes the Alembic migrations (floor

@@ -33,6 +33,8 @@ _HELLO_TIMEOUT = 15.0
 # A job whose response buffer stays full this long (its client is not
 # reading) is failed, so one slow client cannot stall the whole socket.
 _STALL_TIMEOUT = 30.0
+# Telling the worker to stop a job must not wait forever on a stuck socket.
+_CANCEL_TIMEOUT = 5.0
 
 
 def generate_worker_token() -> str:
@@ -194,7 +196,9 @@ class WorkerConnection:
             return
         self._finish(req_id)
         with contextlib.suppress(Exception):
-            await self._send_text({"type": "cancel", "id": req_id})
+            await asyncio.wait_for(
+                self._send_text({"type": "cancel", "id": req_id}), _CANCEL_TIMEOUT
+            )
 
     async def open(
         self, target: str, request: httpx.Request, remote: int | None = None

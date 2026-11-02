@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -149,3 +151,52 @@ async def test_rebuild_uses_this_cycles_liveness(db, httpx_mock) -> None:
     assert status == ProviderStatus.IDLE
     assert pm._active_urls[p.id] == "http://backup:11434"
     await pm.stop()
+
+
+async def test_start_and_health_loop_survive_a_crashing_probe(
+    db, httpx_mock, monkeypatch
+) -> None:
+    from llama_router.config import settings
+
+    _routes(httpx_mock, {"good": _ollama_ok, "bad": _ollama_ok})
+    good = await _provider(db, "good", "http://good:11434", ProviderStatus.OFFLINE)
+    bad = await _provider(db, "bad", "http://bad:11434", ProviderStatus.OFFLINE)
+    pm = ProviderManager(db)
+    real_check = pm.check_provider
+    checked: list[str] = []
+
+    async def check(p, **kw):
+        checked.append(p.name)
+        if p.name == "bad":
+            raise RuntimeError("probe crashed")
+        return await real_check(p, **kw)
+
+    real_cycle = pm._run_health_checks
+    cycles = 0
+    two_cycles = asyncio.Event()
+
+    async def cycle() -> None:
+        nonlocal cycles
+        cycles += 1
+        if cycles == 1:
+            raise RuntimeError("whole cycle failed")
+        await real_cycle()
+        if cycles >= 3:
+            two_cycles.set()
+
+    monkeypatch.setattr(pm, "check_provider", check)
+    monkeypatch.setattr(pm, "_run_health_checks", cycle)
+    monkeypatch.setattr(settings, "health_check_interval_seconds", 0)
+    try:
+        await pm.start()
+        # The crashing probe did not stop startup or the other provider.
+        assert sorted(checked) == ["bad", "good"]
+        assert (await db.get_provider(good.id)).status == ProviderStatus.IDLE
+        # A failed cycle, then cycles with the crashing probe: the loop goes on.
+        await asyncio.wait_for(two_cycles.wait(), 5)
+        assert pm._health_task is not None
+        assert not pm._health_task.done()
+        assert checked.count("good") >= 3
+        assert (await db.get_provider(bad.id)).status == ProviderStatus.OFFLINE
+    finally:
+        await pm.stop()
