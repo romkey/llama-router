@@ -122,9 +122,10 @@ async def shared_client(tmp_path, monkeypatch):
 
 
 async def test_api_request_skips_dashboard_login(shared_client) -> None:
+    # Refused for want of an API key, not redirected to the dashboard login.
     r = await shared_client.get("/api/version")
-    assert r.status_code == 200
-    assert "version" in r.json()
+    assert r.status_code == 401
+    assert "API key" in r.json()["detail"]
 
 
 async def test_dashboard_still_requires_login(shared_client) -> None:
