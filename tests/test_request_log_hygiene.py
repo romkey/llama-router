@@ -115,10 +115,12 @@ async def test_old_request_logs_are_purged(
         await db.save_request_log(
             RequestLog(protocol="v1", endpoint="/v1/x", source_ip="1.2.3.4")
         )
+    oldest = await db._select_one("SELECT MIN(id) AS id FROM request_log")
+    assert oldest is not None
+    # MySQL refuses a subquery on the table being updated, so by id.
     await db._execute(
-        "UPDATE request_log SET created_at = ? "
-        "WHERE id = (SELECT MIN(id) FROM request_log)",
-        (db_timestamp(db, datetime.now(UTC) - timedelta(days=40)),),
+        "UPDATE request_log SET created_at = ? WHERE id = ?",
+        (db_timestamp(db, datetime.now(UTC) - timedelta(days=40)), oldest["id"]),
     )
     monkeypatch.setattr(settings, "request_log_retention_days", 30.0)
     assert await pm.purge_request_logs() == 1
