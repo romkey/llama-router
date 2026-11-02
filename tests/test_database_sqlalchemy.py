@@ -46,6 +46,8 @@ def test_bind_params_passes_through_multiple_args() -> None:
 async def test_alembic_head_recorded_and_core_tables_exist(
     db: Database, tmp_path
 ) -> None:
+    if db._dialect_name != "sqlite":
+        pytest.skip("reads the SQLite file")
     path = tmp_path / "test.db"
     con = sqlite3.connect(path)
     try:

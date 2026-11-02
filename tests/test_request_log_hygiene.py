@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -36,6 +36,7 @@ from llama_router.models import (
 )
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
+from tests.conftest import db_timestamp
 
 BASE = "http://be.test:8080"
 
@@ -117,7 +118,7 @@ async def test_old_request_logs_are_purged(
     await db._execute(
         "UPDATE request_log SET created_at = ? "
         "WHERE id = (SELECT MIN(id) FROM request_log)",
-        ((datetime.now(UTC) - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S"),),
+        (db_timestamp(db, datetime.now(UTC) - timedelta(days=40)),),
     )
     monkeypatch.setattr(settings, "request_log_retention_days", 30.0)
     assert await pm.purge_request_logs() == 1
@@ -257,3 +258,11 @@ async def test_legacy_key_hash_is_upgraded(db: Database) -> None:
     again = await routing_preferences_from_request(db, req)
     assert again is not None
     assert again.key_id == key_id
+
+
+async def test_log_times_are_bound_as_naive_utc(db: Database) -> None:
+    """PostgreSQL's driver refuses an aware time for created_at."""
+    when = datetime(2026, 1, 1, 12, tzinfo=timezone(timedelta(hours=2)))
+    expected = datetime(2026, 1, 1, 10, tzinfo=UTC)
+    assert db._log_time(when) == db_timestamp(db, expected)
+    assert db._log_time(expected.replace(tzinfo=None)) == db_timestamp(db, expected)

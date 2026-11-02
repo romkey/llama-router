@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -123,7 +124,7 @@ def test_api_key_sequence_starts_above_retained_logs(
     dbfile = tmp_path / "key_sequence.db"
     sync_url = f"sqlite:///{dbfile}"
     command.upgrade(_alembic_cfg(sync_url), "026_session_version")
-    with sqlite3.connect(dbfile) as con:
+    with contextlib.closing(sqlite3.connect(dbfile)) as con, con:
         if keep_key:
             con.execute(
                 "INSERT INTO api_keys (id, key_prefix, key_hash) "
@@ -143,7 +144,7 @@ def test_api_key_sequence_starts_above_retained_logs(
         con.execute("DELETE FROM api_keys WHERE id = 9")
 
     run_upgrade_sync(sync_url)
-    with sqlite3.connect(dbfile) as con:
+    with contextlib.closing(sqlite3.connect(dbfile)) as con, con:
         con.execute("PRAGMA foreign_keys = ON")
         con.execute("INSERT INTO api_keys (key_prefix, key_hash) VALUES ('new', 'new')")
         assert con.execute(
@@ -165,7 +166,7 @@ def test_upgrade_drops_impossible_benchmark_speeds(tmp_path: Path) -> None:
     dbfile = tmp_path / "bench.db"
     sync_url = f"sqlite:///{dbfile}"
     command.upgrade(_alembic_cfg(sync_url), "028_dashboard_mfa")
-    with sqlite3.connect(dbfile) as con:
+    with contextlib.closing(sqlite3.connect(dbfile)) as con, con:
         con.execute("INSERT INTO providers (id, name) VALUES (1, 'p')")
         con.executemany(
             "INSERT INTO benchmarks (provider_id, model_name, tokens_per_second) "
@@ -174,7 +175,7 @@ def test_upgrade_drops_impossible_benchmark_speeds(tmp_path: Path) -> None:
         )
 
     run_upgrade_sync(sync_url)
-    with sqlite3.connect(dbfile) as con:
+    with contextlib.closing(sqlite3.connect(dbfile)) as con, con:
         rows = con.execute(
             "SELECT model_name FROM benchmarks ORDER BY model_name"
         ).fetchall()

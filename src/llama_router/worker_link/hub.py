@@ -504,6 +504,9 @@ class WorkerHub:
         self._catalog_due: dict[int, WorkerConnection] = {}
         self._catalog_tasks: dict[int, asyncio.Task[None]] = {}
         self._catalog_at: dict[int, float] = {}
+        # Replaced in tests, so rate limits are tested without waiting.
+        self.clock: Callable[[], float] = time.monotonic
+        self.sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     def set_callbacks(
         self,
@@ -590,12 +593,12 @@ class WorkerHub:
             interval = max(0.0, settings.worker_catalog_min_interval_seconds)
             last = self._catalog_at.get(pid)
             if last is not None:
-                wait = last + interval - time.monotonic()
+                wait = last + interval - self.clock()
                 if wait > 0:
-                    await asyncio.sleep(wait)
+                    await self.sleep(wait)
             # The newest catalog, which may have come in while we waited.
             conn = self._catalog_due.pop(pid)
-            self._catalog_at[pid] = time.monotonic()
+            self._catalog_at[pid] = self.clock()
             if conn.closed or self._on_catalog is None:
                 continue
             try:
