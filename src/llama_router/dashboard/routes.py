@@ -47,6 +47,7 @@ from ..routing_table import DEFAULT_MODE, MODES
 from ..upstream_url import LOCALITIES
 from ..worker_link.hub import (
     generate_worker_token,
+    worker_token_expired,
     worker_token_hash,
     worker_token_prefix,
 )
@@ -3141,6 +3142,16 @@ async def _worker_rows(db: Any, pm: Any) -> list[dict[str, Any]]:
                 "id": w["id"],
                 "name": w["name"],
                 "token_prefix": w["token_prefix"],
+                "token_expires_at": w["token_expires_at"],
+                # UTC, as the ``localtime`` filter expects.
+                "token_expires": (
+                    None
+                    if w["token_expires_at"] is None
+                    else datetime.fromtimestamp(w["token_expires_at"], UTC).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                ),
+                "token_expired": worker_token_expired(w),
                 "provider_id": pid,
                 "enabled": w["enabled"],
                 "created_at": _iso(w["created_at"]),
@@ -3171,6 +3182,11 @@ def _hub_url_hint(request: Request) -> str:
 
 class WorkerCreateBody(BaseModel):
     name: str
+    expires_in_days: int | None = None
+
+
+class WorkerRotateBody(BaseModel):
+    expires_in_days: int | None = None
 
 
 class WorkerEnabledBody(BaseModel):
@@ -3207,6 +3223,7 @@ async def api_create_worker(request: Request, body: WorkerCreateBody):
         raise HTTPException(
             status_code=409, detail=f"A provider named {name!r} already exists"
         )
+    expires_at = management_keys.expiry_from_days(body.expires_in_days)
     provider = await pm.add_worker_provider(name)
     token = generate_worker_token()
     worker_id = await db.create_worker(
@@ -3214,6 +3231,7 @@ async def api_create_worker(request: Request, body: WorkerCreateBody):
         worker_token_hash(token),
         worker_token_prefix(token),
         provider.require_id(),
+        expires_at,
     )
     hub_url = _hub_url_hint(request)
     return JSONResponse(
@@ -3222,6 +3240,7 @@ async def api_create_worker(request: Request, body: WorkerCreateBody):
             "name": name,
             "provider_id": provider.id,
             "token": token,
+            "token_expires_at": expires_at,
             "hub_url": hub_url,
             "env_example": (
                 f"LLAMA_ROUTER_WORKER_HUB_URL={hub_url}\n"
@@ -3232,21 +3251,26 @@ async def api_create_worker(request: Request, body: WorkerCreateBody):
 
 
 @router.post("/api/workers/{worker_id}/rotate")
-async def api_rotate_worker_token(worker_id: int):
+async def api_rotate_worker_token(worker_id: int, body: WorkerRotateBody | None = None):
     db = deps.get_db()
     pm = deps.get_pm()
     worker = await db.get_worker(worker_id)
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
+    expires_at = management_keys.expiry_from_days(
+        body.expires_in_days if body else None
+    )
     token = generate_worker_token()
     await db.set_worker_token(
-        worker_id, worker_token_hash(token), worker_token_prefix(token)
+        worker_id, worker_token_hash(token), worker_token_prefix(token), expires_at
     )
     if worker["provider_id"] is not None:
         await pm.worker_hub.disconnect(
             worker["provider_id"], CLOSE_REVOKED, "token rotated"
         )
-    return JSONResponse({"id": worker_id, "token": token})
+    return JSONResponse(
+        {"id": worker_id, "token": token, "token_expires_at": expires_at}
+    )
 
 
 @router.post("/api/workers/{worker_id}/enabled")

@@ -19,6 +19,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 from websockets.asyncio.client import ClientConnection, connect
@@ -82,8 +83,18 @@ CatalogSource = Callable[[], Awaitable[list[dict[str, Any]]]]
 
 
 def path_allowed(method: str, raw_path: str, allow_admin: bool) -> bool:
-    path = raw_path.split("?", 1)[0]
-    if not path.startswith("/") or "//" in path or "/../" in path + "/":
+    raw = raw_path.split("?", 1)[0]
+    # Match what the upstream will see once it decodes the path. Encoded
+    # slashes and anything still escaped after one decode (``%252F``) could
+    # be read differently there, so they are refused outright.
+    if "%2f" in raw.lower() or "%5c" in raw.lower():
+        return False
+    path = unquote(raw)
+    if "%" in path or "\\" in path or "?" in path or "#" in path:
+        return False
+    if not path.startswith("/") or "//" in path:
+        return False
+    if any(seg in (".", "..") for seg in path.split("/")):
         return False
     if path.startswith("/v1/models/") and method == "GET":
         return True
