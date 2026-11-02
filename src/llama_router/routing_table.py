@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .config import settings
@@ -37,7 +37,14 @@ from .models import (
     measured_cold_start,
 )
 from .pricing import Price, PriceBook
-from .routing_stats import HEALTHY, ProviderHealth, ProviderStats
+from .routing_stats import (
+    HEALTHY,
+    MODEL_CIRCUIT_MIN_SAMPLES,
+    MODEL_CIRCUIT_RATE,
+    ProviderHealth,
+    ProviderStats,
+    model_circuit_open,
+)
 from .upstream_url import LOCALITIES
 
 # Decisions that are not passed through are asked as chat completions.
@@ -77,8 +84,8 @@ UNKNOWN_PRICE_MICRO_USD = 1_000_000.0
 CHEAPEST_TIEBREAK = 0.001
 # Recent failure rate for one model at which a candidate is skipped while
 # others exist. Provider-wide failures have their own breaker in the stats.
-CIRCUIT_OPEN_RATE = 0.5
-CIRCUIT_MIN_SAMPLES = 3
+CIRCUIT_OPEN_RATE = MODEL_CIRCUIT_RATE
+CIRCUIT_MIN_SAMPLES = MODEL_CIRCUIT_MIN_SAMPLES
 # Model larger than the provider's GPU memory: likely CPU offload.
 OVERSIZE_PENALTY_MS = 5_000.0
 
@@ -104,6 +111,8 @@ class Candidate:
     is_hot: bool = False
     startup_ms: float | None = None
     tokens_per_second: float | None = None
+    # Benchmarked speed, used until live samples arrive.
+    bench_tps: float | None = None
     rtt_ms: float | None = None
     ttft_ms: float | None = None
     service_ms: float | None = None
@@ -517,11 +526,13 @@ class RoutingTable:
     )
     # The same, for keys limited to one locality: (model, endpoint, mode,
     # locality). The best tier is chosen among that locality's providers only.
-    ranked_by_locality: dict[tuple[str, str, str, str], tuple[Candidate, ...]] = field(
-        default_factory=dict
-    )
+    # Filled on first lookup (see ranked_for): most keys are never asked for.
+    ranked_by_locality: dict[
+        tuple[str, str, str, str | None], tuple[Candidate, ...]
+    ] = field(default_factory=dict)
     # The same for requests from a hub this router works for, which may only
     # use providers shared with it: (model, endpoint, mode, locality or None).
+    # Also filled on first lookup.
     ranked_for_hub: dict[tuple[str, str, str, str | None], tuple[Candidate, ...]] = (
         field(default_factory=dict)
     )
@@ -582,11 +593,32 @@ class RoutingTable:
     ) -> tuple[Candidate, ...]:
         """Ranked candidates, limited to *locality* when given and to
         providers shared with the hub when *hub_only*."""
-        if hub_only:
-            return self.ranked_for_hub.get((model, endpoint, mode, locality), ())
-        if locality is None:
+        if not hub_only and locality is None:
             return self.ranked.get((model, endpoint, mode), ())
-        return self.ranked_by_locality.get((model, endpoint, mode, locality), ())
+        memo = self.ranked_for_hub if hub_only else self.ranked_by_locality
+        key = (model, endpoint, mode, locality)
+        hit = memo.get(key)
+        if hit is not None:
+            return hit
+        cands = self.all_candidates.get((model, endpoint))
+        if (
+            not cands
+            or mode not in MODES
+            or (locality is not None and locality not in LOCALITIES)
+        ):
+            # Not memoized, so unknown names cannot grow the table.
+            return ()
+        ranked = _rank(
+            [
+                c
+                for c in cands
+                if (locality is None or c.provider.locality == locality)
+                and (c.provider.hub_shared or not hub_only)
+            ],
+            mode,
+        )
+        memo[key] = ranked
+        return ranked
 
     def backend_name(self, provider_id: int, model: str) -> str:
         return self.backend_names.get((provider_id, model), model)
@@ -626,6 +658,34 @@ class RoutingTable:
         }
 
 
+@dataclass(slots=True)
+class TableBase:
+    """A table's structure, read from the database inputs and not yet scored.
+
+    Kept between rebuilds so a change in live samples only rescores (see
+    :func:`rescore`) instead of reading the database and building every
+    candidate again.
+    """
+
+    # (model, endpoint) -> every candidate on an online provider, live
+    # fields unset. Shared with groups, so one object can sit in several.
+    candidates: dict[tuple[str, str], tuple[Candidate, ...]] = field(
+        default_factory=dict
+    )
+    providers: list[Provider] = field(default_factory=list)
+    # Provider id -> its live address ids, whose round trips count.
+    live_addresses: dict[int, list[int]] = field(default_factory=dict)
+    chains: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    chaos: dict[str | None, tuple[tuple[Provider, tuple[str, ...]], ...]] = field(
+        default_factory=dict
+    )
+    backend_names: dict[tuple[int, str], str] = field(default_factory=dict)
+    prices: PriceBook | None = None
+    groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    group_reach: dict[str, tuple[bool, bool]] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
+
+
 def build_table(
     inputs: RoutingInputs,
     *,
@@ -634,45 +694,58 @@ def build_table(
     version: int = 0,
     reasons: tuple[str, ...] = (),
 ) -> RoutingTable:
+    """Build a table from scratch: :func:`reload`, then :func:`rescore`."""
     started = time.perf_counter()
-    now = stats.now() if stats else 0.0
+    table = rescore(
+        reload(inputs),
+        hot_models=hot_models,
+        stats=stats,
+        version=version,
+        reasons=reasons,
+    )
+    table.build_ms = (time.perf_counter() - started) * 1000
+    return table
+
+
+def reload(inputs: RoutingInputs) -> TableBase:
+    """Build every candidate from the database inputs, without live samples."""
     online = [
         p
         for p in inputs.providers
         if p.id is not None and p.status != ProviderStatus.OFFLINE
     ]
 
-    table = RoutingTable(version=version, reasons=reasons)
+    base = TableBase(providers=online)
     grouped: dict[tuple[str, str], list[Candidate]] = {}
     backend_names: dict[tuple[int, str], str] = {}
     groups = alias_groups(inputs.aliases)
     book = PriceBook(inputs.providers, inputs.models, inputs.prices)
-    table.prices = book
+    base.prices = book
 
     for p in online:
         pid = p.require_id()
         models = inputs.models.get(pid, [])
         up = upstream_for(p)
-        hot = hot_models(pid, up)
         addresses = inputs.addresses.get(pid, [])
-        live_ids = [a.id for a in addresses if a.is_live and a.id is not None]
         # Only live addresses count: an address that stopped answering keeps
         # its old samples, which must not make the provider look fast.
-        rtt = stats.rtt_ms(pid, live_ids) if stats and live_ids else None
-        health = stats.provider_health(pid, now) if stats else HEALTHY
-        table.health[pid] = health
+        base.live_addresses[pid] = [
+            a.id for a in addresses if a.is_live and a.id is not None
+        ]
         gpu_bytes = p.gpu_ram_bytes
         # Endpoint support depends only on the provider, not the model.
         support: dict[str, str] = {}
         for path, (protocol, _cls) in ENDPOINTS.items():
             if serves(p, protocol):
-                sup = endpoint_support(p, path, stats)
+                sup = endpoint_support(p, path)
             elif translates(p, protocol) and path in TRANSLATED_ROUTES:
                 # The probe knows the route the translated request lands on.
                 sup = endpoint_support(p, TRANSLATED_ROUTES[path])
             else:
                 continue
-            if offers(p, path, sup):
+            # A decision route may still be ruled out by live samples
+            # (rescore), so keep it for now.
+            if offers(p, path, sup) or path in DECISION_PATHS:
                 support[path] = sup
 
         for m in models:
@@ -680,7 +753,6 @@ def build_table(
             backend_names[(pid, m.name)] = backend
             if m.raw_name:
                 backend_names[(pid, m.raw_name)] = backend
-            recently_used = bool(stats and stats.is_warm(pid, m.name, now))
             oversize = bool(gpu_bytes and m.size and m.size > gpu_bytes)
             keys = {m.name}
             if m.raw_name:
@@ -692,17 +764,9 @@ def build_table(
                 backend_names.setdefault((pid, key), backend)
             for path, sup in support.items():
                 protocol, cls = ENDPOINTS[path]
-                ms = stats.model(pid, m.name, cls) if stats else None
-                model_rate = ms.failures.current(now) if ms else 0.0
-                model_circuit = bool(
-                    ms
-                    and ms.failures.samples >= CIRCUIT_MIN_SAMPLES
-                    and model_rate >= CIRCUIT_OPEN_RATE
-                )
                 bench = inputs.benchmarks.get((pid, m.name, up))
                 if bench is None and protocol is None:
                     bench = inputs.benchmarks.get((pid, m.name, None))
-                observed_tps = ms.tokens_per_second.value if ms else None
                 c = Candidate(
                     provider=p,
                     model=m.name,
@@ -710,62 +774,21 @@ def build_table(
                     endpoint=path,
                     endpoint_class=cls,
                     upstream=up,
-                    # Loaded now: Ollama's /api/ps, or the model llama.cpp
-                    # reports in /props.
-                    # A cloud service has every model loaded.
-                    is_hot=p.is_cloud or m.name in hot or recently_used,
                     startup_ms=bench.startup_time_ms if bench else None,
-                    tokens_per_second=(
-                        observed_tps or (bench.tokens_per_second if bench else None)
-                        if cls == GENERATE
-                        else None
+                    bench_tps=(
+                        bench.tokens_per_second if bench and cls == GENERATE else None
                     ),
-                    rtt_ms=rtt,
-                    ttft_ms=ms.ttft_ms.value if ms else None,
-                    service_ms=ms.duration_ms.value if ms else None,
-                    model_failure_rate=model_rate,
-                    health=health,
-                    failure_rate=combined_failure_rate(model_rate, health),
-                    circuit_open=model_circuit or health.circuit_open,
                     oversize=oversize,
                     price=book.price(pid, m.name),
                     endpoint_support=sup,
                 )
-                score(c)
-                _classify(c)
                 for key in keys:
                     bucket = grouped.setdefault((key, path), [])
                     if all(x.provider.id != pid for x in bucket):
                         bucket.append(c)
 
-    warnings = _add_groups(table, grouped, inputs)
-
-    def _score_by(mode: str) -> Callable[[Candidate], float]:
-        return lambda c: c.scores[mode]
-
-    def _rank(cands: list[Candidate]) -> dict[str, tuple[Candidate, ...]]:
-        best_tier = min(c.tier for c in cands)
-        usable = [c for c in cands if c.tier == best_tier]
-        return {mode: tuple(sorted(usable, key=_score_by(mode))) for mode in MODES}
-
-    for (model, path), cands in grouped.items():
-        table.all_candidates[(model, path)] = tuple(cands)
-        for mode, ranked in _rank(cands).items():
-            table.ranked[(model, path, mode)] = ranked
-        for locality in LOCALITIES:
-            subset = [c for c in cands if c.provider.locality == locality]
-            if subset:
-                for mode, ranked in _rank(subset).items():
-                    table.ranked_by_locality[(model, path, mode, locality)] = ranked
-        shared = [c for c in cands if c.provider.hub_shared]
-        scopes: tuple[str | None, ...] = (None, *LOCALITIES)
-        for scope in scopes:
-            subset = [
-                c for c in shared if scope is None or c.provider.locality == scope
-            ]
-            if subset:
-                for mode, ranked in _rank(subset).items():
-                    table.ranked_for_hub[(model, path, mode, scope)] = ranked
+    base.warnings = tuple(_add_groups(base, grouped, inputs))
+    base.candidates = {k: tuple(v) for k, v in grouped.items()}
 
     for protocol in PROTOCOLS:
         entries = []
@@ -773,14 +796,116 @@ def build_table(
             eligible = _chaos_eligible(p, inputs.models.get(p.id or 0, []), protocol)
             if eligible:
                 entries.append((p, tuple(eligible)))
-        table.chaos[protocol] = tuple(entries)
+        base.chaos[protocol] = tuple(entries)
 
-    table.chains = fallback_chains(inputs.fallbacks)
-    table.backend_names = backend_names
-    table.warnings = tuple(warnings)
+    base.chains = fallback_chains(inputs.fallbacks)
+    base.backend_names = backend_names
+    return base
+
+
+def rescore(
+    base: TableBase,
+    *,
+    hot_models: Callable[[int, str], set[str]],
+    stats: ProviderStats | None,
+    version: int = 0,
+    reasons: tuple[str, ...] = (),
+) -> RoutingTable:
+    """A new table from *base* scored with the live samples in *stats*.
+
+    *base* is left as it is: every candidate is copied, so a table being
+    served is never changed under a request.
+    """
+    started = time.perf_counter()
+    now = stats.now() if stats else 0.0
+    table = RoutingTable(
+        version=version,
+        reasons=reasons,
+        chains=base.chains,
+        chaos=base.chaos,
+        backend_names=base.backend_names,
+        prices=base.prices,
+        groups=base.groups,
+        group_reach=base.group_reach,
+        warnings=base.warnings,
+    )
+    hot: dict[int, set[str]] = {}
+    rtt: dict[int, float | None] = {}
+    for p in base.providers:
+        pid = p.require_id()
+        hot[pid] = hot_models(pid, upstream_for(p))
+        live_ids = base.live_addresses.get(pid)
+        rtt[pid] = stats.rtt_ms(pid, live_ids) if stats and live_ids else None
+        table.health[pid] = stats.provider_health(pid, now) if stats else HEALTHY
+
+    # A candidate can sit in several buckets (aliases, groups): score it once.
+    scored: dict[int, Candidate | None] = {}
+
+    def live(c: Candidate) -> Candidate | None:
+        if id(c) in scored:
+            return scored[id(c)]
+        pid = c.provider_id
+        new = replace(c, scores={}, queue_weight={})
+        sup = c.endpoint_support
+        if c.endpoint in DECISION_PATHS:
+            sup = endpoint_support(c.provider, c.endpoint, stats)
+        if not offers(c.provider, c.endpoint, sup):
+            scored[id(c)] = None
+            return None
+        ms = stats.model(pid, c.model, c.endpoint_class) if stats else None
+        model_rate = ms.failures.current(now) if ms else 0.0
+        health = table.health[pid]
+        observed_tps = ms.tokens_per_second.value if ms else None
+        # Loaded now: Ollama's /api/ps, or the model llama.cpp reports in
+        # /props. A cloud service has every model loaded.
+        new.is_hot = (
+            c.provider.is_cloud
+            or c.model in hot[pid]
+            or bool(stats and stats.is_warm(pid, c.model, now))
+        )
+        new.tokens_per_second = (
+            (observed_tps or c.bench_tps) if c.endpoint_class == GENERATE else None
+        )
+        new.rtt_ms = rtt[pid]
+        new.ttft_ms = ms.ttft_ms.value if ms else None
+        new.service_ms = ms.duration_ms.value if ms else None
+        new.model_failure_rate = model_rate
+        new.health = health
+        new.failure_rate = combined_failure_rate(model_rate, health)
+        new.circuit_open = (
+            bool(ms and model_circuit_open(ms, now)) or health.circuit_open
+        )
+        new.endpoint_support = sup
+        score(new)
+        _classify(new)
+        scored[id(c)] = new
+        return new
+
+    for (model, path), cands in base.candidates.items():
+        bucket = tuple(x for x in (live(c) for c in cands) if x is not None)
+        if not bucket:
+            continue
+        table.all_candidates[(model, path)] = bucket
+        best_tier = min(c.tier for c in bucket)
+        usable = [c for c in bucket if c.tier == best_tier]
+        for mode in MODES:
+            table.ranked[(model, path, mode)] = _sorted(usable, mode)
+
     table.built_at = time.time()
     table.build_ms = (time.perf_counter() - started) * 1000
     return table
+
+
+def _sorted(cands: list[Candidate], mode: str) -> tuple[Candidate, ...]:
+    return tuple(sorted(cands, key=lambda c: c.scores[mode]))
+
+
+def _rank(cands: list[Candidate], mode: str) -> tuple[Candidate, ...]:
+    """The best tier's candidates, best score in *mode* first."""
+    if not cands:
+        return ()
+    best_tier = min(c.tier for c in cands)
+    return _sorted([c for c in cands if c.tier == best_tier], mode)
 
 
 def member_label(model: str, provider: str | None) -> str:
@@ -788,7 +913,7 @@ def member_label(model: str, provider: str | None) -> str:
 
 
 def _add_groups(
-    table: RoutingTable,
+    table: TableBase,
     grouped: dict[tuple[str, str], list[Candidate]],
     inputs: RoutingInputs,
 ) -> list[str]:

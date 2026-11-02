@@ -39,6 +39,8 @@ optionally Sentry and an OpenID Connect provider.
 - All configuration from environment variables; see docs/configuration.md.
 - Async throughout (FastAPI, httpx, SQLAlchemy asyncio).
 - Routing never touches the database on the request path; tables are rebuilt
-  in the background.
+  in the background, in a worker thread. A database change reloads the table
+  (`routing_table.reload`); a live sample that could reorder candidates only
+  rescores it (`routing_table.rescore`).
 - Rules: https://github.com/romkey/python-ai-rules/blob/main/RULES.md;
   deviations in AGENTS.md.
