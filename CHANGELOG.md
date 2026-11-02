@@ -11,20 +11,6 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
-- Non-admin dashboard users can view request logs and counts for their own
-  current API keys. Backend error details remain admin-only.
-
-### Fixed
-
-- SQLite no longer reuses deleted API-key IDs, preventing new keys from
-  inheriting access to retained request logs for deleted keys.
-### Changed
-
-- Open the profile page from the dashboard username. Authenticator management,
-  registration and recovery codes use separate cards.
-
-### Added
-
 - Password + WebAuthn second factor for local dashboard accounts, with multiple
   named authenticators, single-use recovery codes and an operator recovery
   command. `LLAMA_ROUTER_DASHBOARD_REQUIRE_SECOND_FACTOR` enforces enrollment
@@ -32,7 +18,20 @@ described in their git tags and GitHub Releases.
   existing password-only sessions. Configure a stable HTTPS origin with
   `LLAMA_ROUTER_DASHBOARD_WEBAUTHN_ORIGIN`; SSO and API-key authentication stay
   unchanged.
-- Move Decisions from the top banner to the shared dashboard navigation, immediately after Models.
+- Non-admin dashboard users can view request logs and counts for their own
+  current API keys. Backend error details remain admin-only.
+
+### Changed
+
+- Open the profile page from the dashboard username. Authenticator management,
+  registration and recovery codes use separate cards.
+- Move Decisions from the top banner to the shared dashboard navigation,
+  immediately after Models.
+
+### Fixed
+
+- SQLite no longer reuses deleted API-key IDs, preventing new keys from
+  inheriting access to retained request logs for deleted keys.
 
 ## [0.27.0] - 2026-11-01
 
