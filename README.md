@@ -875,13 +875,13 @@ Linting (ruff, mypy, yamllint, actionlint, hadolint, gitleaks and more) runs thr
 
 ### Tests
 
-Tests use a temporary SQLite file. To run the database-backed tests against PostgreSQL, MySQL or MariaDB instead, point them at a throwaway database. It is emptied before every test:
+Tests use a copy of a migrated SQLite file. `pytest -n auto` runs them in parallel, as CI does. To run them against PostgreSQL, MySQL or MariaDB instead, point them at a throwaway database (one at a time, without `-n`). Its tables are emptied before every test:
 
 ```bash
-LLAMA_ROUTER_TEST_DATABASE_URL=mysql+asyncmy://root:pw@127.0.0.1:3306/lr pytest --no-cov tests/test_database.py tests/test_routing_table.py
+LLAMA_ROUTER_TEST_DATABASE_URL=mysql+asyncmy://root:pw@127.0.0.1:3306/lr pytest --no-cov
 ```
 
-A few dashboard tests drive the app through a synchronous test client and fail against a server database with "attached to a different loop"; that is the test client, not the database.
+CI runs the whole suite against PostgreSQL and MySQL as well as SQLite.
 
 ## License
 

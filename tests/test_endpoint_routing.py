@@ -14,6 +14,7 @@ from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_stats import ProviderStats
 from llama_router.routing_table import TIER_FAILING, TIER_MISSING, TIER_OK
+from tests.conftest import asgi_client
 
 CHAT = "/v1/chat/completions"
 
@@ -306,8 +307,6 @@ async def test_provider_checks_feed_the_tally(db: Database, pm: ProviderManager)
 
 
 async def test_dashboard_shows_provider_health(db: Database, pm: ProviderManager):
-    from fastapi.testclient import TestClient
-
     from llama_router.dashboard import deps as dash_deps
     from llama_router.dashboard.app import app as dash_app
 
@@ -317,9 +316,9 @@ async def test_dashboard_shows_provider_health(db: Database, pm: ProviderManager
     rt = Router(db, pm)
     await rt.rebuild()
     dash_deps.init(db, pm)
-    with TestClient(dash_app) as client:
-        page = client.get("/").text
-        table = client.get("/api/routing-table").json()
+    async with asgi_client(dash_app) as client:
+        page = (await client.get("/")).text
+        table = (await client.get("/api/routing-table")).json()
     assert "Provider health" in page
     assert "p50 12 ms" in page
     assert "Balanced (default)" in page
