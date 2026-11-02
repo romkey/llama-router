@@ -83,8 +83,16 @@ def _failure_reason(exc: BaseException) -> str:
                 f"{exc.request.url.path}); set the provider's API key"
             )
         return f"HTTP {code} from {exc.request.url.path}"
+    if isinstance(exc, httpx.RequestError):
+        # The path only: the full URL can carry credentials and internal
+        # hostnames, and this text reaches non-admins on the dashboard.
+        try:
+            path = exc.request.url.path
+        except RuntimeError:
+            return f"{type(exc).__name__}: {exc}"
+        return f"{type(exc).__name__} for {path}: {exc}"
     if isinstance(exc, httpx.HTTPError):
-        return describe_httpx_error(exc)
+        return f"{type(exc).__name__}: {exc}"
     return str(exc) or type(exc).__name__
 
 

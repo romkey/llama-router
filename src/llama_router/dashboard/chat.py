@@ -41,6 +41,12 @@ PATHS = {"chat": "/v1/chat/completions", "image": "/v1/images/generations"}
 NAME_KINDS = ("models", "groups", "aliases")
 
 
+_GENERIC_ERROR = (
+    "The model's provider returned an error. An administrator can find the "
+    "details in the request log."
+)
+
+
 def _user_id(request: Request) -> int | None:
     user = getattr(request.state, "dashboard_user", None)
     return user.id if user is not None else None
@@ -405,10 +411,12 @@ async def send(request: Request) -> JSONResponse:
         log_request_background(
             db, duration_ms=duration, status="error", error_detail=detail, **log
         )
+        # Upstream errors name internal URLs; only admins see them in chat.
+        shown = detail if _is_admin(request) else _GENERIC_ERROR
         reply = await db.add_chat_message(
             conv_id,
             "error",
-            detail,
+            shown,
             model_name=answered_by,
             provider_name=provider.name,
             duration_ms=duration,

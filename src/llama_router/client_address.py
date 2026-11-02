@@ -55,6 +55,15 @@ def _trusted(
     return any(addr in net for net in nets)
 
 
+def forwarded_for_ignored(request: HTTPConnection) -> bool:
+    """True when the request has ``X-Forwarded-For`` from an untrusted peer."""
+    if not request.headers.get("x-forwarded-for"):
+        return False
+    peer = _ip(request.client.host if request.client else "")
+    nets = parse_trusted_proxies(settings.trusted_proxies)
+    return peer is None or not _trusted(peer, nets)
+
+
 def client_ip(request: HTTPConnection) -> str:
     """The address the request came from, for logs and per-client limits."""
     peer = request.client.host if request.client else ""

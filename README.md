@@ -709,6 +709,10 @@ A request goes to the API when its path and method match an API route; the rest 
 
 API requests on the dashboard port are checked by API key, not by dashboard login. Anyone who can reach port 80 can reach the API, so require API keys (leave unauthenticated access off) before exposing it.
 
+### Behind a reverse proxy
+
+Set `LLAMA_ROUTER_TRUSTED_PROXIES` to the proxy's address (IPs or CIDRs, comma-separated) whenever the router sits behind a reverse proxy. The router believes `X-Forwarded-For` only from those addresses; without the setting every client appears as the proxy, so one person's failed sign-ins throttle everyone and the request log shows only the proxy. The router logs a warning the first time a sign-in arrives with `X-Forwarded-For` from an address not in the list.
+
 ### Requests without an API key
 
 New installs require an API key on every API request. **Accept requests without an API key** under *Authentication Policy* on the **API Keys** tab lets clients without one through; llama-router logs a warning at startup while it is on. A request that sends a key that is wrong, revoked or expired is always refused with 401, even then.
