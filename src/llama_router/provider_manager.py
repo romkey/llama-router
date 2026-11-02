@@ -31,6 +31,7 @@ from .models import (
     ProviderStatus,
     RequestLog,
     measured_cold_start,
+    plausible_tokens_per_second,
 )
 from .ollama_client import OllamaClient
 from .probe import check_not_metadata, merge_results, probe_url
@@ -1327,7 +1328,9 @@ class ProviderManager:
                     if provider.is_cloud
                     else measured_cold_start(metrics["startup_time_ms"])
                 ),
-                tokens_per_second=metrics["tokens_per_second"],
+                tokens_per_second=plausible_tokens_per_second(
+                    metrics["tokens_per_second"]
+                ),
                 source=source,
             )
             await self._db.save_benchmark(result)

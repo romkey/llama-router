@@ -294,6 +294,18 @@ def measured_cold_start(startup_ms: float | None) -> float | None:
     return startup_ms
 
 
+# No single request comes near this speed, even prompt processing for an
+# embedding on a big GPU. A faster figure is a bad measurement.
+MAX_TOKENS_PER_SECOND = 1_000_000.0
+
+
+def plausible_tokens_per_second(tps: float | None) -> float | None:
+    """*tps* if it could be a real speed, else None."""
+    if tps is None or tps > MAX_TOKENS_PER_SECOND:
+        return None
+    return tps
+
+
 class ProviderAddress(BaseModel):
     id: int | None = None
     provider_id: int

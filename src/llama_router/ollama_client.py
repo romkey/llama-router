@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -518,21 +519,19 @@ class OllamaClient:
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }
+        start = time.monotonic()
         resp = await self._post(
             "/api/chat",
             op=f"Ollama chat benchmark for {model!r}",
             json=body,
             timeout=httpx.Timeout(30.0, read=120.0),
         )
+        elapsed_ns = (time.monotonic() - start) * 1_000_000_000
         resp.raise_for_status()
         data = resp.json()
 
-        load_duration_ns = data.get("load_duration", 0)
-        eval_count = data.get("eval_count", 0)
-        eval_duration_ns = data.get("eval_duration", 1)
-
-        startup_ms = load_duration_ns / 1_000_000
-        tps = (eval_count / eval_duration_ns * 1_000_000_000) if eval_count else 0
+        startup_ms = _ns(data.get("load_duration")) / 1_000_000
+        tps = _generation_speed(data, elapsed_ns)
 
         return {"startup_time_ms": startup_ms, "tokens_per_second": tps}
 
@@ -565,6 +564,32 @@ class OllamaClient:
         )
 
         return {"startup_time_ms": startup_ms, "tokens_per_second": tps}
+
+
+def _ns(value: Any) -> int:
+    """A duration field from an Ollama response, or 0 when absent or bad."""
+    return value if isinstance(value, int) and value > 0 else 0
+
+
+def _generation_speed(data: dict[str, Any], elapsed_ns: float) -> float:
+    """Tokens per second from an Ollama chat response.
+
+    Ollama reports the generation time as ``eval_duration``. Servers that
+    only mimic Ollama (a router translating an OpenAI-style backend, for
+    one) may leave it out; then use the total time, or the wall time, less
+    the load and prompt time it does report.
+    """
+    count = data.get("eval_count")
+    if not isinstance(count, int) or count <= 0:
+        return 0
+    span = _ns(data.get("eval_duration"))
+    if not span:
+        total = _ns(data.get("total_duration")) or elapsed_ns
+        span = total - _ns(data.get("load_duration"))
+        span -= _ns(data.get("prompt_eval_duration"))
+        if span <= 0:
+            span = total
+    return count / span * 1_000_000_000 if span > 0 else 0
 
 
 def _human_bytes(n: int) -> str:

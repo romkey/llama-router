@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from llama_router import ollama_client
 from llama_router.llamacpp_client import OpenAIClient, _chat_metrics
 from llama_router.ollama_client import OllamaClient, _human_bytes
 from llama_router.v1_client import V1Client
@@ -272,6 +274,37 @@ async def test_ollama_benchmarks() -> None:
     }
     rec.routes["/api/embed"] = _json({})
     assert (await c.benchmark_embed("m", "hi"))["tokens_per_second"] == 0
+    await c.close()
+
+
+async def test_ollama_chat_benchmark_without_eval_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that leaves out eval_duration must not yield count / 1 ns."""
+    rec = Recorder(
+        {
+            "/api/chat": _json(
+                {
+                    "eval_count": 199,
+                    "total_duration": 4_000_000_000,
+                    "load_duration": 0,
+                    "prompt_eval_duration": 2_000_000_000,
+                }
+            ),
+        }
+    )
+    c = OllamaClient("http://o", transport=rec.transport)
+    assert await c.benchmark_chat("m", "hi") == {
+        "startup_time_ms": 0.0,
+        "tokens_per_second": 99.5,
+    }
+    # No durations at all: fall back to the measured wall time.
+    clock = iter([10.0, 12.0])
+    monkeypatch.setattr(
+        ollama_client, "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
+    rec.routes["/api/chat"] = _json({"eval_count": 199})
+    assert (await c.benchmark_chat("m", "hi"))["tokens_per_second"] == 99.5
     await c.close()
 
 

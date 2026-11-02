@@ -167,16 +167,30 @@ def _tool_calls(calls: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _counts(usage: Any, started: float) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "total_duration": int((time.monotonic() - started) * 1e9),
-        "load_duration": 0,
-    }
+def _counts(usage: Any, started: float, timings: Any = None) -> dict[str, Any]:
+    """Ollama's token counts and durations, from OpenAI-style usage.
+
+    llama-server's ``timings`` give the prompt and generation times; without
+    them the generation time is the whole request, which undercounts the
+    speed a little rather than leaving clients to guess.
+    """
+    total = int((time.monotonic() - started) * 1e9)
+    out: dict[str, Any] = {"total_duration": total, "load_duration": 0}
     if isinstance(usage, dict):
         if usage.get("prompt_tokens") is not None:
             out["prompt_eval_count"] = usage["prompt_tokens"]
         if usage.get("completion_tokens") is not None:
             out["eval_count"] = usage["completion_tokens"]
+    if not isinstance(timings, dict):
+        timings = {}
+    prompt_ms = timings.get("prompt_ms")
+    if isinstance(prompt_ms, (int, float)) and prompt_ms > 0:
+        out["prompt_eval_duration"] = int(prompt_ms * 1e6)
+    predicted_ms = timings.get("predicted_ms")
+    if isinstance(predicted_ms, (int, float)) and predicted_ms > 0:
+        out["eval_duration"] = int(predicted_ms * 1e6)
+    elif "eval_count" in out and total > 0:
+        out["eval_duration"] = total
     return out
 
 
@@ -195,7 +209,7 @@ def chat_response(resp: dict[str, Any], model: str, started: float) -> dict[str,
         "message": out_msg,
         "done": True,
         "done_reason": _FINISH.get(choice.get("finish_reason") or "stop", "stop"),
-        **_counts(resp.get("usage"), started),
+        **_counts(resp.get("usage"), started, resp.get("timings")),
     }
 
 
@@ -219,6 +233,7 @@ class _StreamTranslator:
         self._tools: dict[int, dict[str, Any]] = {}
         self._finish: str | None = None
         self._usage: Any = None
+        self._timings: Any = None
         self.done = False
 
     def _line(self, text: str, extra: dict[str, Any] | None = None) -> bytes:
@@ -249,6 +264,8 @@ class _StreamTranslator:
                 continue
             if event.get("usage"):
                 self._usage = event["usage"]
+            if event.get("timings"):
+                self._timings = event["timings"]
             for choice in event.get("choices") or []:
                 delta = choice.get("delta") or {}
                 for tc in delta.get("tool_calls") or []:
@@ -287,7 +304,7 @@ class _StreamTranslator:
             {
                 "done": True,
                 "done_reason": _FINISH.get(self._finish or "stop", "stop"),
-                **_counts(self._usage, self._started),
+                **_counts(self._usage, self._started, self._timings),
             },
         )
         out.append(final)

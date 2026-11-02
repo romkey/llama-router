@@ -7,6 +7,16 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- Benchmarks of Ollama-style providers that leave out `eval_duration`, such as
+  another llama-router in front of llama.cpp, no longer report billions of
+  tokens per second. The benchmark falls back to the reported or measured
+  time, the router's Ollama translation now reports `eval_duration` and
+  `prompt_eval_duration` (from llama-server's timings when present), speeds
+  over a million tokens per second are not stored, and an upgrade deletes the
+  bad benchmarks already stored so they are measured again.
+
 ## [0.28.0] - 2026-11-02
 
 ### Added

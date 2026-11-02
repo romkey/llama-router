@@ -104,6 +104,21 @@ def test_chat_response_translation() -> None:
     ]
     assert (out["done"], out["done_reason"]) == (True, "stop")
     assert (out["prompt_eval_count"], out["eval_count"]) == (9, 4)
+    assert out["eval_duration"] == out["total_duration"]
+
+
+def test_chat_response_durations_from_llamacpp_timings() -> None:
+    out = chat_response(
+        {
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 40},
+            "timings": {"prompt_ms": 12.5, "predicted_ms": 500.0},
+        },
+        "m",
+        0.0,
+    )
+    assert out["prompt_eval_duration"] == 12_500_000
+    assert out["eval_duration"] == 500_000_000
 
 
 @pytest.fixture
@@ -270,3 +285,22 @@ def test_stream_split_anywhere_and_tool_calls() -> None:
     ]
     assert lines[-1]["done"]
     assert lines[-1]["done_reason"] == "stop"
+
+
+def test_stream_final_line_carries_timings() -> None:
+    from llama_router.translate import _StreamTranslator
+
+    events = [
+        {"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]},
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 20},
+            "timings": {"prompt_ms": 5.0, "predicted_ms": 250.0},
+        },
+    ]
+    raw = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events)
+    tr = _StreamTranslator("m", "chat", 0.0)
+    out = tr.feed(raw) + tr.finish()
+    final = json.loads(out[-1])
+    assert (final["eval_count"], final["eval_duration"]) == (20, 250_000_000)
+    assert final["prompt_eval_duration"] == 5_000_000

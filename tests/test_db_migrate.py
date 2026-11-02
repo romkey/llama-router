@@ -161,6 +161,26 @@ def test_api_key_sequence_starts_above_retained_logs(
         assert con.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
+def test_upgrade_drops_impossible_benchmark_speeds(tmp_path: Path) -> None:
+    dbfile = tmp_path / "bench.db"
+    sync_url = f"sqlite:///{dbfile}"
+    command.upgrade(_alembic_cfg(sync_url), "028_dashboard_mfa")
+    with sqlite3.connect(dbfile) as con:
+        con.execute("INSERT INTO providers (id, name) VALUES (1, 'p')")
+        con.executemany(
+            "INSERT INTO benchmarks (provider_id, model_name, tokens_per_second) "
+            "VALUES (1, ?, ?)",
+            [("good", 42.0), ("bogus", 199_000_000_000.0), ("none", None)],
+        )
+
+    run_upgrade_sync(sync_url)
+    with sqlite3.connect(dbfile) as con:
+        rows = con.execute(
+            "SELECT model_name FROM benchmarks ORDER BY model_name"
+        ).fetchall()
+    assert rows == [("good",), ("none",)]
+
+
 def test_upgrade_from_wireguard_schema_keeps_providers(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
