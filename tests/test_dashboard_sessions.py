@@ -498,3 +498,95 @@ async def test_cookie_secure_when_configured(
         "/login", data={"username": "alice", "password": PASSWORD, "next": "/"}
     )
     assert "secure" in r.headers["set-cookie"].lower()
+
+
+# --- Self-service password change ---
+
+
+async def _change(
+    client: httpx.AsyncClient, token: str, current: str, new: str
+) -> httpx.Response:
+    client.cookies.clear()
+    return await client.post(
+        "/account/password",
+        json={"current_password": current, "new_password": new},
+        headers=_cookie(token),
+    )
+
+
+async def test_user_changes_own_password(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db, "root")
+    await _user(db, "alice", admin=False)
+    first = await _sign_in(client)
+    second = await _sign_in(client)
+    r = await _change(client, first, PASSWORD, "brand-new-pass")
+    assert r.status_code == 200, r.text
+    # This browser gets a fresh cookie; every other session ends.
+    assert await _status(client, r.cookies[AUTH_COOKIE]) == 200
+    assert await _status(client, first) == 401
+    assert await _status(client, second) == 401
+    r = await client.post(
+        "/login", data={"username": "alice", "password": PASSWORD, "next": "/"}
+    )
+    assert r.headers["location"].startswith("/login?error")
+    r = await client.post(
+        "/login", data={"username": "alice", "password": "brand-new-pass", "next": "/"}
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/"
+
+
+async def test_password_change_checks_the_request(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db)
+    token = await _sign_in(client)
+    r = await _change(client, token, "wrong-password", "brand-new-pass")
+    assert r.status_code == 400
+    assert r.json()["detail"] == "The current password is wrong"
+    r = await _change(client, token, PASSWORD, "short")
+    assert r.status_code == 400
+    assert "8 characters" in r.json()["detail"]
+    client.cookies.clear()
+    r = await client.post(
+        "/account/password", json={"current_password": PASSWORD}, headers=_cookie(token)
+    )
+    assert r.status_code == 400
+    # Nothing changed, so the session still works.
+    assert await _status(client, token) == 200
+
+
+async def test_password_change_is_throttled(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db)
+    token = await _sign_in(client)
+    for _ in range(login_throttle.FREE_ATTEMPTS):
+        r = await _change(client, token, "wrong-password", "brand-new-pass")
+        assert r.status_code == 400
+    r = await _change(client, token, PASSWORD, "brand-new-pass")
+    assert r.status_code == 429
+    assert int(r.headers["retry-after"]) >= 1
+    login_throttle.throttle.clear()
+
+
+async def test_password_change_refuses_sso_accounts(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db, "root")
+    sso = await db.create_oidc_dashboard_user(
+        "sso", "https://idp", "s1", email=None, display_name=None, is_admin=False
+    )
+    token = sign_session(sso, _secret(), username="sso")
+    r = await _change(client, token, PASSWORD, "brand-new-pass")
+    assert r.status_code == 400
+    assert "single sign-on" in r.json()["detail"]
+
+
+async def test_profile_page_has_password_card(dash_client: DashClient) -> None:
+    client, db = dash_client
+    await _user(db)
+    token = await _sign_in(client)
+    client.cookies.clear()
+    r = await client.get("/account/security", headers=_cookie(token))
+    assert r.status_code == 200
+    assert 'id="password-form"' in r.text
+    assert 'autocomplete="current-password"' in r.text

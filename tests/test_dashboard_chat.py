@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 import pytest
+from starlette.requests import Request
 
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
-from llama_router.dashboard.chat import chat_messages, reply_image, reply_text
+from llama_router.dashboard.chat import (
+    STOPPED_EMPTY,
+    StreamDeltas,
+    chat_messages,
+    reply_image,
+    reply_text,
+)
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
 from llama_router.llamacpp_client import OpenAIClient
@@ -20,6 +29,30 @@ from llama_router.router import Router
 
 DashClient = tuple[httpx.AsyncClient, Database]
 IMAGE = "data:image/png;base64,iVBORw0KGgo="
+# Set by the fake backend once a "hang" stream has sent its first words.
+HANGING = asyncio.Event()
+
+
+def _sse(*texts: str, done: bool = True) -> list[bytes]:
+    out = [
+        b"data: "
+        + json.dumps({"choices": [{"delta": {"content": t}}]}).encode()
+        + b"\n\n"
+        for t in texts
+    ]
+    return [*out, b"data: [DONE]\n\n"] if done else out
+
+
+async def _chunks(*chunks: bytes) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        yield chunk
+
+
+async def _hang() -> AsyncIterator[bytes]:
+    for chunk in _sse("partial ", "words", done=False):
+        yield chunk
+    HANGING.set()
+    await asyncio.Event().wait()
 
 
 async def _backend(db: Database, seen: list[dict[str, Any]]) -> int:
@@ -37,9 +70,16 @@ async def _backend(db: Database, seen: list[dict[str, Any]]) -> int:
         seen.append(body)
         if request.url.path.endswith("/images/generations"):
             return httpx.Response(200, json={"data": [{"b64_json": "QUJD"}]})
-        if body["messages"][-1]["content"] == "fail":
+        last = body["messages"][-1]["content"]
+        if last == "fail":
             return httpx.Response(500, json={"error": "boom"})
         n = len(body["messages"])
+        if body.get("stream"):
+            if last == "hang":
+                return httpx.Response(200, content=_hang())
+            # Split mid-line, as a real stream may be.
+            raw = b"".join(_sse("Hello", " `x`", f" #{n}"))
+            return httpx.Response(200, content=_chunks(raw[:30], raw[30:]))
         return httpx.Response(
             200,
             json={"choices": [{"message": {"role": "assistant", "content": f"#{n}"}}]},
@@ -328,3 +368,120 @@ def test_chat_messages_and_replies() -> None:
     assert reply_text({}) == ""
     assert reply_image({"data": [{"url": "http://x/y.png"}]}) == ("http://x/y.png", "")
     assert reply_image({"data": []}) == (None, "")
+
+
+async def _events(resp: httpx.Response) -> list[dict[str, Any]]:
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    return [json.loads(line) for line in resp.text.splitlines() if line]
+
+
+async def test_stream_sends_text_as_it_arrives(dash_client: DashClient) -> None:
+    c, db = dash_client
+    seen: list[dict[str, Any]] = []
+    pid = await _backend(db, seen)
+    resp = await c.post(
+        "/api/chat/stream",
+        json={"provider_id": pid, "model": "chatty", "content": "hi"},
+    )
+    assert resp.status_code == 200
+    events = await _events(resp)
+    assert [e["type"] for e in events] == ["start", "delta", "delta", "delta", "done"]
+    assert events[0]["user"]["content"] == "hi"
+    assert "".join(e["text"] for e in events[1:4]) == "Hello `x` #1"
+    done = events[-1]
+    assert done["message"]["role"] == "assistant"
+    assert done["message"]["content"] == "Hello `x` #1"
+    assert done["message"]["provider_name"] == "gpu"
+    assert done["conversation"]["title"] == "hi"
+    assert seen[0]["stream"] is True
+    conv = (
+        await c.get(f"/api/chat/conversations/{events[0]['conversation_id']}")
+    ).json()
+    assert [m["content"] for m in conv["messages"]] == ["hi", "Hello `x` #1"]
+
+
+async def test_stream_backend_error(dash_client: DashClient) -> None:
+    c, db = dash_client
+    pid = await _backend(db, [])
+    resp = await c.post(
+        "/api/chat/stream",
+        json={"provider_id": pid, "model": "chatty", "content": "fail"},
+    )
+    events = await _events(resp)
+    assert [e["type"] for e in events] == ["start", "done"]
+    assert events[-1]["message"]["role"] == "error"
+    assert "500" in events[-1]["message"]["content"]
+
+
+async def test_stream_refuses_bad_requests_up_front(dash_client: DashClient) -> None:
+    c, db = dash_client
+    pid = await _backend(db, [])
+    ok = {"provider_id": pid, "model": "chatty", "content": "hi"}
+    for body, status in [
+        ({**ok, "mode": "image"}, 400),
+        ({**ok, "model": "nope"}, 404),
+        ({**ok, "content": ""}, 400),
+    ]:
+        resp = await c.post("/api/chat/stream", json=body)
+        assert resp.status_code == status, (body, resp.text)
+        assert "detail" in resp.json()
+
+
+async def test_stopped_stream_keeps_what_arrived(dash_client: DashClient) -> None:
+    """Stop in the browser drops the connection; the words so far are kept."""
+    c, db = dash_client
+    pid = await _backend(db, [])
+    HANGING.clear()
+    task = asyncio.create_task(
+        c.post(
+            "/api/chat/stream",
+            json={"provider_id": pid, "model": "chatty", "content": "hang"},
+        )
+    )
+    await asyncio.wait_for(HANGING.wait(), 5)
+    # Let the relay hand the deltas on before hanging up.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    convs = (await c.get("/api/chat/conversations")).json()["conversations"]
+    conv = (await c.get(f"/api/chat/conversations/{convs[0]['id']}")).json()
+    assert [(m["role"], m["content"]) for m in conv["messages"]] == [
+        ("user", "hang"),
+        ("assistant", "partial words"),
+    ]
+
+
+async def test_stream_stops_when_the_browser_hangs_up(
+    dash_client: DashClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hang-up noticed between chunks ends the upstream read at once."""
+    c, db = dash_client
+    pid = await _backend(db, [])
+    calls = 0
+
+    async def gone_after_first(self: Request) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls > 1
+
+    monkeypatch.setattr(Request, "is_disconnected", gone_after_first)
+    resp = await c.post(
+        "/api/chat/stream",
+        json={"provider_id": pid, "model": "chatty", "content": "hi"},
+    )
+    events = await _events(resp)
+    # The first chunk ends mid-line, so no words had arrived.
+    assert [e["type"] for e in events] == ["start", "done"]
+    assert events[-1]["message"]["role"] == "error"
+    assert events[-1]["message"]["content"] == STOPPED_EMPTY
+
+
+def test_stream_deltas() -> None:
+    d = StreamDeltas()
+    assert d.feed(b'data: {"choices":[{"delta":{"content":"a') == []
+    assert d.feed(b'b"}}]}\n\n: comment\ndata: not json\n') == ["ab"]
+    assert d.feed(b'data: {"choices":[{"delta":{"reasoning_content":"hm"}}]}\n') == []
+    assert d.feed(b"data: [DONE]\n\n") == []
+    assert d.reasoning == ["hm"]

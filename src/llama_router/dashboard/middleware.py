@@ -306,9 +306,11 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
         if user and request.method == "POST" and path in _LOGOUT_PATHS:
             return await call_next(request)
 
-        if path in ("/profile", "/account/security") or path.startswith(
-            "/account/security/"
-        ):
+        if path in (
+            "/profile",
+            "/account/security",
+            "/account/password",
+        ) or path.startswith("/account/security/"):
             return await call_next(request)
 
         if not user.is_admin:
