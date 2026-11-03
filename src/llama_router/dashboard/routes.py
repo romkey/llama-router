@@ -7,6 +7,7 @@ import math
 import re
 import time
 import uuid
+import weakref
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from ..background import spawn
 from ..client_address import client_ip, forwarded_for_ignored
 from ..cloud_presets import PRESETS, get_preset
 from ..config import settings
+from ..database import Database
 from ..httpx_errors import describe_httpx_error
 from ..models import ProviderProtocol, RequestLog
 from ..probe import FAMILY_LABELS, BlockedAddressError, probe_url
@@ -66,6 +68,26 @@ from .middleware import invalidate_dashboard_user_count_cache
 from .model_groups import group_rows
 
 logger = logging.getLogger(__name__)
+
+# Counting the whole request log is a full scan, and the dashboard asks on
+# every refresh; a page count up to this stale is fine.
+LOG_COUNT_TTL = 30.0
+_log_counts: weakref.WeakKeyDictionary[
+    Database, dict[int | None, tuple[int, float]]
+] = weakref.WeakKeyDictionary()
+
+
+async def _log_count(db: Database, owner_user_id: int | None = None) -> int:
+    """db.count_request_logs, cached for LOG_COUNT_TTL seconds."""
+    counts = _log_counts.setdefault(db, {})
+    now = time.monotonic()
+    hit = counts.get(owner_user_id)
+    if hit is not None and hit[1] > now:
+        return hit[0]
+    value = await db.count_request_logs(owner_user_id=owner_user_id)
+    counts[owner_user_id] = (value, now + LOG_COUNT_TTL)
+    return value
+
 
 _active_pulls: dict[str, dict] = {}
 _active_benchmarks: dict[str, dict] = {}
@@ -1014,7 +1036,7 @@ async def dashboard(request: Request):
     if dash["show_log"]:
         owner_user_id = dash["dash_user"].id if read_only else None
         log_per_page = 100
-        log_total = await db.count_request_logs(owner_user_id=owner_user_id)
+        log_total = await _log_count(db, owner_user_id)
         log_pages = max(1, (log_total + log_per_page - 1) // log_per_page)
         try:
             log_page = int(request.query_params.get("log_page", "1"))
@@ -1167,9 +1189,9 @@ async def api_status(request: Request):
     all_models = await db.list_all_models()
     log_total = 0
     if admin_payload:
-        log_total = await db.count_request_logs()
+        log_total = await _log_count(db)
     elif dash_user is not None:
-        log_total = await db.count_request_logs(owner_user_id=dash_user.id)
+        log_total = await _log_count(db, dash_user.id)
 
     providers_data = [
         _provider_status_payload(info, admin=admin_payload) for info in infos

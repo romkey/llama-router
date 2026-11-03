@@ -21,6 +21,18 @@ from .models import ProviderInfo, ProviderStatus
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 PREFIX = "llama_router_"
 
+# Request log rows dropped because the writer's queue was full.
+_request_log_dropped = 0
+
+
+def count_request_log_dropped() -> None:
+    global _request_log_dropped
+    _request_log_dropped += 1
+
+
+def request_log_dropped_total() -> int:
+    return _request_log_dropped
+
 
 def _escape(value: object) -> str:
     text = str(value)
@@ -271,6 +283,13 @@ def collect(
         if s.duration_ms.value is not None:
             live_duration.add(s.duration_ms.value, **labels)
 
+    log_dropped = Family(
+        "request_log_dropped_total",
+        "counter",
+        "Request log rows dropped because the log writer fell behind.",
+    )
+    log_dropped.add(_request_log_dropped)
+
     families = [
         info_fam,
         providers,
@@ -296,6 +315,7 @@ def collect(
         worker_conn,
         worker_inflight,
         worker_jobs,
+        log_dropped,
     ]
 
     table = getattr(router, "table", None) if router is not None else None

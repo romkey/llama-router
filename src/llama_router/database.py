@@ -5,13 +5,13 @@ import contextlib
 import functools
 import json
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar, Concatenate
 
 from sqlalchemy import event, text
-from sqlalchemy.engine.url import URL
+from sqlalchemy.engine.url import URL, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 def _sqlite_foreign_keys_on(dbapi_connection: Any, _record: Any) -> None:
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys = ON")
+    # WAL lets the dashboard read while the request log writes; NORMAL is
+    # safe under WAL and skips an fsync per commit; busy_timeout waits for
+    # a lock instead of failing with "database is locked".
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
 
 
@@ -154,7 +160,10 @@ class Database:
         sync_url = settings.sync_database_url_for_alembic(self._url)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: run_upgrade_sync(sync_url))
-        self._engine = create_async_engine(self._url, pool_pre_ping=True)
+        # A SQLite file cannot drop the connection, so a ping per checkout
+        # only costs time.
+        is_sqlite = make_url(self._url).get_backend_name() == "sqlite"
+        self._engine = create_async_engine(self._url, pool_pre_ping=not is_sqlite)
         self._session_factory = async_sessionmaker(
             self._engine,
             expire_on_commit=False,
@@ -744,6 +753,52 @@ class Database:
                 entry.routed_model,
             ),
         )
+
+    async def save_request_logs(self, entries: Sequence[RequestLog]) -> None:
+        """Insert *entries* in one transaction (one executemany)."""
+        if not entries:
+            return
+        rows = [
+            {
+                "provider_id": e.provider_id,
+                "provider_name": e.provider_name,
+                "protocol": e.protocol,
+                "endpoint": e.endpoint,
+                "source_ip": e.source_ip,
+                "model": e.model,
+                "request_size": e.request_size,
+                "response_size": e.response_size,
+                "request_meta": e.request_meta,
+                "duration_ms": e.duration_ms,
+                "ttfb_ms": e.ttfb_ms,
+                "router_ms": e.router_ms,
+                "status": e.status,
+                "streamed": int(e.streamed),
+                "error_detail": e.error_detail,
+                "locality": e.locality,
+                "api_key_id": e.api_key_id,
+                "prompt_tokens": e.prompt_tokens,
+                "completion_tokens": e.completion_tokens,
+                "cost_usd": e.cost_usd,
+                "routed_model": e.routed_model,
+            }
+            for e in entries
+        ]
+        stmt = text(
+            "INSERT INTO request_log "
+            "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
+            "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
+            "router_ms, status, streamed, error_detail, locality, api_key_id, "
+            "prompt_tokens, completion_tokens, cost_usd, routed_model) "
+            "VALUES (:provider_id, :provider_name, :protocol, :endpoint, "
+            ":source_ip, :model, :request_size, :response_size, :request_meta, "
+            ":duration_ms, :ttfb_ms, :router_ms, :status, :streamed, "
+            ":error_detail, :locality, :api_key_id, :prompt_tokens, "
+            ":completion_tokens, :cost_usd, :routed_model)"
+        )
+        sf = self._require_session_factory()
+        async with sf() as session, session.begin():
+            await session.execute(stmt, rows)
 
     def _log_time(self, when: datetime) -> Any:
         """*when* bound for a comparison with ``request_log.created_at``: UTC

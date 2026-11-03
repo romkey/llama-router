@@ -8,12 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _tasks: set[asyncio.Task[Any]] = set()
+# Called by drain() to empty queues that are not tasks (the request log).
+_flushers: list[Callable[[], Awaitable[None]]] = []
+
+
+def on_drain(flush: Callable[[], Awaitable[None]]) -> None:
+    """Have drain() also await *flush*."""
+    _flushers.append(flush)
 
 
 def spawn(
@@ -37,6 +44,11 @@ def _done(task: asyncio.Task[Any]) -> None:
 
 
 async def drain() -> None:
-    """Wait for every pending background task (tests and shutdown)."""
-    while _tasks:
+    """Wait for every pending background task and queued write (tests and
+    shutdown)."""
+    while True:
+        for flush in _flushers:
+            await flush()
+        if not _tasks:
+            return
         await asyncio.gather(*list(_tasks), return_exceptions=True)
