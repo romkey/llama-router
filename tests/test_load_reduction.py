@@ -220,10 +220,14 @@ async def test_deadline_between_chunks_ends_the_stream(
     monkeypatch.setattr(settings, "request_deadline_seconds", 0.05)
     slot = await upstream_slot(_request(), None, stream=True)
     got: list[bytes] = []
-    with pytest.raises(DeadlineExceeded):
+
+    async def consume() -> None:
         async for chunk in slot.stream(_fast(5)):
             got.append(chunk)
             await asyncio.sleep(0.1)  # must finish: not cancelled
+
+    with pytest.raises(DeadlineExceeded):
+        await consume()
     assert len(got) == 1
     slot.release()
 
