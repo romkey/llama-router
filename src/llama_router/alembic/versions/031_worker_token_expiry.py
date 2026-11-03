@@ -3,8 +3,8 @@
 ``workers.token_expires_at`` is a Unix timestamp, like
 ``management_keys.expires_at``; NULL means the token never expires.
 
-Revision ID: 030_worker_token_expiry
-Revises: 029_drop_bogus_benchmarks
+Revision ID: 031_worker_token_expiry
+Revises: 030_request_log_model_index
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "030_worker_token_expiry"
-down_revision = "029_drop_bogus_benchmarks"
+revision = "031_worker_token_expiry"
+down_revision = "030_request_log_model_index"
 branch_labels = None
 depends_on = None
 
