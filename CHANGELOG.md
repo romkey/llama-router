@@ -16,6 +16,21 @@ described in their git tags and GitHub Releases.
 
 ### Security
 
+- Every dashboard response now sends `X-Frame-Options: DENY`, a
+  `Content-Security-Policy` with `frame-ancestors 'none'`, `object-src 'none'`
+  and `base-uri 'self'`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: same-origin` and `Cache-Control: no-store`, plus
+  `Strict-Transport-Security` when the dashboard is served over HTTPS.
+- Non-admin dashboard users get 403 from `/metrics` (a metrics token still
+  works), `/docs`, `/redoc` and `/openapi.json`.
+- A provider's status no longer includes its full URL after a connection
+  error, only the path, so non-admins can't see internal hostnames or
+  credentials in it.
+- Dashboard chat shows non-admins a generic message when the provider fails;
+  admins and the request log keep the upstream detail.
+- The router warns once when a sign-in arrives with `X-Forwarded-For` from a
+  peer not in `LLAMA_ROUTER_TRUSTED_PROXIES`; the README now says the setting
+  is required behind a reverse proxy.
 - `/api/tags`, `/api/version`, `/api/ps`, `/v1/models` and `/v1/models/{name}`
   now need an API key, like every other API route, unless the authentication
   policy accepts requests without one. `/health` stays public.
@@ -26,6 +41,19 @@ described in their git tags and GitHub Releases.
 
 ### Changed
 
+- The request log is written by one background writer in batches (up to 200
+  rows or every 100 ms) instead of a task and a transaction per request. Its
+  queue holds 10,000 rows; when the database falls further behind, rows are
+  dropped and counted in the new `request_log_dropped_total` metric.
+  Shutdown writes what is queued before closing the database.
+- SQLite databases use WAL journaling with `synchronous=NORMAL` and a
+  five-second busy timeout, so dashboard reads no longer wait on log writes,
+  and skip the per-checkout connection ping.
+- An upgrade adds an index on the request log's model and time.
+- The dashboard's request log page count is cached for 30 seconds instead of
+  counting the whole log on every refresh.
+- A request's logged size is the body the client sent, not the parsed body
+  serialised again.
 - Test infrastructure: CI runs the whole suite against PostgreSQL and MySQL
   as well as SQLite, checks there is a single Alembic head, and runs the
   tests in parallel. Coverage now includes the Alembic migrations (floor
@@ -43,6 +71,10 @@ described in their git tags and GitHub Releases.
   offset-naive and offset-aware datetimes", so old request logs are deleted.
 - The "accept requests without an API key" setting is re-read every five
   minutes, so routers sharing a database see a change made on another one.
+- A management key used in the router's first minute after boot now records
+  its last-used time.
+- If one of the router's servers cannot bind its port, the others are stopped
+  and the router exits with an error instead of running without it.
 - Benchmarks of Ollama-style providers that leave out `eval_duration`, such as
   another llama-router in front of llama.cpp, no longer report billions of
   tokens per second. The benchmark falls back to the reported or measured
