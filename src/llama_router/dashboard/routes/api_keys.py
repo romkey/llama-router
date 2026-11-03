@@ -11,7 +11,8 @@ from fastapi.responses import (
     JSONResponse,
 )
 
-from ...auth import generate_api_key, key_hash, key_prefix
+from ...auth import generate_api_key, key_prefix
+from ...provider_secrets import key_hash
 from ...router import (
     ROUTING_MODES,
 )

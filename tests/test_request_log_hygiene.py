@@ -17,8 +17,6 @@ from llama_router.api.app import app as ollama_app
 from llama_router.auth import (
     generate_api_key,
     invalidate_auth_cache,
-    key_hash,
-    key_hash_legacy,
     key_prefix,
     routing_preferences_from_request,
 )
@@ -35,6 +33,7 @@ from llama_router.models import (
     RequestLog,
 )
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash, key_hash_legacy
 from llama_router.router import Router
 from tests.conftest import db_timestamp
 

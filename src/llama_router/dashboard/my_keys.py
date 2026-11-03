@@ -18,9 +18,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from ..auth import generate_api_key, key_hash, key_prefix
+from ..auth import generate_api_key, key_prefix
 from ..config import settings
 from ..database import Database
+from ..provider_secrets import key_hash
 from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
 from . import deps, management_keys

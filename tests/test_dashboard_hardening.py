@@ -17,6 +17,7 @@ import pytest
 from starlette.requests import Request
 
 from llama_router import hf_download
+from llama_router import provider_secrets as ps
 from llama_router.config import settings
 from llama_router.dashboard import chat as chat_mod
 from llama_router.dashboard import deps as dash_deps
@@ -29,6 +30,7 @@ from llama_router.llamacpp_client import OpenAIClient
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.probe import BlockedAddressError, check_not_metadata, is_metadata_ip
 from llama_router.provider_manager import _failure_reason
+from llama_router.provider_secrets import session_signing_key
 from llama_router.router import Router
 
 DashClient = tuple[httpx.AsyncClient, Database]
@@ -36,7 +38,7 @@ TEMPLATES = Path(__file__).parent.parent / "src" / "llama_router" / "templates"
 
 
 def _as(user_id: int) -> dict[str, str]:
-    token = sign_session(user_id, settings.session_secret.strip())
+    token = sign_session(user_id, session_signing_key())
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
 
 
@@ -420,9 +422,11 @@ async def test_session_secret_is_generated_once_and_kept(
         monkeypatch.setattr(settings, "session_secret", "")
         dash_deps.invalidate_dashboard_session_secret_cache()
         assert await dash_deps.get_dashboard_session_secret() == secret
-        # A configured secret wins.
+        # A configured secret wins, through its HKDF "session" key.
         monkeypatch.setattr(settings, "session_secret", "  configured-secret  ")
-        assert await dash_deps.get_dashboard_session_secret() == "configured-secret"
+        assert await dash_deps.get_dashboard_session_secret() == (
+            ps.derive_key("session", b"configured-secret").hex()
+        )
     finally:
         dash_deps.invalidate_dashboard_session_secret_cache()
         dash_deps._db = None

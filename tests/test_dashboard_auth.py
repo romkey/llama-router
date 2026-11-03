@@ -17,11 +17,15 @@ from llama_router.dashboard.auth_core import (
     verify_password,
 )
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
-from llama_router.provider_secrets import ENCRYPTED_SETTING_PREFIX, decrypt_setting
+from llama_router.provider_secrets import (
+    ENCRYPTED_SETTING_PREFIX,
+    decrypt_setting,
+    session_signing_key,
+)
 
 
 def _session_cookie_header(user_id: int) -> dict[str, str]:
-    secret = settings.session_secret.strip()
+    secret = session_signing_key()
     token = sign_session(user_id, secret)
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
 
@@ -439,7 +443,7 @@ async def test_session_for_deleted_user_rejected_when_accounts_remain(
     uid = await db.create_dashboard_user("gone", hash_password("password-12345"), True)
     await db.create_dashboard_user("other", hash_password("password-12345"), True)
     invalidate_dashboard_user_count_cache()
-    token = sign_session(uid, settings.session_secret.strip())
+    token = sign_session(uid, session_signing_key())
     await db.delete_dashboard_user(uid)
     invalidate_dashboard_user_count_cache()
 
@@ -454,7 +458,7 @@ async def test_deleting_last_dashboard_user_locks_the_dashboard(dash_client) -> 
     client, db = dash_client
     uid = await db.create_dashboard_user("only", hash_password("password-12345"), True)
     invalidate_dashboard_user_count_cache()
-    token = sign_session(uid, settings.session_secret.strip())
+    token = sign_session(uid, session_signing_key())
     await db.delete_dashboard_user(uid)
     invalidate_dashboard_user_count_cache()
 

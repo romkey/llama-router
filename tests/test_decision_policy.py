@@ -13,7 +13,7 @@ from llama_router import decisions as d
 from llama_router import request_logger
 from llama_router.api import deps as ollama_deps
 from llama_router.api.app import app as ollama_app
-from llama_router.auth import generate_api_key, key_hash_legacy, key_prefix
+from llama_router.auth import generate_api_key, key_prefix
 from llama_router.background import drain
 from llama_router.config import settings
 from llama_router.dashboard import deps as dash_deps
@@ -29,6 +29,7 @@ from llama_router.models import (
     ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash_legacy
 from llama_router.router import Router
 from llama_router.routing_stats import ProviderStats
 from llama_router.worker_link.protocol import REFUSED_PREFIX

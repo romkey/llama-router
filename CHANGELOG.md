@@ -30,6 +30,23 @@ described in their git tags and GitHub Releases.
 
 ### Security
 
+- Secrets are derived per purpose with HKDF from `SESSION_SECRET` (or the
+  generated `secret.key`): one key signs session cookies, one encrypts stored
+  provider keys and the worker hub token, one peppers client API key hashes.
+  Client API keys are now stored as HMAC-SHA256 (they are 32 random bytes, so
+  PBKDF2 only cost CPU); existing PBKDF2 and SHA-256 hashes still match and
+  are replaced on first use. Provider keys and the hub token encrypted by
+  earlier releases still decrypt and are re-encrypted with the derived key
+  (provider keys at startup).
+- **`SESSION_SECRET` must now be at least 32 characters**; the router refuses
+  to start with a shorter one. Existing data survives the upgrade when the
+  secret is unchanged. To replace a short secret without re-entering provider
+  keys or reissuing client keys, set the old value as the new
+  `SESSION_SECRET_PREVIOUS` alongside the new `SESSION_SECRET`; data stored
+  under it moves to the new secret. With a configured `SESSION_SECRET`,
+  everyone signed in to the dashboard has to sign in again once after
+  upgrading (cookies are now signed with the derived key). Deployments without
+  `SESSION_SECRET` keep their sessions.
 - Every dashboard response now sends `X-Frame-Options: DENY`, a
   `Content-Security-Policy` with `frame-ancestors 'none'`, `object-src 'none'`
   and `base-uri 'self'`, `X-Content-Type-Options: nosniff`,

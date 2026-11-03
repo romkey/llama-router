@@ -8,7 +8,6 @@ from starlette.requests import Request
 
 from llama_router.auth import (
     generate_api_key,
-    key_hash,
     key_prefix,
     routing_preferences_from_request,
 )
@@ -22,6 +21,7 @@ from llama_router.models import (
 )
 from llama_router.pricing import FREE, PriceBook
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.request_logger import (
     attach_pricer,
     log_request,
