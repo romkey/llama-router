@@ -66,6 +66,7 @@ from .auth_core import (
     normalize_username,
     session_max_age,
     sign_session,
+    unsign_session,
     verify_password,
 )
 from .middleware import invalidate_dashboard_user_count_cache
@@ -867,8 +868,6 @@ async def users_set_password(
         row = await db.get_dashboard_user_by_id(user_id)
         if row is not None:
             secret = await deps.get_dashboard_session_secret()
-            from .auth_core import unsign_session
-
             claims = unsign_session(request.cookies.get(AUTH_COOKIE, ""), secret)
             _set_session_cookie(
                 request,
@@ -877,6 +876,66 @@ async def users_set_password(
                 secret,
                 mfa_verified=bool(claims and claims.mfa_verified),
             )
+    return resp
+
+
+@router.post("/account/password")
+async def account_change_password(request: Request) -> JSONResponse:
+    """Change the signed-in user's own password.
+
+    Body: {current_password, new_password}. Ends every other session of the
+    account and keeps this one. Wrong guesses count toward the same lockout
+    as password sign-in.
+    """
+    user = getattr(request.state, "dashboard_user", None)
+    if user is None or user.id <= 0:
+        raise HTTPException(status_code=403, detail="Sign in to change your password")
+    body = await deps.json_body(request)
+    current = body.get("current_password")
+    new = body.get("new_password")
+    if not isinstance(current, str) or not isinstance(new, str):
+        raise HTTPException(
+            status_code=400, detail="current_password and new_password are required"
+        )
+    db = deps.get_db()
+    row = await db.get_dashboard_user_by_id(user.id)
+    if row is None or row.get("auth_source", "local") != "local":
+        raise HTTPException(
+            status_code=400,
+            detail="Your password is managed by your single sign-on provider",
+        )
+    if len(new) < 8:
+        raise HTTPException(
+            status_code=400, detail="The new password must be at least 8 characters"
+        )
+    keys = login_throttle.keys_for(client_ip(request) or "unknown", row["username"])
+    wait = login_throttle.throttle.retry_after(keys)
+    if wait > 0:
+        seconds = max(1, math.ceil(wait))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many wrong passwords; try again in {seconds} s",
+            headers={"Retry-After": str(seconds)},
+        )
+    # Counted before the check, as at sign-in.
+    login_throttle.throttle.failure(keys)
+    if not await asyncio.to_thread(verify_password, current, row["password_hash"]):
+        raise HTTPException(status_code=400, detail="The current password is wrong")
+    login_throttle.throttle.success(keys)
+    await db.update_dashboard_user_password(user.id, hash_password(new))
+    logger.info("Dashboard user %s changed their password", user.username)
+    resp = JSONResponse({"status": "ok"})
+    row = await db.get_dashboard_user_by_id(user.id)
+    if row is not None:
+        secret = await deps.get_dashboard_session_secret()
+        claims = unsign_session(request.cookies.get(AUTH_COOKIE, ""), secret)
+        _set_session_cookie(
+            request,
+            resp,
+            row,
+            secret,
+            mfa_verified=bool(claims and claims.mfa_verified),
+        )
     return resp
 
 

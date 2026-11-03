@@ -13,6 +13,14 @@ described in their git tags and GitHub Releases.
   or when rotating its token (or `expires_in_days` on `POST /api/workers` and
   `POST /api/workers/{id}/rotate`); the hub refuses an expired token and
   closes a connected worker's session when its token expires.
+- Dashboard users with a local account can change their own password from
+  their profile page (`POST /account/password` with the current and new
+  password). It signs the account out everywhere else and keeps this session;
+  wrong guesses count toward the sign-in lockout.
+- Dashboard chat streams replies as the model writes them
+  (`POST /api/chat/stream`, newline-delimited JSON events), with a Stop button
+  that keeps what has arrived so far. Replies render fenced code blocks,
+  inline code, bold and italic.
 
 ### Security
 
