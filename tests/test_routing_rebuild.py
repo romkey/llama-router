@@ -20,6 +20,7 @@ from llama_router.models import (
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.routing_stats import WARM_WINDOW_S, ProviderStats
+from llama_router.routing_table import Candidate
 
 ENDPOINT = "/v1/chat/completions"
 
@@ -281,3 +282,30 @@ async def test_failed_rebuild_lets_the_next_sample_retry(
     # A sample too small to matter after a good build still wakes the router.
     pm.stats.record_request(pid, "m", ok=True, tokens_per_second=50.0)
     assert rt._wake.is_set()
+
+
+def test_group_reach_follows_the_candidates_rescore_keeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    p = Provider(id=1, name="p", hub_shared=True)
+    decide = Candidate(
+        provider=p, model="m", backend_model="m", endpoint="/v1/decisions"
+    )
+    chat = Candidate(provider=p, model="m", backend_model="m", endpoint=ENDPOINT)
+    base = routing_table.TableBase(
+        candidates={("g", "/v1/decisions"): (decide,), ("h", ENDPOINT): (chat,)},
+        providers=[p],
+        groups={"g": ("m",), "h": ("m",), "empty": ("x",)},
+    )
+    # The decision route is ruled out at rescore, as for a provider that
+    # declares its routes and has lately answered without logprobs.
+    monkeypatch.setattr(
+        routing_table, "offers", lambda _p, path, _s: path != "/v1/decisions"
+    )
+    table = routing_table.rescore(base, hot_models=lambda *_: set(), stats=None)
+    assert table.group_reach == {
+        "g": (False, False),
+        "h": (True, True),
+        "empty": (False, False),
+    }
+    assert table.listed_groups() == ["h"]

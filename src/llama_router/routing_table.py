@@ -682,7 +682,6 @@ class TableBase:
     backend_names: dict[tuple[int, str], str] = field(default_factory=dict)
     prices: PriceBook | None = None
     groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    group_reach: dict[str, tuple[bool, bool]] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
 
@@ -826,7 +825,6 @@ def rescore(
         backend_names=base.backend_names,
         prices=base.prices,
         groups=base.groups,
-        group_reach=base.group_reach,
         warnings=base.warnings,
     )
     hot: dict[int, set[str]] = {}
@@ -890,6 +888,17 @@ def rescore(
         usable = [c for c in bucket if c.tier == best_tier]
         for mode in MODES:
             table.ranked[(model, path, mode)] = _sorted(usable, mode)
+
+    # Group name -> (served by any provider, served by one shared with the
+    # hub), from the candidates rescoring kept.
+    for g in base.groups:
+        table.group_reach[g] = (False, False)
+    for (model, _path), bucket in table.all_candidates.items():
+        if model in table.group_reach:
+            shared = table.group_reach[model][1] or any(
+                c.provider.hub_shared for c in bucket
+            )
+            table.group_reach[model] = (True, shared)
 
     table.built_at = time.time()
     table.build_ms = (time.perf_counter() - started) * 1000
@@ -962,11 +971,7 @@ def _add_groups(
                     ):
                         continue
                     bucket.append(c)
-        any_provider = shared = False
         for path, bucket in merged.items():
             if bucket:
                 grouped[(g.name, path)] = bucket
-                any_provider = True
-                shared = shared or any(c.provider.hub_shared for c in bucket)
-        table.group_reach[g.name] = (any_provider, shared)
     return warnings
