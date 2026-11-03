@@ -5,6 +5,7 @@ import contextlib
 import functools
 import json
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -43,9 +44,15 @@ def _sqlite_foreign_keys_on(dbapi_connection: Any, _record: Any) -> None:
     # WAL lets the dashboard read while the request log writes; NORMAL is
     # safe under WAL and skips an fsync per commit; busy_timeout waits for
     # a lock instead of failing with "database is locked".
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=5000")
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as exc:
+        # Another connection is switching the file to WAL right now (two
+        # routers starting together); the mode is kept in the file, so that
+        # switch covers this connection too.
+        logger.debug("SQLite journal mode left to another connection: %s", exc)
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
 
@@ -1800,6 +1807,26 @@ class Database:
                 'ON CONFLICT ("key") DO UPDATE SET value = excluded.value',
                 (key, value),
             )
+
+    async def add_app_setting(self, key: str, value: str) -> str:
+        """Store *value* unless *key* already has one; return the stored value."""
+        if self._dialect_name in ("mysql", "mariadb"):
+            await self._execute(
+                "INSERT IGNORE INTO app_settings (`key`, value) VALUES (?, ?)",
+                (key, value),
+            )
+        else:
+            await self._execute(
+                'INSERT INTO app_settings ("key", value) VALUES (?, ?) '
+                'ON CONFLICT ("key") DO NOTHING',
+                (key, value),
+            )
+        stored = await self.get_app_setting(key)
+        if stored:
+            return stored
+        # An empty value was stored before: replace it.
+        await self.set_app_setting(key, value)
+        return value
 
     # --- Management keys ---
 

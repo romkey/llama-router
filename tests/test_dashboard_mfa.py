@@ -258,6 +258,31 @@ async def test_rejects_invalid_signed_assertions(
     assert (await client.get("/api/status")).status_code == 401
 
 
+async def test_replayed_lower_sign_count_is_rejected(
+    mfa_client: tuple[httpx.AsyncClient, Database],
+) -> None:
+    """A cloned authenticator shows up as a counter that went backwards."""
+    client, db = mfa_client
+    uid = await create_user(db)
+    await login(client)
+    authenticator = Authenticator()
+    await enroll(client, authenticator)
+    client.cookies.clear()
+    await login(client)
+    assert (await authenticate(client, authenticator, count=5)).status_code == 200
+    (stored,) = await MfaStore(db).credentials(uid)
+    assert stored.sign_count == 5
+
+    client.cookies.clear()
+    await login(client)
+    response = await authenticate(client, authenticator, count=3)
+    assert response.status_code == 400
+    assert AUTH_COOKIE not in client.cookies
+    assert (await client.get("/api/status")).status_code == 401
+    (stored,) = await MfaStore(db).credentials(uid)
+    assert stored.sign_count == 5
+
+
 async def test_recovery_is_single_use_and_still_requires_password(
     mfa_client: tuple[httpx.AsyncClient, Database],
 ) -> None:

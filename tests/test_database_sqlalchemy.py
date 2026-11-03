@@ -7,6 +7,7 @@ and behaviors that differ by dialect in implementation (exercised here on SQLite
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 
 import pytest
@@ -302,3 +303,24 @@ async def test_request_logs_same_second_newest_first(db: Database) -> None:
         )
     page = await db.get_request_logs(limit=3)
     assert [x.request_size for x in page] == [30, 20, 10]
+
+
+async def test_two_engines_opening_one_sqlite_file_together(tmp_path, request) -> None:
+    """Both switch a fresh file to WAL at once; neither connection fails."""
+    template = request.getfixturevalue("_migrated_sqlite")
+    for i in range(20):
+        path = tmp_path / f"shared-{i}.db"
+        with contextlib.closing(sqlite3.connect(template)) as con:
+            con.execute("VACUUM INTO ?", (str(path),))
+        first, second = Database(str(path)), Database(str(path))
+        await first.connect()
+        await second.connect()
+        try:
+            await asyncio.gather(
+                first.get_app_setting("x"), second.get_app_setting("x")
+            )
+        finally:
+            await first.close()
+            await second.close()
+        with contextlib.closing(sqlite3.connect(path)) as con:
+            assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"

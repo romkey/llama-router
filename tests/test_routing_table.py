@@ -590,3 +590,33 @@ async def test_key_deleted_during_lookup_is_not_cached(db: Database, monkeypatch
     with pytest.raises(HTTPException) as err:
         await routing_preferences_from_request(db, _key_request(key))
     assert err.value.status_code == 401
+
+
+async def test_failed_build_raises_once_then_recovers_with_fresh_data(
+    db: Database, pm: ProviderManager, monkeypatch: pytest.MonkeyPatch
+):
+    from llama_router import routing_table
+
+    old = await _provider(db, "old", ["m"])
+    rt = Router(db, pm)
+    assert (await rt.route("m", "/api/chat")).provider.id == old.id
+
+    real = routing_table.reload
+    calls = 0
+
+    def flaky(*args: Any, **kw: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("build failed")
+        return real(*args, **kw)
+
+    monkeypatch.setattr(routing_table, "reload", flaky)
+    new = await _provider(db, "new", ["fresh"])
+    with pytest.raises(RuntimeError, match="build failed"):
+        await rt.route("fresh", "/api/chat")
+    # The failed build left the table dirty; the next request rebuilds it.
+    r = await rt.route("fresh", "/api/chat")
+    assert r is not None
+    assert r.provider.id == new.id
+    assert calls == 2
