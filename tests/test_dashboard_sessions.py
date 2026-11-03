@@ -382,7 +382,7 @@ async def test_unknown_user_costs_a_password_check(
         burned.append(password)
         real(password)
 
-    monkeypatch.setattr("llama_router.dashboard.routes.burn_password_check", spy)
+    monkeypatch.setattr("llama_router.dashboard.routes.login.burn_password_check", spy)
     r = await client.post(
         "/login", data={"username": "nobody", "password": "guess-1", "next": "/"}
     )

@@ -36,7 +36,7 @@ from ..routing_table import RoutingTable, alias_groups
 from ..v1_client import get_v1_client
 from . import deps
 from .my_keys import self_service_defaults
-from .routes import _is_admin, dash_page_ctx, templates
+from .pages import _is_admin, dash_page_ctx, templates
 
 router = APIRouter()
 

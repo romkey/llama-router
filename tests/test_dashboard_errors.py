@@ -9,7 +9,7 @@ from urllib.parse import unquote
 import httpx
 import pytest
 
-from llama_router.dashboard import routes as dash_routes
+from llama_router.dashboard.routes import providers
 from llama_router.database import Database
 from llama_router.models import ProviderProtocol
 
@@ -66,7 +66,7 @@ async def test_failed_add_provider_reopens_the_dialog_filled_in(
     assert resp.status_code == 303
     location = resp.headers["location"]
     assert location.startswith("/?add_provider=1&error=")
-    assert dash_routes._ADD_FORM_COOKIE in resp.cookies
+    assert providers._ADD_FORM_COOKIE in resp.cookies
     assert await db.list_providers() == []
 
     page = await c.get(location)  # the client sends the cookie back
@@ -79,7 +79,7 @@ async def test_failed_add_provider_reopens_the_dialog_filled_in(
     # Shown once: the page clears the cookie, with the attributes it was set
     # with so browsers honour the deletion.
     cleared = page.headers.get("set-cookie", "").lower()
-    assert dash_routes._ADD_FORM_COOKIE in cleared
+    assert providers._ADD_FORM_COOKIE in cleared
     assert "max-age=0" in cleared
     assert "samesite=strict" in cleared
     assert "httponly" in cleared
@@ -87,7 +87,7 @@ async def test_failed_add_provider_reopens_the_dialog_filled_in(
 
 async def test_dashboard_ignores_a_bad_prefill_cookie(dash_client: DashClient) -> None:
     c, _ = dash_client
-    c.cookies.set(dash_routes._ADD_FORM_COOKIE, "not base64 json")
+    c.cookies.set(providers._ADD_FORM_COOKIE, "not base64 json")
     page = await c.get("/?add_provider=1&error=x")
     assert page.status_code == 200
     assert "addProviderModal')).show()" in page.text

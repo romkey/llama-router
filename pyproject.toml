@@ -96,7 +96,7 @@ files = ["src", "tests", "scripts"]
 [[tool.mypy.overrides]]
 module = [
   "calib",
-  "llama_router.dashboard.routes",
+  "llama_router.dashboard.routes.*",
   "llama_router.llamacpp_client",
   "llama_router.migrate_sqlite_to_postgres",
   "llama_router.ollama_client",

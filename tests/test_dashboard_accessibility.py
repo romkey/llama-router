@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from llama_router.config import settings
-from llama_router.dashboard import routes
+from llama_router.dashboard import pages
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
@@ -19,7 +19,7 @@ from llama_router.models import ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
 
 DashClient = tuple[httpx.AsyncClient, Database]
-TEMPLATES = Path(routes.__file__).resolve().parent.parent / "templates"
+TEMPLATES = Path(pages.__file__).resolve().parent.parent / "templates"
 
 
 def _as(user_id: int) -> dict[str, str]:
@@ -146,7 +146,7 @@ async def test_log_badge_shows_on_every_page(
     async def count(_db: Database, _owner: int | None = None) -> int:
         return 42
 
-    monkeypatch.setattr(routes, "_log_count", count)
+    monkeypatch.setattr(pages, "_log_count", count)
     for path in ("/chat", "/my-keys", "/users"):
         html = (await client.get(path, headers=_as(admin))).text
         assert re.search(
@@ -199,7 +199,7 @@ async def test_offline_provider_always_has_a_reason(database_url: str) -> None:
 
 
 def test_time_tag_filter() -> None:
-    tag = str(routes._time_tag("2026-01-02 03:04:05"))
+    tag = str(pages._time_tag("2026-01-02 03:04:05"))
     assert 'datetime="2026-01-02T03:04:05+00:00"' in tag
     assert "data-local" in tag
     assert "data-relative" not in tag
@@ -207,12 +207,12 @@ def test_time_tag_filter() -> None:
     assert 'title="2026-01-0' in tag
 
     aware = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
-    assert "data-relative" in str(routes._time_tag(aware, relative=True))
-    assert routes._time_tag(None) == "—"
-    assert routes._time_tag("") == "—"
+    assert "data-relative" in str(pages._time_tag(aware, relative=True))
+    assert pages._time_tag(None) == "—"
+    assert pages._time_tag("") == "—"
     # Text it cannot read is returned as plain text, which Jinja escapes.
-    assert routes._time_tag("not a date") == "not a date"
-    assert not hasattr(routes._time_tag("<b>"), "__html__")
+    assert pages._time_tag("not a date") == "not a date"
+    assert not hasattr(pages._time_tag("<b>"), "__html__")
 
 
 # --- API key labels ---

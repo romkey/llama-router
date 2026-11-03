@@ -27,7 +27,7 @@ don't grow them.
 
 - `[tool.mypy.overrides]` in `pyproject.toml` lists modules that don't pass
   `mypy --strict` yet (41 modules, down from 86: the clients,
-  `dashboard/routes.py`, `migrate_sqlite_to_postgres.py`, `scripts/` and most
+  `dashboard/routes/`, `migrate_sqlite_to_postgres.py`, `scripts/` and most
   test files). Remove a module once it does.
 
 ## Project notes

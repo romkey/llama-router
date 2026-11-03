@@ -31,7 +31,7 @@ from ..llamacpp_api import deps as api_deps
 from ..llamacpp_api.decisions import serve as serve_decision
 from ..routing_table import decides_natively
 from . import deps
-from .routes import dash_page_ctx, templates
+from .pages import dash_page_ctx, templates
 
 logger = logging.getLogger(__name__)
 

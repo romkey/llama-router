@@ -15,7 +15,7 @@ import pytest
 
 from llama_router import hf_download
 from llama_router.config import settings
-from llama_router.dashboard import routes
+from llama_router.dashboard.routes import pulls
 
 FAKE_HF = textwrap.dedent("""\
     #!{python}
@@ -172,7 +172,7 @@ def _ollama_handler(created: list[dict], blobs: dict[str, bytes]):
 
 async def _wait_done(pull_id: str) -> dict:
     for _ in range(200):
-        entry = routes._active_pulls[pull_id]
+        entry = pulls._active_pulls[pull_id]
         if entry["status"] == "done":
             return entry
         await asyncio.sleep(0.05)

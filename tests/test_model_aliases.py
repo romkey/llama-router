@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llama_router.dashboard.routes import suggest_aliases
+from llama_router.dashboard.routes.model_aliases import suggest_aliases
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,

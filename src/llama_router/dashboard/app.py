@@ -13,6 +13,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request
 from . import deps
+from .auth_core import _cookie_secure
 from .chat import router as chat_router
 from .decisions import router as decisions_router
 from .management_keys import router as management_keys_router
@@ -20,7 +21,8 @@ from .mfa import router as mfa_router
 from .middleware import DashboardAuthMiddleware
 from .model_groups import router as model_groups_router
 from .my_keys import router as my_keys_router
-from .routes import _cookie_secure, merge_dash_template_ctx, router, templates
+from .pages import merge_dash_template_ctx, templates
+from .routes import router
 
 app = FastAPI(title="llama-router Dashboard")
 app.add_middleware(DashboardAuthMiddleware)
