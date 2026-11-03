@@ -125,6 +125,12 @@ described in their git tags and GitHub Releases.
   `/v1/audio/speech`) share one path, `proxy_json` in `proxy.py`, instead of
   ten copies of routing, slots, logging and upstream-error handling. No
   change in behavior.
+- `dashboard/routes.py` is split into one router per tab under
+  `dashboard/routes/` (health, login, users, home, routing, API keys,
+  providers, benchmarks, pulls, cache, model aliases, workers). Shared page
+  helpers are in `dashboard/pages.py` and form parsing in
+  `dashboard/form_values.py`; the session cookie and redirect helpers moved
+  to `auth_core.py`. Paths and behaviour are unchanged.
 - Less database and disk work behind the dashboard and the registry cache.
   `/api/status`, `/api/ps`, `/metrics`, `/health` and `/v1/audio/voices` read
   every provider's models, addresses and benchmarks in four queries instead

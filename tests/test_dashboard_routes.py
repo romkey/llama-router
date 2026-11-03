@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from llama_router.dashboard.routes import _ollama_library_slug, _ollama_library_url
+from llama_router.dashboard.pages import _ollama_library_slug, _ollama_library_url
 
 
 @pytest.mark.parametrize(

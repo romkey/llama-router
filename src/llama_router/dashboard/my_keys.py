@@ -25,15 +25,8 @@ from ..provider_secrets import key_hash
 from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
 from . import deps, management_keys
-from .routes import (
-    _key_label,
-    _key_locality,
-    _tristate,
-    _usd,
-    _utc_day_start,
-    dash_page_ctx,
-    templates,
-)
+from .form_values import _key_label, _key_locality, _tristate, _usd, _utc_day_start
+from .pages import dash_page_ctx, templates
 
 router = APIRouter()
 

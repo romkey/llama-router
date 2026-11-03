@@ -35,14 +35,9 @@ from webauthn.helpers.structs import (
 
 from ..config import settings
 from . import deps
-from .auth_core import AUTH_COOKIE, unsign_session
+from .auth_core import AUTH_COOKIE, _cookie_secure, _set_session_cookie, unsign_session
 from .mfa_store import FLOW_TTL, Credential, Flow, LocalAccount, MfaStore, digest
-from .routes import (
-    _cookie_secure,
-    _set_session_cookie,
-    dash_page_ctx,
-    templates,
-)
+from .pages import dash_page_ctx, templates
 
 router = APIRouter()
 PENDING_COOKIE = "lr_second_factor"

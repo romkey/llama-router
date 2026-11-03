@@ -15,7 +15,7 @@ from starlette.requests import Request
 
 from llama_router import background, metrics, request_logger
 from llama_router.__main__ import ServerStartupError, _Server, serve_all
-from llama_router.dashboard import routes as dash_routes
+from llama_router.dashboard import pages
 from llama_router.database import Database
 from llama_router.models import RequestLog
 from llama_router.spend import tracker_for
@@ -146,14 +146,14 @@ async def test_dashboard_log_count_is_cached(
 ) -> None:
     entry = RequestLog(protocol="ollama", endpoint="/api/chat")
     with monkeypatch.context() as m:
-        m.setattr(dash_routes, "LOG_COUNT_TTL", 0.0)
-        assert await dash_routes._log_count(db) == 0
+        m.setattr(pages, "LOG_COUNT_TTL", 0.0)
+        assert await pages._log_count(db) == 0
         await db.save_request_log(entry)
-        assert await dash_routes._log_count(db) == 1
+        assert await pages._log_count(db) == 1
     await db.save_request_log(entry)
-    assert await dash_routes._log_count(db) == 2
+    assert await pages._log_count(db) == 2
     await db.save_request_log(entry)
-    assert await dash_routes._log_count(db) == 2  # cached
+    assert await pages._log_count(db) == 2  # cached
 
 
 async def _asgi_app(scope: Any, receive: Any, send: Any) -> None:

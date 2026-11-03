@@ -15,6 +15,9 @@ optionally Sentry and an OpenID Connect provider.
 - `src/llama_router/api/`: Ollama API, decisions API, worker hub socket.
 - `src/llama_router/llamacpp_api/`: OpenAI-compatible API.
 - `src/llama_router/dashboard/`, `templates/`: dashboard, sign-in, OIDC; `GET /healthz`.
+- `src/llama_router/dashboard/routes/`: one `APIRouter` per dashboard tab (`home.py` is `/` and `/api/status`,
+  `login.py`, `users.py`, `providers.py`, `workers.py`, ...); `pages.py` holds the templates and page context,
+  `form_values.py` form parsing, `auth_core.py` passwords, session cookies and safe redirects.
 - `src/llama_router/metrics.py`: Prometheus text format for `GET /metrics`.
 - `src/llama_router/registry_cache/`: pull-through cache for Ollama pulls.
 - `src/llama_router/worker_link/`: hub and worker links.

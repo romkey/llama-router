@@ -188,9 +188,9 @@ async def setup_required_response(request: Request) -> Response:
     """The only answer while there are no accounts."""
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=503, content={"detail": SETUP_REQUIRED_DETAIL})
-    # Imported here: routes imports this module.
+    # Imported here: the users routes import this module.
     from . import oidc
-    from .routes import templates
+    from .pages import templates
 
     cfg = oidc.current_config()
     return templates.TemplateResponse(

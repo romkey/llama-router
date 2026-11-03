@@ -21,10 +21,10 @@ from llama_router import provider_secrets as ps
 from llama_router.config import settings
 from llama_router.dashboard import chat as chat_mod
 from llama_router.dashboard import deps as dash_deps
-from llama_router.dashboard import routes as dash_routes
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
-from llama_router.dashboard.routes import REDACTED_ADDRESS
+from llama_router.dashboard.routes import login as dash_login
+from llama_router.dashboard.routes.home import REDACTED_ADDRESS
 from llama_router.database import Database
 from llama_router.llamacpp_client import OpenAIClient
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
@@ -399,7 +399,7 @@ def _referer_request(referer: str) -> Request:
     ],
 )
 def test_referer_redirect_stays_on_this_origin(referer: str, expected: str) -> None:
-    from llama_router.dashboard.routes import _same_origin_referer_path
+    from llama_router.dashboard.pages import _same_origin_referer_path
 
     assert _same_origin_referer_path(_referer_request(referer), "/fallback") == expected
 
@@ -586,9 +586,9 @@ async def test_untrusted_forwarded_for_warns_once(
     c, db = dash_client
     await _users(db)
     monkeypatch.setattr(settings, "trusted_proxies", "")
-    monkeypatch.setattr(dash_routes, "_warned_untrusted_forwarded_for", False)
+    monkeypatch.setattr(dash_login, "_warned_untrusted_forwarded_for", False)
     form = {"username": "ann", "password": "wrong-password"}
-    with caplog.at_level(logging.WARNING, logger=dash_routes.logger.name):
+    with caplog.at_level(logging.WARNING, logger=dash_login.logger.name):
         await c.post("/login", data=form)
         assert "X-Forwarded-For" not in caplog.text
         for _ in range(2):

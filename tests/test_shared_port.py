@@ -15,7 +15,7 @@ from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.app import app as dashboard_app
 from llama_router.dashboard.auth_core import hash_password
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
-from llama_router.dashboard.routes import _hub_url_hint
+from llama_router.dashboard.routes.workers import _hub_url_hint
 from llama_router.database import Database
 from llama_router.llamacpp_api import deps as v1_deps
 from llama_router.provider_manager import ProviderManager
