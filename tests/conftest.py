@@ -22,6 +22,7 @@ from llama_router import request_logger
 from llama_router.api import deps as api_deps
 from llama_router.config import Settings, settings
 from llama_router.dashboard import deps as dash_deps
+from llama_router.dashboard import management_keys
 from llama_router.dashboard.app import app as dashboard_app
 from llama_router.dashboard.auth_core import DashboardUser
 from llama_router.dashboard.decisions import router as dash_decisions_router
@@ -152,6 +153,12 @@ def _fresh_upstream_limiter() -> Iterator[None]:
     limiter.reset()
     yield
     limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_management_key_touches() -> None:
+    """Key ids repeat across tests' databases; forget when each was used."""
+    management_keys._touched.clear()
 
 
 @pytest.fixture(autouse=True)

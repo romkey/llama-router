@@ -25,6 +25,8 @@ described in their git tags and GitHub Releases.
   `LLAMA_ROUTER_SESSION_SECRET` now keep the same generated dashboard session
   secret, instead of the later one overwriting the earlier one's (which
   signed out everyone signed in through the other).
+- A management key's "last used" time is recorded on its first use even
+  when the host started less than a minute ago.
 - Cancelling a job on a worker whose socket has stalled no longer waits
   forever; the cancel message is given up on after 5 seconds.
 

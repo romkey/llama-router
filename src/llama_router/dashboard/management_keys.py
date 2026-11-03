@@ -148,7 +148,8 @@ async def authenticate(db: Database, token: str) -> ManagementKey | None:
         return None
     key_id = int(row["id"])
     now = time.monotonic()
-    if now - _touched.get(key_id, 0.0) >= _TOUCH_INTERVAL_S:
+    last = _touched.get(key_id)
+    if last is None or now - last >= _TOUCH_INTERVAL_S:
         _touched[key_id] = now
         await db.touch_management_key(key_id)
     return ManagementKey(
