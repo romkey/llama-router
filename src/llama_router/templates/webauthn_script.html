@@ -64,13 +64,32 @@ document.getElementById('recovery-form')?.addEventListener('submit', async event
         window.location.assign(result.next);
     } catch (error) { showSecurityError(error); }
 });
+document.getElementById('recovery-copy')?.addEventListener('click', async event => {
+    const label = event.currentTarget.querySelector('span');
+    try {
+        await navigator.clipboard.writeText(document.getElementById('recovery-codes').textContent);
+        label.textContent = 'Copied';
+    } catch (error) {
+        window.getSelection().selectAllChildren(document.getElementById('recovery-codes'));
+    }
+});
+document.getElementById('recovery-download')?.addEventListener('click', () => {
+    const blob = new Blob([document.getElementById('recovery-codes').textContent + '\n'], {type: 'text/plain'});
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'llama-router-recovery-codes.txt';
+    link.click();
+    URL.revokeObjectURL(link.href);
+});
 document.getElementById('regenerate-codes')?.addEventListener('click', async () => {
+    if (!confirm('Generate new recovery codes? Every unused old code stops working at once.')) return;
     try {
         const result = await securityRequest('/account/security/recovery-codes');
         showRecoveryCodes(result.recovery_codes, '/profile');
     } catch (error) { showSecurityError(error); }
 });
 document.querySelectorAll('[data-remove-credential]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Remove authenticator ' + button.dataset.credentialName + '?')) return;
     try {
         await securityRequest('/account/security/credentials/' + encodeURIComponent(button.dataset.removeCredential), {}, 'DELETE');
         window.location.reload();

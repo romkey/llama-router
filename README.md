@@ -170,7 +170,7 @@ The **API Keys** tab shows each model's first choice per mode for `/v1/chat/comp
 
 ### Explaining a route
 
-The **Route Explorer** on the **API Keys** tab shows where a request would go right now, and why, without sending it. Pick a model, an endpoint, and a service level: a routing mode, or an API key to apply that key's mode, fallback setting and pins. It walks the fallback chain and lists every provider that has the model, with its score, the live queue, the measurements behind the score, and why any provider was left out. A provider can be left out because it is offline, doesn't serve that API, is failing, is missing the endpoint, or because another provider is pinned. The explanation uses the same table and code path as real requests.
+The **Route Explorer** on the **Routing** tab (in the **Access** menu) shows where a request would go right now, and why, without sending it. Pick a model, an endpoint, and a service level: a routing mode, or an API key to apply that key's mode, fallback setting and pins. It walks the fallback chain and lists every provider that has the model, with its score, the live queue, the measurements behind the score, and why any provider was left out. A provider can be left out because it is offline, doesn't serve that API, is failing, is missing the endpoint, or because another provider is pinned. The explanation uses the same table and code path as real requests.
 
 The same is available as JSON:
 
@@ -538,11 +538,11 @@ SSO accounts continue to follow the identity provider's authentication policy.
 API keys and management keys keep their existing authentication.
 
 Set `LLAMA_ROUTER_DASHBOARD_REQUIRE_SECOND_FACTOR=false` to make enrollment
-optional. Users can enroll on their **Profile**, opened by clicking their
+optional. Users can enroll on their **Account** page, opened by clicking their
 username. Once enrolled, that account always requires its second factor even
 when the global policy is optional. Turning the policy off does not remove anyone's authenticators.
 
-The profile page lets users register several named authenticators, remove a
+The Account page lets users register several named authenticators, remove a
 replaced device and generate recovery codes. Register a replacement before
 removing the last authenticator. Enrollment and device removal revoke older
 sessions.

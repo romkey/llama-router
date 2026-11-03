@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "status_macros.html" import status_badge, live_mark %}
 {% block title %}Dashboard - llama-router{% endblock %}
 
 {% block content %}
@@ -9,7 +10,7 @@
 <div class="alert alert-danger py-2"><i class="bi bi-exclamation-triangle-fill me-2"></i>{{ request.query_params.get('error') }}</div>
 {% endif %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard{% if not read_only %} <a href="#keys-pane" id="open-access-badge" class="badge text-bg-warning fs-6 align-middle text-decoration-none{% if not allow_unauthenticated %} d-none{% endif %}" title="The API accepts requests without a key; change it under API Keys, Security"><i class="bi bi-unlock me-1"></i>Open access</a>{% endif %}</h2>
+    <h1 class="h2 mb-0"><i class="bi bi-speedometer2 me-2" aria-hidden="true"></i>Dashboard{% if not read_only %} <a href="#keys-pane" id="open-access-badge" class="badge text-bg-warning fs-6 align-middle text-decoration-none{% if not allow_unauthenticated %} d-none{% endif %}" title="The API accepts requests without a key; change it under API Keys, Security"><i class="bi bi-unlock me-1"></i>Open access</a>{% endif %}</h1>
     {% if not read_only %}
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProviderModal">
         <i class="bi bi-plus-lg me-1"></i>Add Provider
@@ -17,62 +18,62 @@
     {% endif %}
 </div>
 
-{% set ns_hot = namespace(count=0) %}
-{% for info in providers %}{% set ns_hot.count = ns_hot.count + info.hot_models | length %}{% endfor %}
-<div class="row mb-4 g-3">
-    <div class="col">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title text-muted">Providers</h5>
-                <p class="display-6" id="stat-providers">{{ providers | length }}</p>
-            </div>
-        </div>
-    </div>
-    <div class="col">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title text-muted">Online</h5>
-                <p class="display-6 text-success" id="stat-online">{{ providers | selectattr('provider.status.value', 'ne', 'offline') | list | length }}</p>
-            </div>
-        </div>
-    </div>
-    <div class="col">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title text-muted">Busy</h5>
-                <p class="display-6 text-warning" id="stat-busy">{{ providers | selectattr('active_requests', 'gt', 0) | list | length }}</p>
-            </div>
-        </div>
-    </div>
-    <div class="col">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title text-muted"><i class="bi bi-fire"></i> Hot</h5>
-                <p class="display-6 text-danger" id="stat-hot">{{ ns_hot.count }}</p>
-            </div>
-        </div>
-    </div>
-    <div class="col">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title text-muted">Models</h5>
-                <p class="display-6" id="stat-models">{{ models | length }}</p>
-            </div>
-        </div>
-    </div>
-</div>
-
 <div class="tab-content">
 
     <!-- ==================== PROVIDERS TAB ==================== -->
     <div class="tab-pane fade show active" id="providers-pane" role="tabpanel" aria-labelledby="providers-tab" tabindex="0">
+        {% set ns_hot = namespace(count=0) %}
+        {% for info in providers %}{% set ns_hot.count = ns_hot.count + info.hot_models | length %}{% endfor %}
+        <div class="row mb-4 g-3">
+            <div class="col">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div class="card-title text-muted h5"><i class="bi bi-hdd-stack me-1" aria-hidden="true"></i>Providers</div>
+                        <p class="display-6" id="stat-providers">{{ providers | length }}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div class="card-title text-muted h5"><i class="bi bi-check-circle-fill me-1" aria-hidden="true"></i>Online</div>
+                        <p class="display-6 text-success" id="stat-online">{{ providers | selectattr('provider.status.value', 'ne', 'offline') | list | length }}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div class="card-title text-muted h5"><i class="bi bi-hourglass-split me-1" aria-hidden="true"></i>Busy</div>
+                        <p class="display-6 text-warning" id="stat-busy">{{ providers | selectattr('active_requests', 'gt', 0) | list | length }}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div class="card-title text-muted h5"><i class="bi bi-fire me-1" aria-hidden="true"></i>Hot</div>
+                        <p class="display-6 text-danger" id="stat-hot">{{ ns_hot.count }}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card text-center">
+                    <div class="card-body">
+                        <div class="card-title text-muted h5"><i class="bi bi-cpu me-1" aria-hidden="true"></i>Models</div>
+                        <p class="display-6" id="stat-models">{{ models | length }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="d-flex justify-content-between align-items-center mb-3">
-            <h4 class="mb-0">Providers</h4>
+            <h2 class="h4 mb-0">Providers</h2>
             <div class="btn-group btn-group-sm" role="group" aria-label="View toggle">
-                <button type="button" class="btn btn-outline-secondary active" id="btn-card-view" onclick="switchProviderView('card')" title="Card view">
+                <button type="button" class="btn btn-outline-secondary active" id="btn-card-view" onclick="switchProviderView('card')" title="Card view" aria-label="Card view">
                     <i class="bi bi-grid-3x2-gap-fill"></i>
                 </button>
-                <button type="button" class="btn btn-outline-secondary" id="btn-list-view" onclick="switchProviderView('list')" title="List view">
+                <button type="button" class="btn btn-outline-secondary" id="btn-list-view" onclick="switchProviderView('list')" title="List view" aria-label="List view">
                     <i class="bi bi-list-ul"></i>
                 </button>
             </div>
@@ -109,30 +110,24 @@
                     <div class="card provider-card h-100">
                         <div class="card-body">
                             <div class="d-flex justify-content-between align-items-start mb-2">
-                                <h5 class="card-title mb-0">
+                                <h3 class="h5 card-title mb-0">
                                     <a href="/providers/{{ info.provider.id }}" class="text-decoration-none">
                                         {{ info.provider.name }}
                                     </a>
-                                </h5>
+                                </h3>
                                 <div>
                                     {% if info.provider.is_worker %}<span class="badge bg-secondary me-1" title="Dials in to this hub over a WebSocket"><i class="bi bi-diagram-3 me-1"></i>worker</span>{% endif %}
                                     {% if info.provider.is_cloud %}<span class="badge bg-warning text-dark me-1" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud me-1"></i>cloud</span>{% endif %}<span class="badge bg-info text-dark me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
-                                    <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" data-card-status title="{{ info.status_detail or '' }}">
-                                        {{ info.provider.status.value }}
-                                    </span>
+                                    {{ status_badge(info.provider.status.value, info.status_detail, attrs='data-card-status') }}
                                 </div>
                             </div>
                             <div class="small text-danger mb-1" data-card-detail{% if not info.status_detail %} style="display:none"{% endif %}><i class="bi bi-exclamation-triangle me-1"></i><span>{{ info.status_detail or '' }}</span></div>
                             <div class="small mb-2" data-card-addresses>
                                 {% for addr in info.addresses %}
                                 <div class="text-muted">
-                                    {% if addr.is_live %}
-                                    <i class="bi bi-circle-fill text-success me-1" style="font-size:.55rem" title="Live"></i>
-                                    {% else %}
-                                    <i class="bi bi-circle-fill text-danger me-1" style="font-size:.55rem" title="Not responding"></i>
-                                    {% endif %}
+                                    {{ live_mark(addr.is_live, '.7rem') }}
                                     {{ addr.url if not read_only else '(hidden)' }}
-                                    {% if addr.is_preferred %}<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem" title="Preferred"></i>{% endif %}
+                                    {% if addr.is_preferred %}<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem" title="Preferred" aria-hidden="true"></i><span class="visually-hidden">(preferred)</span>{% endif %}
                                 </div>
                                 {% endfor %}
                             </div>
@@ -175,7 +170,7 @@
                                 <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary flex-fill">Details</a>
                                 {% if not read_only %}
                                 <form method="post" action="/providers/{{ info.provider.id }}/remove" class="flex-fill">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Remove this provider?')">Remove</button>
+                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick='return confirm({{ ("Remove provider " ~ info.provider.name ~ "?") | tojson }})'>Remove</button>
                                 </form>
                                 {% endif %}
                             </div>
@@ -221,8 +216,8 @@
                             <td>{% if info.provider.is_cloud %}<span class="badge bg-warning text-dark" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud"></i></span> {% endif %}<span class="badge bg-info text-dark">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %} <span class="badge bg-body-secondary text-body" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}</td>
                             <td class="text-muted small" data-list-addresses>
                                 {% for addr in info.addresses %}
-                                <span title="{{ 'Live' if addr.is_live else 'Not responding' }}">
-                                    <i class="bi bi-circle-fill {% if addr.is_live %}text-success{% else %}text-danger{% endif %}" style="font-size:.5rem"></i>
+                                <span>
+                                    {{ live_mark(addr.is_live, '.65rem') }}
                                     {{ addr.url if not read_only else '(hidden)' }}{% if not loop.last %}, {% endif %}
                                 </span>
                                 {% endfor %}
@@ -231,9 +226,7 @@
                                 {% if info.provider.gpu_type %}{{ info.provider.gpu_type }}{% if info.provider.gpu_ram %} ({{ info.provider.gpu_ram }}){% endif %}{% elif info.provider.machine_type %}{{ info.provider.machine_type }}{% else %}—{% endif %}
                             </td>
                             <td data-list-status>
-                                <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %}" title="{{ info.status_detail or '' }}">
-                                    {{ info.provider.status.value }}
-                                </span>
+                                {{ status_badge(info.provider.status.value, info.status_detail) }}
                             </td>
                             <td data-list-models>{{ info.models | length }}</td>
                             <td data-list-hot>
@@ -254,7 +247,7 @@
                                 <a href="/providers/{{ info.provider.id }}" class="btn btn-sm btn-outline-primary me-1">Details</a>
                                 {% if not read_only %}
                                 <form method="post" action="/providers/{{ info.provider.id }}/remove" class="d-inline">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove this provider?')">Remove</button>
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick='return confirm({{ ("Remove provider " ~ info.provider.name ~ "?") | tojson }})'>Remove</button>
                                 </form>
                                 {% endif %}
                             </td>
@@ -275,7 +268,7 @@
     <div class="tab-pane fade" id="benchmarks-pane" role="tabpanel" aria-labelledby="benchmarks-tab" tabindex="0">
         <div class="card mb-3" id="auto-bench-card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-moon-stars me-2"></i>Auto-benchmark</h5>
+                <h2 class="h5 mb-0"><i class="bi bi-moon-stars me-2"></i>Auto-benchmark</h2>
                 <span id="ab-state" class="badge bg-secondary">loading…</span>
             </div>
             <div class="card-body small">
@@ -324,10 +317,10 @@
             {% for model_name, benchmarks in benchmarks_by_model | dictsort %}
             <div class="card mb-3">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5 class="mb-0"><code>{{ model_name }}</code></h5>
+                    <h2 class="h5 mb-0"><code>{{ model_name }}</code></h2>
                     {% if not read_only %}
                     <form method="post" action="/benchmarks/delete-model/{{ model_name }}" class="d-inline">
-                        <button class="btn btn-sm btn-outline-danger" onclick='return confirm({{ ("Delete all benchmarks for " ~ model_name ~ "?") | tojson }})' title="Delete all benchmarks for this model">
+                        <button class="btn btn-sm btn-outline-danger" onclick='return confirm({{ ("Delete all benchmarks for " ~ model_name ~ "?") | tojson }})' title="Delete all benchmarks for this model" aria-label="Delete all benchmarks for this model">
                             <i class="bi bi-trash"></i>
                         </button>
                     </form>
@@ -363,11 +356,11 @@
                                     </td>
                                     <td>{{ "%.1f" | format(b.tokens_per_second) if b.tokens_per_second else "—" }}</td>
                                     <td>{% if b.startup_time_ms is not none %}{{ "%.0f ms" | format(b.startup_time_ms) }}{% else %}<span class="text-muted" title="The model was already loaded, so this run could not measure a cold start">—</span>{% endif %}</td>
-                                    <td class="text-muted small">{{ b.created_at | localtime }}{% if b.source == 'auto' %} <span class="badge bg-light text-dark border" title="Run automatically while the provider was idle">auto</span>{% endif %}</td>
+                                    <td class="text-muted small">{{ b.created_at | when }}{% if b.source == 'auto' %} <span class="badge bg-light text-dark border" title="Run automatically while the provider was idle">auto</span>{% endif %}</td>
                                     <td class="text-end">
                                         {% if not read_only %}
                                         <form method="post" action="/benchmarks/{{ b.id }}/delete" class="d-inline">
-                                            <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="return confirm('Delete this benchmark result?')" title="Delete">
+                                            <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick='return confirm({{ ("Delete the " ~ b.provider_name ~ " benchmark result?") | tojson }})' title="Delete" aria-label="Delete {{ b.provider_name }} benchmark result">
                                                 <i class="bi bi-x-lg"></i>
                                             </button>
                                         </form>
@@ -422,7 +415,7 @@
         {% if not read_only %}
         <div class="card mb-3" id="hf-card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h6 class="mb-0"><i class="bi bi-cloud-download me-1"></i>Download from Hugging Face</h6>
+                <h2 class="h6 mb-0"><i class="bi bi-cloud-download me-1"></i>Download from Hugging Face</h2>
                 <button type="button" class="btn btn-sm btn-link p-0" data-bs-toggle="collapse" data-bs-target="#hf-body" aria-expanded="false">Show</button>
             </div>
             <div class="collapse" id="hf-body">
@@ -557,7 +550,7 @@
                             {% if model_fallbacks.get(m.name) %}
                             <code>{{ model_fallbacks[m.name] }}</code>
                             {% if not read_only %}
-                            <button class="btn btn-sm btn-link text-danger p-0 ms-1" title="Remove fallback" onclick='removeFallback({{ m.name | tojson }})'>
+                            <button class="btn btn-sm btn-link text-danger p-0 ms-1" title="Remove fallback" onclick='removeFallback({{ m.name | tojson }})' aria-label="Remove fallback">
                                 <i class="bi bi-x-circle"></i>
                             </button>
                             {% endif %}
@@ -568,7 +561,7 @@
                         <td>{{ m.modified_at or "—" }}</td>
                         {% if not read_only %}
                         <td class="text-end text-nowrap">
-                            <button class="btn btn-sm btn-outline-secondary btn-set-fallback" data-model="{{ m.name }}" title="Set fallback model">
+                            <button class="btn btn-sm btn-outline-secondary btn-set-fallback" data-model="{{ m.name }}" title="Set fallback model" aria-label="Set fallback model">
                                 <i class="bi bi-arrow-return-right"></i>
                             </button>
                             {% if cache_stats %}
@@ -603,7 +596,7 @@
         <div class="tab-pane fade" id="model-fallbacks-pane" role="tabpanel" aria-labelledby="model-fallbacks-tab" tabindex="0">
         <div class="card" id="fallbacks-card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-arrow-return-right me-2"></i>Model Fallbacks</h5>
+                <h2 class="h5 mb-0"><i class="bi bi-arrow-return-right me-2"></i>Model Fallbacks</h2>
                 <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addFallbackModal">
                     <i class="bi bi-plus-lg me-1"></i>Add Fallback
                 </button>
@@ -635,7 +628,7 @@
                                 {% endfor %}
                             </td>
                             <td class="text-end">
-                                <button class="btn btn-sm btn-outline-danger" onclick='removeFallback({{ model_name | tojson }})'>
+                                <button class="btn btn-sm btn-outline-danger" onclick='removeFallback({{ model_name | tojson }})' title="Remove fallback" aria-label="Remove fallback for {{ model_name }}">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </td>
@@ -655,7 +648,7 @@
         <div class="tab-pane fade" id="model-aliases-pane" role="tabpanel" aria-labelledby="model-aliases-tab" tabindex="0">
         <div class="card" id="aliases-card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Model Aliases</h5>
+                <h2 class="h5 mb-0"><i class="bi bi-link-45deg me-2"></i>Model Aliases</h2>
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-2">One model under different names, such as <code>claude-sonnet-4-5</code> at Anthropic and <code>anthropic/claude-sonnet-4-5</code> at OpenRouter. A request for any name in a group can go to any provider that serves one of them, under that provider's own name.</p>
@@ -679,7 +672,7 @@
                         <tr>
                             <td><code>{{ alias }}</code></td>
                             <td><code>{{ canonical }}</code></td>
-                            <td class="text-end"><button class="btn btn-sm btn-outline-danger" data-remove-alias="{{ alias }}" title="Remove alias"><i class="bi bi-trash"></i></button></td>
+                            <td class="text-end"><button class="btn btn-sm btn-outline-danger" data-remove-alias="{{ alias }}" title="Remove alias" aria-label="Remove alias"><i class="bi bi-trash"></i></button></td>
                         </tr>
                         {% else %}
                         <tr><td colspan="3" class="text-muted text-center py-2">No aliases yet.</td></tr>
@@ -694,7 +687,7 @@
         <div class="tab-pane fade" id="model-groups-pane" role="tabpanel" aria-labelledby="model-groups-tab" tabindex="0">
         <div class="card" id="model-groups-card">
             <div class="card-header">
-                <h5 class="mb-0"><i class="bi bi-collection me-2"></i>Model Groups</h5>
+                <h2 class="h5 mb-0"><i class="bi bi-collection me-2"></i>Model Groups</h2>
             </div>
             <div class="card-body">
                 <p class="small text-muted mb-2">A name clients ask for like a model, such as <code>coding</code> or <code>vision</code>. Each request goes to the best member that can serve it now, scored the way a model's providers are. A member is a model on any provider, or a model on one provider. A conversation stays on the member model and provider it started on.</p>
@@ -719,7 +712,7 @@
                             {% if g.description %}<span class="small text-muted ms-2">{{ g.description }}</span>{% endif %}
                         </div>
                         <button class="btn btn-sm btn-outline-primary" data-edit-members="{{ g.id }}" title="Choose this group's models"><i class="bi bi-pencil-square me-1"></i>Edit members</button>
-                        <button class="btn btn-sm btn-outline-danger" data-remove-group="{{ g.id }}" data-group-name="{{ g.name }}" title="Delete group"><i class="bi bi-trash"></i></button>
+                        <button class="btn btn-sm btn-outline-danger" data-remove-group="{{ g.id }}" data-group-name="{{ g.name }}" title="Delete group" aria-label="Delete group"><i class="bi bi-trash"></i></button>
                     </div>
                     <div class="mt-2 d-flex flex-wrap gap-1">
                         {% for m in g.members %}
@@ -757,9 +750,13 @@
             <div class="col-lg-5">
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-key me-2"></i>Generate API Key</h5>
+                        <h2 class="h5 mb-0"><i class="bi bi-key me-2"></i>Generate API Key</h2>
                     </div>
                     <div class="card-body">
+                        <div class="mb-2">
+                            <label for="new-key-label" class="form-label small text-muted mb-1">Label (optional)</label>
+                            <input id="new-key-label" type="text" maxlength="100" class="form-control form-control-sm" placeholder="e.g. home assistant" autocomplete="off">
+                        </div>
                         <div class="mb-2">
                             <label for="new-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
                             <select id="new-key-mode" class="form-select form-select-sm">
@@ -802,10 +799,10 @@
                 </div>
                 <div class="card mt-3" id="security-card">
                     <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-shield-lock me-1"></i>Security</h5>
+                        <h2 class="h5 mb-0"><i class="bi bi-shield-lock me-1"></i>Security</h2>
                     </div>
                     <div class="card-body">
-                        <h6 class="mb-2">API access</h6>
+                        <h3 class="h6 mb-2">API access</h3>
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="allow-unauthenticated" {% if allow_unauthenticated %}checked{% endif %} {% if read_only %}disabled{% endif %} onchange="setAllowUnauthenticated(this)">
                             <label class="form-check-label" for="allow-unauthenticated">
@@ -813,7 +810,7 @@
                             </label>
                         </div>
                         <div class="form-text mb-3">When on, anyone who can reach the API port can use every provider, including paid cloud ones, with no key, no spend cap and no locality limit.</div>
-                        <h6 class="mb-2">Keys users issue themselves</h6>
+                        <h3 class="h6 mb-2">Keys users issue themselves</h3>
                         <p class="small text-muted mb-2">Any signed-in user can issue themselves keys under <a href="/my-keys">My API keys</a>. Those keys get these limits; change one afterwards in the table.</p>
                         <div class="mb-2">
                             <label for="self-key-locality" class="form-label small text-muted mb-1">Providers</label>
@@ -833,9 +830,190 @@
                         {% endif %}
                     </div>
                 </div>
-                <div class="card mt-3">
+            </div>
+            <div class="col-lg-7">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h2 class="h5 mb-0">Issued Keys</h2>
+                        <span class="badge bg-secondary">{{ api_keys | length }}</span>
+                    </div>
+                    <div class="card-body p-0">
+                        {% if api_keys %}
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Key</th>
+                                        <th>Owner</th>
+                                        <th>Priority</th>
+                                        <th>Fallback</th>
+                                        <th>Sessions</th>
+                                        <th>Providers</th>
+                                        <th title="Spent today (UTC) / daily cap">Spend</th>
+                                        <th>Pins</th>
+                                        <th>Created</th>
+                                        <th>Last Used</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for k in api_keys %}
+                                    <tr>
+                                        <td><code>{{ k.key_prefix }}</code>{% if k.label %}<div class="small text-muted">{{ k.label }}</div>{% endif %}</td>
+                                        <td class="small">{% if k.owner_username %}{{ k.owner_username }}{% else %}<span class="text-muted">admin</span>{% endif %}</td>
+                                        <td>
+                                            {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
+                                            {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
+                                            <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
+                                        </td>
+                                        <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
+                                        <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
+                                        <td>
+                                            {% if read_only %}
+                                            {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
+                                            {% else %}
+                                            <select class="form-select form-select-sm" style="min-width: 7rem" onchange="setKeyLocality({{ k.id }}, this.value)" aria-label="Providers for key {{ k.key_prefix }}">
+                                                <option value="any" {% if not k.locality %}selected{% endif %}>any</option>
+                                                <option value="local" {% if k.locality == 'local' %}selected{% endif %}>local only</option>
+                                                <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
+                                            </select>
+                                            {% endif %}
+                                        </td>
+                                        <td class="small text-nowrap">
+                                            ${{ "%.2f" | format(k.spent_today_usd or 0) }}
+                                            {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
+                                            {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap" aria-label="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
+                                        </td>
+                                        <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
+                                        <td class="small text-muted">{{ k.created_at | when }}</td>
+                                        <td class="small text-muted">{{ k.last_used_at | when }}</td>
+                                        <td class="text-end">
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPins({{ k.id }}, {{ k.key_prefix | tojson }})' title="Manage pinned routes" aria-label="Manage pinned routes">
+                                                <i class="bi bi-diagram-3"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPolicy({{ k.id }}, {{ k.key_prefix | tojson }})' title="Decision policy (tiered routing, gates)" aria-label="Decision policy (tiered routing, gates)">
+                                                <i class="bi bi-signpost-split"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-danger" onclick='deleteApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Delete key" aria-label="Delete key {{ k.key_prefix }}">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                        <div class="text-muted p-3">No API keys yet.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card mt-4" id="key-usage">
+            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <h2 class="h5 mb-0">Usage by key and provider</h2>
+                <div class="d-flex align-items-center gap-2">
+                    <label class="small text-muted" for="key-usage-period">Last</label>
+                    <select class="form-select form-select-sm w-auto" id="key-usage-period">
+                        <option value="24h">24 hours</option>
+                        <option value="7d" selected>7 days</option>
+                        <option value="30d">30 days</option>
+                        <option value="all">all time</option>
+                    </select>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <p class="small text-muted px-3 pt-3 mb-2">From the request log: every request a key made, by the provider that served it. Providers a worker shares one by one show up separately. Cost is counted for models with a price on their provider's page.</p>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Provider</th>
+                                <th class="text-end">Requests</th>
+                                <th class="text-end">Errors</th>
+                                <th class="text-end">Tokens in</th>
+                                <th class="text-end">Tokens out</th>
+                                <th class="text-end">Cost</th>
+                                <th>Last request</th>
+                            </tr>
+                        </thead>
+                        <tbody id="key-usage-tbody">
+                            <tr><td colspan="8" class="text-muted small">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <script>
+        (function() {
+            var sel = document.getElementById('key-usage-period');
+            var body = document.getElementById('key-usage-tbody');
+            if (!sel || !body) return;
+            function esc(v) {
+                return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
+                    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+                });
+            }
+            function num(n) { return Number(n || 0).toLocaleString(); }
+            function keyLabel(r) {
+                if (r.api_key_id == null) return '<span class="text-muted">no key</span>';
+                if (r.key_prefix) return '<code>' + esc(r.key_prefix) + '</code>';
+                return '<span class="text-muted">deleted key #' + esc(r.api_key_id) + '</span>';
+            }
+            function providerLabel(r) {
+                var name = esc(r.provider || ('#' + r.provider_id));
+                if (!r.provider_exists) return '<span class="text-muted">' + name + ' (deleted)</span>';
+                return '<a href="/providers/' + esc(r.provider_id) + '">' + name + '</a>';
+            }
+            var latest = 0;
+            function load() {
+                // Only the newest request may fill the table, however the
+                // responses arrive.
+                var mine = ++latest;
+                body.innerHTML = '<tr><td colspan="8" class="text-muted small">Loading…</td></tr>';
+                fetch('/api/keys/usage?period=' + encodeURIComponent(sel.value)).then(function(r) {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                }).then(function(j) {
+                    if (mine !== latest) return;
+                    if (!j.rows.length) {
+                        body.innerHTML = '<tr><td colspan="8" class="text-muted small">No requests in this period.</td></tr>';
+                        return;
+                    }
+                    body.innerHTML = j.rows.map(function(r) {
+                        var when = r.last_request_at ? llrTime.html(r.last_request_at) : '';
+                        return '<tr><td>' + keyLabel(r) + '</td><td>' + providerLabel(r) + '</td>' +
+                            '<td class="text-end">' + num(r.requests) + '</td>' +
+                            '<td class="text-end">' + (r.errors ? '<span class="text-danger">' + num(r.errors) + '</span>' : '0') + '</td>' +
+                            '<td class="text-end">' + num(r.prompt_tokens) + '</td>' +
+                            '<td class="text-end">' + num(r.completion_tokens) + '</td>' +
+                            '<td class="text-end">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>' +
+                            '<td class="small text-muted">' + when + '</td></tr>';
+                    }).join('');
+                }).catch(function(e) {
+                    if (mine !== latest) return;
+                    body.innerHTML = '<tr><td colspan="8" class="text-danger small">Could not load usage: ' + esc(e.message) + '</td></tr>';
+                });
+            }
+            sel.addEventListener('change', load);
+            var tab = document.getElementById('keys-tab');
+            if (tab) tab.addEventListener('shown.bs.tab', load);
+            if (document.getElementById('keys-pane').classList.contains('active')) load();
+        })();
+        </script>
+    </div>
+    {% endif %}
+
+    <!-- ==================== ROUTING TAB ==================== -->
+    {% if show_api_keys %}
+    <div class="tab-pane fade" id="routing-pane" role="tabpanel" aria-labelledby="routing-tab" tabindex="0">
+        <div class="row g-3">
+            <div class="col-lg-5">
+                <div class="card">
                     <div class="card-header">
-                        <h5 class="mb-0">Routing Preview</h5>
+                        <h2 class="h5 mb-0">Routing Preview</h2>
                     </div>
                     <div class="card-body small">
                         <p class="text-muted mb-2">Likely provider order for new keys, based on live load and benchmark history.</p>
@@ -914,7 +1092,7 @@
                 {% if routing_summary %}
                 <div class="card mt-3">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Routing Table</h5>
+                        <h2 class="h5 mb-0">Routing Table</h2>
                         <a class="small" href="/api/routing-table" target="_blank" rel="noopener">JSON</a>
                     </div>
                     <div class="card-body small">
@@ -969,9 +1147,13 @@
                         {% endif %}
                     </div>
                 </div>
-                <div class="card mt-3">
+                {% endif %}
+            </div>
+            <div class="col-lg-7">
+                {% if routing_summary %}
+                <div class="card">
                     <div class="card-header">
-                        <h5 class="mb-0">Route Explorer</h5>
+                        <h2 class="h5 mb-0">Route Explorer</h2>
                     </div>
                     <div class="card-body small">
                         <p class="text-muted mb-2">See where a request would go right now, and why, without sending it.</p>
@@ -1105,178 +1287,7 @@
                 </script>
                 {% endif %}
             </div>
-            <div class="col-lg-7">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Issued Keys</h5>
-                        <span class="badge bg-secondary">{{ api_keys | length }}</span>
-                    </div>
-                    <div class="card-body p-0">
-                        {% if api_keys %}
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Prefix</th>
-                                        <th>Owner</th>
-                                        <th>Priority</th>
-                                        <th>Fallback</th>
-                                        <th>Sessions</th>
-                                        <th>Providers</th>
-                                        <th title="Spent today (UTC) / daily cap">Spend</th>
-                                        <th>Pins</th>
-                                        <th>Created</th>
-                                        <th>Last Used</th>
-                                        <th></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for k in api_keys %}
-                                    <tr>
-                                        <td><code>{{ k.key_prefix }}</code></td>
-                                        <td class="small">{% if k.owner_username %}{{ k.owner_username }}{% else %}<span class="text-muted">admin</span>{% endif %}</td>
-                                        <td>
-                                            {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
-                                            {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
-                                            <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
-                                        </td>
-                                        <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
-                                        <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
-                                        <td>
-                                            {% if read_only %}
-                                            {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
-                                            {% else %}
-                                            <select class="form-select form-select-sm" style="min-width: 7rem" onchange="setKeyLocality({{ k.id }}, this.value)" aria-label="Providers for key {{ k.key_prefix }}">
-                                                <option value="any" {% if not k.locality %}selected{% endif %}>any</option>
-                                                <option value="local" {% if k.locality == 'local' %}selected{% endif %}>local only</option>
-                                                <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
-                                            </select>
-                                            {% endif %}
-                                        </td>
-                                        <td class="small text-nowrap">
-                                            ${{ "%.2f" | format(k.spent_today_usd or 0) }}
-                                            {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
-                                            {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
-                                        </td>
-                                        <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
-                                        <td class="small text-muted">{{ k.created_at | localtime }}</td>
-                                        <td class="small text-muted">{{ k.last_used_at | localtime }}</td>
-                                        <td class="text-end">
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPins({{ k.id }}, {{ k.key_prefix | tojson }})' title="Manage pinned routes">
-                                                <i class="bi bi-diagram-3"></i>
-                                            </button>
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPolicy({{ k.id }}, {{ k.key_prefix | tojson }})' title="Decision policy (tiered routing, gates)">
-                                                <i class="bi bi-signpost-split"></i>
-                                            </button>
-                                            <button class="btn btn-sm btn-outline-danger" onclick="deleteApiKey({{ k.id }})">
-                                                <i class="bi bi-trash"></i>
-                                            </button>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                        {% else %}
-                        <div class="text-muted p-3">No API keys yet.</div>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
         </div>
-        <div class="card mt-4" id="key-usage">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h5 class="mb-0">Usage by key and provider</h5>
-                <div class="d-flex align-items-center gap-2">
-                    <label class="small text-muted" for="key-usage-period">Last</label>
-                    <select class="form-select form-select-sm w-auto" id="key-usage-period">
-                        <option value="24h">24 hours</option>
-                        <option value="7d" selected>7 days</option>
-                        <option value="30d">30 days</option>
-                        <option value="all">all time</option>
-                    </select>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <p class="small text-muted px-3 pt-3 mb-2">From the request log: every request a key made, by the provider that served it. Providers a worker shares one by one show up separately. Cost is counted for models with a price on their provider's page.</p>
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>Key</th>
-                                <th>Provider</th>
-                                <th class="text-end">Requests</th>
-                                <th class="text-end">Errors</th>
-                                <th class="text-end">Tokens in</th>
-                                <th class="text-end">Tokens out</th>
-                                <th class="text-end">Cost</th>
-                                <th>Last request</th>
-                            </tr>
-                        </thead>
-                        <tbody id="key-usage-tbody">
-                            <tr><td colspan="8" class="text-muted small">Loading…</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <script>
-        (function() {
-            var sel = document.getElementById('key-usage-period');
-            var body = document.getElementById('key-usage-tbody');
-            if (!sel || !body) return;
-            function esc(v) {
-                return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
-                    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
-                });
-            }
-            function num(n) { return Number(n || 0).toLocaleString(); }
-            function keyLabel(r) {
-                if (r.api_key_id == null) return '<span class="text-muted">no key</span>';
-                if (r.key_prefix) return '<code>' + esc(r.key_prefix) + '</code>';
-                return '<span class="text-muted">deleted key #' + esc(r.api_key_id) + '</span>';
-            }
-            function providerLabel(r) {
-                var name = esc(r.provider || ('#' + r.provider_id));
-                if (!r.provider_exists) return '<span class="text-muted">' + name + ' (deleted)</span>';
-                return '<a href="/providers/' + esc(r.provider_id) + '">' + name + '</a>';
-            }
-            var latest = 0;
-            function load() {
-                // Only the newest request may fill the table, however the
-                // responses arrive.
-                var mine = ++latest;
-                body.innerHTML = '<tr><td colspan="8" class="text-muted small">Loading…</td></tr>';
-                fetch('/api/keys/usage?period=' + encodeURIComponent(sel.value)).then(function(r) {
-                    if (!r.ok) throw new Error('HTTP ' + r.status);
-                    return r.json();
-                }).then(function(j) {
-                    if (mine !== latest) return;
-                    if (!j.rows.length) {
-                        body.innerHTML = '<tr><td colspan="8" class="text-muted small">No requests in this period.</td></tr>';
-                        return;
-                    }
-                    body.innerHTML = j.rows.map(function(r) {
-                        var when = r.last_request_at ? new Date(r.last_request_at).toLocaleString() : '';
-                        return '<tr><td>' + keyLabel(r) + '</td><td>' + providerLabel(r) + '</td>' +
-                            '<td class="text-end">' + num(r.requests) + '</td>' +
-                            '<td class="text-end">' + (r.errors ? '<span class="text-danger">' + num(r.errors) + '</span>' : '0') + '</td>' +
-                            '<td class="text-end">' + num(r.prompt_tokens) + '</td>' +
-                            '<td class="text-end">' + num(r.completion_tokens) + '</td>' +
-                            '<td class="text-end">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>' +
-                            '<td class="small text-muted">' + esc(when) + '</td></tr>';
-                    }).join('');
-                }).catch(function(e) {
-                    if (mine !== latest) return;
-                    body.innerHTML = '<tr><td colspan="8" class="text-danger small">Could not load usage: ' + esc(e.message) + '</td></tr>';
-                });
-            }
-            sel.addEventListener('change', load);
-            var tab = document.getElementById('keys-tab');
-            if (tab) tab.addEventListener('shown.bs.tab', load);
-            if (document.getElementById('keys-pane').classList.contains('active')) load();
-        })();
-        </script>
     </div>
     {% endif %}
 
@@ -1292,7 +1303,7 @@
         <div id="router-id-banner" class="alert d-none" role="alert"></div>
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Workers connected to this hub</h5>
+                <h2 class="h5 mb-0"><i class="bi bi-diagram-3 me-2"></i>Workers connected to this hub</h2>
                 {% if not worker_hub_enabled %}<span class="badge bg-warning text-dark">Hub disabled</span>{% endif %}
             </div>
             <div class="card-body">
@@ -1320,7 +1331,7 @@
                     <div class="mb-2"><strong>Token for <span id="worker-token-name"></span>.</strong> Copy it now; it is not shown again. On the worker, paste the hub URL and token into its Workers tab, or set these environment variables:</div>
                     <div class="input-group input-group-sm mb-2">
                         <textarea class="form-control font-monospace small" id="worker-token-env" rows="2" readonly></textarea>
-                        <button type="button" class="btn btn-outline-secondary" id="worker-token-copy" title="Copy"><i class="bi bi-clipboard"></i></button>
+                        <button type="button" class="btn btn-outline-secondary" id="worker-token-copy" title="Copy" aria-label="Copy"><i class="bi bi-clipboard"></i></button>
                     </div>
                     <div class="small mb-0">If members reach this hub through a reverse proxy, use that public URL instead, for example <code>https://llm.example.org</code>.</div>
                 </div>
@@ -1349,12 +1360,12 @@
                                 </td>
                                 <td class="small" data-worker-jobs>{% if w.live %}{{ w.live.in_flight }} / {{ w.live.max_concurrency }}{% else %}&mdash;{% endif %}</td>
                                 <td class="small" data-worker-models>{{ w.models_label }}</td>
-                                <td class="small text-muted" data-worker-seen>{% if w.last_connected_at %}{{ w.last_connected_at | localtime }}{% if w.last_remote_addr %} from {{ w.last_remote_addr }}{% endif %}{% else %}never{% endif %}</td>
-                                <td><code class="small">{{ w.token_prefix }}</code>{% if w.token_expired %} <span class="badge bg-danger">expired</span>{% elif w.token_expires %}<div class="small text-muted">expires {{ w.token_expires | localtime }}</div>{% endif %}</td>
+                                <td class="small text-muted" data-worker-seen>{% if w.last_connected_at %}{{ w.last_connected_at | when }}{% if w.last_remote_addr %} from {{ w.last_remote_addr }}{% endif %}{% else %}never{% endif %}</td>
+                                <td><code class="small">{{ w.token_prefix }}</code>{% if w.token_expired %} <span class="badge bg-danger">expired</span>{% elif w.token_expires %}<div class="small text-muted">expires {{ w.token_expires | when }}</div>{% endif %}</td>
                                 <td class="text-end text-nowrap">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick='workerRotate({{ w.id }}, {{ w.name | tojson }})' title="Issue a new token and disconnect the old one"><i class="bi bi-arrow-repeat"></i></button>
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerSetEnabled({{ w.id }}, {{ 'false' if w.enabled else 'true' }})" title="{{ 'Disable' if w.enabled else 'Enable' }}"><i class="bi {{ 'bi-pause-circle' if w.enabled else 'bi-play-circle' }}"></i></button>
-                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick='workerDelete({{ w.id }}, {{ w.name | tojson }})' title="Remove worker and its provider"><i class="bi bi-trash"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick='workerRotate({{ w.id }}, {{ w.name | tojson }})' title="Issue a new token and disconnect the old one" aria-label="Issue a new token and disconnect the old one"><i class="bi bi-arrow-repeat"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerSetEnabled({{ w.id }}, {{ 'false' if w.enabled else 'true' }})" title="{{ 'Disable' if w.enabled else 'Enable' }}" aria-label="{{ 'Disable' if w.enabled else 'Enable' }}"><i class="bi {{ 'bi-pause-circle' if w.enabled else 'bi-play-circle' }}"></i></button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" onclick='workerDelete({{ w.id }}, {{ w.name | tojson }})' title="Remove worker and its provider" aria-label="Remove worker and its provider"><i class="bi bi-trash"></i></button>
                                 </td>
                             </tr>
                             {% else %}
@@ -1368,7 +1379,7 @@
 
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-broadcast me-2"></i>Serve a hub from this router</h5>
+                <h2 class="h5 mb-0"><i class="bi bi-broadcast me-2"></i>Connect to a hub (run as a worker)</h2>
                 <span id="worker-link-state">{% set st = worker_link.state if worker_link else 'disabled' %}<span class="badge {% if st == 'connected' %}bg-success{% elif st in ('rejected',) %}bg-danger{% elif st == 'disabled' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">{{ st }}</span></span>
             </div>
             <div class="card-body">
@@ -1521,7 +1532,7 @@
                         data-model="{{ (entry.model or '') | lower }} {{ (entry.routed_model or '') | lower }}"
                         data-meta="{{ (entry.request_meta or '') | lower }}"
                     >
-                        <td class="text-muted small text-nowrap">{{ entry.created_at | localtime }}</td>
+                        <td class="text-muted small text-nowrap">{{ entry.created_at | when }}</td>
                         <td class="small"><code>{{ entry.source_ip or "—" }}</code></td>
                         <td><span class="badge {% if entry.protocol == 'ollama' %}bg-primary{% elif entry.protocol == 'system' %}bg-secondary{% else %}bg-info text-dark{% endif %}">{{ entry.protocol }}</span></td>
                         <td class="small"><code>{{ entry.endpoint }}</code></td>
@@ -1561,8 +1572,8 @@
                             {% if entry.status == 'ok' %}
                             <span class="badge bg-success">OK</span>
                             {% elif entry.error_detail and not read_only %}
-                            <button class="badge bg-danger border-0" type="button" data-bs-toggle="collapse" data-bs-target="#error-detail-{{ entry.id }}" title="Click to view details">
-                                Error <i class="bi bi-chevron-expand ms-1"></i>
+                            <button class="badge bg-danger border-0" type="button" data-bs-toggle="collapse" data-bs-target="#error-detail-{{ entry.id }}" aria-expanded="false" aria-controls="error-detail-{{ entry.id }}" title="Show error details">
+                                Error <i class="bi bi-chevron-expand ms-1" aria-hidden="true"></i>
                             </button>
                             {% else %}
                             <span class="badge bg-danger">Error</span>
@@ -1571,7 +1582,7 @@
                     </tr>
                     {% if entry.status != 'ok' and entry.error_detail and not read_only %}
                     <tr class="collapse table-danger log-error-row" id="error-detail-{{ entry.id }}" data-parent-id="{{ entry.id }}">
-                        <td colspan="11" class="small py-2 px-3">
+                        <td colspan="12" class="small py-2 px-3">
                             <strong>Error detail:</strong>
                             <pre class="mb-0 mt-1 text-wrap" style="white-space:pre-wrap; font-size:.8rem">{{ entry.error_detail }}</pre>
                         </td>
@@ -1630,7 +1641,7 @@
             <div class="col-md-6">
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0"><i class="bi bi-archive me-2"></i>Registry Cache</h5>
+                        <h2 class="h5 mb-0"><i class="bi bi-archive me-2"></i>Registry Cache</h2>
                         <button class="btn btn-sm btn-outline-danger" id="btn-clear-cache" onclick="clearCache()">
                             <i class="bi bi-trash me-1"></i>Clear Cache
                         </button>
@@ -1689,7 +1700,7 @@
             <div class="col-md-6">
                 <div class="card mb-3">
                     <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-download me-2"></i>Cache a Model</h5>
+                        <h2 class="h5 mb-0"><i class="bi bi-download me-2"></i>Cache a Model</h2>
                     </div>
                     <div class="card-body">
                         <p class="text-muted small mb-2">Download a model from the Ollama registry into the local cache without pulling it to any provider.</p>
@@ -1704,7 +1715,7 @@
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>Cached Models</h5>
+                        <h2 class="h5 mb-0"><i class="bi bi-cpu me-2"></i>Cached Models</h2>
                     </div>
                     <div class="card-body p-0" id="cache-models-list">
                         {% if cache_stats.model_details %}
@@ -1713,7 +1724,7 @@
                             {% set mid = "cm-" ~ loop.index %}
                             {% set blob_cached = md.blobs | selectattr("cached") | list | length %}
                             <div class="accordion-item">
-                                <h2 class="accordion-header">
+                                <h3 class="accordion-header">
                                     <button class="accordion-button collapsed py-2 px-3" type="button" data-bs-toggle="collapse" data-bs-target="#{{ mid }}">
                                         <span class="me-2">
                                             {% if md.fully_cached %}
@@ -1725,7 +1736,7 @@
                                         <code>{{ md.name }}</code>
                                         <span class="text-muted small ms-2">({{ blob_cached }}/{{ md.blobs | length }} blobs)</span>
                                     </button>
-                                </h2>
+                                </h3>
                                 <div id="{{ mid }}" class="accordion-collapse collapse" data-bs-parent="#cache-model-accordion">
                                     <div class="accordion-body p-0">
                                         <table class="table table-sm mb-0 small">
@@ -1766,7 +1777,7 @@
                 </div>
                 <div class="card mt-3">
                     <div class="card-header">
-                        <h5 class="mb-0">How It Works</h5>
+                        <h2 class="h5 mb-0">How It Works</h2>
                     </div>
                     <div class="card-body">
                         <p class="mb-2">The registry cache acts as a pull-through proxy for the Ollama model registry. When a model is pulled:</p>
@@ -1791,7 +1802,7 @@
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="gm-title">Members of <code id="gm-name"></code></h5>
+                <h2 class="h5 modal-title" id="gm-title">Members of <code id="gm-name"></code></h2>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
@@ -1833,8 +1844,8 @@
     <div class="modal-dialog modal-sm">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Set Model Fallback</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Set Model Fallback</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
@@ -1857,11 +1868,11 @@
 
 <!-- Add Provider Modal -->
 <div class="modal fade" id="addProviderModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <form method="post" action="/providers/add" class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Add Provider</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Add Provider</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="alert alert-danger py-2" id="add-provider-error" style="display:none"></div>
@@ -1954,7 +1965,7 @@
                     </button>
                     <span class="small text-muted">Runs when you enter a URL or key: finds the server, its protocol and its endpoints. Saving probes again.</span>
                 </div>
-                <div id="probe-new-result" class="small mb-3" style="display:none"></div>
+                <div id="probe-new-result" class="small mb-3" style="min-height:4.5rem" aria-live="polite"></div>
                 <hr>
                 <p class="text-muted small mb-2">Hardware (optional)</p>
                 <div class="mb-3">
@@ -1985,8 +1996,8 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Pinned Routes for API Key</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Pinned Routes for API Key</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="small text-muted mb-2">Key: <code id="pins-key-prefix">—</code></div>
@@ -2038,7 +2049,7 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-key me-2"></i>New API Key</h5>
+                <h2 class="h5 modal-title"><i class="bi bi-key me-2"></i>New API Key</h2>
             </div>
             <div class="modal-body">
                 <div class="alert alert-warning small">Copy this key now. It is only shown once.</div>
@@ -2061,8 +2072,8 @@
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Decision Policy for API Key</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Decision Policy for API Key</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="small text-muted mb-2">Key: <code id="policy-key-prefix">—</code></div>
@@ -2293,7 +2304,8 @@ function applyPreset(id) {
         info.appendChild(probeEl('code', '', p.env_var));
         info.appendChild(document.createTextNode(' and restart.'));
     }
-    document.getElementById('probe-new-result').style.display = 'none';
+    // Emptied, not hidden: the box keeps its height so the form below stays put.
+    document.getElementById('probe-new-result').replaceChildren();
 }
 
 document.addEventListener('click', function(ev) {
@@ -2440,6 +2452,13 @@ function switchProviderView(view) {
         const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
         if (tab) {
             bootstrap.Tab.getOrCreateInstance(tab).show();
+            // Showing a tab in the Access menu also opens the menu; a click
+            // closes it again, so close it here too.
+            const menu = tab.closest('.dropdown-menu');
+            if (menu) {
+                menu.classList.remove('show');
+                menu.parentElement.querySelector('.dropdown-toggle').setAttribute('aria-expanded', 'false');
+            }
             const outer = tab.closest('.tab-pane');
             const outerTab = outer && document.querySelector('[data-bs-target="#' + outer.id + '"]');
             if (outerTab) bootstrap.Tab.getOrCreateInstance(outerTab).show();
@@ -2607,9 +2626,11 @@ function pfRender() {
         btn.className = 'btn btn-sm btn-primary rounded-pill py-0';
         btn.dataset.model = m;
         btn.title = 'Remove model filter';
+        btn.setAttribute('aria-label', 'Remove model filter ' + m);
         btn.textContent = m + ' ';
         const x = document.createElement('i');
         x.className = 'bi bi-x';
+        x.setAttribute('aria-hidden', 'true');
         btn.appendChild(x);
         modelPills.appendChild(btn);
     });
@@ -2800,6 +2821,24 @@ const STATUS_CLASSES = {
     offline: 'badge bg-danger',
     unknown: 'badge bg-secondary'
 };
+// Mirrors status_macros.html: every state has its own icon, not just a colour.
+const STATUS_ICONS = {
+    idle: 'bi-check-circle-fill',
+    busy: 'bi-hourglass-split',
+    offline: 'bi-x-circle-fill',
+    unknown: 'bi-question-circle-fill'
+};
+
+function statusInner(status) {
+    return '<i class="bi ' + (STATUS_ICONS[status] || STATUS_ICONS.unknown) + ' me-1" aria-hidden="true"></i>' + esc(status);
+}
+
+function liveMark(isLive, size) {
+    const label = isLive ? 'Live' : 'Not responding';
+    return '<i class="bi ' + (isLive ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger') +
+        '" style="font-size:' + size + '" title="' + label + '" aria-hidden="true"></i>' +
+        '<span class="visually-hidden">' + label + '</span>';
+}
 
 var statusTimer;  // set by the start-up block above; null once stopped
 function refreshStatus() {
@@ -2875,12 +2914,12 @@ function updateDashboard(data) {
                         ? '<i class="bi bi-check-circle-fill text-success"></i>'
                         : '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
                     html += '<div class="accordion-item">' +
-                        '<h2 class="accordion-header">' +
+                        '<h3 class="accordion-header">' +
                         '<button class="accordion-button collapsed py-2 px-3" type="button" data-bs-toggle="collapse" data-bs-target="#' + mid + '">' +
                         '<span class="me-2">' + icon + '</span>' +
                         '<code>' + esc(md.name) + '</code>' +
                         '<span class="text-muted small ms-2">(' + esc(blobCached) + '/' + esc(md.blobs.length) + ' blobs)</span>' +
-                        '</button></h2>' +
+                        '</button></h3>' +
                         '<div id="' + mid + '" class="accordion-collapse collapse" data-bs-parent="#cache-model-accordion">' +
                         '<div class="accordion-body p-0">' +
                         '<table class="table table-sm mb-0 small"><thead><tr>' +
@@ -2920,7 +2959,7 @@ function updateDashboard(data) {
         const statusEl = card.querySelector('[data-card-status]');
         if (statusEl) {
             statusEl.className = STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown;
-            statusEl.textContent = p.status;
+            statusEl.innerHTML = statusInner(p.status);
             statusEl.title = p.status_detail || '';
         }
         const detailEl = card.querySelector('[data-card-detail]');
@@ -2966,7 +3005,7 @@ function updateDashboard(data) {
 
         const statusEl = row.querySelector('[data-list-status]');
         if (statusEl) {
-            statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + esc(p.status) + '</span>';
+            statusEl.innerHTML = '<span class="' + (STATUS_CLASSES[p.status] || STATUS_CLASSES.unknown) + '">' + statusInner(p.status) + '</span>';
             statusEl.firstChild.title = p.status_detail || '';
         }
 
@@ -2994,17 +3033,16 @@ function updateDashboard(data) {
 function renderCardAddresses(addrs) {
     return addrs.map(a =>
         '<div class="text-muted">' +
-        '<i class="bi bi-circle-fill ' + (a.is_live ? 'text-success' : 'text-danger') + ' me-1" style="font-size:.55rem"></i>' +
+        liveMark(a.is_live, '.7rem') + ' ' +
         esc(a.url) +
-        (a.is_preferred ? '<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem"></i>' : '') +
+        (a.is_preferred ? '<i class="bi bi-star-fill text-warning ms-1" style="font-size:.6rem" title="Preferred" aria-hidden="true"></i><span class="visually-hidden">(preferred)</span>' : '') +
         '</div>'
     ).join('');
 }
 
 function renderListAddresses(addrs) {
     return addrs.map((a, i) =>
-        '<span title="' + (a.is_live ? 'Live' : 'Not responding') + '">' +
-        '<i class="bi bi-circle-fill ' + (a.is_live ? 'text-success' : 'text-danger') + '" style="font-size:.5rem"></i> ' +
+        '<span>' + liveMark(a.is_live, '.65rem') + ' ' +
         esc(a.url) + (i < addrs.length - 1 ? ', ' : '') +
         '</span>'
     ).join('');
@@ -3025,10 +3063,11 @@ function generateApiKey() {
     var locality = localityEl ? localityEl.value : 'any';
     var capEl = document.getElementById('new-key-cap');
     var cap = capEl && capEl.value !== '' ? capEl.value : null;
+    var label = document.getElementById('new-key-label').value;
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -3111,9 +3150,9 @@ function copyGeneratedKey() {
         .catch(function() { el.select(); });
 }
 
-function deleteApiKey(keyId) {
+function deleteApiKey(keyId, keyPrefix) {
     if (!dashRequireWrite()) return;
-    if (!confirm('Delete this API key?')) return;
+    if (!confirm('Delete API key ' + keyPrefix + '? Programs using it stop working at once.')) return;
     fetch('/api/keys/' + keyId, {method: 'DELETE'})
         .then(function(r) {
             if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -3218,7 +3257,7 @@ function renderKeyPins(pins) {
             '<td class="text-end">' +
             // The model name rides in a data attribute, never inside the JS of
             // the onclick handler, so a quote in it cannot break out.
-            '<button class="btn btn-sm btn-outline-danger py-0 px-1" data-model="' + esc(p.model_name) + '" onclick="deleteKeyPin(encodeURIComponent(this.dataset.model))" title="Remove pin">' +
+            '<button class="btn btn-sm btn-outline-danger py-0 px-1" data-model="' + esc(p.model_name) + '" onclick="deleteKeyPin(encodeURIComponent(this.dataset.model))" title="Remove pin" aria-label="Remove pin for ' + esc(p.model_name) + '">' +
             '<i class="bi bi-x-lg"></i></button></td></tr>';
     }).join('');
 }

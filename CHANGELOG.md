@@ -13,6 +13,12 @@ described in their git tags and GitHub Releases.
   or when rotating its token (or `expires_in_days` on `POST /api/workers` and
   `POST /api/workers/{id}/rotate`); the hub refuses an expired token and
   closes a connected worker's session when its token expires.
+- API keys can have an optional label, set when issuing a key on the API
+  Keys tab or under My API keys (`label` on `POST /api/keys/generate` and
+  `POST /api/my-keys`, up to 100 characters) and shown under the prefix. An
+  upgrade adds the column.
+- Recovery codes have Copy and Download buttons, and generating new ones
+  asks first.
 
 ### Security
 
@@ -73,6 +79,24 @@ described in their git tags and GitHub Releases.
   counting the whole log on every refresh.
 - A request's logged size is the body the client sent, not the parsed body
   serialised again.
+- Dashboard accessibility and structure. Status is never shown by colour
+  alone: each provider state and address liveness has its own icon and
+  text, and an offline provider always says why. Icon-only buttons and
+  close buttons have labels; each page has one `h1`, cards use `h2`. Chat
+  conversations are buttons and their delete button shows on keyboard
+  focus; a log row's error detail opens from a button that reports whether
+  it is open. Confirmations name what they remove.
+- Dashboard layout: the provider counts sit in the Providers tab; the API
+  Keys tab is split into Keys and a new Routing tab (preview, table,
+  explorer); the menu groups Operate tabs, then Access (API Keys, Routing,
+  Users) and Tools (Decisions, Chat) menus so it fits one row; the Log count
+  shows on every page. Users' actions are in a menu per row, the last
+  sign-in is relative and the sign-in detail is a tooltip. The Add Provider
+  dialog scrolls and keeps room for the probe result.
+- Dates on the dashboard all read `YYYY-MM-DD HH:MM` in the browser's time
+  zone, with the full time on hover.
+- "Profile" is now "Account"; the Workers card "Serve a hub from this
+  router" is now "Connect to a hub (run as a worker)".
 - Test infrastructure: CI runs the whole suite against PostgreSQL and MySQL
   as well as SQLite, checks there is a single Alembic head, and runs the
   tests in parallel. Coverage now includes the Alembic migrations (floor

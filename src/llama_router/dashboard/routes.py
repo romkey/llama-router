@@ -27,6 +27,7 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import BaseModel
 
 from .. import __version__, hf_download, router_identity
@@ -308,31 +309,58 @@ def _ollama_library_url(model_name: str) -> str:
     return f"https://ollama.com/library/{quote(slug, safe='/')}"
 
 
-def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
-    """Jinja2 filter: convert a UTC timestamp to the local timezone (honours TZ)."""
+def _parse_utc(value: str | datetime | None) -> datetime | str | None:
+    """A stored timestamp as an aware UTC datetime; text it cannot read as is."""
     if value is None:
-        return "—"
+        return None
     if isinstance(value, str):
         value = value.strip()
         if not value:
-            return "—"
+            return None
         for pattern in (
             "%Y-%m-%d %H:%M:%S",
             "%Y-%m-%dT%H:%M:%S",
             "%Y-%m-%dT%H:%M:%S.%f",
         ):
             try:
-                value = datetime.strptime(value, pattern).replace(tzinfo=UTC)
-                break
+                return datetime.strptime(value, pattern).replace(tzinfo=UTC)
             except ValueError:
                 continue
-        else:
-            return str(value)
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        return value.astimezone().strftime(fmt)
-    return str(value)
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value
+
+
+def _localtime(value: str | datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Jinja2 filter: convert a UTC timestamp to the local timezone (honours TZ)."""
+    parsed = _parse_utc(value)
+    if parsed is None:
+        return "—"
+    if isinstance(parsed, str):
+        return parsed
+    return parsed.astimezone().strftime(fmt)
+
+
+def _time_tag(value: str | datetime | None, relative: bool = False) -> Markup | str:
+    """Jinja2 filter: a ``<time>`` the page shows as ``YYYY-MM-DD HH:MM``.
+
+    base.html rewrites it in the browser's zone (or as "3 days ago" when
+    *relative*), with the full timestamp in its title. The text here, in the
+    server's zone, is what shows without JavaScript.
+    """
+    parsed = _parse_utc(value)
+    if parsed is None:
+        return "—"
+    if isinstance(parsed, str):
+        return parsed
+    local = parsed.astimezone()
+    return Markup('<time datetime="{}" data-local{} title="{}">{}</time>').format(
+        parsed.astimezone(UTC).isoformat(),
+        Markup(" data-relative") if relative else "",
+        local.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        local.strftime("%Y-%m-%d %H:%M"),
+    )
 
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -340,6 +368,7 @@ templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 templates.env.globals["version"] = __version__
 templates.env.globals["ollama_library_url"] = _ollama_library_url
 templates.env.filters["localtime"] = _localtime
+templates.env.filters["when"] = _time_tag
 
 router = APIRouter()
 
@@ -372,6 +401,16 @@ def merge_dash_template_ctx(request: Request, ctx: dict[str, Any]) -> dict[str, 
     merged = template_auth_ctx(request)
     merged.update(ctx)
     merged["show_cache"] = merged["show_cache"] and deps.get_cache() is not None
+    return merged
+
+
+async def dash_page_ctx(request: Request, ctx: dict[str, Any]) -> dict[str, Any]:
+    """merge_dash_template_ctx plus the Log tab's count, which every page shows."""
+    merged = merge_dash_template_ctx(request, ctx)
+    if merged["show_log"] and "log_total" not in merged:
+        user = merged["dash_user"]
+        owner = None if user.is_admin else user.id
+        merged["log_total"] = await _log_count(deps.get_db(), owner)
     return merged
 
 
@@ -771,7 +810,7 @@ async def users_page(request: Request):
     return templates.TemplateResponse(
         request,
         "users.html",
-        merge_dash_template_ctx(
+        await dash_page_ctx(
             request,
             {
                 "dashboard_users": users,
@@ -1525,6 +1564,7 @@ async def api_generate_key(request: Request):
     session_affinity = _tristate(body.get("session_affinity"))
     locality = _key_locality(body.get("locality"))
     cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
+    label = _key_label(body.get("label"))
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     # PBKDF2 is slow; keep it off the event loop.
@@ -1539,10 +1579,12 @@ async def api_generate_key(request: Request):
         session_affinity=session_affinity,
         locality=locality,
         daily_spend_cap_usd=cap,
+        label=label,
     )
     return JSONResponse(
         {
             "api_key": plaintext,
+            "label": label,
             "daily_spend_cap_usd": cap,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
@@ -1731,7 +1773,7 @@ async def provider_detail(request: Request, provider_id: int):
     return templates.TemplateResponse(
         request,
         "provider_detail.html",
-        merge_dash_template_ctx(
+        await dash_page_ctx(
             request,
             {
                 "info": info,
@@ -1774,6 +1816,24 @@ def _parse_locality(value: str | None) -> str:
     if v not in LOCALITIES:
         raise ValueError("locality must be local or cloud")
     return v
+
+
+KEY_LABEL_MAX = 100
+
+
+def _key_label(value: Any) -> str | None:
+    """An API key's optional label from a request body; blank means none."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="label must be text")
+    label = value.strip()
+    if len(label) > KEY_LABEL_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"label must be at most {KEY_LABEL_MAX} characters",
+        )
+    return label or None
 
 
 def _key_locality(value: Any) -> str | None:
