@@ -2,11 +2,14 @@
 {% block title %}Dashboard - llama-router{% endblock %}
 
 {% block content %}
+<div class="alert alert-warning py-2 d-none" id="session-expired" role="alert"><i class="bi bi-clock-history me-2"></i>Session expired — <a href="/login?next=/" class="alert-link">sign in again</a>.</div>
 {% if request.query_params.get('error') == 'forbidden' %}
 <div class="alert alert-danger py-2"><i class="bi bi-slash-circle me-2"></i>You do not have permission for that.</div>
+{% elif request.query_params.get('error') %}
+<div class="alert alert-danger py-2"><i class="bi bi-exclamation-triangle-fill me-2"></i>{{ request.query_params.get('error') }}</div>
 {% endif %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
+    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard{% if not read_only %} <a href="#keys-pane" id="open-access-badge" class="badge text-bg-warning fs-6 align-middle text-decoration-none{% if not allow_unauthenticated %} d-none{% endif %}" title="The API accepts requests without a key; change it under API Keys, Security"><i class="bi bi-unlock me-1"></i>Open access</a>{% endif %}</h2>
     {% if not read_only %}
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProviderModal">
         <i class="bi bi-plus-lg me-1"></i>Add Provider
@@ -797,11 +800,20 @@
                         </button>
                     </div>
                 </div>
-                <div class="card mt-3">
+                <div class="card mt-3" id="security-card">
                     <div class="card-header">
-                        <h5 class="mb-0">Keys Users Issue Themselves</h5>
+                        <h5 class="mb-0"><i class="bi bi-shield-lock me-1"></i>Security</h5>
                     </div>
                     <div class="card-body">
+                        <h6 class="mb-2">API access</h6>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="allow-unauthenticated" {% if allow_unauthenticated %}checked{% endif %} {% if read_only %}disabled{% endif %} onchange="setAllowUnauthenticated(this)">
+                            <label class="form-check-label" for="allow-unauthenticated">
+                                Accept requests without an API key
+                            </label>
+                        </div>
+                        <div class="form-text mb-3">When on, anyone who can reach the API port can use every provider, including paid cloud ones, with no key, no spend cap and no locality limit.</div>
+                        <h6 class="mb-2">Keys users issue themselves</h6>
                         <p class="small text-muted mb-2">Any signed-in user can issue themselves keys under <a href="/my-keys">My API keys</a>. Those keys get these limits; change one afterwards in the table.</p>
                         <div class="mb-2">
                             <label for="self-key-locality" class="form-label small text-muted mb-1">Providers</label>
@@ -819,19 +831,6 @@
                         <button class="btn btn-sm btn-outline-primary" onclick="saveSelfServiceDefaults()">Save</button>
                         <span class="small text-muted ms-2" id="self-key-status"></span>
                         {% endif %}
-                    </div>
-                </div>
-                <div class="card mt-3">
-                    <div class="card-header">
-                        <h5 class="mb-0">Authentication Policy</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="allow-unauthenticated" {% if allow_unauthenticated %}checked{% endif %} onchange="setAllowUnauthenticated(this.checked)">
-                            <label class="form-check-label" for="allow-unauthenticated">
-                                Accept requests without an API key
-                            </label>
-                        </div>
                     </div>
                 </div>
                 <div class="card mt-3">
@@ -1861,6 +1860,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
+                <div class="alert alert-danger py-2" id="add-provider-error" style="display:none"></div>
                 <div class="mb-3">
                     <div class="form-label">Start from</div>
                     <div class="d-flex flex-wrap gap-1" id="preset-grid">
@@ -2082,9 +2082,34 @@
 </div>
 {% endif %}
 
+<div class="toast-container position-fixed bottom-0 end-0 p-3" id="dash-toasts" aria-live="polite"></div>
 {% endblock %}
 
 {% block scripts %}
+{% if add_provider_prefill is not none %}
+<script>
+// A failed Add Provider form: reopen the dialog with what was typed.
+document.addEventListener('DOMContentLoaded', function () {
+    const form = {{ add_provider_prefill | tojson }};
+    if (form.preset) applyPreset(form.preset);
+    ['name', 'preset_resource', 'protocol', 'locality', 'url', 'api_key_header',
+     'model_filter', 'manual_models', 'machine_type', 'gpu_type', 'gpu_ram'].forEach(function (k) {
+        const el = document.getElementById(k);
+        if (el && form[k]) el.value = form[k];
+    });
+    if (form.auto_benchmark) document.getElementById('add-auto-benchmark').value = form.auto_benchmark;
+    if (form.model_filter || form.manual_models) document.getElementById('add-advanced').open = true;
+    toggleUrlFields();
+    const err = new URLSearchParams(location.search).get('error');
+    if (err) {
+        const box = document.getElementById('add-provider-error');
+        box.textContent = err;
+        box.style.display = '';
+    }
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('addProviderModal')).show();
+});
+</script>
+{% endif %}
 <script>
 const DASH_READ_ONLY = {{ read_only | tojson }};
 // HTML-escape a value before it goes into an innerHTML string. Everything
@@ -2433,7 +2458,8 @@ function switchProviderView(view) {
     initLogFilters();
     // Runs after this whole script has executed, so the filter state below exists.
     document.addEventListener('DOMContentLoaded', initProviderFilters);
-    setInterval(refreshStatus, 5000);
+    statusTimer = setInterval(refreshStatus, 5000);
+    document.addEventListener('visibilitychange', onStatusVisibility);
 })();
 
 // ---- Provider filter pills ----------------------------------------------
@@ -2771,11 +2797,29 @@ const STATUS_CLASSES = {
     unknown: 'badge bg-secondary'
 };
 
+var statusTimer;  // set by the start-up block above; null once stopped
 function refreshStatus() {
+    if (document.hidden) return;
     fetch('/api/status')
-        .then(r => r.json())
-        .then(updateDashboard)
+        .then(function(r) {
+            if (r.status === 401) {
+                stopStatusPolling();
+                document.getElementById('session-expired').classList.remove('d-none');
+                return null;
+            }
+            return r.json();
+        })
+        .then(function(d) { if (d) updateDashboard(d); })
         .catch(() => {});
+}
+function stopStatusPolling() {
+    clearInterval(statusTimer);
+    statusTimer = null;
+    document.removeEventListener('visibilitychange', onStatusVisibility);
+}
+function onStatusVisibility() {
+    // Catch up as soon as the tab is shown again.
+    if (!document.hidden && statusTimer !== null) refreshStatus();
 }
 
 function updateDashboard(data) {
@@ -3226,13 +3270,58 @@ function deleteKeyPin(encodedModel) {
         });
 }
 
-function setAllowUnauthenticated(allow) {
-    if (!dashRequireWrite()) return;
+function showToast(message, ok) {
+    var box = document.getElementById('dash-toasts');
+    if (!box) return;
+    var el = document.createElement('div');
+    el.className = 'toast align-items-center border-0 ' + (ok ? 'text-bg-success' : 'text-bg-danger');
+    el.setAttribute('role', ok ? 'status' : 'alert');
+    var row = document.createElement('div');
+    row.className = 'd-flex';
+    var body = document.createElement('div');
+    body.className = 'toast-body';
+    body.textContent = message;
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn-close btn-close-white me-2 m-auto';
+    close.setAttribute('data-bs-dismiss', 'toast');
+    close.setAttribute('aria-label', 'Close');
+    row.appendChild(body);
+    row.appendChild(close);
+    el.appendChild(row);
+    box.appendChild(el);
+    el.addEventListener('hidden.bs.toast', function() { el.remove(); });
+    bootstrap.Toast.getOrCreateInstance(el).show();
+}
+
+function setAllowUnauthenticated(input) {
+    var allow = input.checked;
+    if (!dashRequireWrite()) { input.checked = !allow; return; }
+    if (allow && !confirm('Accept API requests without a key?\n\nAnyone who can reach the API port will be able to use every provider, including paid cloud ones, with no spend cap or locality limit.')) {
+        input.checked = false;
+        return;
+    }
+    input.disabled = true;
     fetch('/api/auth/allow-unauthenticated', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({allow: allow})
-    }).catch(function() {});
+    }).then(function(r) {
+        return r.json().catch(function() { return {}; }).then(function(d) {
+            if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+            return d;
+        });
+    }).then(function(d) {
+        var on = !!d.allow_unauthenticated;
+        input.checked = on;
+        document.getElementById('open-access-badge').classList.toggle('d-none', !on);
+        showToast(on ? 'The API now accepts requests without a key.' : 'The API now requires a key.', true);
+    }).catch(function(err) {
+        input.checked = !allow;
+        showToast('Could not change API access: ' + (err.message || 'request failed'), false);
+    }).finally(function() {
+        input.disabled = false;
+    });
 }
 
 var _trackedPulls = {};

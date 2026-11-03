@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from http import HTTPStatus
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -19,7 +20,7 @@ from .mfa import router as mfa_router
 from .middleware import DashboardAuthMiddleware
 from .model_groups import router as model_groups_router
 from .my_keys import router as my_keys_router
-from .routes import _cookie_secure, router
+from .routes import _cookie_secure, merge_dash_template_ctx, router, templates
 
 app = FastAPI(title="llama-router Dashboard")
 app.add_middleware(DashboardAuthMiddleware)
@@ -53,10 +54,41 @@ async def security_headers(
     return response
 
 
+def _wants_html(request: Request) -> bool:
+    """HTML for browser pages, JSON for ``/api/*`` and for JSON clients."""
+    if request.url.path.startswith("/api/"):
+        return False
+    accept = request.headers.get("accept", "").lower()
+    return "text/html" in accept or "json" not in accept
+
+
+def _error_page(request: Request, exc: StarletteHTTPException) -> Response:
+    try:
+        reason = HTTPStatus(exc.status_code).phrase
+    except ValueError:
+        reason = "Error"
+    detail = exc.detail if isinstance(exc.detail, str) else reason
+    return templates.TemplateResponse(
+        request,
+        "error.html",
+        merge_dash_template_ctx(
+            request,
+            {
+                "status_code": exc.status_code,
+                "reason": reason,
+                "detail": detail,
+                "back_url": "/",
+            },
+        ),
+        status_code=exc.status_code,
+        headers=exc.headers,
+    )
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
-) -> JSONResponse:
+) -> Response:
     if exc.status_code in (400, 401, 403, 404):
         with contextlib.suppress(Exception):
             db = deps.get_db()
@@ -73,6 +105,8 @@ async def http_exception_handler(
                 status="error",
                 error_detail=f"HTTP {exc.status_code}: {exc.detail}",
             )
+    if _wants_html(request):
+        return _error_page(request, exc)
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},

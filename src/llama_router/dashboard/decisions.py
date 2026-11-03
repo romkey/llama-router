@@ -144,12 +144,7 @@ async def api_set_calibration(request: Request) -> JSONResponse:
     The body carries either ``temperature`` and ``offsets``, or
     ``examples`` to fit them from.
     """
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
+    body = await deps.json_body(request)
     model = str(body.get("model") or "").strip()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
@@ -266,12 +261,7 @@ async def api_fit_calibration(request: Request) -> JSONResponse:
     response reports accuracy and log loss before and after calibration,
     cross-validated so the after numbers are not scored on their own fit.
     """
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
+    body = await deps.json_body(request)
     model = str(body.get("model") or "").strip()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
@@ -344,10 +334,7 @@ async def api_fit_calibration(request: Request) -> JSONResponse:
 @router.post("/api/decisions/try")
 async def api_try_decision(request: Request) -> Response:
     """Answer a decision request as ``/v1/systemone`` would."""
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
+    body = await deps.json_body(request)
     return await serve_decision(request, body, "/v1/systemone", None)
 
 
@@ -385,10 +372,7 @@ async def api_set_key_policy(key_id: int, request: Request) -> JSONResponse:
     """
     db = deps.get_db()
     await _require_key(db, key_id)
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
+    body = await deps.json_body(request)
     try:
         policy = parse_policy(body)
     except ValidationError as exc:

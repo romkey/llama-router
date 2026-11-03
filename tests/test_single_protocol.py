@@ -49,7 +49,8 @@ async def test_add_provider_form_takes_protocol(
         "/providers/add",
         data={"name": "x", "url": "http://x:8080", "protocol": "both"},
     )
-    assert r.status_code == 400
+    assert r.status_code == 303
+    assert "error=" in r.headers["location"]
     assert await db.list_providers() == []
 
     await client.post(

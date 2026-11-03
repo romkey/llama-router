@@ -52,16 +52,6 @@ def _user_id(request: Request) -> int | None:
     return user.id if user is not None else None
 
 
-async def _body(request: Request) -> dict[str, Any]:
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="body must be JSON") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    return body
-
-
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_page(request: Request) -> Response:
     """Chat with a model on a provider."""
@@ -322,7 +312,7 @@ async def send(request: Request) -> JSONResponse:
     conversation and the two new messages: the user's and the reply, which
     is an "error" message when the backend failed.
     """
-    body = await _body(request)
+    body = await deps.json_body(request)
     db = deps.get_db()
     pm = deps.get_pm()
     uid = _user_id(request)

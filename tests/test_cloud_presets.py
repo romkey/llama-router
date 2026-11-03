@@ -198,7 +198,9 @@ async def test_dashboard_add_from_preset(dash_client, httpx_mock) -> None:
         "/providers/add",
         data={"name": "Az", "url": "x", "preset": "azure-openai", "api_key": "k"},
     )
-    assert r.status_code == 400  # needs a resource name
+    # Needs a resource name: back to the dialog with the error.
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/?add_provider=1&error=")
     r = await client.post(
         "/providers/add",
         data={
@@ -245,7 +247,8 @@ async def test_dashboard_edit_extra_headers_and_models(
     r = await client.post(
         f"/providers/{p.id}/edit", data={**form, "extra_headers": "Authorization: x"}
     )
-    assert r.status_code == 400
+    assert r.status_code == 303
+    assert r.headers["location"].startswith(f"/providers/{p.id}?error=")
     await client.post(
         f"/providers/{p.id}/edit",
         data={**form, "extra_headers": "", "manual_models": ""},

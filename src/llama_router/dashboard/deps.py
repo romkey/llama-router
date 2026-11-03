@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import secrets
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from fastapi import HTTPException, Request
 
 from ..config import settings
 from ..database import Database
@@ -103,3 +105,18 @@ async def get_dashboard_session_secret() -> str:
         await db.set_app_setting(key, val)
     _dashboard_session_secret_cache = val
     return val
+
+
+async def json_body(request: Request) -> dict[str, Any]:
+    """The request body as a JSON object; 400 when it is not one.
+
+    Usable as a FastAPI dependency or awaited directly, which keeps a
+    route's own checks (admin, 404) ahead of body parsing.
+    """
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="body must be JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+    return body

@@ -191,12 +191,7 @@ async def api_create_management_key(request: Request) -> JSONResponse:
     The key is in the response once and never again.
     """
     admin = _require_admin_user(request)
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
+    body = await deps.json_body(request)
     name = str(body.get("name") or "").strip()
     if not name or len(name) > MAX_NAME_LENGTH:
         raise HTTPException(

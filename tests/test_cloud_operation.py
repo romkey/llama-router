@@ -189,7 +189,9 @@ async def test_dashboard_edit_cloud_settings(dash_client, httpx_mock) -> None:
     assert p.model_filter == "anthropic/*\nopenai/*"
     assert (p.read_timeout_s, p.auto_benchmark) == (300.0, True)
     bad = {**form, "read_timeout_s": "0"}
-    assert (await client.post(f"/providers/{p.id}/edit", data=bad)).status_code == 400
+    r = await client.post(f"/providers/{p.id}/edit", data=bad)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith(f"/providers/{p.id}?error=")
     page = await client.get(f"/providers/{p.id}")
     assert "anthropic/*" in page.text
     assert "PROVIDER_IS_CLOUD" in page.text
