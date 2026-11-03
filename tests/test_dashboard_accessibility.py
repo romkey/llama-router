@@ -100,13 +100,16 @@ async def test_dashboard_structure(dash_client: DashClient) -> None:
     assert _unlabelled(page) == []
     # The stat cards belong to the Providers tab and are not headings.
     providers_pane = html.index('id="providers-pane"')
-    assert providers_pane < html.index('id="stat-providers"') < html.index(
-        'id="benchmarks-pane"'
+    assert (
+        providers_pane
+        < html.index('id="stat-providers"')
+        < html.index('id="benchmarks-pane"')
     )
     # Routing has its own tab; API Keys keeps keys and their usage.
     keys = html[html.index('id="keys-pane"') : html.index('id="routing-pane"')]
     routing = html[html.index('id="routing-pane"') : html.index('id="workers-pane"')]
-    assert "Issued Keys" in keys and "key-usage" in keys
+    assert "Issued Keys" in keys
+    assert "key-usage" in keys
     assert "Routing Preview" in routing
     # Table and explorer show once the routing table has been built.
     for card in ("Routing Preview", "Routing Table", "Route Explorer"):
@@ -122,7 +125,13 @@ async def test_every_page_has_one_h1_and_labelled_buttons(
     client, db = dash_client
     admin = await _admin(db)
     provider = await db.add_provider("box", ProviderProtocol.OLLAMA)
-    for path in ("/users", "/my-keys", "/chat", "/decisions", f"/providers/{provider.id}"):
+    for path in (
+        "/users",
+        "/my-keys",
+        "/chat",
+        "/decisions",
+        f"/providers/{provider.id}",
+    ):
         page = _Page((await client.get(path, headers=_as(admin))).text)
         assert page.headings.count("h1") == 1, path
         assert _unlabelled(page) == [], path
@@ -140,7 +149,9 @@ async def test_log_badge_shows_on_every_page(
     monkeypatch.setattr(routes, "_log_count", count)
     for path in ("/chat", "/my-keys", "/users"):
         html = (await client.get(path, headers=_as(admin))).text
-        assert re.search(r'href="/#log-pane">.*?<span class="badge[^"]*">42</span>', html), path
+        assert re.search(
+            r'href="/#log-pane">.*?<span class="badge[^"]*">42</span>', html
+        ), path
 
 
 async def test_users_actions_sit_in_a_named_menu(dash_client: DashClient) -> None:
@@ -165,18 +176,21 @@ async def test_offline_provider_always_has_a_reason(database_url: str) -> None:
         provider = await db.add_provider("box", ProviderProtocol.OLLAMA)
         assert provider.id is not None
         info = await pm.get_provider_info(provider.id)
-        assert info is not None and info.status_detail is None
+        assert info is not None
+        assert info.status_detail is None
 
         await db.update_provider_status(provider.id, ProviderStatus.OFFLINE)
         info = await pm.get_provider_info(provider.id)
-        assert info is not None and info.status_detail == "no address responded"
+        assert info is not None
+        assert info.status_detail == "no address responded"
         [listed] = await pm.list_provider_infos()
         assert listed.status_detail == "no address responded"
 
         # A reason the check recorded wins over the fallback.
         pm._status_detail[provider.id] = "HTTP 401 listing models"
         info = await pm.get_provider_info(provider.id)
-        assert info is not None and info.status_detail == "HTTP 401 listing models"
+        assert info is not None
+        assert info.status_detail == "HTTP 401 listing models"
     finally:
         await db.close()
 
@@ -187,7 +201,8 @@ async def test_offline_provider_always_has_a_reason(database_url: str) -> None:
 def test_time_tag_filter() -> None:
     tag = str(routes._time_tag("2026-01-02 03:04:05"))
     assert 'datetime="2026-01-02T03:04:05+00:00"' in tag
-    assert "data-local" in tag and "data-relative" not in tag
+    assert "data-local" in tag
+    assert "data-relative" not in tag
     assert re.search(r">\d{4}-\d\d-\d\d \d\d:\d\d</time>$", tag)
     assert 'title="2026-01-0' in tag
 
@@ -216,12 +231,16 @@ async def test_admin_key_label(dash_client: DashClient) -> None:
     html = (await client.get("/", headers=_as(admin))).text
     assert '<div class="small text-muted">home assistant</div>' in html
 
-    resp = await client.post("/api/keys/generate", json={"label": ""}, headers=_as(admin))
+    resp = await client.post(
+        "/api/keys/generate", json={"label": ""}, headers=_as(admin)
+    )
     assert resp.json()["label"] is None
 
 
 @pytest.mark.parametrize("label", ["x" * 101, 5, ["a"]])
-async def test_bad_key_labels_are_refused(dash_client: DashClient, label: object) -> None:
+async def test_bad_key_labels_are_refused(
+    dash_client: DashClient, label: object
+) -> None:
     client, db = dash_client
     admin = await _admin(db)
     for path in ("/api/keys/generate", "/api/my-keys"):
