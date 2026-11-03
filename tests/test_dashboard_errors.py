@@ -33,10 +33,19 @@ async def test_api_errors_stay_json(dash_client: DashClient) -> None:
     assert resp.json() == {"detail": "Provider not found"}
 
 
-async def test_json_clients_get_json_off_the_api(dash_client: DashClient) -> None:
+@pytest.mark.parametrize("accept", ["application/json", "*/*", ""])
+async def test_script_clients_get_json_off_the_api(
+    dash_client: DashClient, accept: str
+) -> None:
+    """fetch() sends */*; WebAuthn and other script routes need JSON."""
     c, _ = dash_client
-    resp = await c.get("/providers/9999", headers={"Accept": "application/json"})
+    resp = await c.get("/providers/9999", headers={"Accept": accept})
     assert resp.status_code == 404
+    assert "detail" in resp.json()
+    resp = await c.post(
+        "/account/security/register/options", json={}, headers={"Accept": accept}
+    )
+    assert resp.status_code >= 400
     assert "detail" in resp.json()
 
 

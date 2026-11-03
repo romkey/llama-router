@@ -55,11 +55,15 @@ async def security_headers(
 
 
 def _wants_html(request: Request) -> bool:
-    """HTML for browser pages, JSON for ``/api/*`` and for JSON clients."""
+    """HTML for browser pages, JSON for ``/api/*`` and everything else.
+
+    Browsers ask for ``text/html`` when they load a page or submit a form;
+    ``fetch()`` sends ``*/*``, and the WebAuthn and other script-only
+    routes outside ``/api/`` need JSON back.
+    """
     if request.url.path.startswith("/api/"):
         return False
-    accept = request.headers.get("accept", "").lower()
-    return "text/html" in accept or "json" not in accept
+    return "text/html" in request.headers.get("accept", "").lower()
 
 
 def _error_page(request: Request, exc: StarletteHTTPException) -> Response:
