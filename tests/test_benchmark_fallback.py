@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llama_router.provider_manager import _transient_chat_benchmark_failure
+from llama_router.provider_benchmark import _transient_chat_benchmark_failure
 
 
 def _status_error(status: int) -> httpx.HTTPStatusError:

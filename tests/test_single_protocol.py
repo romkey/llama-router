@@ -8,7 +8,8 @@ from pytest_httpx import HTTPXMock
 
 from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol
-from llama_router.provider_manager import ProviderManager, worker_protocol
+from llama_router.provider_manager import ProviderManager
+from llama_router.worker_sync import worker_protocol
 
 
 def test_parse_accepts_old_name_and_rejects_both() -> None:

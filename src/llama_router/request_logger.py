@@ -39,7 +39,7 @@ _pricer: Callable[[int, str], Price | None] | None = None
 
 # Upstream answers that say the provider, not the request, is the problem.
 # 429 is left out: the provider is busy, not broken. Its client marks it busy
-# for the Retry-After period instead (see ProviderManager._response_hook).
+# for the Retry-After period instead (see ClientPool._response_hook).
 _PROVIDER_FAULT_4XX = frozenset({401, 403, 404, 408})
 _STATUS_RE = re.compile(r"^(?:HTTP |HTTPStatusError )(\d{3})")
 # Final-chunk fields that give generation speed.
