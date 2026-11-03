@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings
 from sqlalchemy.engine import make_url
 from sqlalchemy.engine.url import URL
 
+MIN_SESSION_SECRET_LENGTH = 32
+
 
 class Settings(BaseSettings):
     database_path: str = "llama_router.db"
@@ -173,7 +175,11 @@ class Settings(BaseSettings):
     # llama.cpp server's --models-dir to share models without pushing them.
     hf_models_dir: str = "./hf_models"
     # If set, signs dashboard session cookies; otherwise persisted in app_settings.
+    # At least MIN_SESSION_SECRET_LENGTH characters.
     session_secret: str = ""
+    # The secret used before session_secret was changed. Only read: values
+    # stored under it are re-encrypted or re-hashed with the new one.
+    session_secret_previous: str = ""
     # Without session_secret, a random secret is generated and kept in this
     # file (mode 0600) to encrypt provider keys and pepper client key hashes.
     # Empty: secret.key in the directory holding database_path.
@@ -228,6 +234,18 @@ class Settings(BaseSettings):
     oidc_allow_insecure: bool = False
 
     model_config = {"env_prefix": "LLAMA_ROUTER_"}
+
+    @model_validator(mode="after")
+    def validate_session_secret(self) -> Settings:
+        secret = self.session_secret.strip()
+        if secret and len(secret) < MIN_SESSION_SECRET_LENGTH:
+            raise ValueError(
+                f"LLAMA_ROUTER_SESSION_SECRET must be at least "
+                f"{MIN_SESSION_SECRET_LENGTH} characters (generate one with "
+                f"`openssl rand -base64 48`); to replace a short one, set the old "
+                f"value as LLAMA_ROUTER_SESSION_SECRET_PREVIOUS"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_webauthn(self) -> Settings:

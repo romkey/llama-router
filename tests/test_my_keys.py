@@ -5,17 +5,16 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llama_router.auth import key_hash
-from llama_router.config import settings
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
+from llama_router.provider_secrets import key_hash, session_signing_key
 
 DashClient = tuple[httpx.AsyncClient, Database]
 
 
 def _as(user_id: int) -> dict[str, str]:
-    token = sign_session(user_id, settings.session_secret.strip())
+    token = sign_session(user_id, session_signing_key())
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
 
 

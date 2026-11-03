@@ -24,6 +24,7 @@ from llama_router.dashboard.mfa import PENDING_COOKIE
 from llama_router.dashboard.mfa_store import MfaStore
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
+from llama_router.provider_secrets import session_signing_key
 
 ORIGIN = "https://testserver"
 HEADERS = {"X-Llama-Router-Security": "1", "Origin": ORIGIN}
@@ -326,7 +327,7 @@ async def test_enforcement_rejects_old_password_sessions_but_exempts_sso(
         is_admin=True,
     )
     client.cookies.clear()
-    client.cookies.set(AUTH_COOKIE, sign_session(oidc_uid, settings.session_secret))
+    client.cookies.set(AUTH_COOKIE, sign_session(oidc_uid, session_signing_key()))
     assert (await client.get("/api/status")).status_code == 200
     assert (await client.get("/profile")).status_code == 200
     assert "single sign-on provider" in (await client.get("/profile")).text

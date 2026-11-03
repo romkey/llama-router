@@ -13,7 +13,6 @@ slow hash protects guessable passwords, not tokens like these.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -26,6 +25,7 @@ from fastapi.responses import JSONResponse
 
 from ..auth import key_prefix
 from ..database import Database
+from ..provider_secrets import management_key_hash
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -77,10 +77,6 @@ class ManagementKey:
 
 def generate_management_key() -> str:
     return KEY_PREFIX + token_urlsafe(32)
-
-
-def management_key_hash(key: str) -> str:
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def bearer_token(request: Request) -> str | None:

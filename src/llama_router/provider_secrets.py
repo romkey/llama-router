@@ -10,15 +10,24 @@ the router and never stored in the database itself. Changing the secret, or
 losing that file, makes stored keys undecryptable, and the affected providers
 report that their key must be entered again.
 
-Before that file existed a fixed, public development key was used; values
-encrypted with it still decrypt, and :func:`reencrypt_legacy` moves them to
-the current key.
+Each use gets its own key, derived from that secret with HKDF (``info`` is
+the purpose: ``session``, ``api-key-pepper`` or ``fernet``). Values stored
+under an older key still decrypt or match, and are moved to the current one:
+keys derived directly from the secret (releases before HKDF), the fixed public
+development key used before the secret file existed, and the previous secret
+(``LLAMA_ROUTER_SESSION_SECRET_PREVIOUS``) while a secret is being rotated.
+
+Client API keys are stored as HMAC-SHA256 fingerprints. They are 32 random
+bytes, so a slow hash adds nothing; older PBKDF2 and plain SHA-256
+fingerprints still match and are replaced on first use (see ``auth.py``).
 """
 
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
+import hmac
 import logging
 import os
 import secrets
@@ -27,6 +36,8 @@ import threading
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .config import settings
 
@@ -36,6 +47,15 @@ logger = logging.getLogger(__name__)
 # so existing values can be decrypted and re-encrypted; never used to encrypt.
 _LEGACY_DEV_SECRET = b"llama-router-provider-key-dev"
 _CONTEXT = b"llama-router provider api key v1\x00"
+# Likewise the fixed pepper for client API key hashes.
+_LEGACY_DEV_PEPPER = b"llama-router-api-key-pepper-dev"
+_PBKDF2_ROUNDS = 390_000
+_HKDF_SALT = b"llama-router secrets v1"
+
+# HKDF purposes (the ``info`` parameter).
+PURPOSE_SESSION = "session"
+PURPOSE_API_KEY_PEPPER = "api-key-pepper"
+PURPOSE_FERNET = "fernet"
 
 DEFAULT_HEADER = "Authorization"
 SECRET_FILE_NAME = "secret.key"  # noqa: S105  # a file name, not a secret
@@ -123,13 +143,57 @@ def server_secret() -> bytes:
     return _local_secret()
 
 
+def previous_secret() -> bytes | None:
+    """``LLAMA_ROUTER_SESSION_SECRET_PREVIOUS``: read only, to migrate data."""
+    value = (settings.session_secret_previous or "").strip()
+    return value.encode("utf-8") if value else None
+
+
+@functools.lru_cache(maxsize=32)
+def _hkdf(secret: bytes, purpose: str) -> bytes:
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=_HKDF_SALT,
+        info=purpose.encode("ascii"),
+    ).derive(secret)
+
+
+def derive_key(purpose: str, secret: bytes | None = None) -> bytes:
+    """A 32-byte key for one *purpose*, derived from the server secret."""
+    return _hkdf(server_secret() if secret is None else secret, purpose)
+
+
+def session_signing_key() -> str:
+    """Signs dashboard cookies when ``LLAMA_ROUTER_SESSION_SECRET`` is set."""
+    return derive_key(PURPOSE_SESSION).hex()
+
+
 def _fernet_for(secret: bytes) -> Fernet:
+    """The key releases before HKDF used: SHA-256 of a context and the secret."""
     digest = hashlib.sha256(_CONTEXT + secret).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
 
+def _hkdf_fernet(secret: bytes | None = None) -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(derive_key(PURPOSE_FERNET, secret)))
+
+
 def _fernet() -> Fernet:
-    return _fernet_for(server_secret())
+    return _hkdf_fernet()
+
+
+def _legacy_fernets() -> list[Fernet]:
+    """Keys that may still open stored values, most likely first."""
+    out = [_fernet_for(server_secret())]
+    previous = previous_secret()
+    if previous is not None:
+        out.append(
+            Fernet(base64.urlsafe_b64encode(derive_key(PURPOSE_FERNET, previous)))
+        )
+        out.append(_fernet_for(previous))
+    out.append(_fernet_for(_LEGACY_DEV_SECRET))
+    return out
 
 
 def encrypt_api_key(plaintext: str) -> str:
@@ -137,19 +201,20 @@ def encrypt_api_key(plaintext: str) -> str:
 
 
 def _decrypt(token: str) -> tuple[str, bool]:
-    """Plaintext, and whether only the legacy development key opened it."""
+    """Plaintext, and whether an older key opened it (so it should be re-saved)."""
     try:
         return _fernet().decrypt(token.encode("ascii")).decode("utf-8"), False
     except InvalidToken, ValueError:
         pass
-    try:
-        legacy = _fernet_for(_LEGACY_DEV_SECRET).decrypt(token.encode("ascii"))
-    except (InvalidToken, ValueError) as exc:
-        raise ApiKeyUnavailableError(
-            "stored API key cannot be decrypted (was LLAMA_ROUTER_SESSION_SECRET "
-            "changed, or the secret key file lost?); enter the key again"
-        ) from exc
-    return legacy.decode("utf-8"), True
+    for fernet in _legacy_fernets():
+        try:
+            return fernet.decrypt(token.encode("ascii")).decode("utf-8"), True
+        except InvalidToken, ValueError:
+            continue
+    raise ApiKeyUnavailableError(
+        "stored API key cannot be decrypted (was LLAMA_ROUTER_SESSION_SECRET "
+        "changed, or the secret key file lost?); enter the key again"
+    )
 
 
 def decrypt_api_key(token: str) -> str:
@@ -157,7 +222,7 @@ def decrypt_api_key(token: str) -> str:
 
 
 def reencrypt_legacy(token: str) -> str | None:
-    """*token* re-encrypted with the current key if it used the legacy one.
+    """*token* re-encrypted with the current key if it used an older one.
 
     None when it already uses the current key or cannot be decrypted at all.
     """
@@ -166,6 +231,54 @@ def reencrypt_legacy(token: str) -> str | None:
     except ApiKeyUnavailableError:
         return None
     return encrypt_api_key(plaintext) if legacy else None
+
+
+def key_hash(key: str) -> str:
+    """Fingerprint stored for a client API key: HMAC-SHA256 with the derived
+    ``api-key-pepper`` key."""
+    return _hmac(key, server_secret())
+
+
+def _hmac(key: str, secret: bytes) -> str:
+    pepper = derive_key(PURPOSE_API_KEY_PEPPER, secret)
+    return hmac.new(pepper, key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def key_hash_legacy(key: str) -> str:
+    """Plain SHA-256, the oldest storage format; also the in-memory cache key."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def key_hash_previous(key: str) -> str | None:
+    """HMAC fingerprint under ``LLAMA_ROUTER_SESSION_SECRET_PREVIOUS``, if set."""
+    previous = previous_secret()
+    return None if previous is None else _hmac(key, previous)
+
+
+def pbkdf2_peppers() -> list[bytes]:
+    """Peppers older releases hashed client API keys with (PBKDF2), most
+    likely first."""
+    peppers = [server_secret()]
+    previous = previous_secret()
+    if previous is not None:
+        peppers.append(previous)
+    if not (settings.session_secret or "").strip():
+        # Created before the generated secret replaced the fixed pepper.
+        peppers.append(_LEGACY_DEV_PEPPER)
+    return peppers
+
+
+def key_hash_pbkdf2(key: str, pepper: bytes) -> str:
+    """A PBKDF2 fingerprint older releases stored. Slow (tens of
+    milliseconds): call it off the event loop."""
+    return hashlib.pbkdf2_hmac(
+        "sha256", key.encode("utf-8"), pepper, _PBKDF2_ROUNDS
+    ).hex()
+
+
+def management_key_hash(key: str) -> str:
+    """Fingerprint stored for a management key (32 random bytes): SHA-256."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 # Marks encrypted values in app_settings; older releases stored them plain.
