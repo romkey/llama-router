@@ -6,7 +6,7 @@ import functools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Concatenate
 
@@ -809,6 +809,20 @@ class Database:
             return when.strftime("%Y-%m-%d %H:%M:%S")
         return when
 
+    def _retained_since(self, since: datetime | None) -> datetime | None:
+        """The later of *since* and the start of the retention window (UTC,
+        naive): bounding an aggregate by ``created_at`` lets it read only the
+        rows still kept, through the index, even before a purge has run."""
+        days = settings.request_log_retention_days
+        if days <= 0:
+            return since
+        floor = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+        if since is None:
+            return floor
+        if since.tzinfo is not None:
+            since = since.astimezone(UTC).replace(tzinfo=None)
+        return max(since, floor)
+
     async def delete_request_logs_before(self, before: datetime) -> int:
         """Delete request log rows created before *before* (UTC); the count."""
         return await self._execute_rowcount(
@@ -852,6 +866,7 @@ class Database:
             "COALESCE(r.source_ip, '') <> 'internal'",
         ]
         params: list[Any] = []
+        since = self._retained_since(since)
         if since is not None:
             where.append("r.created_at >= ?")
             params.append(self._log_time(since))
@@ -972,10 +987,18 @@ class Database:
         return [_row_to_request_log(r) for r in rows]
 
     async def get_model_request_counts(self) -> dict[str, int]:
-        rows = await self._select_all(
-            "SELECT model, COUNT(*) AS cnt FROM request_log "
-            "WHERE model IS NOT NULL GROUP BY model"
-        )
+        since = self._retained_since(None)
+        if since is None:
+            rows = await self._select_all(
+                "SELECT model, COUNT(*) AS cnt FROM request_log "
+                "WHERE model IS NOT NULL GROUP BY model"
+            )
+        else:
+            rows = await self._select_all(
+                "SELECT model, COUNT(*) AS cnt FROM request_log "
+                "WHERE model IS NOT NULL AND created_at >= ? GROUP BY model",
+                (self._log_time(since),),
+            )
         return {r["model"]: r["cnt"] for r in rows}
 
     async def count_request_logs(self, *, owner_user_id: int | None = None) -> int:

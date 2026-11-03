@@ -1034,10 +1034,11 @@ async def dashboard(request: Request):
         routing_summary = _routing_summary(pm)
 
         cache = deps.get_cache()
-        cache_stats = cache.stats() if cache else None
+        # Each walks the cache directory: keep that off the event loop.
+        cache_stats = await asyncio.to_thread(cache.stats) if cache else None
         if cache_stats is not None:
             cache_stats["enabled"] = settings.cache_enabled
-        cached_models = cache.cached_models() if cache else set()
+        cached_models = await asyncio.to_thread(cache.cached_models) if cache else set()
 
         workers = await _worker_rows(db, pm)
         worker_link_status = await deps.get_worker_link().status()
@@ -1066,7 +1067,7 @@ async def dashboard(request: Request):
     if not read_only:
         cache = deps.get_cache()
         if cache:
-            for detail in cache.cached_model_details():
+            for detail in await asyncio.to_thread(cache.cached_model_details):
                 if detail["name"] not in provider_model_names:
                     total_size = sum(b["size"] for b in detail["blobs"])
                     all_models.append(
@@ -1250,7 +1251,7 @@ async def api_status(request: Request):
     cache = deps.get_cache()
     cache_stats = None
     if admin_payload and cache:
-        cache_stats = cache.stats()
+        cache_stats = await asyncio.to_thread(cache.stats)
         if cache_stats is not None:
             cache_stats["enabled"] = settings.cache_enabled
 
@@ -1720,9 +1721,9 @@ async def provider_detail(request: Request, provider_id: int):
     cached_models: set[str] = set()
     cached_only_models: list[dict] = []
     if cache:
-        cached_models = cache.cached_models()
+        cached_models = await asyncio.to_thread(cache.cached_models)
         provider_and_missing_names = local_names | {m["name"] for m in missing_models}
-        for detail in cache.cached_model_details():
+        for detail in await asyncio.to_thread(cache.cached_model_details):
             if detail["name"] not in provider_and_missing_names:
                 total_size = sum(b["size"] for b in detail["blobs"])
                 cached_only_models.append({"name": detail["name"], "size": total_size})
@@ -3042,7 +3043,7 @@ async def api_cache_status():
     cache = deps.get_cache()
     if cache is None:
         return JSONResponse({"enabled": False})
-    stats = cache.stats()
+    stats = await asyncio.to_thread(cache.stats)
     stats["enabled"] = settings.cache_enabled
     return JSONResponse(stats)
 

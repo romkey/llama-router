@@ -341,21 +341,41 @@ class UpstreamSlot:
             async for chunk in inner:
                 yield chunk
             return
+        # One timer for the whole stream, not one per chunk: when it fires
+        # while a chunk is awaited it cancels that wait (as asyncio.timeout
+        # does); otherwise the next wait sees it has fired.
         it = aiter(inner)
+        expired = False
+        waiting: asyncio.Task[Any] | None = None
+        cancelled = False
+
+        def expire() -> None:
+            nonlocal expired, cancelled
+            expired = True
+            if waiting is not None:
+                cancelled = True
+                waiting.cancel()
+
+        handle = asyncio.get_running_loop().call_later(_remaining(deadline), expire)
         try:
             while True:
-                timeout = asyncio.timeout(_remaining(deadline))
+                if expired:
+                    raise DeadlineExceeded()
+                waiting = asyncio.current_task()
                 try:
-                    async with timeout:
-                        chunk = await anext(it)
+                    chunk = await anext(it)
                 except StopAsyncIteration:
                     return
-                except TimeoutError as err:
-                    if timeout.expired():
+                except asyncio.CancelledError as err:
+                    task = asyncio.current_task()
+                    if cancelled and task is not None and task.uncancel() == 0:
                         raise DeadlineExceeded() from err
                     raise
+                finally:
+                    waiting = None
                 yield chunk
         finally:
+            handle.cancel()
             aclose = getattr(it, "aclose", None)
             if aclose is not None:
                 await aclose()
