@@ -1309,6 +1309,10 @@
                         <label class="form-label" for="worker-new-name">New worker name</label>
                         <input type="text" class="form-control" id="worker-new-name" placeholder="alice-3090" maxlength="64" autocomplete="off">
                     </div>
+                    <div class="col-sm-4 col-md-2">
+                        <label class="form-label" for="worker-new-expiry">Expires after (days)</label>
+                        <input type="number" class="form-control" id="worker-new-expiry" min="1" max="3650" placeholder="never">
+                    </div>
                     <div class="col-auto">
                         <button type="button" class="btn btn-success" id="worker-create-btn"><i class="bi bi-plus-lg me-1"></i>Create worker token</button>
                     </div>
@@ -1347,7 +1351,7 @@
                                 <td class="small" data-worker-jobs>{% if w.live %}{{ w.live.in_flight }} / {{ w.live.max_concurrency }}{% else %}&mdash;{% endif %}</td>
                                 <td class="small" data-worker-models>{{ w.models_label }}</td>
                                 <td class="small text-muted" data-worker-seen>{% if w.last_connected_at %}{{ w.last_connected_at | localtime }}{% if w.last_remote_addr %} from {{ w.last_remote_addr }}{% endif %}{% else %}never{% endif %}</td>
-                                <td><code class="small">{{ w.token_prefix }}</code></td>
+                                <td><code class="small">{{ w.token_prefix }}</code>{% if w.token_expired %} <span class="badge bg-danger">expired</span>{% elif w.token_expires %}<div class="small text-muted">expires {{ w.token_expires | localtime }}</div>{% endif %}</td>
                                 <td class="text-end text-nowrap">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick='workerRotate({{ w.id }}, {{ w.name | tojson }})' title="Issue a new token and disconnect the old one"><i class="bi bi-arrow-repeat"></i></button>
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="workerSetEnabled({{ w.id }}, {{ 'false' if w.enabled else 'true' }})" title="{{ 'Disable' if w.enabled else 'Enable' }}"><i class="bi {{ 'bi-pause-circle' if w.enabled else 'bi-play-circle' }}"></i></button>
@@ -4088,7 +4092,18 @@ function workerAgo(epochSeconds) {
 function workerRotate(id, name) {
     if (!dashRequireWrite()) return;
     if (!confirm('Issue a new token for ' + name + '? The current token stops working and the worker disconnects.')) return;
-    workerFetchJson('/api/workers/' + id + '/rotate', {method: 'POST'})
+    var days = prompt('Expire the new token after how many days? Leave empty for never.', '');
+    if (days === null) return;
+    days = days.trim();
+    if (days !== '' && !/^[0-9]+$/.test(days)) {
+        workerBanner('worker-banner', 'danger', 'Expiry must be a whole number of days, or empty for never. The token was not rotated.');
+        return;
+    }
+    workerFetchJson('/api/workers/' + id + '/rotate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({expires_in_days: days === '' ? null : parseInt(days, 10)})
+    })
         .then(function(res) {
             var hub = {% if api_on_dashboard_port %}window.location.protocol + '//' + window.location.host{% else %}window.location.protocol + '//' + window.location.hostname + ':{{ api_port }}'{% endif %};
             workerShowToken(name, 'LLAMA_ROUTER_WORKER_HUB_URL=' + hub + '\nLLAMA_ROUTER_WORKER_TOKEN=' + res.token);
@@ -4260,10 +4275,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!dashRequireWrite()) return;
         var name = (document.getElementById('worker-new-name').value || '').trim();
         if (!name) { workerBanner('worker-banner', 'danger', 'Enter a name for the worker.'); return; }
+        var days = (document.getElementById('worker-new-expiry').value || '').trim();
         workerFetchJson('/api/workers', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name: name})
+            body: JSON.stringify({name: name, expires_in_days: days === '' ? null : parseInt(days, 10)})
         }).then(function(res) {
             workerShowToken(res.name, res.env_example);
             var tb = document.getElementById('workers-tbody');
@@ -4278,6 +4294,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     '<td class="text-end small text-muted">reload for actions</td></tr>');
             }
             document.getElementById('worker-new-name').value = '';
+            document.getElementById('worker-new-expiry').value = '';
         }).catch(function(e) { workerBanner('worker-banner', 'danger', e.message); });
     });
 

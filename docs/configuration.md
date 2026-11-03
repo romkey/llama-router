@@ -147,7 +147,7 @@ together pins the link and locks the dashboard form.
 | `WORKER_MAX_BODY_BYTES_IN_FLIGHT` | `268435456` (256 MiB) | Request bodies the worker buffers at once across all jobs; a job that would go over is refused with 503 |
 | `WORKER_ALLOW_ADMIN` | `false` | Let the hub pull and delete models on this worker |
 | `WORKER_EXPOSE` | *(dashboard; `combined`)* | `combined`: the hub sees this worker as one provider. `individual`: each shared provider on its own |
-| `WORKER_RESPONSE_BUFFER_BYTES` | `16777216` (16 MiB) | Hub: response bytes held per job for a slow client. When full the hub stops reading from that worker; a job still full after 30 s is failed |
+| `WORKER_RESPONSE_BUFFER_BYTES` | `16777216` (16 MiB) | Hub: response bytes held per job for a slow client. A job whose client falls this far behind is failed and cancelled on the worker; other jobs on the same worker are unaffected |
 | `WORKER_MAX_RESPONSE_BYTES` | `1073741824` (1 GiB) | Hub: largest response one job may send back; a larger one is cut off with an error |
 | `WORKER_MAX_SHARED_PROVIDERS` | `256` | Hub: providers one worker may share individually, counting ones it stopped sharing that are not yet deleted |
 | `WORKER_CATALOG_MIN_INTERVAL_SECONDS` | `5` | Hub: a worker's provider list is applied at most this often; only the latest list in between is used |

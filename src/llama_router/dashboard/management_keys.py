@@ -205,7 +205,7 @@ async def api_create_management_key(request: Request) -> JSONResponse:
             detail=f"name is required (at most {MAX_NAME_LENGTH} characters)",
         )
     privileges = parse_privileges(body.get("privileges"))
-    expires_at = _expiry(body.get("expires_in_days"))
+    expires_at = expiry_from_days(body.get("expires_in_days"))
     plaintext = generate_management_key()
     key_id = await deps.get_db().create_management_key(
         name=name,
@@ -243,7 +243,8 @@ async def api_delete_management_key(key_id: int, request: Request) -> JSONRespon
     return JSONResponse({"ok": True})
 
 
-def _expiry(value: Any) -> int | None:
+def expiry_from_days(value: Any) -> int | None:
+    """Unix time *value* days from now; None (never) for an empty value."""
     if value is None or value == "":
         return None
     try:

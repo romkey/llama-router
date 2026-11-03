@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from . import router_identity
+from . import router_identity, routing_table
 from .affinity import Binding, SessionAffinity, session_key, short_key
 from .config import settings
 from .database import ROUTING_CHANGES, Database
@@ -48,8 +48,8 @@ from .routing_table import (
     Candidate,
     RoutingInputs,
     RoutingTable,
+    TableBase,
     alias_groups,
-    build_table,
     load_inputs,
     reaches,
 )
@@ -135,6 +135,10 @@ class Router:
         self._min_interval_s = min_interval_s
         self._table: RoutingTable | None = None
         self._inputs: RoutingInputs | None = None
+        # The table's structure from _inputs, and the providers hidden from
+        # the hub when it was built; rescored on live samples.
+        self._base: TableBase | None = None
+        self._base_hidden: frozenset[int] = frozenset()
         self._need_reload = True
         self._need_rescore = True
         self._pending_reasons: list[str] = []
@@ -191,6 +195,8 @@ class Router:
 
     def _on_stats_change(self, reason: str) -> None:
         # Live samples only change scores; the database inputs are unchanged.
+        # The stats call this only for a change that can reorder candidates
+        # (see ProviderStats.mark_built).
         self.mark_dirty(reason, reload=False)
 
     async def rebuild(self) -> RoutingTable:
@@ -208,9 +214,20 @@ class Router:
                 inputs = self._inputs
                 if reload or inputs is None:
                     inputs = self._inputs = await load_inputs(self._db)
+                hidden = frozenset(self._pm.hub_loopback_ids())
+                base = self._base
+                if reload or base is None or hidden != self._base_hidden:
+                    # Building runs in a thread so requests keep being served:
+                    # the inputs are a snapshot nothing else changes.
+                    base = await asyncio.to_thread(
+                        routing_table.reload, _hide_from_hub(inputs, set(hidden))
+                    )
+                    self._base, self._base_hidden = base, hidden
                 self._version += 1
-                table = build_table(
-                    _hide_from_hub(inputs, self._pm.hub_loopback_ids()),
+                self._pm.stats.mark_built()
+                table = await asyncio.to_thread(
+                    routing_table.rescore,
+                    base,
                     hot_models=self._pm.hot_model_names,
                     stats=self._pm.stats,
                     version=self._version,
@@ -220,6 +237,9 @@ class Router:
                 if reload:
                     self._need_reload = True
                 self._need_rescore = True
+                # Nothing was built from that snapshot: let the next sample
+                # count as a change, so it brings another attempt.
+                self._pm.stats.forget_built()
                 raise
             self._table = table
             if reload:

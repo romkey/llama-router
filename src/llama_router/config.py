@@ -151,8 +151,8 @@ class Settings(BaseSettings):
     # Jobs whose bodies would go over it are refused with 503.
     worker_max_body_bytes_in_flight: int = 256 * 1024 * 1024
     # Hub: response bytes held per job waiting for the client to read them.
-    # When full the hub stops reading from that worker until there is room;
-    # a job that stays full for 30 seconds is failed.
+    # A job whose client falls this far behind is failed (and cancelled on
+    # the worker) so it cannot stall the other jobs sharing the socket.
     worker_response_buffer_bytes: int = 16 * 1024 * 1024
     # Hub: largest response one job may send back from a worker.
     worker_max_response_bytes: int = 1024 * 1024 * 1024
