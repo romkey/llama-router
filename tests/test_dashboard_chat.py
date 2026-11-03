@@ -11,7 +11,6 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from llama_router.config import settings
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.dashboard.chat import (
@@ -25,6 +24,7 @@ from llama_router.dashboard.middleware import invalidate_dashboard_user_count_ca
 from llama_router.database import Database
 from llama_router.llamacpp_client import OpenAIClient
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
+from llama_router.provider_secrets import session_signing_key
 from llama_router.router import Router
 
 DashClient = tuple[httpx.AsyncClient, Database]
@@ -93,7 +93,7 @@ async def _backend(db: Database, seen: list[dict[str, Any]]) -> int:
 
 
 def _as(user_id: int) -> dict[str, str]:
-    token = sign_session(user_id, settings.session_secret.strip())
+    token = sign_session(user_id, session_signing_key())
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
 
 
@@ -105,7 +105,7 @@ async def _signed_in(dash_client: DashClient) -> None:
         "chat-admin", hash_password("pw-123456789"), True
     )
     invalidate_dashboard_user_count_cache()
-    c.cookies.set(AUTH_COOKIE, sign_session(uid, settings.session_secret.strip()))
+    c.cookies.set(AUTH_COOKIE, sign_session(uid, session_signing_key()))
 
 
 async def test_targets_list_online_providers(dash_client: DashClient) -> None:

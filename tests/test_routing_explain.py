@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from llama_router.affinity import session_key
-from llama_router.auth import key_hash
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.app import app as dash_app
 from llama_router.database import Database
@@ -14,6 +13,7 @@ from llama_router.models import (
     ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.router import (
     ENDPOINT_PROTOCOLS,
     Router,

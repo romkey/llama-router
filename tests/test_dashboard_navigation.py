@@ -13,6 +13,7 @@ from llama_router.dashboard import deps
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.database import Database
 from llama_router.models import ProviderProtocol
+from llama_router.provider_secrets import session_signing_key
 from llama_router.registry_cache.cache import BlobCache
 
 
@@ -60,7 +61,7 @@ async def test_navigation_stays_consistent_across_pages(
     user_id = await db.create_dashboard_user(
         "test-user", hash_password("test-password"), role == "admin"
     )
-    client.cookies.set(AUTH_COOKIE, sign_session(user_id, settings.session_secret))
+    client.cookies.set(AUTH_COOKIE, sign_session(user_id, session_signing_key()))
     provider = await db.add_provider("test-provider", ProviderProtocol.OLLAMA)
     pages = ["/", "/chat", "/my-keys", "/decisions", f"/providers/{provider.id}"]
     # Operate tabs, then the Access menu (admins only), then Tools.

@@ -8,11 +8,7 @@ import pytest
 from starlette.requests import Request
 
 from llama_router import request_logger
-from llama_router.auth import (
-    generate_api_key,
-    key_hash,
-    routing_preferences_from_request,
-)
+from llama_router.auth import generate_api_key, routing_preferences_from_request
 from llama_router.background import drain
 from llama_router.database import Database
 from llama_router.models import (
@@ -22,6 +18,7 @@ from llama_router.models import (
     ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_stats import WARM_WINDOW_S, ProviderStats
 from llama_router.routing_table import fallback_chains

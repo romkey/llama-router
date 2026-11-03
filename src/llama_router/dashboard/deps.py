@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 from ..config import settings
 from ..database import Database
 from ..provider_manager import ProviderManager
+from ..provider_secrets import session_signing_key
 from ..registry_cache.cache import BlobCache
 from ..worker_link.worker import WorkerLinkManager
 
@@ -94,7 +95,7 @@ def invalidate_dashboard_session_secret_cache() -> None:
 async def get_dashboard_session_secret() -> str:
     global _dashboard_session_secret_cache
     if settings.session_secret.strip():
-        return settings.session_secret.strip()
+        return session_signing_key()
     if _dashboard_session_secret_cache:
         return _dashboard_session_secret_cache
     db = get_db()

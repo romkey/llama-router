@@ -14,7 +14,7 @@ from pytest_httpx import HTTPXMock
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as ollama_app
-from llama_router.auth import generate_api_key, key_hash, key_prefix
+from llama_router.auth import generate_api_key, key_prefix
 from llama_router.background import drain
 from llama_router.database import Database
 from llama_router.limits import limiter
@@ -27,6 +27,7 @@ from llama_router.models import (
     ProviderStatus,
 )
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.router import Router
 
 MODEL = "m"

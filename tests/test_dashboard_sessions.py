@@ -21,13 +21,14 @@ from llama_router.dashboard.auth_core import (
 from llama_router.dashboard.login_throttle import LoginThrottle
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
+from llama_router.provider_secrets import session_signing_key
 
 DashClient = tuple[httpx.AsyncClient, Database]
 PASSWORD = "password-12345"  # noqa: S105  # test fixture value
 
 
 def _secret() -> str:
-    return settings.session_secret.strip()
+    return session_signing_key()
 
 
 def _cookie(token: str) -> dict[str, str]:

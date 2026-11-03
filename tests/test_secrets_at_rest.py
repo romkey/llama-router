@@ -13,16 +13,19 @@ from llama_router import provider_secrets as ps
 from llama_router.auth import (
     _resolve_key,
     generate_api_key,
-    key_hash,
-    key_hash_legacy_pepper,
     key_prefix,
 )
 from llama_router.config import settings
 from llama_router.database import Database
 from llama_router.models import ProviderProtocol
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.sentry import FILTERED, scrub_event
 from llama_router.worker_link.worker import WorkerLinkManager
+
+
+def _legacy_pepper_hash(key: str) -> str:
+    return ps.key_hash_pbkdf2(key, ps._LEGACY_DEV_PEPPER)
 
 
 def _legacy_encrypt(plaintext: str) -> str:
@@ -148,7 +151,7 @@ async def test_legacy_pepper_key_matches_and_is_rehashed(
     key = generate_api_key()
     key_id = await db.create_api_key(
         key_prefix=key_prefix(key),
-        key_hash=key_hash_legacy_pepper(key),
+        key_hash=_legacy_pepper_hash(key),
         routing_mode="auto",
         allow_fallback=True,
     )
@@ -156,7 +159,7 @@ async def test_legacy_pepper_key_matches_and_is_rehashed(
     assert resolved is not None
     assert resolved[1] == key_id
     assert await db.lookup_api_key(key_hash(key)) is not None
-    assert await db.lookup_api_key(key_hash_legacy_pepper(key)) is None
+    assert await db.lookup_api_key(_legacy_pepper_hash(key)) is None
 
 
 def test_scrub_event_drops_request_parts_and_masks_secrets() -> None:
@@ -192,11 +195,11 @@ async def test_legacy_pepper_rehash_race_still_authenticates(
     key = generate_api_key()
     key_id = await db.create_api_key(
         key_prefix=key_prefix(key),
-        key_hash=key_hash_legacy_pepper(key),
+        key_hash=_legacy_pepper_hash(key),
         routing_mode="auto",
         allow_fallback=True,
     )
-    old_hash = key_hash_legacy_pepper(key)
+    old_hash = _legacy_pepper_hash(key)
     real_lookup = db.lookup_api_key
 
     async def lookup(fingerprint: str) -> dict[str, Any] | None:
