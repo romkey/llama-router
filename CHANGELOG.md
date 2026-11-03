@@ -88,6 +88,12 @@ described in their git tags and GitHub Releases.
 
 ### Changed
 
+- `database.py` is split into per-domain repositories under
+  `src/llama_router/repositories/` (providers, benchmarks, request log, model
+  config, decisions, chat, workers, API keys, management keys, dashboard
+  users) on a shared query base; the change reasons and `@_notifies` live in
+  `db_events.py`. `Database` still combines them, so callers are unchanged.
+  These modules now pass `mypy --strict`.
 - Less database and disk work behind the dashboard and the registry cache.
   `/api/status`, `/api/ps`, `/metrics`, `/health` and `/v1/audio/voices` read
   every provider's models, addresses and benchmarks in four queries instead
