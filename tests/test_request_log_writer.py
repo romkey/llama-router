@@ -18,6 +18,7 @@ from llama_router.__main__ import ServerStartupError, _Server, serve_all
 from llama_router.dashboard import routes as dash_routes
 from llama_router.database import Database
 from llama_router.models import RequestLog
+from llama_router.spend import tracker_for
 
 
 def _log(db: Database, **kwargs: Any) -> None:
@@ -176,3 +177,30 @@ async def test_bind_failure_stops_every_server() -> None:
         assert good.should_exit
     finally:
         taken.close()
+
+
+@pytest.mark.parametrize("failure", ["build", "drop"])
+async def test_unlogged_row_settles_its_reservation(
+    db: Database, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    tracker = tracker_for(db)
+    held = await tracker.reserve(1, 1.0, 0.25)
+    assert held is not None
+    if failure == "build":
+
+        def broken(*_args: Any, **_kwargs: Any) -> RequestLog:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(request_logger, "_build_entry", broken)
+    else:
+        monkeypatch.setattr(request_logger, "QUEUE_MAX", 1)
+        monkeypatch.setattr(request_logger, "_log_writer", None)
+        _log(db)  # fills the queue; the writer cannot run before the next
+
+    _log(db, spend_reservation=held)
+    await background.drain()
+
+    assert held.released
+    assert held.charged
+    # The hold is gone and the estimate is charged instead.
+    assert await tracker.committed_today(1) == pytest.approx(0.25)

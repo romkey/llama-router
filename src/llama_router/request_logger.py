@@ -647,10 +647,7 @@ class _LogWriter:
             dropped = metrics.request_log_dropped_total()
             if dropped == 1 or dropped % 1000 == 0:
                 logger.warning("Request log writer is behind; %d rows dropped", dropped)
-            held = kwargs.get("spend_reservation")
-            if isinstance(held, Reservation):
-                # Charge the estimate so the cap still counts the request.
-                tracker_for(db).settle(held, held.amount)
+            _charge_estimate(db, kwargs)
             return
         self._wake.set()
 
@@ -706,8 +703,18 @@ class _LogWriter:
                 by_db.setdefault(db, []).append(_build_entry(db, **kwargs))
             except Exception:
                 logger.exception("Could not build a request log row")
+                _charge_estimate(db, kwargs)
         for db, entries in by_db.items():
             await db.save_request_logs(entries)
+
+
+def _charge_estimate(db: Database, kwargs: dict[str, Any]) -> None:
+    """Settle the spend reservation of a row that will not be logged at its
+    estimate, so the cap still counts the request and the hold is freed.
+    A no-op when the reservation was already settled."""
+    held = kwargs.get("spend_reservation")
+    if isinstance(held, Reservation):
+        tracker_for(db).settle(held, held.amount)
 
 
 _log_writer: _LogWriter | None = None
