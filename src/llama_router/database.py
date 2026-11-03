@@ -1393,12 +1393,18 @@ class Database:
     # --- Workers (hub side) ---
 
     async def create_worker(
-        self, name: str, token_hash: str, token_prefix: str, provider_id: int
+        self,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+        provider_id: int,
+        token_expires_at: int | None = None,
     ) -> int:
         return await self._insert_get_id(
-            "INSERT INTO workers (name, token_hash, token_prefix, provider_id) "
-            "VALUES (?, ?, ?, ?)",
-            (name, token_hash, token_prefix, provider_id),
+            "INSERT INTO workers "
+            "(name, token_hash, token_prefix, provider_id, token_expires_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, token_hash, token_prefix, provider_id, token_expires_at),
         )
 
     async def list_workers(self) -> list[dict]:
@@ -1422,11 +1428,16 @@ class Database:
         return _row_to_worker(row) if row else None
 
     async def set_worker_token(
-        self, worker_id: int, token_hash: str, token_prefix: str
+        self,
+        worker_id: int,
+        token_hash: str,
+        token_prefix: str,
+        token_expires_at: int | None = None,
     ) -> None:
         await self._execute(
-            "UPDATE workers SET token_hash = ?, token_prefix = ? WHERE id = ?",
-            (token_hash, token_prefix, worker_id),
+            "UPDATE workers SET token_hash = ?, token_prefix = ?, "
+            "token_expires_at = ? WHERE id = ?",
+            (token_hash, token_prefix, token_expires_at, worker_id),
         )
 
     async def set_worker_enabled(self, worker_id: int, enabled: bool) -> None:
@@ -2091,10 +2102,12 @@ def _row_to_dashboard_user(row: Mapping[str, Any]) -> dict:
 
 def _row_to_worker(row: Mapping[str, Any]) -> dict:
     pid = row.get("provider_id")
+    expires = row.get("token_expires_at")
     return {
         "id": int(row["id"]),
         "name": row["name"],
         "token_prefix": row["token_prefix"],
+        "token_expires_at": None if expires is None else int(expires),
         "provider_id": int(pid) if pid is not None else None,
         "enabled": bool(row["enabled"]),
         "created_at": row["created_at"],

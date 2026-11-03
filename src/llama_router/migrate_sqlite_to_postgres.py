@@ -79,6 +79,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "name",
             "token_hash",
             "token_prefix",
+            "token_expires_at",
             "provider_id",
             "enabled",
             "created_at",

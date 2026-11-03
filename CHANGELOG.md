@@ -7,6 +7,13 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- Worker tokens can expire. Set "Expires after (days)" when creating a worker
+  or when rotating its token (or `expires_in_days` on `POST /api/workers` and
+  `POST /api/workers/{id}/rotate`); the hub refuses an expired token and
+  closes a connected worker's session when its token expires.
+
 ### Security
 
 - Every dashboard response now sends `X-Frame-Options: DENY`, a
@@ -94,6 +101,13 @@ described in their git tags and GitHub Releases.
   `prompt_eval_duration` (from llama-server's timings when present), speeds
   over a million tokens per second are not stored, and an upgrade deletes the
   bad benchmarks already stored so they are measured again.
+- A hub client that falls more than `LLAMA_ROUTER_WORKER_RESPONSE_BUFFER_BYTES`
+  behind a worker's response no longer stalls every other job on that worker:
+  the hub fails and cancels only that job instead of pausing the socket.
+- Workers decode the request path before checking it against the allowed
+  endpoints, and refuse encoded slashes (`%2F`), `.` and `..` segments and
+  doubly encoded paths, so an encoded path cannot reach an endpoint the
+  worker does not serve.
 - The routing table no longer stalls request handling while it is rebuilt,
   and is rebuilt far less often. Building runs in a worker thread; a live
   request or health-check sample only rescores the existing candidates

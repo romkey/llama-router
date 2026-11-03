@@ -30,9 +30,6 @@ logger = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "lrw_"  # noqa: S105  # public prefix, not a secret
 _HELLO_TIMEOUT = 15.0
-# A job whose response buffer stays full this long (its client is not
-# reading) is failed, so one slow client cannot stall the whole socket.
-_STALL_TIMEOUT = 30.0
 
 
 def generate_worker_token() -> str:
@@ -48,6 +45,11 @@ def worker_token_prefix(token: str) -> str:
     return token[:12] + "…" if len(token) > 12 else token
 
 
+def worker_token_expired(row: dict[str, Any], now: float | None = None) -> bool:
+    expires = row.get("token_expires_at")
+    return expires is not None and expires <= (time.time() if now is None else now)
+
+
 def _bearer(websocket: WebSocket) -> str:
     raw = (websocket.headers.get("authorization") or "").strip()
     if raw.lower().startswith("bearer "):
@@ -56,7 +58,7 @@ def _bearer(websocket: WebSocket) -> str:
 
 
 class _Pending:
-    __slots__ = ("buffered", "finished", "id", "queue", "received", "room", "started")
+    __slots__ = ("buffered", "finished", "id", "queue", "received", "started")
 
     def __init__(self, req_id: int) -> None:
         self.id = req_id
@@ -67,22 +69,16 @@ class _Pending:
         # Body bytes queued and not yet read, and received in all.
         self.buffered = 0
         self.received = 0
-        # Set while the queue has room for more body bytes.
-        self.room = asyncio.Event()
-        self.room.set()
 
     def take(self, item: bytes) -> None:
         """The reader took *item* off the queue."""
         self.buffered -= len(item)
-        if self.buffered < settings.worker_response_buffer_bytes:
-            self.room.set()
 
     def fail(self, exc: BaseException) -> None:
         """End the response with *exc*, dropping whatever is still queued."""
         while not self.queue.empty():
             self.queue.get_nowait()
         self.buffered = 0
-        self.room.set()
         if not self.started.done():
             self.started.set_exception(exc)
             self.started.exception()
@@ -186,7 +182,6 @@ class WorkerConnection:
         self._requests.pop(req_id, None)
         if pend is not None and not pend.finished:
             pend.finished = True
-            pend.room.set()
             self._slots.release()
 
     async def cancel(self, req_id: int) -> None:
@@ -342,19 +337,12 @@ class WorkerConnection:
                     f"{settings.worker_max_response_bytes} bytes",
                 )
                 return
-            if pend.buffered >= settings.worker_response_buffer_bytes:
-                # Backpressure: stop reading from the socket until the client
-                # catches up (TCP slows the worker down meanwhile).
-                pend.room.clear()
-                try:
-                    await asyncio.wait_for(pend.room.wait(), _STALL_TIMEOUT)
-                except TimeoutError:
-                    await self._abort(
-                        pend, "client stopped reading the worker's response"
-                    )
-                    return
-                if pend.finished:
-                    return
+            if pend.buffered + len(payload) > settings.worker_response_buffer_bytes:
+                # Never wait here: the read loop serves every job on this
+                # socket, so a client that falls behind loses only its own
+                # response instead of stalling the others.
+                await self._abort(pend, "client fell behind the worker's response")
+                return
             pend.buffered += len(payload)
             pend.queue.put_nowait(payload)
         elif kind == p.RESP_END:
@@ -628,6 +616,12 @@ class WorkerHub:
             logger.warning("Rejected worker connection from %s: bad token", remote)
             await websocket.close(code=p.CLOSE_UNAUTHORIZED)
             return
+        if worker_token_expired(row):
+            logger.warning(
+                "Rejected worker %s from %s: token expired", row.get("name"), remote
+            )
+            await websocket.close(code=p.CLOSE_UNAUTHORIZED)
+            return
 
         await websocket.accept()
         try:
@@ -691,6 +685,16 @@ class WorkerHub:
             logger.info("Worker %s reconnected; closing previous socket", name)
             await previous.close(p.CLOSE_REPLACED, "replaced by a newer connection")
         self._conns[provider_id] = conn
+        # A session outlives no token: close it when the token expires.
+        expires = row.get("token_expires_at")
+        expiry_timer = (
+            asyncio.get_running_loop().call_later(
+                max(0.0, expires - time.time()),
+                lambda: self._spawn(conn.close(p.CLOSE_REVOKED, "token expired")),
+            )
+            if expires is not None
+            else None
+        )
 
         try:
             await websocket.send_text(
@@ -723,6 +727,8 @@ class WorkerHub:
         except Exception as exc:
             logger.warning("Worker %s session error: %s", name, exc)
         finally:
+            if expiry_timer is not None:
+                expiry_timer.cancel()
             conn.fail_all("socket closed")
             if self._conns.get(provider_id) is conn:
                 del self._conns[provider_id]

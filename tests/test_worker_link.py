@@ -80,6 +80,17 @@ def test_filter_headers_drops_hop_by_hop_and_credentials() -> None:
         ("GET", "/api/chat", False, False),
         ("POST", "/api/../admin", False, False),
         ("POST", "//api/chat", False, False),
+        ("POST", "/api/ch%61t", False, True),
+        ("POST", "/api/%2e%2e/admin", False, False),
+        ("POST", "/api/%2E%2E/api/pull", False, False),
+        ("GET", "/v1/models/a%2Fb", False, False),
+        ("GET", "/v1/models/a%2fb", False, False),
+        ("GET", "/v1/models/..", False, False),
+        ("GET", "/v1/models/%2e%2e", False, False),
+        ("GET", "/v1/models/./x", False, False),
+        ("GET", "/v1/models/a%252Fb", False, False),
+        ("POST", "/api/pull%3Fx", True, False),
+        ("GET", "/v1/models/llama3%3A8b", False, True),
         ("GET", "/users", True, False),
         ("POST", "/v1/systemone", False, True),
         ("POST", "/v1/decisions", False, True),
@@ -473,6 +484,36 @@ async def test_bad_token_is_rejected(link) -> None:
     w.start()
     await _wait_for(lambda: w.state == "rejected")
     assert "rejected" in (w.last_error or "")
+    assert not link["pm"].worker_hub.is_connected(link["provider_id"])
+
+
+async def test_expired_token_is_rejected(link) -> None:
+    db = link["db"]
+    await db.set_worker_token(
+        link["worker_id"],
+        worker_token_hash(link["token"]),
+        worker_token_prefix(link["token"]),
+        int(time.time()) - 1,
+    )
+    w = link["make_worker"]()
+    link["workers"].append(w)
+    w.start()
+    await _wait_for(lambda: w.state == "rejected")
+    assert not link["pm"].worker_hub.is_connected(link["provider_id"])
+
+
+async def test_session_closes_when_its_token_expires(link) -> None:
+    db = link["db"]
+    await db.set_worker_token(
+        link["worker_id"],
+        worker_token_hash(link["token"]),
+        worker_token_prefix(link["token"]),
+        int(time.time()) + 3,
+    )
+    w = await _connected_worker(link)
+    assert link["pm"].worker_hub.is_connected(link["provider_id"])
+    await _wait_for(lambda: w.state == "rejected", timeout=8)
+    assert w.last_error == "token expired"
     assert not link["pm"].worker_hub.is_connected(link["provider_id"])
 
 
@@ -1463,31 +1504,34 @@ async def test_hub_cuts_off_a_response_over_the_ceiling(monkeypatch) -> None:
     assert conn._ws.text[-1] == {"type": "cancel", "id": 1}
 
 
-async def test_hub_stops_reading_while_a_client_falls_behind(monkeypatch) -> None:
-    from llama_router.worker_link import hub as hub_mod
-
+async def test_hub_aborts_only_the_stream_whose_client_falls_behind(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(settings, "worker_response_buffer_bytes", 10)
-    monkeypatch.setattr(hub_mod, "_STALL_TIMEOUT", 1.5)
     conn = _hub_conn()
-    pend, stream = await _open_response(conn)
+    pend, stream = await _open_response(conn, 1)
+    other, other_stream = await _open_response(conn, 2)
     await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"a" * 6))
-    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"b" * 6))
-    # Full: the next frame waits for the client to read.
-    blocked = asyncio.create_task(
-        conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"c" * 6))
-    )
-    await asyncio.sleep(0.05)
-    assert not blocked.done()
     assert await stream.__anext__() == b"a" * 6
-    await asyncio.wait_for(blocked, 1)
-    assert pend.buffered == 12
-
-    # A client that stops reading altogether loses its response.
-    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"d" * 6))
-    with pytest.raises(httpx.ReadError, match="stopped reading"):
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"b" * 6))
+    # Over the buffer: the frame is handled at once (the read loop never
+    # waits on a client) and only that job is failed and cancelled.
+    await asyncio.wait_for(
+        conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"c" * 6)), 0.5
+    )
+    with pytest.raises(httpx.ReadError, match="fell behind"):
         await stream.__anext__()
-    assert conn.in_flight == 0
     assert pend.buffered == 0
+    assert conn._ws.text[-1] == {"type": "cancel", "id": 1}
+    assert conn.in_flight == 1
+
+    # The other job on the same socket carries on.
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 2, b"z" * 4))
+    assert await other_stream.__anext__() == b"z" * 4
+    await conn._on_bytes(p.encode_binary(p.RESP_END, 2, b""))
+    with pytest.raises(StopAsyncIteration):
+        await other_stream.__anext__()
+    assert other.finished
 
 
 async def test_catalogs_are_applied_at_a_limited_rate_latest_first(

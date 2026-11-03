@@ -19,7 +19,10 @@ client ──HTTP──▶ hub router ──WebSocket (outbound from worker)─�
 ## Setup
 
 1. On the hub, **Workers** tab: create a worker. This creates a provider named
-   after it with the address `worker://<name>` and shows a token once.
+   after it with the address `worker://<name>` and shows a token once. Set
+   **Expires after (days)** for a token that stops working on its own; the
+   hub then refuses it and closes a connected worker's session. Rotating the
+   token asks for a new expiry.
 2. On the worker, **Workers** tab: enter the hub URL and token. Or set
    `LLAMA_ROUTER_WORKER_HUB_URL` and `LLAMA_ROUTER_WORKER_TOKEN`.
 3. The worker connects, the hub discovers its models, and the provider goes
@@ -165,8 +168,8 @@ Close codes:
 
 | Code | Meaning | Worker behaviour |
 |------|---------|------------------|
-| 4401 | Bad token | Retry after five minutes |
-| 4403 | Token revoked, rotated, or worker disabled | Retry after five minutes |
+| 4401 | Bad or expired token | Retry after five minutes |
+| 4403 | Token revoked, rotated, expired during the session, or worker disabled | Retry after five minutes |
 | 4409 | Replaced by a newer connection with the same token | Retry after 30 seconds |
 | 4400 | Protocol error | Retry after five minutes |
 | 4508 | Hub and worker are the same router (same router ID) | Retry after five minutes |
@@ -197,7 +200,9 @@ not seen from it since the hub started, so an upgraded worker is picked up
 without waiting for the probe to go stale.
 
 A worker refuses a path outside its allowlist with 403 and an error starting
-`worker does not allow`. Every worker version words it the same way, and the
+`worker does not allow`. It checks the path after percent-decoding it, and
+refuses encoded slashes (`%2F`), `.` and `..` segments and paths still
+encoded after one decode. Every worker version words it the same way, and the
 hub's probe reads it as a missing route rather than one that needs a key. An
 older worker therefore gets decisions emulated. If a probe stored before the
 hub knew this still claims a decision route, the refused pass-through is
