@@ -5,10 +5,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from llama_router.config import settings
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.database import Database
 from llama_router.models import RequestLog
+from llama_router.provider_secrets import session_signing_key
 
 
 async def test_log_ownership_filters_before_pagination(db: Database) -> None:
@@ -62,7 +62,7 @@ async def test_dashboard_logs_and_live_count_are_user_scoped(
             )
         )
     await db.save_request_log(RequestLog(protocol="system", endpoint="/system-event"))
-    client.cookies.set(AUTH_COOKIE, sign_session(owner, settings.session_secret))
+    client.cookies.set(AUTH_COOKIE, sign_session(owner, session_signing_key()))
     response = await client.get(f"/?owner_user_id={other}")
     assert response.status_code == 200
     assert 'id="log-pane"' in response.text
@@ -74,7 +74,7 @@ async def test_dashboard_logs_and_live_count_are_user_scoped(
     response = await client.get(f"/api/status?owner_user_id={other}")
     assert response.json()["log_total"] == 1
 
-    client.cookies.set(AUTH_COOKIE, sign_session(admin, settings.session_secret))
+    client.cookies.set(AUTH_COOKIE, sign_session(admin, session_signing_key()))
     response = await client.get("/")
     for endpoint in [
         "/unique-request-0",
@@ -86,7 +86,7 @@ async def test_dashboard_logs_and_live_count_are_user_scoped(
     assert "internal-backend-address" in response.text
     assert (await client.get("/api/status")).json()["log_total"] == 4
 
-    client.cookies.set(AUTH_COOKIE, sign_session(other, settings.session_secret))
+    client.cookies.set(AUTH_COOKIE, sign_session(other, session_signing_key()))
     await db.delete_owned_api_key(
         (await db.list_api_keys(owner_user_id=other))[0]["id"], other
     )
@@ -133,7 +133,7 @@ async def test_dashboard_log_page_is_clamped(
     await db.save_request_log(
         RequestLog(protocol="ollama", endpoint="/only-request", api_key_id=key)
     )
-    client.cookies.set(AUTH_COOKIE, sign_session(owner, settings.session_secret))
+    client.cookies.set(AUTH_COOKIE, sign_session(owner, session_signing_key()))
     response = await client.get(f"/?log_page={page}")
     assert response.status_code == 200
     assert "/only-request" in response.text

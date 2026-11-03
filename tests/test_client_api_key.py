@@ -13,7 +13,6 @@ from llama_router.api.app import app as ollama_app
 from llama_router.auth import (
     client_api_key,
     generate_api_key,
-    key_hash,
     key_prefix,
     routing_preferences_from_request,
 )
@@ -21,6 +20,7 @@ from llama_router.database import Database
 from llama_router.llamacpp_api import deps as v1_deps
 from llama_router.llamacpp_api.app import app as v1_app
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.router import Router
 
 
@@ -88,7 +88,7 @@ async def _fail_lookup(_hash: str) -> None:
 
 def _count_hashes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
-    real = auth.key_hash
+    real = key_hash
 
     def counting(key: str) -> str:
         calls.append(key)

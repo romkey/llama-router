@@ -12,14 +12,11 @@ from llama_router.affinity import (
     SessionAffinity,
     session_key,
 )
-from llama_router.auth import (
-    generate_api_key,
-    key_hash,
-    routing_preferences_from_request,
-)
+from llama_router.auth import generate_api_key, routing_preferences_from_request
 from llama_router.database import Database
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.router import Router, RoutingPreferences
 from llama_router.routing_stats import ProviderStats
 

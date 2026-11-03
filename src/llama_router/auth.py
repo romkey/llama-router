@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import re
 import time
@@ -18,7 +17,13 @@ from .config import settings
 from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
 from .pricing import estimate_tokens
-from .provider_secrets import server_secret
+from .provider_secrets import (
+    key_hash,
+    key_hash_legacy,
+    key_hash_pbkdf2,
+    key_hash_previous,
+    pbkdf2_peppers,
+)
 from .router import ROUTING_MODES, Router, RouteResult, RoutingPreferences
 from .routing_table import DEFAULT_MODE
 from .spend import RESERVATION_STATE, cap_reached, tracker_for
@@ -28,14 +33,14 @@ from .worker_link.relay import is_own_relay
 
 logger = logging.getLogger(__name__)
 
-_PBKDF2_ROUNDS = 390_000
 # Resolved keys are reused for this long unless an edit invalidates them.
 _PREFS_TTL_S = 300.0
 # last_used_at is written at most this often per key.
 _TOUCH_INTERVAL_S = 60.0
 _MAX_CACHED_KEYS = 1024
 # Keys the database did not know are refused from memory for this long, so
-# a client retrying a wrong key does not cost a PBKDF2 hash per request.
+# a client retrying a wrong key does not cost a PBKDF2 hash per request
+# (older fingerprints are still checked for keys the fast forms miss).
 _INVALID_TTL_S = 30.0
 _MAX_INVALID_KEYS = 10_000
 # At most this many PBKDF2 hashes run at once (per event loop).
@@ -59,39 +64,6 @@ def key_prefix(key: str) -> str:
     if len(key) <= 10:
         return key
     return key[:10] + "…"
-
-
-def key_hash_legacy(key: str) -> str:
-    """Legacy storage format (plain SHA-256); used for backward-compatible lookup."""
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
-
-
-# The fixed pepper older releases used without a session secret. Keys
-# hashed with it still match and are re-hashed with the current pepper.
-_LEGACY_DEV_PEPPER = b"llama-router-api-key-pepper-dev"
-
-
-def _pbkdf2(key: str, pepper: bytes) -> str:
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        key.encode("utf-8"),
-        pepper,
-        _PBKDF2_ROUNDS,
-    ).hex()
-
-
-def key_hash(key: str) -> str:
-    """Fingerprint for API key storage using PBKDF2-HMAC-SHA256.
-
-    The pepper is ``LLAMA_ROUTER_SESSION_SECRET``, or the generated secret
-    file's value when that is not set.
-    """
-    return _pbkdf2(key, server_secret())
-
-
-def key_hash_legacy_pepper(key: str) -> str:
-    """PBKDF2 fingerprint with the old fixed development pepper."""
-    return _pbkdf2(key, _LEGACY_DEV_PEPPER)
 
 
 class _AuthCache:
@@ -176,7 +148,9 @@ _hash_slots: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaph
 )
 
 
-async def _hash_off_loop(fn: Callable[[str], str], key: str) -> str:
+async def _hash_off_loop(
+    fn: Callable[[str, bytes], str], key: str, pepper: bytes
+) -> str:
     """Run a PBKDF2 hash in a thread, a few at a time.
 
     PBKDF2 takes tens of milliseconds; a flood of keys must not tie up every
@@ -187,7 +161,45 @@ async def _hash_off_loop(fn: Callable[[str], str], key: str) -> str:
     if slots is None:
         slots = _hash_slots[loop] = asyncio.Semaphore(_MAX_CONCURRENT_HASHES)
     async with slots:
-        return await asyncio.to_thread(fn, key)
+        return await asyncio.to_thread(fn, key, pepper)
+
+
+async def _upgrade_hash(db: Database, key_id: int, modern: str) -> None:
+    try:
+        await db.set_api_key_hash(key_id, modern)
+        logger.info("Upgraded API key %s to an HMAC-SHA256 hash", key_id)
+    except Exception:
+        logger.warning(
+            "Could not upgrade the hash of API key %s", key_id, exc_info=True
+        )
+
+
+async def _lookup_record(db: Database, key: str, legacy: str) -> dict[str, Any] | None:
+    """The key's database row, upgrading an older fingerprint to HMAC-SHA256.
+
+    Tries the current fingerprint, then plain SHA-256 (*legacy*) and the HMAC
+    under the previous secret, which are cheap, and only then PBKDF2 under
+    each secret older releases may have used.
+    """
+    modern = key_hash(key)
+    record = await db.lookup_api_key(modern)
+    if record:
+        return record
+    for old in (legacy, key_hash_previous(key)):
+        if old is None or old == modern:
+            continue
+        record = await db.lookup_api_key(old)
+        if record:
+            await _upgrade_hash(db, int(record["id"]), modern)
+            return record
+    for pepper in pbkdf2_peppers():
+        old = await _hash_off_loop(key_hash_pbkdf2, key, pepper)
+        record = await db.lookup_api_key(old)
+        if record:
+            await _upgrade_hash(db, int(record["id"]), modern)
+            return record
+    # A concurrent request may have just re-hashed it.
+    return await db.lookup_api_key(modern)
 
 
 async def _resolve_key(
@@ -197,33 +209,7 @@ async def _resolve_key(
 
     *legacy* is ``key_hash_legacy(key)``, already computed by the caller.
     """
-    record = await db.lookup_api_key(legacy)
-    modern = await _hash_off_loop(key_hash, key)
-    if record:
-        # Stored in the old plain SHA-256 form: upgrade it now that we have
-        # the key. Lookups still try the legacy form first, then PBKDF2.
-        if modern != legacy:
-            try:
-                await db.set_api_key_hash(int(record["id"]), modern)
-                logger.info("Upgraded API key %s to a PBKDF2 hash", record["id"])
-            except Exception:
-                logger.warning(
-                    "Could not upgrade the hash of API key %s",
-                    record["id"],
-                    exc_info=True,
-                )
-    else:
-        if modern != legacy:
-            record = await db.lookup_api_key(modern)
-        if not record and not settings.session_secret.strip():
-            # Created before the generated secret replaced the fixed pepper.
-            old = await _hash_off_loop(key_hash_legacy_pepper, key)
-            record = await db.lookup_api_key(old)
-            if record:
-                await db.set_api_key_hash(int(record["id"]), modern)
-            else:
-                # A concurrent request may have just re-hashed it.
-                record = await db.lookup_api_key(modern)
+    record = await _lookup_record(db, key, legacy)
     if not record:
         return None
     mode = str(record["routing_mode"]).lower()

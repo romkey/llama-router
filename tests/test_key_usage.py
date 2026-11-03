@@ -12,6 +12,7 @@ from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_se
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
 from llama_router.models import RequestLog
+from llama_router.provider_secrets import session_signing_key
 from tests.conftest import db_timestamp
 
 CHAT = "/v1/chat/completions"
@@ -194,7 +195,7 @@ async def test_model_request_counts_stay_in_the_retention_window(
 
 
 def _cookie(user_id: int) -> dict[str, str]:
-    token = sign_session(user_id, settings.session_secret.strip())
+    token = sign_session(user_id, session_signing_key())
     return {"Cookie": f"{AUTH_COOKIE}={token}"}
 
 

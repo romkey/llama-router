@@ -32,7 +32,7 @@ from pydantic import BaseModel
 from .. import __version__, hf_download, router_identity
 from .. import metrics as metrics_mod
 from ..affinity import session_key
-from ..auth import generate_api_key, key_hash, key_prefix
+from ..auth import generate_api_key, key_prefix
 from ..background import spawn
 from ..client_address import client_ip, forwarded_for_ignored
 from ..cloud_presets import PRESETS, get_preset
@@ -42,7 +42,7 @@ from ..httpx_errors import describe_httpx_error
 from ..models import ProviderProtocol, RequestLog
 from ..probe import FAMILY_LABELS, BlockedAddressError, probe_url
 from ..provider_manager import preset_settings
-from ..provider_secrets import format_extra_headers, parse_extra_headers
+from ..provider_secrets import format_extra_headers, key_hash, parse_extra_headers
 from ..router import (
     ENDPOINT_PROTOCOLS,
     ROUTING_MODES,
