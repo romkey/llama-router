@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
 from ..config import settings
+from ..httpx_errors import install_upstream_error_handlers
 from ..limits import BodySizeLimitMiddleware
 from ..llamacpp_api.audio import router as v1_audio_router
 from ..llamacpp_api.chat import router as v1_chat_router
@@ -84,6 +85,8 @@ async def http_exception_handler(
         headers=exc.headers,
     )
 
+
+install_upstream_error_handlers(app)
 
 app.include_router(chat_router)
 app.include_router(generate_router)

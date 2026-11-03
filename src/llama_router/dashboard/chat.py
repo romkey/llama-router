@@ -463,10 +463,10 @@ async def send(request: Request) -> JSONResponse:
     db = deps.get_db()
     pm = deps.get_pm()
     pid = turn.provider.require_id()
-    client = get_v1_client(pm, pid)
     start = time.monotonic()
     try:
         async with pm.acquire_provider(pid):
+            client = get_v1_client(pm, pid)
             if turn.mode == "image":
                 resp = await client.images_generations(turn.upstream)
             else:
@@ -573,8 +573,8 @@ async def _relay(request: Request, turn: Turn) -> AsyncIterator[bytes]:
     reply: dict[str, Any] | None = None
     start = time.monotonic()
     try:
-        client = get_v1_client(pm, pid)
         async with pm.acquire_provider(pid):
+            client = get_v1_client(pm, pid)
             async for chunk in client.chat_completions_stream(
                 {**turn.upstream, "stream": True}
             ):

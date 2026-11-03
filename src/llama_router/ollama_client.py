@@ -8,13 +8,16 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 
 from .httpx_errors import describe_httpx_error, raise_for_stream_status
 from .models import ProviderModel
+
+if TYPE_CHECKING:
+    from .v1_client import MultipartForm
 
 logger = logging.getLogger(__name__)
 
@@ -404,12 +407,12 @@ class OllamaClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def v1_images_edits(self, data: bytes, content_type: str) -> httpx.Response:
+    async def v1_images_edits(self, form: MultipartForm) -> httpx.Response:
         resp = await self._post(
             "/v1/images/edits",
             op="OpenAI-compatible image edits (/v1/images/edits)",
-            content=data,
-            headers={"Content-Type": content_type},
+            data=form.data,
+            files=form.files,
             timeout=httpx.Timeout(10.0, read=600.0),
         )
         resp.raise_for_status()
@@ -435,14 +438,12 @@ class OllamaClient:
             )
             raise
 
-    async def v1_audio_transcriptions(
-        self, data: bytes, content_type: str
-    ) -> httpx.Response:
+    async def v1_audio_transcriptions(self, form: MultipartForm) -> httpx.Response:
         resp = await self._post(
             "/v1/audio/transcriptions",
             op="OpenAI-compatible audio transcription (/v1/audio/transcriptions)",
-            content=data,
-            headers={"Content-Type": content_type},
+            data=form.data,
+            files=form.files,
             timeout=httpx.Timeout(10.0, read=600.0),
         )
         resp.raise_for_status()

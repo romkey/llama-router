@@ -34,7 +34,13 @@ from .models import (
     plausible_tokens_per_second,
 )
 from .ollama_client import OllamaClient
-from .probe import check_not_metadata, merge_results, probe_url
+from .probe import (
+    BlockedAddressError,
+    check_not_metadata,
+    merge_results,
+    normalize_base_url,
+    probe_url,
+)
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailableError,
@@ -121,6 +127,16 @@ def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
     return False
 
 
+async def _check_provider_url(url: str) -> None:
+    """Refuse a provider address that is not plain http(s) (another scheme, or
+    credentials in it) or that reaches a cloud metadata service."""
+    try:
+        normalize_base_url(url)
+    except ValueError as exc:
+        raise BlockedAddressError(str(exc)) from exc
+    await check_not_metadata(url)
+
+
 def worker_protocol(targets: list[str]) -> ProviderProtocol:
     """The one protocol a worker provider is reached by.
 
@@ -158,6 +174,11 @@ class ProviderManager:
         )
         self._ollama_clients: dict[int, OllamaClient] = {}
         self._llamacpp_clients: dict[int, LlamaCppClient] = {}
+        # Requests using each client right now (see acquire_provider), and the
+        # clients a rebuild replaced while still in use: those close when
+        # their last request finishes, not mid-request.
+        self._client_users: dict[OllamaClient | LlamaCppClient, int] = {}
+        self._retired: set[OllamaClient | LlamaCppClient] = set()
         self._active_requests: dict[int, int] = defaultdict(int)
         self._hot_models: dict[int, list[HotModel]] = {}
         # The model each llama.cpp upstream reports as loaded (/props).
@@ -386,10 +407,13 @@ class ProviderManager:
         for timer in list(self._purge_timers.values()):
             timer.cancel()
         self._purge_timers.clear()
-        for client in self._ollama_clients.values():
+        for client in [
+            *self._ollama_clients.values(),
+            *self._llamacpp_clients.values(),
+            *self._retired,
+        ]:
             await client.close()
-        for lcpp_client in self._llamacpp_clients.values():
-            await lcpp_client.close()
+        self._retired.clear()
 
     # --- Address helpers ---
 
@@ -428,12 +452,15 @@ class ProviderManager:
         return headers or None
 
     async def _rebuild_clients(self, provider: Provider) -> None:
-        """Close existing clients and create new ones from the best live address."""
+        """Replace the provider's clients with ones for the best live address.
+
+        Requests already running keep the old client until they finish.
+        """
         provider_id = provider.require_id()
-        await self._close_clients(provider_id)
         addresses = await self._db.get_addresses(provider_id)
         addr = self._best_address(addresses)
         if not addr:
+            await self._close_clients(provider_id)
             self._active_urls.pop(provider_id, None)
             return
         kw: dict[str, Any] = {"on_response": self._response_hook(provider_id)}
@@ -452,10 +479,16 @@ class ProviderManager:
         # A worker's address only names it; the transport picks the socket,
         # and a path in it (worker://<name>/<id>) must not reach the worker.
         base = "http://worker" if provider.is_worker else addr.url
+        new: OllamaClient | LlamaCppClient
         if provider.is_ollama:
-            self._ollama_clients[provider_id] = OllamaClient(base, **kw)
+            new = OllamaClient(base, **kw)
         else:
-            self._llamacpp_clients[provider_id] = LlamaCppClient(base, **kw)
+            new = LlamaCppClient(base, **kw)
+        await self._close_clients(provider_id)
+        if isinstance(new, OllamaClient):
+            self._ollama_clients[provider_id] = new
+        else:
+            self._llamacpp_clients[provider_id] = new
         self._active_urls[provider_id] = self._address_url_sig(addr)
 
     def _response_hook(
@@ -476,12 +509,43 @@ class ProviderManager:
         return on_response
 
     async def _close_clients(self, provider_id: int) -> None:
-        if provider_id in self._ollama_clients:
-            await self._ollama_clients[provider_id].close()
-            del self._ollama_clients[provider_id]
-        if provider_id in self._llamacpp_clients:
-            await self._llamacpp_clients[provider_id].close()
-            del self._llamacpp_clients[provider_id]
+        """Drop the provider's clients; each closes once no request uses it."""
+        ollama = self._ollama_clients.pop(provider_id, None)
+        if ollama is not None:
+            await self._retire(ollama)
+        lcpp = self._llamacpp_clients.pop(provider_id, None)
+        if lcpp is not None:
+            await self._retire(lcpp)
+
+    async def _retire(self, client: OllamaClient | LlamaCppClient) -> None:
+        if self._client_users.get(client, 0) > 0:
+            self._retired.add(client)
+        else:
+            await client.close()
+
+    def _pin_clients(self, provider_id: int) -> list[OllamaClient | LlamaCppClient]:
+        pinned: list[OllamaClient | LlamaCppClient] = []
+        ollama = self._ollama_clients.get(provider_id)
+        if ollama is not None:
+            pinned.append(ollama)
+        lcpp = self._llamacpp_clients.get(provider_id)
+        if lcpp is not None:
+            pinned.append(lcpp)
+        for client in pinned:
+            self._client_users[client] = self._client_users.get(client, 0) + 1
+        return pinned
+
+    async def _unpin_clients(self, pinned: list[OllamaClient | LlamaCppClient]) -> None:
+        for client in pinned:
+            left = self._client_users.get(client, 0) - 1
+            if left > 0:
+                self._client_users[client] = left
+                continue
+            self._client_users.pop(client, None)
+            if client in self._retired:
+                self._retired.discard(client)
+                with suppress(Exception):
+                    await client.close()
 
     # --- Provider CRUD ---
 
@@ -503,7 +567,7 @@ class ProviderManager:
         *provider_settings* are optional columns (preset, extra_headers,
         manual_models, ...) written before the first check.
         """
-        await check_not_metadata(url)
+        await _check_provider_url(url)
         header = normalize_header(api_key_header) if api_key else None
         provider_settings = dict(provider_settings or {})
         if not provider_settings.get("locality"):
@@ -667,7 +731,7 @@ class ProviderManager:
         url: str,
         is_preferred: bool = False,
     ) -> ProviderAddress:
-        await check_not_metadata(url)
+        await _check_provider_url(url)
         addr = await self._db.add_address(provider_id, url, is_preferred)
         provider = await self._db.get_provider(provider_id)
         if provider:
@@ -684,7 +748,7 @@ class ProviderManager:
         addr = await self._db.get_address(address_id)
         if not addr:
             return
-        await check_not_metadata(url)
+        await _check_provider_url(url)
         await self._db.update_address(address_id, url, is_preferred)
         provider = await self._db.get_provider(addr.provider_id)
         if provider:
@@ -824,19 +888,29 @@ class ProviderManager:
     def get_llamacpp_client(self, provider_id: int) -> LlamaCppClient:
         return self._llamacpp_clients[provider_id]
 
+    def find_ollama_client(self, provider_id: int) -> OllamaClient | None:
+        return self._ollama_clients.get(provider_id)
+
+    def find_llamacpp_client(self, provider_id: int) -> LlamaCppClient | None:
+        return self._llamacpp_clients.get(provider_id)
+
     def ollama_api_client(self, provider_id: int) -> OllamaClient | OllamaOverOpenAI:
         """What the Ollama API handlers call: the provider's Ollama client, or
-        for an OpenAI-style provider, one that translates (see translate)."""
+        for an OpenAI-style provider, one that translates (see translate).
+
+        Raises NoReachableAddressError when the provider has neither.
+        """
         client = self._ollama_clients.get(provider_id)
         if client is not None:
             return client
+        lcpp = self._llamacpp_clients.get(provider_id)
+        if lcpp is None:
+            from .v1_client import NoReachableAddressError
+
+            raise NoReachableAddressError()
         from .translate import OllamaOverOpenAI
 
-        return OllamaOverOpenAI(self._llamacpp_clients[provider_id])
-
-    def get_client(self, provider_id: int) -> OllamaClient:
-        """Backward compat: return Ollama client."""
-        return self._ollama_clients[provider_id]
+        return OllamaOverOpenAI(lcpp)
 
     def add_activity_listener(self, fn: Callable[[int], None]) -> None:
         """Call *fn(provider_id)* whenever a proxied request starts."""
@@ -873,11 +947,18 @@ class ProviderManager:
 
     @asynccontextmanager
     async def acquire_provider(self, provider_id: int) -> AsyncIterator[None]:
+        """Count a request against the provider for its duration.
+
+        The provider's clients are kept open until it ends even if an edit
+        replaces them, so fetch the client inside this block, not before.
+        """
+        pinned = self._pin_clients(provider_id)
         self.acquire(provider_id)
         try:
             yield
         finally:
             self.release(provider_id)
+            await self._unpin_clients(pinned)
 
     def active_requests(self, provider_id: int) -> int:
         return self._active_requests.get(provider_id, 0)
@@ -1349,9 +1430,15 @@ class ProviderManager:
             if client is None:
                 raise RuntimeError(f"No client available for provider {provider.name}")
             protocol = provider.protocol.value
-            metrics = await self._try_benchmark(
-                client, backend_name, model_name, provider_id
-            )
+            # Not counted as a request (that would reset idle detection), but
+            # the client must stay open if an edit replaces it meanwhile.
+            pinned = self._pin_clients(provider_id)
+            try:
+                metrics = await self._try_benchmark(
+                    client, backend_name, model_name, provider_id
+                )
+            finally:
+                await self._unpin_clients(pinned)
 
             result = BenchmarkResult(
                 provider_id=provider_id,

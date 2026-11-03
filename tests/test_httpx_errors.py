@@ -6,7 +6,13 @@ from typing import Any
 import httpx
 from fastapi.responses import JSONResponse
 
-from llama_router.httpx_errors import describe_httpx_error, forward_upstream_http_error
+from llama_router.httpx_errors import (
+    MAX_ERROR_BODY,
+    describe_httpx_error,
+    forward_upstream_http_error,
+    raise_for_stream_status,
+    read_capped,
+)
 
 GENERIC = "upstream service returned an error"
 
@@ -108,3 +114,48 @@ def test_server_errors_get_a_generic_body() -> None:
     resp = forward_upstream_http_error(exc)
     assert resp.status_code == 500
     assert _body(resp) == {"error": GENERIC}
+
+
+async def _streamed(
+    status: int, chunks: list[bytes]
+) -> tuple[httpx.Response, list[int]]:
+    sent: list[int] = []
+
+    async def body() -> Any:
+        for chunk in chunks:
+            sent.append(len(chunk))
+            yield chunk
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status, content=body(), headers={"retry-after": "3", "x-y": "z"}
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    req = client.build_request("POST", "http://up.test/v1/chat/completions")
+    return await client.send(req, stream=True), sent
+
+
+async def test_error_body_read_is_capped() -> None:
+    chunk = b"x" * 16 * 1024
+    resp, sent = await _streamed(500, [chunk] * 64)
+    capped = await read_capped(resp)
+    assert len(capped.content) == MAX_ERROR_BODY
+    # Reading stopped at the cap instead of draining the whole megabyte.
+    assert sum(sent) == MAX_ERROR_BODY
+    assert capped.status_code == 500
+    assert capped.headers["retry-after"] == "3"
+    assert resp.is_closed
+
+
+async def test_stream_status_error_keeps_a_capped_readable_body() -> None:
+    resp, _ = await _streamed(429, [b'{"error": "slow down"}'])
+    try:
+        await raise_for_stream_status(resp)
+    except httpx.HTTPStatusError as exc:
+        forwarded = forward_upstream_http_error(exc)
+    else:
+        raise AssertionError("expected HTTPStatusError")
+    assert forwarded.status_code == 429
+    assert json.loads(bytes(forwarded.body)) == {"error": "slow down"}
+    assert forwarded.headers["retry-after"] == "3"
