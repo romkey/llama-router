@@ -853,19 +853,27 @@ class ProviderManager:
         return conn.summary()
 
     async def list_provider_infos(self) -> list[ProviderInfo]:
+        # Four queries however many providers there are, grouped here; each
+        # bulk query keeps the order the per-provider one used.
         providers = await self._db.list_providers()
+        models: dict[int, list[ProviderModel]] = {}
+        for m in await self._db.get_all_provider_models():
+            models.setdefault(m.provider_id, []).append(m)
+        addresses: dict[int, list[ProviderAddress]] = {}
+        for a in await self._db.get_all_addresses():
+            addresses.setdefault(a.provider_id, []).append(a)
+        benchmarks: dict[int, list[BenchmarkResult]] = {}
+        for b in await self._db.get_all_benchmark_results():
+            benchmarks.setdefault(b.provider_id, []).append(b)
         infos = []
         for p in providers:
             p_id = p.require_id()
-            models = await self._db.get_provider_models(p_id)
-            benchmarks = await self._db.get_benchmarks_for_provider(p_id)
-            addresses = await self._db.get_addresses(p_id)
             infos.append(
                 ProviderInfo(
                     provider=p,
-                    models=models,
-                    benchmarks=benchmarks,
-                    addresses=addresses,
+                    models=models.get(p_id, []),
+                    benchmarks=benchmarks.get(p_id, []),
+                    addresses=addresses.get(p_id, []),
                     active_requests=self._active_requests.get(p_id, 0),
                     hot_models=self._hot_models.get(p_id, []),
                     worker=self.worker_summary(p),

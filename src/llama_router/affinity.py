@@ -224,8 +224,9 @@ class SessionAffinity:
         self.max_per_key = max(0, int(max_per_key))
         self._clock = clock
         self._entries: OrderedDict[str, tuple[Binding, float]] = OrderedDict()
-        # Live entries per scope, kept in step with _entries.
-        self._per_scope: dict[str, int] = {}
+        # Each scope's keys in the same LRU order as _entries, so the
+        # scope's oldest session is found without scanning every entry.
+        self._per_scope: dict[str, OrderedDict[str, None]] = {}
         self.hits = 0  # request went to its bound provider
         self.misses = 0  # new session, bound to the normal choice
         self.rebinds = 0  # bound provider was not eligible; moved
@@ -277,8 +278,9 @@ class SessionAffinity:
             self.rebinds += 1
         entries = self._entries
         scope = _scope_of(key)
-        if key not in entries:
-            self._per_scope[scope] = self._per_scope.get(scope, 0) + 1
+        scoped = self._per_scope.setdefault(scope, OrderedDict())
+        scoped[key] = None
+        scoped.move_to_end(key)
         entries[key] = (Binding(provider_id, model), now)
         entries.move_to_end(key)
         for _ in range(_SWEEP_BATCH):
@@ -286,10 +288,10 @@ class SessionAffinity:
             if first is None or now - entries[first][1] < self.ttl_s:
                 break
             self._drop(first)
-        if self.max_per_key and self._per_scope.get(scope, 0) > self.max_per_key:
+        held = self._per_scope.get(scope)
+        if self.max_per_key and held and len(held) > self.max_per_key:
             # Oldest first, so the scope's least recently used session goes.
-            oldest = next(k for k in entries if _scope_of(k) == scope)
-            self._drop(oldest)
+            self._drop(next(iter(held)))
         while len(entries) > self.max_sessions:
             self._drop(next(iter(entries)))
 
@@ -297,11 +299,11 @@ class SessionAffinity:
         if self._entries.pop(key, None) is None:
             return
         scope = _scope_of(key)
-        left = self._per_scope.get(scope, 0) - 1
-        if left > 0:
-            self._per_scope[scope] = left
-        else:
-            self._per_scope.pop(scope, None)
+        scoped = self._per_scope.get(scope)
+        if scoped is not None:
+            scoped.pop(key, None)
+            if not scoped:
+                del self._per_scope[scope]
 
     def forget(self, key: str | None) -> None:
         if key:
