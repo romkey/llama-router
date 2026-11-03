@@ -67,8 +67,13 @@ async def test_failed_add_provider_reopens_the_dialog_filled_in(
     # The key is never echoed back.
     assert "sk-secret" not in page.text
     assert "addProviderModal')).show()" in page.text
-    # Shown once: the page clears the cookie.
-    assert dash_routes._ADD_FORM_COOKIE in page.headers.get("set-cookie", "")
+    # Shown once: the page clears the cookie, with the attributes it was set
+    # with so browsers honour the deletion.
+    cleared = page.headers.get("set-cookie", "").lower()
+    assert dash_routes._ADD_FORM_COOKIE in cleared
+    assert "max-age=0" in cleared
+    assert "samesite=strict" in cleared
+    assert "httponly" in cleared
 
 
 async def test_dashboard_ignores_a_bad_prefill_cookie(dash_client: DashClient) -> None:
@@ -117,7 +122,7 @@ async def test_bad_json_bodies_are_400(
 
 
 async def test_allow_unauthenticated_round_trip(dash_client: DashClient) -> None:
-    c, db = dash_client
+    c, _ = dash_client
     resp = await c.post("/api/auth/allow-unauthenticated", json={"allow": True})
     assert resp.json() == {"allow_unauthenticated": True}
     page = await c.get("/")

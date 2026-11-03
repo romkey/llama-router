@@ -1125,7 +1125,7 @@ async def dashboard(request: Request):
         ),
     )
     if _ADD_FORM_COOKIE in request.cookies:
-        resp.delete_cookie(_ADD_FORM_COOKIE)
+        _clear_add_form(request, resp)
     return resp
 
 
@@ -1839,6 +1839,16 @@ def _add_provider_failed(
     return resp
 
 
+def _clear_add_form(request: Request, resp: Response) -> None:
+    """Expire the prefill cookie with the attributes it was set with."""
+    resp.delete_cookie(
+        _ADD_FORM_COOKIE,
+        secure=_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+
+
 def _add_provider_prefill(request: Request) -> dict[str, str]:
     raw = request.cookies.get(_ADD_FORM_COOKIE, "")
     if not raw or len(raw) > _ADD_FORM_MAX:
@@ -1940,7 +1950,7 @@ async def add_provider(
         logger.exception("add_provider failed")
         return _add_provider_failed(request, "Could not add provider", form)
     resp = RedirectResponse(url="/", status_code=303)
-    resp.delete_cookie(_ADD_FORM_COOKIE)
+    _clear_add_form(request, resp)
     return resp
 
 
