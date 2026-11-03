@@ -41,7 +41,8 @@ import logging
 import time
 from collections.abc import AsyncIterator, MutableMapping
 from contextlib import asynccontextmanager, suppress
-from typing import Any
+from pathlib import Path
+from typing import Any, BinaryIO
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -63,6 +64,8 @@ logger = logging.getLogger(__name__)
 
 UPSTREAM = "https://registry.ollama.ai"
 CHUNK_SIZE = 256 * 1024  # 256 KB
+# Bytes buffered before a worker thread writes and hashes them.
+FLUSH_SIZE = 4 * 1024 * 1024
 
 _cache: BlobCache | None = None
 _upstream_client: httpx.AsyncClient | None = None
@@ -159,6 +162,53 @@ def _upstream() -> httpx.AsyncClient:
     if _upstream_client is None:
         raise RuntimeError("upstream client not initialized")
     return _upstream_client
+
+
+class _BlobWriter:
+    """Writes a blob to *path* and hashes it, in a worker thread.
+
+    Chunks are buffered up to FLUSH_SIZE so a multi-gigabyte download costs
+    a few hundred thread hops, and the event loop never blocks on the disk
+    or on sha256.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._file: BinaryIO | None = None
+        self._hasher = hashlib.sha256()
+        self._buf = bytearray()
+
+    async def __aenter__(self) -> _BlobWriter:
+        self._file = await asyncio.to_thread(self._path.open, "wb")
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        f, self._file = self._file, None
+        if f is not None:
+            await asyncio.to_thread(f.close)
+
+    async def write(self, chunk: bytes) -> None:
+        self._buf += chunk
+        if len(self._buf) >= FLUSH_SIZE:
+            await self._flush()
+
+    async def digest(self) -> str:
+        """Write what is buffered and return the sha256 of every byte."""
+        await self._flush()
+        return f"sha256:{self._hasher.hexdigest()}"
+
+    async def _flush(self) -> None:
+        if not self._buf:
+            return
+        data = bytes(self._buf)
+        self._buf.clear()
+        await asyncio.to_thread(self._write, data)
+
+    def _write(self, data: bytes) -> None:
+        if self._file is None:
+            raise RuntimeError("blob writer is closed")
+        self._file.write(data)
+        self._hasher.update(data)
 
 
 def _extract_blob_sizes(manifest_bytes: bytes) -> None:
@@ -380,20 +430,19 @@ async def get_blob(name: str, digest: str) -> Response:
     async def stream_and_cache() -> AsyncIterator[bytes]:
         try:
             client = _upstream()
-            hasher = hashlib.sha256()
             async with client.stream(
                 "GET",
                 upstream_url,
                 timeout=httpx.Timeout(30.0, read=1800.0),
             ) as resp:
                 resp.raise_for_status()
-                with tmp.open("wb") as f:
+                async with _BlobWriter(tmp) as writer:
                     async for chunk in resp.aiter_bytes(CHUNK_SIZE):
-                        f.write(chunk)
-                        hasher.update(chunk)
+                        await writer.write(chunk)
                         yield chunk
+                    computed = await writer.digest()
             # A mismatch raises, which aborts the response mid-stream.
-            cache.commit_blob(digest, f"sha256:{hasher.hexdigest()}")
+            await asyncio.to_thread(cache.commit_blob, digest, computed)
             logger.info("Streamed and cached blob: %s", digest[:24])
         except BaseException as exc:
             # BaseException: a client disconnect cancels the generator.
@@ -507,7 +556,6 @@ async def precache_model(
             tmp = cache.temp_blob_path(digest)
             total_bytes = 0
             blob_start = time.monotonic()
-            hasher = hashlib.sha256()
             try:
                 async with client.stream(
                     "GET",
@@ -515,10 +563,9 @@ async def precache_model(
                     timeout=httpx.Timeout(30.0, read=3600.0),
                 ) as blob_resp:
                     blob_resp.raise_for_status()
-                    with tmp.open("wb") as f:
+                    async with _BlobWriter(tmp) as writer:
                         async for chunk in blob_resp.aiter_bytes(CHUNK_SIZE):
-                            f.write(chunk)
-                            hasher.update(chunk)
+                            await writer.write(chunk)
                             total_bytes += len(chunk)
                             if progress_callback and size > 0:
                                 pct = int(total_bytes * 100 / size)
@@ -531,7 +578,8 @@ async def precache_model(
                                     f"downloading blob {i}/{total} {pct}% "
                                     f"({_human_bytes(total_bytes)}/{_human_bytes(size)}){speed_str}"
                                 )
-                cache.commit_blob(digest, f"sha256:{hasher.hexdigest()}")
+                        computed = await writer.digest()
+                await asyncio.to_thread(cache.commit_blob, digest, computed)
                 if not cache.has_blob(digest):
                     raise RuntimeError(
                         "Blob commit failed — file not found after rename"
