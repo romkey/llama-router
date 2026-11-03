@@ -31,7 +31,7 @@ from ..llamacpp_api import deps as api_deps
 from ..llamacpp_api.decisions import serve as serve_decision
 from ..routing_table import decides_natively
 from . import deps
-from .routes import merge_dash_template_ctx, templates
+from .routes import dash_page_ctx, templates
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ async def decisions_page(request: Request) -> Response:
     return templates.TemplateResponse(
         request,
         "decisions.html",
-        merge_dash_template_ctx(
+        await dash_page_ctx(
             request,
             {
                 "models": models,

@@ -170,6 +170,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "created_at",
             "last_used_at",
             "owner_user_id",
+            "label",
         ],
     ),
     (

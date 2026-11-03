@@ -1525,14 +1525,16 @@ class Database:
         locality: str | None = None,
         daily_spend_cap_usd: float | None = None,
         owner_user_id: int | None = None,
+        label: str | None = None,
     ) -> int:
         """*owner_user_id* is the dashboard user who issued the key to
-        themselves; None for a key an admin issued."""
+        themselves; None for a key an admin issued. *label* is a free-text
+        name shown beside the prefix."""
         return await self._insert_get_id(
             "INSERT INTO api_keys "
             "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
-            "locality, daily_spend_cap_usd, owner_user_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "locality, daily_spend_cap_usd, owner_user_id, label) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
@@ -1542,6 +1544,7 @@ class Database:
                 locality,
                 daily_spend_cap_usd,
                 owner_user_id,
+                label,
             ),
         )
 
@@ -1571,7 +1574,7 @@ class Database:
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
             "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
-            "k.owner_user_id, u.username AS owner_username, "
+            "k.owner_user_id, k.label, u.username AS owner_username, "
             "COUNT(p.id) AS pin_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
@@ -1579,7 +1582,7 @@ class Database:
             + where
             + "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
-            "k.last_used_at, k.owner_user_id, u.username "
+            "k.last_used_at, k.owner_user_id, k.label, u.username "
             "ORDER BY k.created_at DESC, k.id DESC",
             (owner_user_id,) if owner_user_id is not None else (),
         )
@@ -1598,6 +1601,7 @@ class Database:
                     None if r["owner_user_id"] is None else int(r["owner_user_id"])
                 ),
                 "owner_username": r["owner_username"],
+                "label": r["label"],
                 "pin_count": int(r["pin_count"] or 0),
             }
             for r in rows

@@ -2,7 +2,7 @@
 {% block title %}Users - llama-router{% endblock %}
 
 {% block content %}
-<h2 class="mb-4"><i class="bi bi-people me-2"></i>Dashboard users</h2>
+<h1 class="h2 mb-4"><i class="bi bi-people me-2" aria-hidden="true"></i>Dashboard users</h1>
 <p class="text-muted">{% if mfa_required %}Second factor is required for all local accounts. Users must enroll before accessing the dashboard.{% else %}Second-factor enrollment is optional for local accounts. Enrolled users always need their second factor.{% endif %} SSO accounts follow the identity provider's policy.</p>
 
 {% if query_created %}
@@ -33,7 +33,7 @@
 
 {% if oidc %}
 <div class="card mb-4">
-    <div class="card-header"><h5 class="mb-0"><i class="bi bi-box-arrow-in-right me-2"></i>Single sign-on</h5></div>
+    <div class="card-header"><h2 class="h5 mb-0"><i class="bi bi-box-arrow-in-right me-2"></i>Single sign-on</h2></div>
     <div class="card-body small">
         {% if oidc_problems %}
         <div class="alert alert-danger py-2 mb-3">
@@ -60,7 +60,7 @@
     <div class="col-lg-5">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0">Add user</h5>
+                <h2 class="h5 mb-0">Add user</h2>
             </div>
             <div class="card-body">
                 <form method="post" action="/users/add">
@@ -85,7 +85,7 @@
     <div class="col-lg-7">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Accounts</h5>
+                <h2 class="h5 mb-0">Accounts</h2>
                 <span class="badge bg-secondary">{{ dashboard_users | length }}</span>
             </div>
             <div class="card-body p-0">
@@ -106,24 +106,41 @@
                             <tr>
                                 <td><code>{{ u.username }}</code>{% if u.display_name and u.display_name != u.username %}<div class="small text-muted">{{ u.display_name }}</div>{% endif %}</td>
                                 <td>{% if u.is_admin %}<span class="badge bg-primary">Admin</span>{% else %}<span class="badge bg-secondary">Viewer</span>{% endif %}{% if not u.approved %} <span class="badge text-bg-warning">Pending approval</span>{% endif %}</td>
-                                <td>{% if u.auth_source == 'oidc' %}<span class="badge text-bg-info" title="Role managed by the identity provider">SSO</span>{% if u.email %}<div class="small text-muted">{{ u.email }}</div>{% endif %}{% else %}<span class="badge text-bg-light border">Local</span><div class="small {% if u.mfa_enabled %}text-success{% else %}text-muted{% endif %}">{% if u.mfa_enabled %}Second factor enabled{% elif mfa_required %}Enrollment required{% else %}Password only{% endif %}</div>{% endif %}</td>
-                                <td class="small text-muted text-nowrap">{% if u.last_login_at %}{{ u.last_login_at | localtime }}{% else %}never{% endif %}</td>
+                                {% if u.auth_source == 'oidc' %}
+                                {% set signin_detail = 'Role managed by the identity provider' ~ ((' · ' ~ u.email) if u.email else '') %}
+                                <td><span class="badge text-bg-info" title="{{ signin_detail }}" data-bs-toggle="tooltip" tabindex="0">SSO</span><span class="visually-hidden">: {{ signin_detail }}</span></td>
+                                {% else %}
+                                {% set signin_detail = 'Second factor enabled' if u.mfa_enabled else ('Enrollment required' if mfa_required else 'Password only') %}
+                                <td><span class="badge text-bg-light border" title="{{ signin_detail }}" data-bs-toggle="tooltip" tabindex="0">Local{% if u.mfa_enabled %} <i class="bi bi-shield-check text-success" aria-hidden="true"></i>{% endif %}</span><span class="visually-hidden">: {{ signin_detail }}</span></td>
+                                {% endif %}
+                                <td class="small text-muted text-nowrap">{% if u.last_login_at %}{{ u.last_login_at | when(relative=true) }}{% else %}never{% endif %}</td>
                                 <td class="text-end text-nowrap">
                                     {% if not u.approved %}
                                     <form method="post" action="/users/{{ u.id }}/approve" class="d-inline">
                                         <button type="submit" class="btn btn-sm btn-success">Approve</button>
                                     </form>
-                                    {% else %}
-                                    <form method="post" action="/users/{{ u.id }}/sign-out" class="d-inline" onsubmit="return confirm('Sign {{ u.username }} out of every browser?');">
-                                        <button type="submit" class="btn btn-sm btn-outline-secondary" title="End every session of this account">Sign out</button>
-                                    </form>
                                     {% endif %}
-                                    {% if u.auth_source != 'oidc' %}
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#pw-{{ u.id }}">Set password</button>
-                                    {% endif %}
-                                    <form method="post" action="/users/{{ u.id }}/delete" class="d-inline" onsubmit="return confirm('Delete user {{ u.username }}?');">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
-                                    </form>
+                                    <div class="dropdown d-inline-block">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" aria-label="Actions for {{ u.username }}" title="Actions"><i class="bi bi-three-dots-vertical" aria-hidden="true"></i></button>
+                                        <ul class="dropdown-menu dropdown-menu-end">
+                                            {% if u.approved %}
+                                            <li>
+                                                <form method="post" action="/users/{{ u.id }}/sign-out" data-confirm="Sign {{ u.username }} out of every browser?" onsubmit="return confirm(this.dataset.confirm);">
+                                                    <button type="submit" class="dropdown-item" title="End every session of this account">Sign out everywhere</button>
+                                                </form>
+                                            </li>
+                                            {% endif %}
+                                            {% if u.auth_source != 'oidc' %}
+                                            <li><button type="button" class="dropdown-item" data-bs-toggle="collapse" data-bs-target="#pw-{{ u.id }}" aria-controls="pw-{{ u.id }}">Set password</button></li>
+                                            {% endif %}
+                                            <li><hr class="dropdown-divider"></li>
+                                            <li>
+                                                <form method="post" action="/users/{{ u.id }}/delete" data-confirm="Delete user {{ u.username }}?" onsubmit="return confirm(this.dataset.confirm);">
+                                                    <button type="submit" class="dropdown-item text-danger">Delete</button>
+                                                </form>
+                                            </li>
+                                        </ul>
+                                    </div>
                                 </td>
                             </tr>
                             {% if u.auth_source != 'oidc' %}
@@ -156,7 +173,7 @@
 {% if users_exist %}
 <div class="card mt-4" id="management-keys">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>Management keys</h5>
+        <h2 class="h5 mb-0"><i class="bi bi-shield-lock me-2"></i>Management keys</h2>
         <span class="badge bg-secondary">{{ management_keys | length }}</span>
     </div>
     <div class="card-body">
@@ -209,9 +226,9 @@
                         <td>{{ k.name }}</td>
                         <td><code>{{ k.key_prefix }}</code></td>
                         <td>{% for p in k.privileges %}<span class="badge text-bg-light border me-1">{{ p }}</span>{% endfor %}</td>
-                        <td class="small text-muted text-nowrap">{{ k.created_at | localtime }}{% if k.created_by %}<div>by {{ k.created_by }}</div>{% endif %}</td>
-                        <td class="small text-nowrap">{% if k.expired %}<span class="badge bg-danger">expired</span>{% elif k.expires_at_dt %}{{ k.expires_at_dt | localtime }}{% else %}<span class="text-muted">never</span>{% endif %}</td>
-                        <td class="small text-muted text-nowrap">{% if k.last_used_at %}{{ k.last_used_at | localtime }}{% else %}never{% endif %}</td>
+                        <td class="small text-muted text-nowrap">{{ k.created_at | when }}{% if k.created_by %}<div>by {{ k.created_by }}</div>{% endif %}</td>
+                        <td class="small text-nowrap">{% if k.expired %}<span class="badge bg-danger">expired</span>{% elif k.expires_at_dt %}{{ k.expires_at_dt | when }}{% else %}<span class="text-muted">never</span>{% endif %}</td>
+                        <td class="small text-muted text-nowrap">{% if k.last_used_at %}{{ k.last_used_at | when }}{% else %}never{% endif %}</td>
                         <td class="text-end">
                             <button type="button" class="btn btn-sm btn-outline-danger" data-key-id="{{ k.id }}" data-key-name="{{ k.name }}" onclick="revokeManagementKey(this)">Revoke</button>
                         </td>
@@ -230,6 +247,8 @@
 
 {% block scripts %}
 <script>
+document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function(el) { new bootstrap.Tooltip(el); });
+
 function createManagementKey(ev) {
     ev.preventDefault();
     var privs = Array.prototype.map.call(

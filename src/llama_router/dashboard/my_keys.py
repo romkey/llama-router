@@ -26,11 +26,12 @@ from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
 from . import deps, management_keys
 from .routes import (
+    _key_label,
     _key_locality,
     _tristate,
     _usd,
     _utc_day_start,
-    merge_dash_template_ctx,
+    dash_page_ctx,
     templates,
 )
 
@@ -65,7 +66,7 @@ def _owner_id(request: Request) -> int:
 @router.get("/my-keys", response_class=HTMLResponse)
 async def my_keys_page(request: Request) -> Response:
     return templates.TemplateResponse(
-        request, "my_keys.html", merge_dash_template_ctx(request, {})
+        request, "my_keys.html", await dash_page_ctx(request, {})
     )
 
 
@@ -93,6 +94,7 @@ async def issue_my_key(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
+    label = _key_label(body.get("label"))
     db = deps.get_db()
     limit = settings.max_api_keys_per_user
     if limit > 0 and len(await db.list_api_keys(owner_user_id=owner)) >= limit:
@@ -113,11 +115,13 @@ async def issue_my_key(request: Request) -> JSONResponse:
         locality=defaults["locality"],
         daily_spend_cap_usd=defaults["daily_spend_cap_usd"],
         owner_user_id=owner,
+        label=label,
     )
     return JSONResponse(
         {
             "id": key_id,
             "api_key": plaintext,
+            "label": label,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,

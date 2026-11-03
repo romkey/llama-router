@@ -727,7 +727,7 @@ class ProviderManager:
             active_requests=self._active_requests.get(provider_id, 0),
             hot_models=self._hot_models.get(provider_id, []),
             worker=self.worker_summary(provider),
-            status_detail=self._status_detail.get(provider_id),
+            status_detail=self._reported_detail(provider),
         )
 
     def hub_loopback_ids(self) -> set[int]:
@@ -813,7 +813,7 @@ class ProviderManager:
                     active_requests=self._active_requests.get(p_id, 0),
                     hot_models=self._hot_models.get(p_id, []),
                     worker=self.worker_summary(p),
-                    status_detail=self._status_detail.get(p_id),
+                    status_detail=self._reported_detail(p),
                 )
             )
         return infos
@@ -985,6 +985,19 @@ class ProviderManager:
     def status_detail(self, provider_id: int) -> str | None:
         """Why a provider is not usable although an address answers, if known."""
         return self._status_detail.get(provider_id)
+
+    def _reported_detail(self, provider: Provider) -> str | None:
+        """The reason shown with a provider; an offline one always has one.
+
+        The fallback names no address: it is shown to non-admins too.
+        """
+        pid = provider.require_id()
+        detail = self._status_detail.get(pid)
+        if detail is None and provider.status == ProviderStatus.OFFLINE:
+            if provider.is_worker and not self.worker_hub.is_connected(pid):
+                return self._child_reasons.get(pid, "worker is not connected")
+            return "no address responded"
+        return detail
 
     async def _log_event(
         self,
