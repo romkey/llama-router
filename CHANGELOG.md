@@ -49,6 +49,9 @@ described in their git tags and GitHub Releases.
   signed out everyone signed in through the other).
 - A management key's "last used" time is recorded on its first use even
   when the host started less than a minute ago.
+- Two routers (or a router and a `llama-router` command) opening a new
+  SQLite database at the same moment no longer fail with "database is
+  locked" while one of them switches it to WAL.
 - Cancelling a job on a worker whose socket has stalled no longer waits
   forever; the cancel message is given up on after 5 seconds.
 
