@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from llama_router.config import settings
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
@@ -141,7 +142,8 @@ def test_utc_datetime() -> None:
     assert _utc_datetime(aware.replace(tzinfo=None)) == aware
 
 
-async def test_usage_period(db: Database) -> None:
+async def test_usage_period(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "request_log_retention_days", 0)
     ids = await _seed(db)
     await db._execute(
         "UPDATE request_log SET created_at = ? WHERE api_key_id = ?",
@@ -152,6 +154,43 @@ async def test_usage_period(db: Database) -> None:
     assert ids["bob"] not in {r["api_key_id"] for r in recent}
     everything = await db.usage_by_key_and_provider()
     assert ids["bob"] in {r["api_key_id"] for r in everything}
+
+
+async def test_usage_stays_in_the_retention_window(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows older than the retention window are not counted, even before
+    the hourly purge has deleted them."""
+    monkeypatch.setattr(settings, "request_log_retention_days", 30)
+    ids = await _seed(db)
+    await db._execute(
+        "UPDATE request_log SET created_at = ? WHERE api_key_id = ?",
+        (db_timestamp(db, datetime(2000, 1, 1, tzinfo=UTC)), ids["bob"]),
+    )
+    everything = await db.usage_by_key_and_provider()
+    assert ids["bob"] not in {r["api_key_id"] for r in everything}
+    assert ids["alice"] in {r["api_key_id"] for r in everything}
+    old = datetime(1999, 1, 1, tzinfo=UTC)
+    assert ids["bob"] not in {
+        r["api_key_id"] for r in await db.usage_by_key_and_provider(old)
+    }
+
+
+async def test_model_request_counts_stay_in_the_retention_window(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for model in ("fresh", "stale", "stale"):
+        await db.save_request_log(
+            RequestLog(protocol="v1", endpoint=CHAT, model=model, status="ok")
+        )
+    await db._execute(
+        "UPDATE request_log SET created_at = ? WHERE model = ?",
+        (db_timestamp(db, datetime(2000, 1, 1, tzinfo=UTC)), "stale"),
+    )
+    monkeypatch.setattr(settings, "request_log_retention_days", 30)
+    assert await db.get_model_request_counts() == {"fresh": 1}
+    monkeypatch.setattr(settings, "request_log_retention_days", 0)
+    assert await db.get_model_request_counts() == {"fresh": 1, "stale": 2}
 
 
 def _cookie(user_id: int) -> dict[str, str]:

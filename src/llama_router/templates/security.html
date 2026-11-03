@@ -8,6 +8,29 @@
     {% else %}
     <p>{% if mfa_required %}Second factor is required for all local accounts.{% else %}Add a second factor to protect your local account.{% endif %}</p>
     <div id="security-error" class="alert alert-danger" role="alert" hidden></div>
+    <div class="card mb-4">
+        <div class="card-header"><h2 class="h5 mb-0">Change password</h2></div>
+        <div class="card-body">
+            <form id="password-form">
+                <div id="password-result" class="alert" role="status" hidden></div>
+                <input type="text" name="username" value="{{ dash_user.username }}" autocomplete="username" hidden>
+                <div class="mb-3">
+                    <label for="current-password" class="form-label">Current password</label>
+                    <input type="password" id="current-password" class="form-control" autocomplete="current-password" required>
+                </div>
+                <div class="mb-3">
+                    <label for="new-password" class="form-label">New password</label>
+                    <input type="password" id="new-password" class="form-control" autocomplete="new-password" minlength="8" required aria-describedby="new-password-help">
+                    <div id="new-password-help" class="form-text">At least 8 characters. Changing it signs you out everywhere else.</div>
+                </div>
+                <div class="mb-3">
+                    <label for="confirm-password" class="form-label">Confirm new password</label>
+                    <input type="password" id="confirm-password" class="form-control" autocomplete="new-password" minlength="8" required>
+                </div>
+                <button type="submit" class="btn btn-primary" id="password-submit">Change password</button>
+            </form>
+        </div>
+    </div>
     {% if not webauthn_configured %}
     <div class="alert alert-info">WebAuthn is not configured. Ask your administrator to set the dashboard's WebAuthn origin.</div>
     {% else %}
@@ -48,4 +71,42 @@
     {% endif %}
 </div></div>
 {% endblock %}
-{% block scripts %}{% if not dash_user.is_sso %}{% include "webauthn_script.html" %}{% endif %}{% endblock %}
+{% block scripts %}{% if not dash_user.is_sso %}{% include "webauthn_script.html" %}
+<script>
+(() => {
+    const form = document.getElementById("password-form");
+    const result = document.getElementById("password-result");
+    const show = (ok, text) => {
+        result.className = "alert " + (ok ? "alert-success" : "alert-danger");
+        result.textContent = text;
+        result.hidden = false;
+    };
+    form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const current = document.getElementById("current-password").value;
+        const next = document.getElementById("new-password").value;
+        if (next !== document.getElementById("confirm-password").value) {
+            show(false, "The new passwords do not match.");
+            return;
+        }
+        const button = document.getElementById("password-submit");
+        button.disabled = true;
+        try {
+            const resp = await fetch("/account/password", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ current_password: current, new_password: next }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+            form.reset();
+            show(true, "Password changed. Other sessions have been signed out.");
+        } catch (err) {
+            show(false, err.message);
+        } finally {
+            button.disabled = false;
+        }
+    });
+})();
+</script>
+{% endif %}{% endblock %}

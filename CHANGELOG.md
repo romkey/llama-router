@@ -19,6 +19,14 @@ described in their git tags and GitHub Releases.
   upgrade adds the column.
 - Recovery codes have Copy and Download buttons, and generating new ones
   asks first.
+- Dashboard users with a local account can change their own password from
+  their Account page (`POST /account/password` with the current and new
+  password). It signs the account out everywhere else and keeps this session;
+  wrong guesses count toward the sign-in lockout.
+- Dashboard chat streams replies as the model writes them
+  (`POST /api/chat/stream`, newline-delimited JSON events), with a Stop button
+  that keeps what has arrived so far. Replies render fenced code blocks,
+  inline code, bold and italic.
 
 ### Security
 
@@ -63,6 +71,19 @@ described in their git tags and GitHub Releases.
 
 ### Changed
 
+- Less database and disk work behind the dashboard and the registry cache.
+  `/api/status`, `/api/ps`, `/metrics`, `/health` and `/v1/audio/voices` read
+  every provider's models, addresses and benchmarks in four queries instead
+  of three per provider; `/v1/models` and `/api/tags` list models from the
+  routing table's inputs instead of querying. The registry cache writes and
+  hashes blobs in a worker thread, 4 MB at a time, and the dashboard reads
+  cache statistics off the event loop. Usage per key and the per-model
+  request counts only read request log rows inside
+  `LLAMA_ROUTER_REQUEST_LOG_RETENTION_DAYS`, so "all" means the retained log
+  even before the hourly purge runs. Session affinity finds a key's oldest
+  session without scanning every session, and
+  `LLAMA_ROUTER_SESSION_AFFINITY_MAX_SESSIONS` now defaults to 10000. A
+  streamed response arms one deadline timer instead of one per chunk.
 - More tests at security edges and failure paths: hostile `Referer`
   headers, WebAuthn sign-count replay, worker sockets that stall, drop or
   send garbage, a failed routing-table build, a client disconnecting

@@ -67,6 +67,7 @@ from .auth_core import (
     normalize_username,
     session_max_age,
     sign_session,
+    unsign_session,
     verify_password,
 )
 from .middleware import invalidate_dashboard_user_count_cache
@@ -904,8 +905,6 @@ async def users_set_password(
         row = await db.get_dashboard_user_by_id(user_id)
         if row is not None:
             secret = await deps.get_dashboard_session_secret()
-            from .auth_core import unsign_session
-
             claims = unsign_session(request.cookies.get(AUTH_COOKIE, ""), secret)
             _set_session_cookie(
                 request,
@@ -914,6 +913,66 @@ async def users_set_password(
                 secret,
                 mfa_verified=bool(claims and claims.mfa_verified),
             )
+    return resp
+
+
+@router.post("/account/password")
+async def account_change_password(request: Request) -> JSONResponse:
+    """Change the signed-in user's own password.
+
+    Body: {current_password, new_password}. Ends every other session of the
+    account and keeps this one. Wrong guesses count toward the same lockout
+    as password sign-in.
+    """
+    user = getattr(request.state, "dashboard_user", None)
+    if user is None or user.id <= 0:
+        raise HTTPException(status_code=403, detail="Sign in to change your password")
+    body = await deps.json_body(request)
+    current = body.get("current_password")
+    new = body.get("new_password")
+    if not isinstance(current, str) or not isinstance(new, str):
+        raise HTTPException(
+            status_code=400, detail="current_password and new_password are required"
+        )
+    db = deps.get_db()
+    row = await db.get_dashboard_user_by_id(user.id)
+    if row is None or row.get("auth_source", "local") != "local":
+        raise HTTPException(
+            status_code=400,
+            detail="Your password is managed by your single sign-on provider",
+        )
+    if len(new) < 8:
+        raise HTTPException(
+            status_code=400, detail="The new password must be at least 8 characters"
+        )
+    keys = login_throttle.keys_for(client_ip(request) or "unknown", row["username"])
+    wait = login_throttle.throttle.retry_after(keys)
+    if wait > 0:
+        seconds = max(1, math.ceil(wait))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many wrong passwords; try again in {seconds} s",
+            headers={"Retry-After": str(seconds)},
+        )
+    # Counted before the check, as at sign-in.
+    login_throttle.throttle.failure(keys)
+    if not await asyncio.to_thread(verify_password, current, row["password_hash"]):
+        raise HTTPException(status_code=400, detail="The current password is wrong")
+    login_throttle.throttle.success(keys)
+    await db.update_dashboard_user_password(user.id, hash_password(new))
+    logger.info("Dashboard user %s changed their password", user.username)
+    resp = JSONResponse({"status": "ok"})
+    row = await db.get_dashboard_user_by_id(user.id)
+    if row is not None:
+        secret = await deps.get_dashboard_session_secret()
+        claims = unsign_session(request.cookies.get(AUTH_COOKIE, ""), secret)
+        _set_session_cookie(
+            request,
+            resp,
+            row,
+            secret,
+            mfa_verified=bool(claims and claims.mfa_verified),
+        )
     return resp
 
 
@@ -1076,10 +1135,11 @@ async def dashboard(request: Request):
         routing_summary = _routing_summary(pm)
 
         cache = deps.get_cache()
-        cache_stats = cache.stats() if cache else None
+        # Each walks the cache directory: keep that off the event loop.
+        cache_stats = await asyncio.to_thread(cache.stats) if cache else None
         if cache_stats is not None:
             cache_stats["enabled"] = settings.cache_enabled
-        cached_models = cache.cached_models() if cache else set()
+        cached_models = await asyncio.to_thread(cache.cached_models) if cache else set()
 
         workers = await _worker_rows(db, pm)
         worker_link_status = await deps.get_worker_link().status()
@@ -1108,7 +1168,7 @@ async def dashboard(request: Request):
     if not read_only:
         cache = deps.get_cache()
         if cache:
-            for detail in cache.cached_model_details():
+            for detail in await asyncio.to_thread(cache.cached_model_details):
                 if detail["name"] not in provider_model_names:
                     total_size = sum(b["size"] for b in detail["blobs"])
                     all_models.append(
@@ -1292,7 +1352,7 @@ async def api_status(request: Request):
     cache = deps.get_cache()
     cache_stats = None
     if admin_payload and cache:
-        cache_stats = cache.stats()
+        cache_stats = await asyncio.to_thread(cache.stats)
         if cache_stats is not None:
             cache_stats["enabled"] = settings.cache_enabled
 
@@ -1765,9 +1825,9 @@ async def provider_detail(request: Request, provider_id: int):
     cached_models: set[str] = set()
     cached_only_models: list[dict] = []
     if cache:
-        cached_models = cache.cached_models()
+        cached_models = await asyncio.to_thread(cache.cached_models)
         provider_and_missing_names = local_names | {m["name"] for m in missing_models}
-        for detail in cache.cached_model_details():
+        for detail in await asyncio.to_thread(cache.cached_model_details):
             if detail["name"] not in provider_and_missing_names:
                 total_size = sum(b["size"] for b in detail["blobs"])
                 cached_only_models.append({"name": detail["name"], "size": total_size})
@@ -3105,7 +3165,7 @@ async def api_cache_status():
     cache = deps.get_cache()
     if cache is None:
         return JSONResponse({"enabled": False})
-    stats = cache.stats()
+    stats = await asyncio.to_thread(cache.stats)
     stats["enabled"] = settings.cache_enabled
     return JSONResponse(stats)
 

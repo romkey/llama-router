@@ -10,19 +10,27 @@ when asking for an image. Each dashboard user keeps their own history.
 
 from __future__ import annotations
 
+import json
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+import anyio
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 
 from ..config import settings
 from ..database import Database
 from ..httpx_errors import describe_httpx_error
 from ..models import Provider, ProviderStatus
-from ..request_logger import log_request_background
+from ..request_logger import STATUS_CANCELLED, log_request_background
 from ..router import Router, RoutingPreferences
 from ..routing_table import RoutingTable, alias_groups
 from ..v1_client import get_v1_client
@@ -301,20 +309,28 @@ def reply_image(resp: dict[str, Any]) -> tuple[str | None, str]:
     return None, revised
 
 
-@router.post("/api/chat/send")
-async def send(request: Request) -> JSONResponse:
-    """Body: {conversation_id?, provider_id?, model, content, image?, mode?}.
+@dataclass(slots=True)
+class Turn:
+    """A user message saved and ready to go to the model."""
 
-    *model* is a model, a model group or an alias. Without *provider_id*
-    the router picks the provider. *mode* is "chat" (default) or "image"
-    (generate an image from *content*).
-    Without *conversation_id* a new conversation is started. Returns the
-    conversation and the two new messages: the user's and the reply, which
-    is an "error" message when the backend failed.
-    """
-    body = await deps.json_body(request)
+    mode: str
+    uid: int | None
+    conv_id: int
+    provider: Provider
+    # The provider the user chose, kept with the chat; None when the router
+    # picked.
+    chosen_pid: int | None
+    answered_by: str
+    user_msg: dict[str, Any]
+    upstream: dict[str, Any]
+    log: dict[str, Any]
+    admin: bool
+
+
+async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
+    """Check *body*, find the target, open or start the conversation and
+    save the user's message."""
     db = deps.get_db()
-    pm = deps.get_pm()
     uid = _user_id(request)
     mode = str(body.get("mode") or "chat")
     if mode not in MODES:
@@ -372,9 +388,6 @@ async def send(request: Request) -> JSONResponse:
             "messages": chat_messages([*history, user_msg]),
             "stream": False,
         }
-
-    client = get_v1_client(pm, pid)
-    start = time.monotonic()
     log: dict[str, Any] = {
         "provider": provider,
         "protocol": "v1",
@@ -385,52 +398,243 @@ async def send(request: Request) -> JSONResponse:
         "request_meta": f"dashboard chat ({mode})",
         "sample": False,
     }
+    return Turn(
+        mode,
+        uid,
+        conv_id,
+        provider,
+        chosen_pid,
+        answered_by,
+        user_msg,
+        upstream,
+        log,
+        _is_admin(request),
+    )
+
+
+def _error_detail(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPError):
+        return describe_httpx_error(exc)
+    return str(exc) or type(exc).__name__
+
+
+async def _add_reply(
+    turn: Turn,
+    role: str,
+    text: str,
+    duration: float,
+    image: str | None = None,
+) -> dict[str, Any]:
+    return await deps.get_db().add_chat_message(
+        turn.conv_id,
+        role,
+        text,
+        image=image,
+        model_name=turn.answered_by,
+        provider_name=turn.provider.name,
+        duration_ms=duration,
+    )
+
+
+async def _finish_turn(turn: Turn) -> dict[str, Any] | None:
+    """Touch the conversation; returns it without its messages."""
+    db = deps.get_db()
+    model = turn.log["model"]
+    await db.touch_chat_conversation(turn.conv_id, turn.chosen_pid, model)
+    conversation = await db.get_chat_conversation(turn.conv_id, turn.uid)
+    if conversation is not None:
+        conversation.pop("messages", None)
+    return conversation
+
+
+@router.post("/api/chat/send")
+async def send(request: Request) -> JSONResponse:
+    """Body: {conversation_id?, provider_id?, model, content, image?, mode?}.
+
+    *model* is a model, a model group or an alias. Without *provider_id*
+    the router picks the provider. *mode* is "chat" (default) or "image"
+    (generate an image from *content*).
+    Without *conversation_id* a new conversation is started. Returns the
+    conversation and the two new messages: the user's and the reply, which
+    is an "error" message when the backend failed.
+    """
+    body = await deps.json_body(request)
+    turn = await _start_turn(request, body)
+    db = deps.get_db()
+    pm = deps.get_pm()
+    pid = turn.provider.require_id()
+    client = get_v1_client(pm, pid)
+    start = time.monotonic()
     try:
         async with pm.acquire_provider(pid):
-            if mode == "image":
-                resp = await client.images_generations(upstream)
+            if turn.mode == "image":
+                resp = await client.images_generations(turn.upstream)
             else:
-                resp = await client.chat_completions(upstream)
+                resp = await client.chat_completions(turn.upstream)
     except Exception as exc:
         duration = (time.monotonic() - start) * 1000
-        detail = (
-            describe_httpx_error(exc)
-            if isinstance(exc, httpx.HTTPError)
-            else str(exc) or type(exc).__name__
-        )
+        detail = _error_detail(exc)
         log_request_background(
-            db, duration_ms=duration, status="error", error_detail=detail, **log
+            db, duration_ms=duration, status="error", error_detail=detail, **turn.log
         )
         # Upstream errors name internal URLs; only admins see them in chat.
-        shown = detail if _is_admin(request) else _GENERIC_ERROR
-        reply = await db.add_chat_message(
-            conv_id,
-            "error",
-            shown,
-            model_name=answered_by,
-            provider_name=provider.name,
-            duration_ms=duration,
+        reply = await _add_reply(
+            turn, "error", detail if turn.admin else _GENERIC_ERROR, duration
         )
     else:
         duration = (time.monotonic() - start) * 1000
-        log_request_background(db, duration_ms=duration, response_body=resp, **log)
-        if mode == "image":
+        log_request_background(db, duration_ms=duration, response_body=resp, **turn.log)
+        if turn.mode == "image":
             out_image, text = reply_image(resp)
             if out_image is None:
                 text = text or "The backend returned no image."
         else:
             out_image, text = None, reply_text(resp)
-        reply = await db.add_chat_message(
-            conv_id,
-            "assistant" if mode == "chat" or out_image else "error",
+        reply = await _add_reply(
+            turn,
+            "assistant" if turn.mode == "chat" or out_image else "error",
             text,
+            duration,
             image=out_image,
-            model_name=answered_by,
-            provider_name=provider.name,
-            duration_ms=duration,
         )
-    await db.touch_chat_conversation(conv_id, chosen_pid, model)
-    conversation = await db.get_chat_conversation(conv_id, uid)
-    if conversation is not None:
-        conversation.pop("messages", None)
-    return JSONResponse({"conversation": conversation, "messages": [user_msg, reply]})
+    conversation = await _finish_turn(turn)
+    return JSONResponse(
+        {"conversation": conversation, "messages": [turn.user_msg, reply]}
+    )
+
+
+class StreamDeltas:
+    """Reply text from an OpenAI-style SSE stream of chat completion chunks.
+
+    Chunks need not end on a line boundary. Reasoning text is kept apart:
+    it stands in for the reply only when the model gave no other answer.
+    """
+
+    def __init__(self) -> None:
+        self._buf = b""
+        self.reasoning: list[str] = []
+
+    def feed(self, chunk: bytes) -> list[str]:
+        self._buf += chunk
+        out: list[str] = []
+        while b"\n" in self._buf:
+            raw, self._buf = self._buf.split(b"\n", 1)
+            line = raw.strip()
+            if not line.startswith(b"data:"):
+                continue
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                continue
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            for choice in event.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta") or {}
+                text = delta.get("content")
+                if isinstance(text, str) and text:
+                    out.append(text)
+                why = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(why, str) and why:
+                    self.reasoning.append(why)
+        return out
+
+
+def _event(obj: dict[str, Any]) -> bytes:
+    return (json.dumps(obj) + "\n").encode()
+
+
+STOPPED_EMPTY = "Stopped before the model answered."
+
+
+async def _relay(request: Request, turn: Turn) -> AsyncIterator[bytes]:
+    """Stream the reply as JSON lines: a "start" event with the saved user
+    message, "delta" events with reply text, and a "done" event with the
+    saved reply. When the browser hangs up (Stop), what arrived so far is
+    saved as the reply.
+
+    A hang-up is checked for between upstream chunks: behind the dashboard's
+    middleware a failed send may not show it for several seconds.
+    """
+    db = deps.get_db()
+    pm = deps.get_pm()
+    pid = turn.provider.require_id()
+    yield _event(
+        {"type": "start", "conversation_id": turn.conv_id, "user": turn.user_msg}
+    )
+    parts: list[str] = []
+    deltas = StreamDeltas()
+    error: str | None = None
+    finished = stopped = False
+    reply: dict[str, Any] | None = None
+    start = time.monotonic()
+    try:
+        client = get_v1_client(pm, pid)
+        async with pm.acquire_provider(pid):
+            async for chunk in client.chat_completions_stream(
+                {**turn.upstream, "stream": True}
+            ):
+                if await request.is_disconnected():
+                    stopped = True
+                    break
+                for text in deltas.feed(chunk):
+                    parts.append(text)
+                    yield _event({"type": "delta", "text": text})
+        finished = not stopped
+    except Exception as exc:
+        error = _error_detail(exc)
+    finally:
+        # Also runs when the browser hung up and this task is being
+        # cancelled; the shield lets the reply be saved anyway.
+        with anyio.CancelScope(shield=True):
+            duration = (time.monotonic() - start) * 1000
+            text = "".join(parts)
+            if not text.strip() and finished:
+                text = "".join(deltas.reasoning)
+            if error is not None:
+                status = "error"
+            elif finished:
+                status = "ok"
+            else:
+                status = STATUS_CANCELLED
+            log_request_background(
+                db,
+                duration_ms=duration,
+                streamed=True,
+                status=status,
+                error_detail=error,
+                response_body={
+                    "choices": [{"message": {"role": "assistant", "content": text}}]
+                },
+                **turn.log,
+            )
+            if error is not None:
+                # Upstream errors name internal URLs; only admins see them.
+                shown = error if turn.admin else _GENERIC_ERROR
+                reply = await _add_reply(turn, "error", shown, duration)
+            elif text or finished:
+                reply = await _add_reply(turn, "assistant", text, duration)
+            else:
+                reply = await _add_reply(turn, "error", STOPPED_EMPTY, duration)
+            conversation = await _finish_turn(turn)
+    yield _event({"type": "done", "conversation": conversation, "message": reply})
+
+
+@router.post("/api/chat/stream")
+async def stream(request: Request) -> StreamingResponse:
+    """Like ``/api/chat/send`` for chat (not image) mode, but the reply
+    comes back as it is written: newline-delimited JSON events (see
+    ``_relay``). Request errors are answered before streaming, as there."""
+    body = await deps.json_body(request)
+    if str(body.get("mode") or "chat") != "chat":
+        raise HTTPException(status_code=400, detail="only chat mode streams")
+    turn = await _start_turn(request, body)
+    return StreamingResponse(
+        _relay(request, turn),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )

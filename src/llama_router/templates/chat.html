@@ -7,6 +7,9 @@
     #chat-log { height: 60vh; overflow-y: auto; }
     .chat-msg { max-width: 85%; white-space: pre-wrap; word-wrap: break-word; }
     .chat-msg img { max-width: 100%; max-height: 24rem; display: block; border-radius: .375rem; }
+    .chat-msg pre { white-space: pre; overflow-x: auto; background: var(--bs-body-bg); color: var(--bs-body-color); border: 1px solid var(--bs-border-color); border-radius: .375rem; padding: .5rem .75rem; margin: .5rem 0; }
+    .chat-msg code { font-size: .875em; }
+    .chat-msg :not(pre) > code { background: var(--bs-secondary-bg); color: var(--bs-body-color); border-radius: .25rem; padding: 0 .25rem; }
     .chat-conv-row { position: relative; }
     .chat-conv-row .chat-conv { padding-right: 2.5rem; }
     .chat-conv-row .chat-del { position: absolute; top: .5rem; right: .75rem; z-index: 3; visibility: hidden; }
@@ -52,6 +55,7 @@
                     <input type="file" accept="image/*" id="chat-file" class="d-none">
                 </label>
                 <span class="text-muted small ms-auto" id="chat-status" role="status"></span>
+                <button type="button" class="btn btn-sm btn-outline-danger d-none" id="chat-stop"><i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Stop</button>
                 <button type="submit" class="btn btn-sm btn-primary" id="chat-send"><i class="bi bi-send me-1"></i>Send</button>
             </div>
         </form>
@@ -68,7 +72,8 @@
     // *nav* counts moves between chats and *rendered* is the move whose
     // chat is on screen: when loads overlap only the latest one is drawn,
     // and nothing is sent until it is.
-    const state = { providers: [], any: null, convId: null, image: null, busy: false, nav: 0, rendered: 0 };
+    // *abort* stops the reply being streamed.
+    const state = { providers: [], any: null, convId: null, image: null, busy: false, nav: 0, rendered: 0, abort: null };
 
     async function api(method, url, body) {
         const opts = { method, headers: {} };
@@ -267,6 +272,56 @@
 
     $("chat-new").addEventListener("click", newChat);
 
+    // ── Markdown ──
+    // A small subset: ``` fenced code blocks, `inline code`, **bold** and
+    // *italic*. Built with text nodes only, so nothing in a reply is ever
+    // parsed as HTML.
+
+    const INLINE = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\s][^*\n]*\*)/;
+
+    function renderInline(parent, text) {
+        for (const part of text.split(INLINE)) {
+            if (!part) continue;
+            if (part.length > 2 && part.startsWith("`") && part.endsWith("`")) {
+                parent.appendChild(el("code", "", part.slice(1, -1)));
+            } else if (part.length > 4 && part.startsWith("**") && part.endsWith("**")) {
+                parent.appendChild(el("strong", "", part.slice(2, -2)));
+            } else if (part.length > 2 && part.startsWith("*") && part.endsWith("*") && !part.startsWith("**")) {
+                parent.appendChild(el("em", "", part.slice(1, -1)));
+            } else {
+                parent.appendChild(document.createTextNode(part));
+            }
+        }
+    }
+
+    function renderMarkdown(text) {
+        const out = el("div");
+        const lines = text.split("\n");
+        let prose = [];
+        const flush = () => {
+            if (prose.length) renderInline(out, prose.join("\n"));
+            prose = [];
+        };
+        for (let i = 0; i < lines.length; i++) {
+            const fence = lines[i].match(/^\s*```\s*([\w+#.-]*)\s*$/);
+            if (!fence) { prose.push(lines[i]); continue; }
+            // An open fence runs to the closing one, or to the end while the
+            // reply is still streaming.
+            flush();
+            const code = [];
+            for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) code.push(lines[i]);
+            const pre = el("pre");
+            const c = el("code", "", code.join("\n"));
+            if (fence[1]) c.dataset.lang = fence[1];
+            pre.appendChild(c);
+            out.appendChild(pre);
+            // Drop the newline that ended the block, so no blank line follows.
+            if (i + 1 < lines.length && lines[i + 1] === "") i++;
+        }
+        flush();
+        return out;
+    }
+
     // ── Messages ──
 
     function addMessage(m) {
@@ -282,12 +337,15 @@
             img.src = m.image;
             bubble.appendChild(img);
         }
-        if (m.content) bubble.appendChild(el("div", "", m.content));
+        if (m.content) {
+            bubble.appendChild(m.role === "assistant" ? renderMarkdown(m.content) : el("div", "", m.content));
+        }
         wrap.appendChild(bubble);
-        if (!mine && (m.model_name || m.duration_ms != null)) {
+        if (!mine && (m.model_name || m.duration_ms != null || m.note)) {
             const bits = [];
             if (m.model_name) bits.push(m.model_name + (m.provider_name ? ` on ${m.provider_name}` : ""));
             if (m.duration_ms != null) bits.push(`${(m.duration_ms / 1000).toFixed(1)} s`);
+            if (m.note) bits.push(m.note);
             wrap.appendChild(el("div", "small text-muted mt-1", bits.join(" · ")));
         }
         $("chat-log").appendChild(wrap);
@@ -349,23 +407,108 @@
         setStatus(body.mode === "image" ? "Generating image…" : "Waiting for the model…");
         const started = Date.now();
         const timer = setInterval(() => setStatus(`Waiting… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
+        const firstMessage = state.convId === null;
         try {
-            const data = await api("POST", "/api/chat/send", body);
-            pending.remove();
-            const firstMessage = state.convId === null;
-            state.convId = data.conversation.id;
-            for (const m of data.messages) addMessage(m);
+            if (body.mode === "chat") {
+                await streamReply(body, pending, () => clearInterval(timer));
+            } else {
+                const data = await api("POST", "/api/chat/send", body);
+                pending.remove();
+                state.convId = data.conversation.id;
+                for (const m of data.messages) addMessage(m);
+            }
             setStatus("");
-            if (firstMessage) loadConversations();
         } catch (err) {
             addMessage({ role: "error", content: err.message });
             setStatus("");
         } finally {
             clearInterval(timer);
             setBusy(false);
+            if (firstMessage && state.convId !== null) loadConversations();
             $("chat-input").focus();
         }
     }
+
+    // Send *body* to the streaming endpoint and draw the reply as it comes.
+    // The server sends JSON lines: "start" (the saved user message),
+    // "delta" (more reply text) and "done" (the saved reply). Stop aborts
+    // the fetch; the server then keeps what had arrived.
+    async function streamReply(body, pending, onFirstText) {
+        const controller = new AbortController();
+        state.abort = controller;
+        $("chat-stop").classList.remove("d-none");
+        let reply = null;
+        let text = "";
+        let done = false;
+        let frame = 0;
+        const draw = () => {
+            frame = 0;
+            const bubble = reply.querySelector(".chat-msg");
+            bubble.replaceChildren(renderMarkdown(text));
+            const log = $("chat-log");
+            log.scrollTop = log.scrollHeight;
+        };
+        const handle = (ev) => {
+            if (ev.type === "start") {
+                pending.remove();
+                state.convId = ev.conversation_id;
+                addMessage(ev.user);
+                reply = addMessage({ role: "assistant", content: "" });
+                reply.querySelector(".chat-msg").setAttribute("aria-busy", "true");
+            } else if (ev.type === "delta" && reply) {
+                if (!text) { onFirstText(); setStatus("Writing…"); }
+                text += ev.text;
+                if (!frame) frame = requestAnimationFrame(draw);
+            } else if (ev.type === "done") {
+                done = true;
+                if (frame) cancelAnimationFrame(frame);
+                if (reply) reply.remove();
+                if (ev.message) addMessage(ev.message);
+            }
+        };
+        try {
+            const resp = await fetch("/api/chat/stream", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+                signal: controller.signal,
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data.detail || `HTTP ${resp.status}`);
+            }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = "";
+            for (;;) {
+                const { value, done: end } = await reader.read();
+                if (end) break;
+                buf += decoder.decode(value, { stream: true });
+                let nl;
+                while ((nl = buf.indexOf("\n")) >= 0) {
+                    const line = buf.slice(0, nl).trim();
+                    buf = buf.slice(nl + 1);
+                    if (line) handle(JSON.parse(line));
+                }
+            }
+            if (!done) throw new Error("The reply was cut off.");
+        } catch (err) {
+            if (err.name !== "AbortError") throw err;
+            // Stopped: keep what arrived, as the server does.
+            if (frame) cancelAnimationFrame(frame);
+            if (reply) {
+                reply.remove();
+                addMessage(text
+                    ? { role: "assistant", content: text, note: "stopped" }
+                    : { role: "error", content: "Stopped before the model answered." });
+            }
+        } finally {
+            state.abort = null;
+            $("chat-stop").classList.add("d-none");
+        }
+    }
+
+    $("chat-stop").addEventListener("click", () => { if (state.abort) state.abort.abort(); });
 
     function setBusy(busy) {
         state.busy = busy;

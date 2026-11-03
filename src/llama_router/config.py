@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # A session forgets its provider after this long without a request.
     session_affinity_ttl_seconds: int = 1800
     # Most sessions remembered at once; the least recently used go first.
-    session_affinity_max_sessions: int = 1000
+    session_affinity_max_sessions: int = 10000
     # Most sessions one API key (or one client address, without a key) may
     # hold, so one client cannot push everyone else's sessions out.
     session_affinity_max_sessions_per_key: int = 200

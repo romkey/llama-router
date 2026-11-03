@@ -550,7 +550,7 @@ sessions.
 Save the ten recovery codes displayed after first enrollment. Each is a
 single-use alternative to WebAuthn **after entering the password**. Only hashes
 are stored; generating new codes invalidates the previous set. A recovery login
-opens the profile page so you can add a replacement device.
+opens the Account page so you can add a replacement device.
 
 If all devices and recovery codes are lost, an operator with access to the
 server can reset a local user's second factor:
