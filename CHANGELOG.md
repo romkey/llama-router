@@ -61,6 +61,25 @@ described in their git tags and GitHub Releases.
   released), `run()` under several settings, health checks surviving a
   crashing probe, and Hypothesis round trips of the Ollama/OpenAI
   translation. Hypothesis is a new dev dependency.
+- Dashboard errors: a page that fails in the browser now shows an error page
+  with a link back instead of raw JSON; `/api/*` still answers in JSON.
+  A failed Add Provider form returns to the dashboard with the message and
+  reopens the dialog with what was typed (except the API key and extra
+  headers); failed provider and address edits return to the provider page
+  with the message. A password sign-in from an address other than
+  `LLAMA_ROUTER_DASHBOARD_WEBAUTHN_ORIGIN` returns to the sign-in page and
+  names the configured address instead of answering 403.
+- The "Accept requests without an API key" switch now asks for confirmation
+  before turning on, reports success or failure, and turns itself back if
+  the change fails. While it is on, the dashboard header shows an "Open
+  access" badge. The switch and the limits for keys users issue themselves
+  share a new Security card under API Keys.
+- The dashboard stops refreshing provider status while its tab is hidden,
+  and when the session has expired it shows a "sign in again" banner and
+  stops instead of polling forever.
+- Dashboard JSON endpoints share one body parser: a body that is not a JSON
+  object, or a `provider_id` that is not a number in `/api/benchmark` and
+  `/api/pull`, now gets 400 instead of 500.
 - The request log is written by one background writer in batches (up to 200
   rows or every 100 ms) instead of a task and a transaction per request. Its
   queue holds 10,000 rows; when the database falls further behind, rows are

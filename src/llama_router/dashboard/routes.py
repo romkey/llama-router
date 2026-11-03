@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import ipaddress
+import json
 import logging
 import math
 import re
@@ -400,6 +403,14 @@ def _provider_url(provider_id: int, query: str = "") -> str:
     return out
 
 
+def _provider_error(provider_id: int, msg: str) -> RedirectResponse:
+    """Back to a provider's page with *msg* shown, after a failed form."""
+    return RedirectResponse(
+        url=_provider_url(provider_id, "error=" + quote(msg, safe="")),
+        status_code=303,
+    )
+
+
 def _same_origin_referer_path(request: Request, fallback: str) -> str:
     raw = (request.headers.get("referer") or "").strip()
     if not raw:
@@ -548,6 +559,7 @@ async def login_page(request: Request):
             "oidc_display_name": cfg.display_name,
             # With no accounts yet only SSO can sign anyone in.
             "password_login": cfg.password_login_enabled and users_exist,
+            "dashboard_origin": settings.dashboard_webauthn_origin,
         },
     )
 
@@ -1071,7 +1083,7 @@ async def dashboard(request: Request):
                     )
             all_models.sort(key=lambda m: m["name"])
 
-    return templates.TemplateResponse(
+    resp = templates.TemplateResponse(
         request,
         "dashboard.html",
         merge_dash_template_ctx(
@@ -1130,9 +1142,17 @@ async def dashboard(request: Request):
                 "worker_hub_enabled": settings.worker_hub_enabled,
                 "api_port": settings.api_port,
                 "api_on_dashboard_port": settings.api_on_dashboard_port,
+                "add_provider_prefill": (
+                    _add_provider_prefill(request)
+                    if request.query_params.get("add_provider") and not read_only
+                    else None
+                ),
             },
         ),
     )
+    if _ADD_FORM_COOKIE in request.cookies:
+        _clear_add_form(request, resp)
+    return resp
 
 
 # Shown instead of a provider address to users who are not administrators:
@@ -1502,7 +1522,7 @@ async def api_key_usage(period: str = "7d", key_id: int | None = None):
 @router.post("/api/keys/generate")
 async def api_generate_key(request: Request):
     db = deps.get_db()
-    body = await request.json()
+    body = await deps.json_body(request)
     routing_mode = (body.get("routing_mode") or DEFAULT_MODE).strip().lower()
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
@@ -1539,10 +1559,7 @@ async def api_generate_key(request: Request):
 async def api_set_key_spend_cap(key_id: int, request: Request):
     """Body: {daily_spend_cap_usd: number or null}. Past the cap, the key is
     limited to local providers until the next UTC day."""
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
+    body = await deps.json_body(request)
     cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     if not await deps.get_db().set_api_key_spend_cap(key_id, cap):
         raise HTTPException(status_code=404, detail="API key not found")
@@ -1578,7 +1595,7 @@ async def api_set_price(provider_id: int, request: Request):
     db = deps.get_db()
     if await db.get_provider(provider_id) is None:
         raise HTTPException(status_code=404, detail="Provider not found")
-    body = await request.json()
+    body = await deps.json_body(request)
     pattern = str(body.get("model_pattern") or "").strip()
     if not pattern or len(pattern) > 255:
         raise HTTPException(status_code=400, detail="model_pattern is required")
@@ -1602,10 +1619,7 @@ async def api_delete_price(provider_id: int, price_id: int):
 @router.post("/api/keys/{key_id}/locality")
 async def api_set_key_locality(key_id: int, request: Request):
     """Limit a key to local or cloud providers, or allow either (``any``)."""
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
+    body = await deps.json_body(request)
     locality = _key_locality(body.get("locality"))
     if not await deps.get_db().set_api_key_locality(key_id, locality):
         raise HTTPException(status_code=404, detail="API key not found")
@@ -1655,7 +1669,7 @@ async def api_set_key_pin(key_id: int, request: Request):
     db = deps.get_db()
     if not await _api_key_exists(db, key_id):
         raise HTTPException(status_code=404, detail="API key not found")
-    body = await request.json()
+    body = await deps.json_body(request)
     provider_id_raw = body.get("provider_id")
     if not body.get("model_name") or provider_id_raw is None:
         raise HTTPException(
@@ -1687,7 +1701,7 @@ async def api_delete_key_pin(key_id: int, model_name: str):
 @router.post("/api/auth/allow-unauthenticated")
 async def api_set_allow_unauthenticated(request: Request):
     db = deps.get_db()
-    body = await request.json()
+    body = await deps.json_body(request)
     allow = bool(body.get("allow", True))
     await db.set_allow_unauthenticated(allow)
     return JSONResponse({"allow_unauthenticated": allow})
@@ -1808,8 +1822,77 @@ def _model_lines(text: str | None) -> list[str]:
     return out
 
 
+# A failed Add Provider form comes back to the dashboard with its fields in
+# this short-lived cookie, so the dialog reopens filled in. The API key and
+# extra headers can hold secrets and are left out.
+_ADD_FORM_COOKIE = "add_provider_form"
+_ADD_FORM_FIELDS = (
+    "name",
+    "url",
+    "protocol",
+    "machine_type",
+    "gpu_type",
+    "gpu_ram",
+    "api_key_header",
+    "preset",
+    "preset_resource",
+    "manual_models",
+    "locality",
+    "model_filter",
+    "auto_benchmark",
+)
+_ADD_FORM_MAX = 3000
+
+
+def _add_provider_failed(
+    request: Request, msg: str, form: dict[str, str | None]
+) -> RedirectResponse:
+    """Back to the dashboard with *msg*, reopening the Add Provider dialog."""
+    resp = RedirectResponse(
+        url="/?add_provider=1&error=" + quote(msg, safe=""), status_code=303
+    )
+    kept = {k: v for k, v in form.items() if k in _ADD_FORM_FIELDS and v}
+    raw = base64.urlsafe_b64encode(json.dumps(kept).encode()).decode()
+    if len(raw) <= _ADD_FORM_MAX:
+        resp.set_cookie(
+            _ADD_FORM_COOKIE,
+            raw,
+            max_age=300,
+            httponly=True,
+            samesite="strict",
+            secure=_cookie_secure(request),
+        )
+    return resp
+
+
+def _clear_add_form(request: Request, resp: Response) -> None:
+    """Expire the prefill cookie with the attributes it was set with."""
+    resp.delete_cookie(
+        _ADD_FORM_COOKIE,
+        secure=_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def _add_provider_prefill(request: Request) -> dict[str, str]:
+    raw = request.cookies.get(_ADD_FORM_COOKIE, "")
+    if not raw or len(raw) > _ADD_FORM_MAX:
+        return {}
+    try:
+        data = json.loads(base64.urlsafe_b64decode(raw.encode()))
+    except binascii.Error, ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        k: v for k, v in data.items() if k in _ADD_FORM_FIELDS and isinstance(v, str)
+    }
+
+
 @router.post("/providers/add")
 async def add_provider(
+    request: Request,
     name: str = Form(...),
     url: str = Form(""),
     protocol: str = Form("ollama"),
@@ -1832,6 +1915,21 @@ async def add_provider(
     With *preset*, the cloud preset's URL, protocol, key header and extra
     headers fill whatever the form left blank.
     """
+    form = {
+        "name": name,
+        "url": url,
+        "protocol": protocol,
+        "machine_type": machine_type,
+        "gpu_type": gpu_type,
+        "gpu_ram": gpu_ram,
+        "api_key_header": api_key_header,
+        "preset": preset,
+        "preset_resource": preset_resource,
+        "manual_models": manual_models,
+        "locality": locality,
+        "model_filter": model_filter,
+        "auto_benchmark": auto_benchmark,
+    }
     pm = deps.get_pm()
     settings_: dict[str, Any] = {}
     try:
@@ -1859,7 +1957,7 @@ async def add_provider(
         if _tristate(auto_benchmark) is not None:
             settings_["auto_benchmark"] = _tristate(auto_benchmark)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _add_provider_failed(request, str(exc) or "Invalid provider", form)
     try:
         await pm.add_provider(
             name,
@@ -1873,20 +1971,19 @@ async def add_provider(
             provider_settings=settings_ or None,
         )
     except BlockedAddressError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+        return _add_provider_failed(request, str(exc), form)
+    except Exception:
         logger.exception("add_provider failed")
-        raise HTTPException(status_code=400, detail="Could not add provider") from exc
-    return RedirectResponse(url="/", status_code=303)
+        return _add_provider_failed(request, "Could not add provider", form)
+    resp = RedirectResponse(url="/", status_code=303)
+    _clear_add_form(request, resp)
+    return resp
 
 
 @router.post("/api/providers/probe")
 async def api_probe_url(request: Request):
     """Probe a URL before a provider is saved (Add Provider dialog)."""
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="JSON body required") from exc
+    body = await deps.json_body(request)
     url = str(body.get("url") or "")
     api_key = (str(body.get("api_key") or "")).strip() or None
     header = (str(body.get("api_key_header") or "")).strip() or None
@@ -1958,9 +2055,7 @@ async def edit_provider(
         if locality:
             settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=str(exc) or "Invalid protocol"
-        ) from exc
+        return _provider_error(provider_id, str(exc) or "Invalid protocol")
     try:
         await pm.update_provider(
             provider_id,
@@ -1975,12 +2070,10 @@ async def edit_provider(
             provider_settings=settings_ or None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+        return _provider_error(provider_id, str(exc) or "Invalid provider")
+    except Exception:
         logger.exception("update_provider failed (provider_id=%s)", provider_id)
-        raise HTTPException(
-            status_code=400, detail="Could not update provider"
-        ) from exc
+        return _provider_error(provider_id, "Could not update provider")
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -2001,9 +2094,14 @@ async def refresh_provider(provider_id: int):
 @router.post("/api/benchmark")
 async def api_start_benchmark(request: Request):
     """Start a benchmark as a background task and return immediately."""
-    body = await request.json()
-    provider_id = int(body["provider_id"])
-    model_name = body["model"]
+    body = await deps.json_body(request)
+    try:
+        provider_id = int(body["provider_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="provider_id is required") from exc
+    model_name = body.get("model")
+    if not model_name or not isinstance(model_name, str):
+        raise HTTPException(status_code=400, detail="model is required")
     benchmark_api = (body.get("benchmark_api") or "auto").strip().lower()
     if benchmark_api not in {"auto", "ollama", "openai", "llamacpp"}:
         raise HTTPException(status_code=400, detail="Invalid benchmark_api value")
@@ -2135,19 +2233,14 @@ async def delete_model(provider_id: int, model_name: str):
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             msg = f"Model {model_name} not found on backend (removed from local list)"
-            return RedirectResponse(
-                url=_provider_url(provider_id, "error=" + quote(msg)),
-                status_code=303,
-            )
+            return _provider_error(provider_id, msg)
         logger.error(
             "Delete model: backend HTTP %s for provider_id=%s model=%r",
             exc.response.status_code,
             provider_id,
             model_name,
         )
-        raise HTTPException(
-            status_code=500, detail="Could not delete model on backend"
-        ) from exc
+        return _provider_error(provider_id, "Could not delete model on backend")
     except httpx.HTTPError as exc:
         logger.error(
             "Delete model failed (provider_id=%s, model=%r): %s",
@@ -2155,18 +2248,14 @@ async def delete_model(provider_id: int, model_name: str):
             model_name,
             describe_httpx_error(exc),
         )
-        raise HTTPException(
-            status_code=500, detail="Could not delete model on backend"
-        ) from exc
-    except Exception as exc:
+        return _provider_error(provider_id, "Could not delete model on backend")
+    except Exception:
         logger.exception(
             "Delete model failed (provider_id=%s, model=%r)",
             provider_id,
             model_name,
         )
-        raise HTTPException(
-            status_code=500, detail="Could not delete model on backend"
-        ) from exc
+        return _provider_error(provider_id, "Could not delete model on backend")
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -2180,10 +2269,10 @@ async def add_address(
     try:
         await pm.add_address(provider_id, url, is_preferred=bool(is_preferred))
     except BlockedAddressError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+        return _provider_error(provider_id, str(exc))
+    except Exception:
         logger.exception("add_address failed (provider_id=%s)", provider_id)
-        raise HTTPException(status_code=400, detail="Could not add address") from exc
+        return _provider_error(provider_id, "Could not add address")
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -2206,21 +2295,19 @@ async def save_provider_address(
             aid = int(raw_id)
             addr = await db.get_address(aid)
             if addr is None or addr.provider_id != provider_id:
-                raise HTTPException(status_code=400, detail="Invalid address")
+                return _provider_error(provider_id, "Invalid address")
             await pm.update_address(aid, url, is_preferred=pref)
-    except HTTPException:
-        raise
     except BlockedAddressError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid address") from exc
-    except Exception as exc:
+        return _provider_error(provider_id, str(exc))
+    except ValueError:
+        return _provider_error(provider_id, "Invalid address")
+    except Exception:
         logger.exception(
             "save_provider_address failed (provider_id=%s address_id=%r)",
             provider_id,
             raw_id or None,
         )
-        raise HTTPException(status_code=400, detail="Could not save address") from exc
+        return _provider_error(provider_id, "Could not save address")
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -2235,14 +2322,14 @@ async def edit_address(
     try:
         await pm.update_address(address_id, url, is_preferred=bool(is_preferred))
     except BlockedAddressError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+        return _provider_error(provider_id, str(exc))
+    except Exception:
         logger.exception(
             "update_address failed (provider_id=%s address_id=%s)",
             provider_id,
             address_id,
         )
-        raise HTTPException(status_code=400, detail="Could not update address") from exc
+        return _provider_error(provider_id, "Could not update address")
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 
@@ -2263,7 +2350,7 @@ async def toggle_preferred(provider_id: int, address_id: int):
 @router.post("/api/pull")
 async def api_pull_model(request: Request):
     """Start a pull as a background task and return immediately."""
-    body = await request.json()
+    body = await deps.json_body(request)
     model = body.get("model")
     provider_id = body.get("provider_id")
     pull_api = (body.get("pull_api") or "auto").strip().lower()
@@ -2281,7 +2368,10 @@ async def api_pull_model(request: Request):
     pull_id = str(uuid.uuid4())
 
     if provider_id is not None:
-        provider_ids = [int(provider_id)]
+        try:
+            provider_ids = [int(provider_id)]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid provider_id") from exc
     else:
         infos = await pm.list_provider_infos()
         provider_ids = [
@@ -2365,7 +2455,7 @@ async def api_hf_env(request: Request):
 @router.post("/api/hf/files")
 async def api_hf_files(request: Request):
     """List the files a repository and pattern select, without downloading."""
-    body = await request.json()
+    body = await deps.json_body(request)
     try:
         repo = hf_download.validate_repo(str(body.get("repo") or ""))
         pattern = hf_download.validate_pattern(body.get("pattern"))
@@ -2453,7 +2543,7 @@ async def _hf_deliver_ollama(
 async def api_hf_pull(request: Request):
     """Download from Hugging Face, then push to Ollama providers and/or refresh
     llama.cpp providers that share the models directory."""
-    body = await request.json()
+    body = await deps.json_body(request)
     try:
         repo = hf_download.validate_repo(str(body.get("repo") or ""))
         pattern = hf_download.validate_pattern(body.get("pattern"))
@@ -2729,7 +2819,7 @@ async def api_auto_benchmark_status():
 @router.post("/api/auto-benchmark")
 async def api_auto_benchmark_configure(request: Request):
     """Body: any of ``enabled`` (bool), ``idle_minutes``, ``max_age_days``."""
-    body = await request.json()
+    body = await deps.json_body(request)
     kwargs: dict[str, Any] = {}
     try:
         if "enabled" in body:
@@ -2983,7 +3073,7 @@ async def api_cache_clear():
 @router.post("/api/cache/model")
 async def api_cache_model(request: Request):
     """Pre-cache a model by downloading its manifest and blobs."""
-    body = await request.json()
+    body = await deps.json_body(request)
     model = body.get("model", "").strip()
     if not model:
         raise HTTPException(status_code=400, detail="model is required")
@@ -3028,7 +3118,7 @@ async def api_cache_model(request: Request):
 @router.post("/api/fallbacks")
 async def set_fallback(request: Request):
     """Set or update a model fallback. Body: {model: str, fallback: str}."""
-    body = await request.json()
+    body = await deps.json_body(request)
     model = body.get("model", "").strip()
     fallback = body.get("fallback", "").strip()
     if not model or not fallback:
@@ -3097,7 +3187,7 @@ async def list_model_aliases():
 async def set_model_alias(request: Request):
     """Body: {alias, canonical}. The alias then reaches every provider of the
     canonical name and of its other aliases."""
-    body = await request.json()
+    body = await deps.json_body(request)
     alias = str(body.get("alias") or "").strip()
     canonical = str(body.get("canonical") or "").strip()
     if not alias or not canonical:

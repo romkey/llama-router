@@ -61,16 +61,6 @@ def _owner_id(request: Request) -> int:
     return int(user.id)
 
 
-async def _body(request: Request) -> dict[str, Any]:
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="body must be JSON") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    return body
-
-
 @router.get("/my-keys", response_class=HTMLResponse)
 async def my_keys_page(request: Request) -> Response:
     return templates.TemplateResponse(
@@ -96,7 +86,7 @@ async def list_my_keys(request: Request) -> JSONResponse:
 @router.post("/api/my-keys")
 async def issue_my_key(request: Request) -> JSONResponse:
     owner = _owner_id(request)
-    body = await _body(request)
+    body = await deps.json_body(request)
     routing_mode = str(body.get("routing_mode") or DEFAULT_MODE).strip().lower()
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
@@ -154,7 +144,7 @@ async def get_self_service_defaults() -> JSONResponse:
 async def set_self_service_defaults(request: Request) -> JSONResponse:
     """Body: {locality: local|cloud|any, daily_spend_cap_usd: number|null}.
     Applies to keys issued from now on, not to existing ones."""
-    body = await _body(request)
+    body = await deps.json_body(request)
     locality = _key_locality(body.get("locality"))
     cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     db = deps.get_db()

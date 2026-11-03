@@ -163,16 +163,6 @@ async def _group(db: Database, group_id: int) -> ModelGroup:
     raise HTTPException(status_code=404, detail="group not found")
 
 
-async def _body(request: Request) -> dict[str, Any]:
-    try:
-        body = await request.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="body must be JSON") from exc
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="body must be a JSON object")
-    return body
-
-
 @router.get("/api/model-groups")
 async def list_groups() -> JSONResponse:
     """Every group with its members and current choices, plus problems the
@@ -187,7 +177,7 @@ async def list_groups() -> JSONResponse:
 @router.post("/api/model-groups")
 async def create_group(request: Request) -> JSONResponse:
     """Body: {name, description?, members?: [{model_name, provider_id?}]}."""
-    body = await _body(request)
+    body = await deps.json_body(request)
     db = deps.get_db()
     name = str(body.get("name") or "").strip()
     await _check_group_name(db, name, current=None)
@@ -209,7 +199,7 @@ async def create_group(request: Request) -> JSONResponse:
 @router.patch("/api/model-groups/{group_id}")
 async def update_group(group_id: int, request: Request) -> JSONResponse:
     """Body: {name?, description?}. Renaming keeps the members."""
-    body = await _body(request)
+    body = await deps.json_body(request)
     db = deps.get_db()
     group = await _group(db, group_id)
     name = str(body.get("name") or group.name).strip()
@@ -233,7 +223,7 @@ async def add_member(group_id: int, request: Request) -> JSONResponse:
     model on any provider that serves it."""
     db = deps.get_db()
     group = await _group(db, group_id)
-    model, pid = await _member(db, await _body(request))
+    model, pid = await _member(db, await deps.json_body(request))
     if model == group.name:
         raise HTTPException(status_code=400, detail="a group cannot contain itself")
     m = await db.add_model_group_member(group_id, model, pid)
@@ -246,7 +236,7 @@ async def set_members(group_id: int, request: Request) -> JSONResponse:
     members in one go; members that stay keep their place."""
     db = deps.get_db()
     group = await _group(db, group_id)
-    raw_members = (await _body(request)).get("members")
+    raw_members = (await deps.json_body(request)).get("members")
     if not isinstance(raw_members, list):
         raise HTTPException(status_code=400, detail="members must be a list")
     members = [await _member(db, m if isinstance(m, dict) else {}) for m in raw_members]

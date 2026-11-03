@@ -692,3 +692,23 @@ async def test_profile_is_available_to_local_admins_and_viewers(
     assert response.status_code == 200
     assert 'href="/profile" aria-label="Profile for alice"' in response.text
     assert 'href="/account/security"' not in response.text
+
+
+async def test_password_login_from_another_origin_explains_itself(
+    mfa_client: tuple[httpx.AsyncClient, Database],
+) -> None:
+    client, db = mfa_client
+    await create_user(db)
+    # Same-origin as far as the browser goes, but not the configured address.
+    client.base_url = httpx.URL("http://10.0.0.5:8000")
+    resp = await client.post(
+        "/login",
+        data={"username": "alice", "password": PASSWORD, "next": "/chat"},
+        headers={"Origin": "http://10.0.0.5:8000"},
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login?error=origin&next=%2Fchat"
+    assert AUTH_COOKIE not in resp.cookies
+    page = await client.get(resp.headers["location"])
+    assert ORIGIN in page.text
+    assert "different one" in page.text

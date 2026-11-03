@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -151,9 +151,10 @@ async def password_login_response(
         and request.headers.get("origin", settings.dashboard_webauthn_origin)
         != settings.dashboard_webauthn_origin
     ):
-        raise HTTPException(
-            status_code=403, detail="Sign in from the configured dashboard origin"
-        )
+        url = "/login?error=origin"
+        if next_url != "/":
+            url += "&next=" + quote(next_url, safe="")
+        return _private(RedirectResponse(url, status_code=303))
     if not account.enabled and not settings.dashboard_require_second_factor:
         response = RedirectResponse(next_url, status_code=303)
         await _set_session(request, response, account, verified=False)

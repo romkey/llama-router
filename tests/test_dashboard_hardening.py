@@ -10,6 +10,7 @@ import logging
 import socket
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -311,8 +312,8 @@ async def test_provider_routes_refuse_metadata_addresses(
     resp = await c.post(
         "/providers/add", data={"name": "m", "url": meta, "protocol": "ollama"}
     )
-    assert resp.status_code == 400
-    assert "metadata" in resp.json()["detail"]
+    assert resp.status_code == 303
+    assert "metadata" in unquote(resp.headers["location"])
     assert await db.list_providers() == []
 
     resp = await c.post(
@@ -323,14 +324,14 @@ async def test_provider_routes_refuse_metadata_addresses(
     [p] = await db.list_providers()
     pid = p.require_id()
     resp = await c.post(f"/providers/{pid}/addresses/add", data={"url": meta})
-    assert resp.status_code == 400
+    assert "metadata" in unquote(resp.headers["location"])
     resp = await c.post(f"/providers/{pid}/addresses/save", data={"url": meta})
-    assert resp.status_code == 400
+    assert "metadata" in unquote(resp.headers["location"])
     [addr] = await db.get_addresses(pid)
     resp = await c.post(
         f"/providers/{pid}/addresses/{addr.id}/edit", data={"url": meta}
     )
-    assert resp.status_code == 400
+    assert resp.headers["location"].startswith(f"/providers/{pid}?error=")
     assert [a.url for a in await db.get_addresses(pid)] == ["http://127.0.0.1:9"]
 
 
