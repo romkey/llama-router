@@ -146,7 +146,7 @@ async def test_run_starts_one_server_per_port_and_shuts_down(
     monkeypatch.setattr(settings, "llamacpp_port", 18002)
     monkeypatch.setattr(settings, "cache_port", 18003)
 
-    await asyncio.wait_for(main_mod.run(), 10)
+    assert await asyncio.wait_for(main_mod.run(), 10) == 0
 
     ports = [c.port for c in isolated_run]
     assert ports == [18000, 18001, 18002] + ([18003] if cache else [])
@@ -172,10 +172,9 @@ async def test_run_closes_everything_when_a_server_fails(
     monkeypatch.setattr(settings, "cache_enabled", False)
 
     async def broken(self: uvicorn.Server, sockets: Any = None) -> None:
-        raise OSError("address already in use")
+        raise SystemExit(1)  # how uvicorn reports a port it cannot bind
 
     monkeypatch.setattr(uvicorn.Server, "serve", broken)
-    with pytest.raises(OSError, match="in use"):
-        await asyncio.wait_for(main_mod.run(), 10)
+    assert await asyncio.wait_for(main_mod.run(), 10) == 1
     with pytest.raises(RuntimeError):
         await dash_deps.get_db()._select_one("SELECT 1", ())

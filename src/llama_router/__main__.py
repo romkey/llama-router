@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import uvicorn
 
-from . import __version__, router_identity
+from . import __version__, background, router_identity
 from .api import deps as api_deps
 from .api.app import app as api_app
 from .auto_benchmark import AutoBenchmarker
@@ -24,7 +24,12 @@ from .database import Database
 from .llamacpp_api import deps as lcpp_deps
 from .llamacpp_api.app import app as lcpp_app
 from .provider_manager import ProviderManager
-from .request_logger import attach_pricer, attach_stats
+from .request_logger import (
+    attach_pricer,
+    attach_stats,
+    start_log_writer,
+    stop_log_writer,
+)
 from .router import Router
 from .sentry import init_sentry
 from .shared_port import SharedPortApp
@@ -72,6 +77,36 @@ class _Server(uvicorn.Server):
         yield
 
 
+class ServerStartupError(RuntimeError):
+    """A server could not start (uvicorn exits when it cannot bind)."""
+
+
+async def serve_all(servers: list[_Server]) -> None:
+    """Run *servers* until they stop. If one cannot start, the others are
+    stopped and ServerStartupError is raised."""
+
+    async def serve(server: _Server) -> None:
+        try:
+            await server.serve()
+        except SystemExit as exc:
+            for other in servers:
+                other.should_exit = True
+            cfg = server.config
+            raise ServerStartupError(
+                f"could not start the server on {cfg.host}:{cfg.port}"
+            ) from exc
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for s in servers:
+                tg.create_task(serve(s))
+    except ExceptionGroup as group:
+        failed = [e for e in group.exceptions if isinstance(e, ServerStartupError)]
+        if failed:
+            raise failed[0] from None
+        raise
+
+
 def _log_oidc_config() -> None:
     cfg = OIDCConfig.from_settings(settings)
     if not cfg.enabled:
@@ -116,7 +151,7 @@ async def _warn_if_anonymous(db: Database) -> None:
         )
 
 
-async def run() -> None:
+async def run() -> int:
     init_sentry()
     _log_oidc_config()
 
@@ -138,6 +173,7 @@ async def run() -> None:
     pm.attach_router(rt)
     attach_stats(pm.stats)
     attach_pricer(rt.price_for)
+    start_log_writer()
     # Build the first routing table before any API accepts requests.
     await rt.start()
     auto_bench = AutoBenchmarker(db, pm)
@@ -235,14 +271,22 @@ async def run() -> None:
         loop.add_signal_handler(sig, stop, sig)
 
     try:
-        await asyncio.gather(*(s.serve() for s in servers))
+        await serve_all(servers)
+    except ServerStartupError as exc:
+        logger.error("Shutting down: %s", exc)
+        return 1
     finally:
         await worker_link.stop()
         await auto_bench.stop()
         await rt.stop()
         await pm.worker_hub.close_all()
         await pm.stop()
+        # Pending log rows and other after-response writes go before the
+        # database closes.
+        await background.drain()
+        await stop_log_writer()
         await db.close()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -268,8 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         from .dashboard.mfa_recovery import reset_second_factor
 
         return asyncio.run(reset_second_factor(args.reset_dashboard_second_factor))
-    asyncio.run(run())
-    return 0
+    return asyncio.run(run())
 
 
 if __name__ == "__main__":

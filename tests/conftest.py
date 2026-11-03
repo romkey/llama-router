@@ -156,15 +156,15 @@ def _fresh_upstream_limiter() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_management_key_touches() -> None:
-    """Key ids repeat across tests' databases; forget when each was used."""
-    management_keys._touched.clear()
-
-
-@pytest.fixture(autouse=True)
 def _fresh_voices_cache() -> None:
     """Each test fetches /v1/audio/voices afresh."""
     audio._voices_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_management_key_touches() -> None:
+    """Key ids repeat across tests' databases; forget when each was used."""
+    management_keys._touched.clear()
 
 
 @pytest.fixture(autouse=True)
