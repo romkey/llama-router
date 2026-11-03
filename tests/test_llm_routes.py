@@ -628,12 +628,16 @@ async def test_streaming_connection_failure_is_bad_gateway(
     assert pm.active_requests(_pid(provider)) == 0
 
 
-async def test_deeply_nested_body_is_bad_request(provider: Provider) -> None:
-    deep = '{"model": "m", "x": ' + "[" * 100_000 + "]" * 100_000 + "}"
+async def test_deeply_nested_body_is_bad_request(
+    provider: Provider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # How deep the parser gets before RecursionError depends on the stack, so
+    # raise it directly.
+    async def too_deep(self: Any) -> Any:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("starlette.requests.Request.json", too_deep)
     async with _client(v1_app) as c:
-        resp = await c.post(
-            "/v1/chat/completions",
-            content=deep,
-            headers={"content-type": "application/json"},
-        )
+        resp = await c.post("/v1/chat/completions", json={"model": MODEL})
     assert resp.status_code == 400
+    assert resp.json() == {"detail": "JSON body required"}
