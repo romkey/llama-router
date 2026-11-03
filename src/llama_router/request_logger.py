@@ -340,6 +340,10 @@ def _payload_size(body: Any) -> int:
         return 0
 
 
+# How deep _request_meta_summary looks into a body; real requests are shallow.
+_MAX_WALK_DEPTH = 64
+
+
 def _request_meta_summary(body: Any) -> str | None:
     if body is None:
         return None
@@ -367,7 +371,9 @@ def _request_meta_summary(body: Any) -> str | None:
         if "stream" in body:
             stream = bool(body.get("stream"))
 
-    def walk(node: Any) -> None:
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth >= _MAX_WALK_DEPTH:
+            return
         if isinstance(node, dict):
             for k, v in node.items():
                 lk = str(k).lower()
@@ -379,10 +385,10 @@ def _request_meta_summary(body: Any) -> str | None:
                     flags["audio"] = True
                 if lk in {"tools", "tool_calls"}:
                     flags["tools"] = True
-                walk(v)
+                walk(v, depth + 1)
         elif isinstance(node, list):
             for item in node:
-                walk(item)
+                walk(item, depth + 1)
 
     walk(body)
     parts: list[str] = []

@@ -54,12 +54,9 @@ async def completions(request: Request) -> Response:
 
     provider = result.provider
     routed = result.model_key
-    if result.resolved_model != model:
-        body["model"] = result.resolved_model
 
     provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = get_v1_client(pm, provider_id)
     stream = body.get("stream", False)
     start = time.monotonic()
 
@@ -71,6 +68,7 @@ async def completions(request: Request) -> Response:
         async def generate() -> AsyncIterator[bytes]:
             try:
                 async with slot, pm.acquire_provider(provider_id):
+                    client = get_v1_client(pm, provider_id)
                     async for chunk in slot.stream(client.completions_stream(body)):
                         yield chunk
             except Exception:
@@ -95,6 +93,7 @@ async def completions(request: Request) -> Response:
     slot = await upstream_slot(request, prefs)
     try:
         async with slot, pm.acquire_provider(provider_id):
+            client = get_v1_client(pm, provider_id)
             resp = await client.completions(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

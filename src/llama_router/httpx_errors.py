@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 import httpx
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -36,15 +37,73 @@ def describe_httpx_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+# The most of an upstream error body ever read: enough for any real error
+# message, and a misbehaving upstream cannot make the router buffer more.
+MAX_ERROR_BODY = 64 * 1024
+# Headers that describe the original encoded body, not a buffered copy.
+_BODY_HEADERS = frozenset({"content-encoding", "content-length", "transfer-encoding"})
+
+
+async def read_capped(
+    resp: httpx.Response, limit: int = MAX_ERROR_BODY
+) -> httpx.Response:
+    """Read at most *limit* bytes of streamed *resp*, close it, and return a
+    buffered copy holding them (same status, request and headers)."""
+    buf = bytearray()
+    try:
+        async for chunk in resp.aiter_bytes():
+            buf += chunk
+            if len(buf) >= limit:
+                break
+    finally:
+        await resp.aclose()
+    headers = [
+        (k, v) for k, v in resp.headers.items() if k.lower() not in _BODY_HEADERS
+    ]
+    return httpx.Response(
+        resp.status_code,
+        headers=headers,
+        content=bytes(buf[:limit]),
+        request=resp.request,
+    )
+
+
 async def raise_for_stream_status(resp: httpx.Response) -> None:
     """``raise_for_status`` for a streamed response.
 
-    Reads an error body first, while the stream is still open, so the
-    ``HTTPStatusError`` can still be turned into the upstream's own reply.
+    Reads an error body first (at most MAX_ERROR_BODY), while the stream is
+    still open, so the ``HTTPStatusError`` can still be turned into the
+    upstream's own reply.
     """
     if resp.is_error:
-        await resp.aread()
+        resp = await read_capped(resp)
     resp.raise_for_status()
+
+
+def install_upstream_error_handlers(app: FastAPI) -> None:
+    """Answer an upstream that could not be reached with JSON, not a bare 500.
+
+    A timeout is 504, any other connection failure 502, and a provider with
+    no address to send to 503. The upstream's address is never echoed.
+    """
+    from .v1_client import NoReachableAddressError
+
+    async def timeout(request: Request, exc: Exception) -> JSONResponse:
+        logger.warning("Upstream timed out: %s", describe_httpx_error(exc))
+        return JSONResponse(status_code=504, content={"error": "upstream timed out"})
+
+    async def unreachable(request: Request, exc: Exception) -> JSONResponse:
+        logger.warning("Upstream request failed: %s", describe_httpx_error(exc))
+        return JSONResponse(
+            status_code=502, content={"error": "upstream could not be reached"}
+        )
+
+    async def no_address(request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"error": str(exc)})
+
+    app.add_exception_handler(httpx.TimeoutException, timeout)
+    app.add_exception_handler(httpx.RequestError, unreachable)
+    app.add_exception_handler(NoReachableAddressError, no_address)
 
 
 # Upstream statuses whose error the client caused (a bad request, an unknown

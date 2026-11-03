@@ -14,7 +14,7 @@ import pytest
 from llama_router import ollama_client
 from llama_router.llamacpp_client import OpenAIClient, _chat_metrics
 from llama_router.ollama_client import OllamaClient, _human_bytes
-from llama_router.v1_client import V1Client
+from llama_router.v1_client import MultipartForm, V1Client
 
 
 class Recorder:
@@ -146,10 +146,12 @@ async def test_ollama_streams_and_binary_proxies() -> None:
     assert await collect(c.v1_completions_stream({})) == b"d"
     assert await collect(c.v1_responses_stream({})) == b"r"
     assert await collect(c.v1_audio_speech({})) == b"mp3"
-    resp = await c.v1_images_edits(b"data", "multipart/form-data; boundary=x")
+    resp = await c.v1_images_edits(
+        MultipartForm({"model": "m"}, [("image", ("a.png", b"data", "image/png"))])
+    )
     assert resp.content == b"img"
     assert rec.requests[-1].headers["content-type"].startswith("multipart")
-    assert (await c.v1_audio_transcriptions(b"d", "audio/wav")).json() == {"text": "hi"}
+    assert (await c.v1_audio_transcriptions(MultipartForm())).json() == {"text": "hi"}
     await c.close()
 
 
@@ -403,10 +405,8 @@ async def test_openai_calls_and_streams() -> None:
     assert await c.embeddings({}) == {"ok": True}
     assert await c.images_generations({}) == {"ok": True}
     assert await c.audio_voices() == {"ok": True}
-    assert (await c.images_edits(b"d", "multipart/form-data")).content == b"img"
-    assert (await c.audio_transcriptions(b"d", "multipart/form-data")).json() == {
-        "ok": True
-    }
+    assert (await c.images_edits(MultipartForm())).content == b"img"
+    assert (await c.audio_transcriptions(MultipartForm())).json() == {"ok": True}
     assert b"".join([x async for x in c.audio_speech({})]) == b"wav"
     for stream in (c.chat_completions_stream, c.completions_stream, c.responses_stream):
         body = {}
@@ -487,8 +487,8 @@ async def test_v1client_falls_back_to_ollama() -> None:
     assert await v1.responses({}) == want
     assert await v1.images_generations({}) == want
     assert await v1.audio_voices() == want
-    assert (await v1.images_edits(b"", "x/y")).content == b"i"
-    assert (await v1.audio_transcriptions(b"", "x/y")).json() == want
+    assert (await v1.images_edits(MultipartForm())).content == b"i"
+    assert (await v1.audio_transcriptions(MultipartForm())).json() == want
     for stream in (
         v1.chat_completions_stream,
         v1.completions_stream,
@@ -527,8 +527,8 @@ async def test_v1client_llamacpp_paths() -> None:
     assert await v1.responses({}) == want
     assert await v1.images_generations({}) == want
     assert await v1.audio_voices() == want
-    assert (await v1.images_edits(b"", "x/y")).content == b"i"
-    assert (await v1.audio_transcriptions(b"", "x/y")).json() == want
+    assert (await v1.images_edits(MultipartForm())).content == b"i"
+    assert (await v1.audio_transcriptions(MultipartForm())).json() == want
     for stream in (
         v1.chat_completions_stream,
         v1.completions_stream,

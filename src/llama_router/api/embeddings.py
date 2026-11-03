@@ -39,16 +39,14 @@ async def _handle_embedding(
 
     provider = result.provider
     routed = result.model_key
-    if result.resolved_model != model:
-        body["model"] = result.resolved_model
 
     provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = pm.ollama_api_client(provider_id)
     start = time.monotonic()
     slot = await upstream_slot(request, prefs)
     try:
         async with slot, pm.acquire_provider(provider_id):
+            client = pm.ollama_api_client(provider_id)
             result = await getattr(client, method)(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

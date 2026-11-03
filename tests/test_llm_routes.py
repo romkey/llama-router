@@ -198,7 +198,8 @@ async def test_json_route_connection_failure_is_logged_and_released(
     httpx_mock.add_exception(httpx.ConnectError("refused"))
     async with _client(app) as c:
         resp = await c.post(path, json=body)
-    assert resp.status_code == 500
+    assert resp.status_code == 502
+    assert resp.json() == {"error": "upstream could not be reached"}
     assert pm.active_requests(_pid(provider)) == 0
     await drain()
     (entry,) = [e for e in await db.get_request_logs(20, 0) if e.endpoint == path]
@@ -376,7 +377,7 @@ async def test_audio_transcriptions_errors(
     assert unknown.status_code == 404
     assert upstream.status_code == 500
     assert upstream.json() == {"error": "upstream service returned an error"}
-    assert down.status_code == 500
+    assert down.status_code == 502
 
 
 async def test_audio_voices_aggregates_and_skips_failures(
@@ -531,3 +532,113 @@ async def test_client_disconnect_mid_stream_releases_everything(
     assert limiter.active_streams(key_id) == 0
     assert pm.active_requests(_pid(provider)) == 0
     assert upstream.closed
+
+
+async def _rename_backend(db: Database, pm: ProviderManager, p: Provider) -> None:
+    """The provider knows MODEL as reg.io/m:1, so that is what it must be sent."""
+    pid = _pid(p)
+    await db.set_provider_models(
+        pid, [ProviderModel(provider_id=pid, name=MODEL, raw_name="reg.io/m:1")]
+    )
+    rt = Router(db, pm)
+    api_deps.init(db, pm, rt)
+    v1_deps.init(db, pm, rt)
+
+
+@pytest.mark.parametrize(
+    ("path", "field"),
+    [("/v1/audio/transcriptions", "file"), ("/v1/images/edits", "image")],
+)
+async def test_multipart_routes_send_backend_model_and_drop_router_fields(
+    provider: Provider,
+    pm: ProviderManager,
+    db: Database,
+    httpx_mock: HTTPXMock,
+    path: str,
+    field: str,
+) -> None:
+    await _rename_backend(db, pm, provider)
+    httpx_mock.add_response(url=BASE + path, json={"ok": True})
+    async with _client(v1_app) as c:
+        resp = await c.post(
+            path,
+            data={"model": MODEL, "provider": "elsewhere", "language": "en"},
+            files={field: ("a.bin", b"\x00\x01", "application/octet-stream")},
+        )
+    assert resp.status_code == 200
+    sent = httpx_mock.get_requests()[0]
+    assert sent.headers["content-type"].startswith("multipart/form-data")
+    body = sent.content
+    assert b'name="model"\r\n\r\nreg.io/m:1\r\n' in body
+    assert b'name="language"\r\n\r\nen\r\n' in body
+    assert b'name="provider"' not in body
+    assert b"elsewhere" not in body
+    assert b'filename="a.bin"' in body
+    assert b"\x00\x01" in body
+
+
+@pytest.mark.parametrize(("app", "path", "up", "body", "answer"), JSON_ROUTES, ids=IDS)
+async def test_json_route_timeout_is_gateway_timeout(
+    provider: Provider,
+    pm: ProviderManager,
+    httpx_mock: HTTPXMock,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+    answer: dict[str, Any],
+) -> None:
+    httpx_mock.add_exception(httpx.ReadTimeout("slow"))
+    async with _client(app) as c:
+        resp = await c.post(path, json=body)
+    assert resp.status_code == 504
+    assert resp.json() == {"error": "upstream timed out"}
+    assert pm.active_requests(_pid(provider)) == 0
+
+
+@pytest.mark.parametrize(("app", "path", "up", "body", "answer"), JSON_ROUTES, ids=IDS)
+async def test_provider_without_address_is_unavailable(
+    provider: Provider,
+    pm: ProviderManager,
+    db: Database,
+    app: FastAPI,
+    path: str,
+    up: str,
+    body: dict[str, Any],
+    answer: dict[str, Any],
+) -> None:
+    for addr in await db.get_addresses(_pid(provider)):
+        await db.remove_address(addr.require_id())
+    await pm._rebuild_clients(provider)
+    async with _client(app) as c:
+        resp = await c.post(path, json=body)
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "provider has no reachable address"}
+    assert pm.active_requests(_pid(provider)) == 0
+
+
+async def test_streaming_connection_failure_is_bad_gateway(
+    provider: Provider, pm: ProviderManager, httpx_mock: HTTPXMock
+) -> None:
+    httpx_mock.add_exception(httpx.ConnectError("refused"))
+    async with _client(v1_app) as c:
+        resp = await c.post(
+            "/v1/chat/completions", json={"model": MODEL, "stream": True}
+        )
+    assert resp.status_code == 502
+    assert pm.active_requests(_pid(provider)) == 0
+
+
+async def test_deeply_nested_body_is_bad_request(
+    provider: Provider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # How deep the parser gets before RecursionError depends on the stack, so
+    # raise it directly.
+    async def too_deep(self: Any) -> Any:
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("starlette.requests.Request.json", too_deep)
+    async with _client(v1_app) as c:
+        resp = await c.post("/v1/chat/completions", json={"model": MODEL})
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "JSON body required"}

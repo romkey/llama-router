@@ -856,7 +856,8 @@ async def users_add(
     if len(password) < 8:
         return RedirectResponse(url="/users?error=password", status_code=303)
     make_admin = is_admin in ("1", "on", "true", "yes")
-    await db.create_dashboard_user(un, hash_password(password), make_admin)
+    hashed = await asyncio.to_thread(hash_password, password)
+    await db.create_dashboard_user(un, hashed, make_admin)
     invalidate_dashboard_user_count_cache()
     return RedirectResponse(url="/users?created=1", status_code=303)
 
@@ -899,7 +900,8 @@ async def users_set_password(
         return RedirectResponse(url="/users?error=password", status_code=303)
     # Ends every session of the account; an administrator changing their
     # own password keeps this one.
-    await db.update_dashboard_user_password(user_id, hash_password(new_password))
+    hashed = await asyncio.to_thread(hash_password, new_password)
+    await db.update_dashboard_user_password(user_id, hashed)
     resp = RedirectResponse(url="/users?updated=1", status_code=303)
     if user is not None and user.id == user_id:
         row = await db.get_dashboard_user_by_id(user_id)
