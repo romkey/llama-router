@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-03
+
 ### Added
 
 - Worker tokens can expire. Set "Expires after (days)" when creating a worker
