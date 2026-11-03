@@ -4095,6 +4095,10 @@ function workerRotate(id, name) {
     var days = prompt('Expire the new token after how many days? Leave empty for never.', '');
     if (days === null) return;
     days = days.trim();
+    if (days !== '' && !/^[0-9]+$/.test(days)) {
+        workerBanner('worker-banner', 'danger', 'Expiry must be a whole number of days, or empty for never. The token was not rotated.');
+        return;
+    }
     workerFetchJson('/api/workers/' + id + '/rotate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
