@@ -207,8 +207,13 @@ async def setup_required_response(request: Request) -> Response:
     )
 
 
+# Machine-readable pages refused with a plain 403 rather than a redirect.
+_FORBIDDEN_AS_403 = ("/metrics", "/docs", "/redoc", "/openapi.json")
+
+
 def _forbidden(request: Request) -> Response:
-    if request.url.path.startswith("/api/"):
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith(_FORBIDDEN_AS_403):
         return JSONResponse(status_code=403, content={"detail": "Forbidden"})
     return RedirectResponse(url="/?error=forbidden", status_code=302)
 

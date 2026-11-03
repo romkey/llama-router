@@ -30,7 +30,7 @@ from .. import metrics as metrics_mod
 from ..affinity import session_key
 from ..auth import generate_api_key, key_hash, key_prefix
 from ..background import spawn
-from ..client_address import client_ip
+from ..client_address import client_ip, forwarded_for_ignored
 from ..cloud_presets import PRESETS, get_preset
 from ..config import settings
 from ..httpx_errors import describe_httpx_error
@@ -526,6 +526,27 @@ async def login_page(request: Request):
     )
 
 
+_warned_untrusted_forwarded_for = False
+
+
+def _warn_untrusted_forwarded_for(request: Request) -> None:
+    """Log once per process that a proxy's X-Forwarded-For is being ignored.
+
+    Behind an unlisted proxy every sign-in shares the proxy's address, so
+    one client's failures throttle everyone.
+    """
+    global _warned_untrusted_forwarded_for
+    if _warned_untrusted_forwarded_for or not forwarded_for_ignored(request):
+        return
+    _warned_untrusted_forwarded_for = True
+    logger.warning(
+        "Ignoring X-Forwarded-For from %s, which is not in "
+        "LLAMA_ROUTER_TRUSTED_PROXIES; sign-in throttling uses the proxy's "
+        "address for every client. List the reverse proxy there.",
+        request.client.host if request.client else "unknown",
+    )
+
+
 @router.post("/login")
 async def login_submit(
     request: Request,
@@ -540,6 +561,7 @@ async def login_submit(
         return RedirectResponse(url="/", status_code=302)
     # X-Forwarded-For counts only from LLAMA_ROUTER_TRUSTED_PROXIES; a client
     # can't rotate it to dodge the per-address limit.
+    _warn_untrusted_forwarded_for(request)
     ip = client_ip(request) or "unknown"
     try:
         un = normalize_username(username)
