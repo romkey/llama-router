@@ -690,7 +690,7 @@ async def test_profile_is_available_to_local_admins_and_viewers(
     await login(client)
     response = await client.get("/profile")
     assert response.status_code == 200
-    assert 'href="/profile" aria-label="Profile for alice"' in response.text
+    assert 'href="/profile" aria-label="Account for alice"' in response.text
     assert 'href="/account/security"' not in response.text
 
 

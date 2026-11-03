@@ -31,7 +31,7 @@ client ──HTTP──▶ hub router ──WebSocket (outbound from worker)─�
 ## Choosing which providers a hub may use
 
 By default a worker serves every provider its router has. The worker's
-**Workers** tab, under *Serve a hub from this router*, lists the providers in
+**Workers** tab, under *Connect to a hub (run as a worker)*, lists the providers in
 three groups, **Local**, **Cloud** and **Remotes** (workers that dial in to
 this router), each with *all* and *none* quick picks, plus *All* and *None*
 for the lot. Untick a provider to keep it from the hub: jobs from the hub

@@ -1,28 +1,49 @@
-{# All dashboard pages share this order and the same permission flags. #}
-{% macro pane(name, label, icon, badge=false) %}
-<li class="nav-item" role="presentation">
+{# All dashboard pages share this order and the same permission flags.
+   Operate tabs sit in the bar; Access and Tools are menus, so the bar fits
+   one row at 1280 px. #}
+{% macro pane(name, label, icon, badge=false, menu=false) %}
+{% set cls = 'dropdown-item' if menu else 'nav-link' %}
+<li{% if not menu %} class="nav-item"{% endif %} role="presentation">
     {% if request.url.path == '/' %}
-    <button class="nav-link{{ ' active' if name == 'providers' else '' }}" id="{{ name }}-tab" data-bs-toggle="tab" data-bs-target="#{{ name }}-pane" type="button" role="tab" aria-controls="{{ name }}-pane" aria-selected="{{ 'true' if name == 'providers' else 'false' }}">
-        <i class="bi bi-{{ icon }} me-1"></i>{{ label }}
+    <button class="{{ cls }}{{ ' active' if name == 'providers' else '' }}" id="{{ name }}-tab" data-bs-toggle="tab" data-bs-target="#{{ name }}-pane" type="button" role="tab" aria-controls="{{ name }}-pane" aria-selected="{{ 'true' if name == 'providers' else 'false' }}">
+        <i class="bi bi-{{ icon }} me-1" aria-hidden="true"></i>{{ label }}
         {% if badge %}<span class="badge bg-secondary ms-1" id="stat-log-total">{% if log_total %}{{ log_total }}{% endif %}</span>{% endif %}
     </button>
     {% else %}
-    <a class="nav-link" href="/#{{ name }}-pane"><i class="bi bi-{{ icon }} me-1"></i>{{ label }}</a>
+    <a class="{{ cls }}" href="/#{{ name }}-pane"><i class="bi bi-{{ icon }} me-1" aria-hidden="true"></i>{{ label }}{% if badge and log_total %} <span class="badge bg-secondary ms-1">{{ log_total }}</span>{% endif %}</a>
     {% endif %}
 </li>
 {% endmacro %}
-{% macro page_link(path, label, icon) %}
-<li class="nav-item">
-    <a class="nav-link{{ ' active' if request.url.path == path else '' }}" href="{{ path }}"{% if request.url.path == path %} aria-current="page"{% endif %}><i class="bi bi-{{ icon }} me-1"></i>{{ label }}</a>
+{% macro page_link(path, label, icon, menu=false) %}
+{% set here = request.url.path == path %}
+<li{% if not menu %} class="nav-item"{% endif %}>
+    <a class="{{ 'dropdown-item' if menu else 'nav-link' }}{{ ' active' if here else '' }}" href="{{ path }}"{% if here %} aria-current="page"{% endif %}><i class="bi bi-{{ icon }} me-1" aria-hidden="true"></i>{{ label }}</a>
 </li>
 {% endmacro %}
+{% macro menu(label, icon, here) %}
+<li class="nav-item dropdown">
+    <button class="nav-link dropdown-toggle{{ ' active' if here else '' }}" type="button" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-{{ icon }} me-1" aria-hidden="true"></i>{{ label }}</button>
+    <ul class="dropdown-menu">
+        {{ caller() }}
+    </ul>
+</li>
+{% endmacro %}
+{# Operate #}
 {{ pane('providers', 'Providers', 'hdd-stack') }}
 {{ pane('benchmarks', 'Benchmarks', 'speedometer') }}
 {{ pane('models', 'Models', 'cpu') }}
-{% if dash_user %}{{ page_link('/decisions', 'Decisions', 'signpost-split') }}{% endif %}
-{{ page_link('/chat', 'Chat', 'chat-dots') }}
-{% if show_users_tab %}{{ page_link('/users', 'Users', 'people') }}{% endif %}
-{% if show_api_keys %}{{ pane('keys', 'API Keys', 'key') }}{% endif %}
 {% if show_workers %}{{ pane('workers', 'Workers', 'diagram-3') }}{% endif %}
 {% if show_log %}{{ pane('log', 'Log', 'journal-text', badge=true) }}{% endif %}
 {% if show_cache %}{{ pane('cache', 'Cache', 'archive') }}{% endif %}
+{# Access #}
+{% if show_api_keys or show_users_tab %}
+{% call menu('Access', 'shield-lock', request.url.path == '/users') %}
+{% if show_api_keys %}{{ pane('keys', 'API Keys', 'key', menu=true) }}{{ pane('routing', 'Routing', 'signpost-2', menu=true) }}{% endif %}
+{% if show_users_tab %}{{ page_link('/users', 'Users', 'people', menu=true) }}{% endif %}
+{% endcall %}
+{% endif %}
+{# Tools #}
+{% call menu('Tools', 'tools', request.url.path in ('/decisions', '/chat')) %}
+{% if dash_user %}{{ page_link('/decisions', 'Decisions', 'signpost-split', menu=true) }}{% endif %}
+{{ page_link('/chat', 'Chat', 'chat-dots', menu=true) }}
+{% endcall %}
