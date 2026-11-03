@@ -121,13 +121,11 @@ async def proxy_json(
             return pm.ollama_api_client(provider_id)
         return get_v1_client(pm, provider_id)
 
-    stream = call is None or (
-        stream_call is not None and body.get("stream", _STREAM_DEFAULT[protocol])
-    )
     start = time.monotonic()
 
-    if stream:
-        assert stream_call is not None
+    if stream_call is not None and (
+        call is None or body.get("stream", _STREAM_DEFAULT[protocol])
+    ):
         slot = await upstream_slot(request, prefs, stream=True)
         # Usage in the stream's last event lets the request be costed.
         hide_usage = ask_stream_usage(body, provider) if stream_usage else False
@@ -154,12 +152,11 @@ async def proxy_json(
             start_time=start,
             hide_usage=hide_usage,
         )
-        content_type = (
-            media_type(body) if media_type else _STREAM_MEDIA_TYPE[protocol]
-        )
+        content_type = media_type(body) if media_type else _STREAM_MEDIA_TYPE[protocol]
         return await stream_response(logged, content_type)
 
-    assert call is not None
+    if call is None:
+        raise TypeError("proxy_json needs call or stream_call")
     slot = await upstream_slot(request, prefs)
     try:
         async with slot, pm.acquire_provider(provider_id):
