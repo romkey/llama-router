@@ -173,6 +173,11 @@ _NON_ADMIN_FORBIDDEN_PREFIXES = (
     "/api/pulls",
     "/api/auth/allow-unauthenticated",
     "/api/hf",
+    # Token access to /metrics is checked before this, in the middleware.
+    "/metrics",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
 )
 
 

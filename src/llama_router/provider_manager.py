@@ -83,8 +83,21 @@ def _failure_reason(exc: BaseException) -> str:
                 f"{exc.request.url.path}); set the provider's API key"
             )
         return f"HTTP {code} from {exc.request.url.path}"
+    if isinstance(exc, httpx.RequestError):
+        # The path only: the full URL can carry credentials and internal
+        # hostnames, and this text reaches non-admins on the dashboard.
+        # TLS and transport errors often repeat the host, so drop it too.
+        try:
+            url = exc.request.url
+        except RuntimeError:
+            return type(exc).__name__
+        text = str(exc)
+        for secret in (str(url), url.netloc.decode("ascii", "replace"), url.host):
+            if secret:
+                text = text.replace(secret, "(provider)")
+        return f"{type(exc).__name__} for {url.path}: {text}".rstrip(": ")
     if isinstance(exc, httpx.HTTPError):
-        return describe_httpx_error(exc)
+        return type(exc).__name__
     return str(exc) or type(exc).__name__
 
 
