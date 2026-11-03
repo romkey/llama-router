@@ -32,7 +32,7 @@ Everything lives in the `llama_router` package under `src/`:
 | `decisions.py`, `decision_service.py`, `decision_policy.py` | Decision models (`/v1/systemone`) and per-key decision policies |
 | `cloud_presets.py`, `pricing.py`, `spend.py` | Cloud service presets, request cost and spend caps |
 | `hf_download.py` | Hugging Face GGUF downloads |
-| `database.py`, `db_*.py`, `alembic/` | Async SQLAlchemy storage and migrations (SQLite, PostgreSQL, MySQL) |
+| `database.py`, `repositories/`, `db_*.py`, `alembic/` | Async SQLAlchemy storage and migrations (SQLite, PostgreSQL, MySQL) |
 | `migrate_sqlite_to_postgres.py` | The `llama-router-migrate-sqlite-pg` command |
 | `provider_secrets.py`, `auth.py` | Encryption of provider keys, API-key authentication |
 | `sentry.py` | Optional Sentry reporting |
