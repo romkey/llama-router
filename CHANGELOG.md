@@ -89,6 +89,14 @@ described in their git tags and GitHub Releases.
   endpoints, and refuse encoded slashes (`%2F`), `.` and `..` segments and
   doubly encoded paths, so an encoded path cannot reach an endpoint the
   worker does not serve.
+- The routing table no longer stalls request handling while it is rebuilt,
+  and is rebuilt far less often. Building runs in a worker thread; a live
+  request or health-check sample only rescores the existing candidates
+  instead of re-reading the database, and only when it could change an
+  ordering (a moving average moved over 10 %, a failure rate moved, or a
+  circuit or warm flag flipped). Per-locality and hub rankings are built on
+  first use. A provider flipping between busy and idle no longer reloads the
+  table every health-check cycle.
 
 ## [0.28.0] - 2026-11-02
 
