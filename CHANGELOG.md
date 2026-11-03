@@ -49,6 +49,8 @@ described in their git tags and GitHub Releases.
   offset-naive and offset-aware datetimes", so old request logs are deleted.
 - The "accept requests without an API key" setting is re-read every five
   minutes, so routers sharing a database see a change made on another one.
+- A management key used in the router's first minute after boot now records
+  its last-used time.
 - If one of the router's servers cannot bind its port, the others are stopped
   and the router exits with an error instead of running without it.
 - Benchmarks of Ollama-style providers that leave out `eval_duration`, such as
