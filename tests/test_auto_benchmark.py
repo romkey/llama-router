@@ -211,14 +211,14 @@ async def test_warm_runs_do_not_record_startup(db: Database, pm: ProviderManager
     p = await _provider(db, "a", ["m"])
     # The backend's own load time decides, whatever the router thinks is
     # loaded: here the router believes nothing is.
-    pm._ollama_clients[p.id] = _FakeOllama(startup_ms=2.0)
+    pm.clients.ollama[p.id] = _FakeOllama(startup_ms=2.0)
     warm = await pm.benchmark_provider(p.id, "m", source="auto")
     assert warm.startup_time_ms is None
     assert warm.source == "auto"
 
     # ...and a real load is recorded even if the router thinks it is loaded.
     pm._set_hot_models(p.id, [{"name": "m"}])
-    pm._ollama_clients[p.id] = _FakeOllama(startup_ms=4200.0)
+    pm.clients.ollama[p.id] = _FakeOllama(startup_ms=4200.0)
     cold = await pm.benchmark_provider(p.id, "m")
     assert cold.startup_time_ms == 4200.0
     assert cold.source == "manual"
@@ -247,7 +247,7 @@ async def test_llamacpp_loaded_model_is_hot(db: Database, pm: ProviderManager):
     p = await _provider(db, "lcpp", ["m", "n"], ptype=ProviderProtocol.OPENAI)
     provider = await db.get_provider(p.id)
     lcpp = _FakeLlamaCpp("m")
-    pm._llamacpp_clients[p.id] = lcpp
+    pm.clients.llamacpp[p.id] = lcpp
     await pm._refresh_hot_models(provider)
     rt = Router(db, pm)
 
