@@ -40,6 +40,16 @@ described in their git tags and GitHub Releases.
   for 30 seconds, and at most four hashes run at once.
 - A `Referer` with a port that is not a number no longer makes "run
   benchmarks" fail with a server error; it redirects to the fallback page.
+- Provider addresses must be plain `http://` or `https://` URLs without
+  credentials in them, when adding a provider and when adding or editing an
+  address. Alibaba Cloud's metadata address (`100.100.100.200`) is refused
+  like the other cloud metadata services.
+- A JSON body nested too deeply to parse gets 400 instead of 500, and the
+  request log's summary of a body stops looking 64 levels down.
+- At most 64 KB of an upstream error body is read, by the API routes and by
+  endpoint probes.
+- Creating a dashboard user or setting a user's password no longer blocks the
+  server while the password is hashed.
 
 ### Fixed
 
@@ -54,6 +64,14 @@ described in their git tags and GitHub Releases.
   locked" while one of them switches it to WAL.
 - Cancelling a job on a worker whose socket has stalled no longer waits
   forever; the cancel message is given up on after 5 seconds.
+- Editing a provider or its addresses no longer cuts off requests running on
+  it: they finish on the old connection, which closes once they are done.
+- An upstream that times out now gets 504 and one that cannot be reached 502,
+  each with a JSON `error`, instead of a bare 500. A provider with no address
+  left answers 503 `{"error": "provider has no reachable address"}`.
+- `/v1/audio/transcriptions` and `/v1/images/edits` send the provider its own
+  name for the model (a model group or alias used to be passed on as is) and
+  drop router-only fields such as `provider`, as the JSON routes do.
 
 ### Changed
 

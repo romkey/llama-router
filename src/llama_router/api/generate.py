@@ -15,7 +15,7 @@ from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import clamp_generation_params, upstream_slot
 from ..request_body import json_object
 from ..request_logger import StreamLogger, log_request_background, stream_response
-from ..translate import TranslationError
+from ..translate import OllamaOverOpenAI, TranslationError
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -49,15 +49,14 @@ async def generate(request: Request) -> Response:
 
     provider = route_result.provider
     routed = route_result.model_key
-    if route_result.resolved_model != model:
-        body["model"] = route_result.resolved_model
 
     provider_id = provider.require_id()
     body["model"] = route_result.backend_model
-    client = pm.ollama_api_client(provider_id)
-    if hasattr(client, "validate"):
+    if not provider.is_ollama:
+        # Served through OllamaOverOpenAI: refuse what it cannot translate
+        # before a response starts.
         try:
-            client.validate("generate", body)
+            OllamaOverOpenAI.validate("generate", body)
         except TranslationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     stream = body.get("stream", True)
@@ -69,6 +68,7 @@ async def generate(request: Request) -> Response:
         async def generate_chunks() -> AsyncIterator[bytes]:
             try:
                 async with slot, pm.acquire_provider(provider_id):
+                    client = pm.ollama_api_client(provider_id)
                     async for chunk in slot.stream(client.generate_stream(body)):
                         yield chunk
             except Exception:
@@ -92,6 +92,7 @@ async def generate(request: Request) -> Response:
     slot = await upstream_slot(request, prefs)
     try:
         async with slot, pm.acquire_provider(provider_id):
+            client = pm.ollama_api_client(provider_id)
             payload = await client.generate(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(

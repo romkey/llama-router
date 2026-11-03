@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -13,6 +13,9 @@ import httpx
 from .httpx_errors import describe_httpx_error, raise_for_stream_status
 from .models import ProviderModel
 from .upstream_url import split_api_base
+
+if TYPE_CHECKING:
+    from .v1_client import MultipartForm
 
 logger = logging.getLogger(__name__)
 
@@ -285,13 +288,13 @@ class OpenAIClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def images_edits(self, data: bytes, content_type: str) -> httpx.Response:
+    async def images_edits(self, form: MultipartForm) -> httpx.Response:
         """Proxy a multipart images/edits request, returning the raw response."""
         resp = await self._post(
             "/v1/images/edits",
             op="llama.cpp image edits (/v1/images/edits)",
-            content=data,
-            headers={"Content-Type": content_type},
+            data=form.data,
+            files=form.files,
             timeout=httpx.Timeout(10.0, read=600.0),
         )
         resp.raise_for_status()
@@ -320,15 +323,13 @@ class OpenAIClient:
             )
             raise
 
-    async def audio_transcriptions(
-        self, data: bytes, content_type: str
-    ) -> httpx.Response:
+    async def audio_transcriptions(self, form: MultipartForm) -> httpx.Response:
         """Proxy a multipart audio/transcriptions request; return the raw response."""
         resp = await self._post(
             "/v1/audio/transcriptions",
             op="llama.cpp audio transcription (/v1/audio/transcriptions)",
-            content=data,
-            headers={"Content-Type": content_type},
+            data=form.data,
+            files=form.files,
             timeout=httpx.Timeout(10.0, read=600.0),
         )
         resp.raise_for_status()

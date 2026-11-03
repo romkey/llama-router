@@ -28,10 +28,6 @@ def qmark(sql: str, *args: Any) -> tuple[TextClause, dict[str, Any]]:
     return text("".join(out)), bind
 
 
-def row_to_mapping(row: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
-    return row
-
-
 def result_mappings(result: Result[Any]) -> Sequence[Mapping[str, Any]]:
     """Return all rows as read-only mappings (like sqlite Row)."""
     return cast(Sequence[Mapping[str, Any]], result.mappings().all())

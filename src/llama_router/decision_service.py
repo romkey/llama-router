@@ -158,7 +158,6 @@ class Asker:
     ) -> None:
         self._pm = pm
         self._provider_id = provider_id
-        self._client = get_v1_client(pm, provider_id)
         self._backend_model = backend_model
         self._acquire = acquire
         self._probe: asyncio.Task[bool] | None = None
@@ -166,8 +165,10 @@ class Asker:
     async def _send(self, body: dict[str, Any]) -> dict[str, Any]:
         if self._acquire:
             async with self._pm.acquire_provider(self._provider_id):
-                return await self._client.chat_completions(body)
-        return await self._client.chat_completions(body)
+                client = get_v1_client(self._pm, self._provider_id)
+                return await client.chat_completions(body)
+        client = get_v1_client(self._pm, self._provider_id)
+        return await client.chat_completions(body)
 
     async def _accepts_without_logprobs(self, body: dict[str, Any]) -> bool:
         plain = {k: v for k, v in body.items() if k not in _LOGPROB_FIELDS}
@@ -306,8 +307,8 @@ async def native(
     pm: ProviderManager, provider_id: int, path: str, body: dict[str, Any]
 ) -> dict[str, Any]:
     """Pass a decision request to an upstream that serves *path* itself."""
-    client = get_v1_client(pm, provider_id)
     async with pm.acquire_provider(provider_id):
+        client = get_v1_client(pm, provider_id)
         return await client.post_json(path, body, op=f"Decisions ({path})")
 
 

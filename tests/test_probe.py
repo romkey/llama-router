@@ -279,3 +279,28 @@ async def test_version_without_ping_is_not_vllm() -> None:
     transport, _ = _server(routes)
     r = await probe_url("http://other:9000", transport=transport)
     assert "vllm" not in r.servers
+
+
+async def test_error_bodies_are_read_only_up_to_the_cap() -> None:
+    from llama_router.httpx_errors import MAX_ERROR_BODY
+
+    sent: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.12.6"})
+        path = request.url.path
+        sent[path] = 0
+
+        async def huge():
+            for _ in range(256):
+                sent[path] += 16 * 1024
+                yield b"x" * 16 * 1024
+
+        return httpx.Response(500, content=huge())
+
+    result = await probe_url("http://big:11434", transport=httpx.MockTransport(handler))
+    assert result.reachable
+    assert result.servers == ["ollama"]
+    assert sent
+    assert max(sent.values()) <= MAX_ERROR_BODY

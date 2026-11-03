@@ -268,3 +268,13 @@ async def test_log_times_are_bound_as_naive_utc(db: Database) -> None:
     expected = datetime(2026, 1, 1, 10, tzinfo=UTC)
     assert db._log_time(when) == db_timestamp(db, expected)
     assert db._log_time(expected.replace(tzinfo=None)) == db_timestamp(db, expected)
+
+
+def test_meta_summary_stops_at_a_depth_limit() -> None:
+    node: Any = {"image": True}
+    for _ in range(5000):
+        node = {"x": [node]}
+    # Deeper than the walk looks: no RecursionError, and the flag is not seen.
+    assert request_logger._request_meta_summary({"messages": [node]}) == "messages=1"
+    shallow = {"messages": [{"content": [{"image_url": {"url": "u"}}]}]}
+    assert "images" in (request_logger._request_meta_summary(shallow) or "")

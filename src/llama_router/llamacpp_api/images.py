@@ -12,7 +12,7 @@ from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import log_request_background
-from ..v1_client import get_v1_client
+from ..v1_client import get_v1_client, upstream_form
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -39,16 +39,14 @@ async def images_generations(request: Request) -> JSONResponse:
 
     provider = result.provider
     routed = result.model_key
-    if result.resolved_model != model:
-        body["model"] = result.resolved_model
 
     provider_id = provider.require_id()
     body["model"] = result.backend_model
-    client = get_v1_client(pm, provider_id)
     start = time.monotonic()
     slot = await upstream_slot(request, prefs)
     try:
         async with slot, pm.acquire_provider(provider_id):
+            client = get_v1_client(pm, provider_id)
             resp = await client.images_generations(body)
             duration = (time.monotonic() - start) * 1000
             log_request_background(
@@ -122,7 +120,6 @@ async def images_edits(request: Request) -> Response:
     db = deps.get_db()
     prefs = await routing_preferences_from_request(db, request)
     content_type = request.headers.get("content-type", "")
-    raw_body = await request.body()
     log_body = {"attachments": True, "content_type": content_type}
 
     form = await request.form()
@@ -142,12 +139,13 @@ async def images_edits(request: Request) -> Response:
     provider = result.provider
     routed = result.model_key
     provider_id = provider.require_id()
-    client = get_v1_client(pm, provider_id)
+    upstream = await upstream_form(form, result.backend_model)
     start = time.monotonic()
     slot = await upstream_slot(request, prefs)
     try:
         async with slot, pm.acquire_provider(provider_id):
-            resp = await client.images_edits(raw_body, content_type)
+            client = get_v1_client(pm, provider_id)
+            resp = await client.images_edits(upstream)
             duration = (time.monotonic() - start) * 1000
             log_request_background(
                 db,

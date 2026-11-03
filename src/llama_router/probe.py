@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .cloud_presets import preset_for_url
+from .httpx_errors import read_capped
 from .provider_secrets import auth_headers
 from .worker_link.protocol import refused as worker_refused
 
@@ -332,7 +333,11 @@ def normalize_base_url(url: str) -> str:
 # credentials to anything on the instance that asks. A provider URL must never
 # reach them. Private and loopback addresses stay allowed: local providers are
 # the normal case.
-_METADATA_V4 = ipaddress.ip_network("169.254.0.0/16")
+_METADATA_V4 = (
+    ipaddress.ip_network("169.254.0.0/16"),
+    # Alibaba Cloud's metadata service.
+    ipaddress.ip_network("100.100.100.200/32"),
+)
 _METADATA_V6 = ipaddress.ip_address("fd00:ec2::254")
 _RESOLVE_TIMEOUT_S = 3.0
 
@@ -342,12 +347,13 @@ class BlockedAddressError(ValueError):
 
 
 def is_metadata_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True for a link-local IPv4 address or AWS's IPv6 metadata address."""
+    """True for a link-local IPv4 address, Alibaba's metadata address, or AWS's
+    IPv6 metadata address."""
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped is not None:
-            return ip.ipv4_mapped in _METADATA_V4
+            return any(ip.ipv4_mapped in net for net in _METADATA_V4)
         return ip == _METADATA_V6
-    return ip in _METADATA_V4
+    return any(ip in net for net in _METADATA_V4)
 
 
 async def check_not_metadata(url: str) -> None:
@@ -408,12 +414,18 @@ async def _probe_one(
 ) -> tuple[EndpointResult, httpx.Response | None]:
     async with sem:
         try:
-            if ep.method == "POST":
-                resp = await client.post(ep.path, json={})
-            elif ep.method == "HEAD":
-                resp = await client.head(ep.path)
+            req = client.build_request(
+                ep.method, ep.path, json={} if ep.method == "POST" else None
+            )
+            resp = await client.send(req, stream=True)
+            if resp.is_error:
+                # _detect reads some error bodies; never buffer a huge one.
+                resp = await read_capped(resp)
             else:
-                resp = await client.get(ep.path)
+                try:
+                    await resp.aread()
+                finally:
+                    await resp.aclose()
         except httpx.HTTPError:
             return (
                 EndpointResult(ep.path, ep.method, ep.family, ep.purpose, ERROR, None),

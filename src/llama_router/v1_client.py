@@ -7,11 +7,12 @@ backend type.
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from starlette.datastructures import FormData, UploadFile
 
 if TYPE_CHECKING:
     from .llamacpp_client import LlamaCppClient
@@ -32,6 +33,53 @@ def upstream_body(body: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in body.items() if k not in ROUTER_ONLY_FIELDS}
 
 
+@dataclass
+class MultipartForm:
+    """A multipart request rebuilt for the upstream: text fields and files."""
+
+    data: dict[str, str | list[str]] = field(default_factory=dict)
+    files: list[tuple[str, tuple[str | None, bytes, str | None]]] = field(
+        default_factory=list
+    )
+
+
+async def upstream_form(form: FormData, backend_model: str) -> MultipartForm:
+    """Rebuild a client's multipart *form* for the upstream.
+
+    ``model`` becomes the provider's own name for the routed model (a group or
+    alias means nothing upstream) and ``ROUTER_ONLY_FIELDS`` are dropped, as
+    for JSON bodies.
+    """
+    out = MultipartForm()
+    for key, value in form.multi_items():
+        if key in ROUTER_ONLY_FIELDS:
+            continue
+        if isinstance(value, UploadFile):
+            out.files.append(
+                (key, (value.filename, await value.read(), value.content_type))
+            )
+            continue
+        text = backend_model if key == "model" else value
+        prev = out.data.get(key)
+        if prev is None:
+            out.data[key] = text
+        elif isinstance(prev, list):
+            prev.append(text)
+        else:
+            out.data[key] = [prev, text]
+    return out
+
+
+class NoReachableAddressError(RuntimeError):
+    """The routed provider has no client: it has no address to send to.
+
+    The API apps answer it with 503.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("provider has no reachable address")
+
+
 class V1Client:
     """Wraps either an OllamaClient or LlamaCppClient for v1/* calls."""
 
@@ -40,6 +88,8 @@ class V1Client:
         ollama: OllamaClient | None = None,
         llamacpp: LlamaCppClient | None = None,
     ):
+        if ollama is None and llamacpp is None:
+            raise NoReachableAddressError()
         self._ollama = ollama
         self._llamacpp = llamacpp
 
@@ -54,9 +104,9 @@ class V1Client:
         self, path: str, body: dict[str, Any], *, op: str
     ) -> dict[str, Any]:
         """POST *body* to *path* upstream and return the JSON answer."""
-        client = self._llamacpp or self._ollama
-        if client is None:
-            raise RuntimeError("V1Client has no upstream client")
+        client: LlamaCppClient | OllamaClient = (
+            self._llamacpp if self._llamacpp is not None else self._require_ollama()
+        )
         resp = await client._post(path, op=op, json=upstream_body(body))
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
@@ -132,11 +182,11 @@ class V1Client:
         ollama = self._require_ollama()
         return await ollama.v1_images_generations(upstream_body(body))
 
-    async def images_edits(self, data: bytes, content_type: str) -> httpx.Response:
+    async def images_edits(self, form: MultipartForm) -> httpx.Response:
         if self._llamacpp:
-            return await self._llamacpp.images_edits(data, content_type)
+            return await self._llamacpp.images_edits(form)
         ollama = self._require_ollama()
-        return await ollama.v1_images_edits(data, content_type)
+        return await ollama.v1_images_edits(form)
 
     # --- audio ---
 
@@ -148,13 +198,11 @@ class V1Client:
             async for chunk in self._ollama.v1_audio_speech(upstream_body(body)):
                 yield chunk
 
-    async def audio_transcriptions(
-        self, data: bytes, content_type: str
-    ) -> httpx.Response:
+    async def audio_transcriptions(self, form: MultipartForm) -> httpx.Response:
         if self._llamacpp:
-            return await self._llamacpp.audio_transcriptions(data, content_type)
+            return await self._llamacpp.audio_transcriptions(form)
         ollama = self._require_ollama()
-        return await ollama.v1_audio_transcriptions(data, content_type)
+        return await ollama.v1_audio_transcriptions(form)
 
     async def audio_voices(self) -> dict[str, Any]:
         if self._llamacpp:
@@ -165,10 +213,7 @@ class V1Client:
 
 def get_v1_client(pm: ProviderManager, provider_id: int) -> V1Client:
     """Build a V1Client for the given provider, preferring llama.cpp if available."""
-    ollama = None
-    llamacpp = None
-    with contextlib.suppress(KeyError, Exception):
-        llamacpp = pm.get_llamacpp_client(provider_id)
-    with contextlib.suppress(KeyError, Exception):
-        ollama = pm.get_ollama_client(provider_id)
-    return V1Client(ollama=ollama, llamacpp=llamacpp)
+    return V1Client(
+        ollama=pm.find_ollama_client(provider_id),
+        llamacpp=pm.find_llamacpp_client(provider_id),
+    )

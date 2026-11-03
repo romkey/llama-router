@@ -267,6 +267,8 @@ def test_mask_userinfo(raw: str, masked: str) -> None:
         ("169.254.0.1", True),
         ("fd00:ec2::254", True),
         ("::ffff:169.254.169.254", True),
+        ("100.100.100.200", True),
+        ("100.100.100.201", False),
         ("127.0.0.1", False),
         ("10.0.0.5", False),
         ("192.168.1.10", False),

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..httpx_errors import install_upstream_error_handlers
 from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
@@ -68,6 +69,8 @@ async def http_exception_handler(
         headers=exc.headers,
     )
 
+
+install_upstream_error_handlers(app)
 
 app.include_router(audio_router)
 app.include_router(chat_router)

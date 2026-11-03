@@ -373,7 +373,6 @@ async def send(request: Request) -> JSONResponse:
             "stream": False,
         }
 
-    client = get_v1_client(pm, pid)
     start = time.monotonic()
     log: dict[str, Any] = {
         "provider": provider,
@@ -387,6 +386,7 @@ async def send(request: Request) -> JSONResponse:
     }
     try:
         async with pm.acquire_provider(pid):
+            client = get_v1_client(pm, pid)
             if mode == "image":
                 resp = await client.images_generations(upstream)
             else:
