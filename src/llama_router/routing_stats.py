@@ -39,6 +39,19 @@ PROVIDER_CIRCUIT_MIN_SAMPLES = 5
 # A provider that answered a decision question without logprobs is not
 # asked again for this long; then it is retried in case it was upgraded.
 NO_LOGPROBS_TTL_S = 3600.0
+# Recent failure rate for one model at which its candidates are skipped while
+# others exist (see routing_table).
+MODEL_CIRCUIT_RATE = 0.5
+MODEL_CIRCUIT_MIN_SAMPLES = 3
+# A live sample makes the routing table rescore only when it could change an
+# ordering: a moving average that moved more than this fraction since the
+# table was built (and by more than MIN_MOVE ms or tokens/s, so jitter on tiny
+# values is ignored), a failure rate that moved by more than RATE_MOVE, or a
+# circuit or warm flag that flipped.
+SIGNIFICANT_MOVE = 0.10
+MIN_MOVE = 1.0
+RATE_MOVE = 0.10
+_RATES = frozenset({"requests", "probes", "failures"})
 
 
 @dataclass(slots=True)
@@ -177,6 +190,22 @@ class ProviderHealth:
 HEALTHY = ProviderHealth(0.0, 0.0, 0, False)
 
 
+def model_circuit_open(s: ModelStats, now: float) -> bool:
+    """The model is failing too often here to be offered while others exist."""
+    return (
+        s.failures.samples >= MODEL_CIRCUIT_MIN_SAMPLES
+        and s.failures.current(now) >= MODEL_CIRCUIT_RATE
+    )
+
+
+def _provider_circuit(rate: DecayingRate | None, now: float) -> bool:
+    return (
+        rate is not None
+        and rate.samples >= PROVIDER_CIRCUIT_MIN_SAMPLES
+        and rate.current(now) >= PROVIDER_CIRCUIT_RATE
+    )
+
+
 # Cooldown after a 429 without a usable Retry-After, and the longest one.
 DEFAULT_BUSY_S = 10.0
 MAX_BUSY_S = 300.0
@@ -219,6 +248,8 @@ class ProviderStats:
         self._busy_until: dict[int, float] = {}
         # When each provider last returned a chat completion with no logprobs.
         self._no_logprobs: dict[int, float] = {}
+        # Every signal as the routing table last built saw it (mark_built).
+        self._built: dict[tuple[Any, ...], float] = {}
 
     def now(self) -> float:
         return self._clock()
@@ -229,6 +260,81 @@ class ProviderStats:
     def _changed(self, reason: str) -> None:
         for fn in self._listeners:
             fn(reason)
+
+    def mark_built(self) -> None:
+        """Remember every signal as the table about to be built sees it.
+
+        Called before a build, so a sample that lands during the build is
+        compared with what the build may have missed.
+        """
+        now = self._clock()
+        built: dict[tuple[Any, ...], float] = {}
+        for key, s in list(self._models.items()):
+            for name, ewma in (
+                ("ttft", s.ttft_ms),
+                ("tps", s.tokens_per_second),
+                ("duration", s.duration_ms),
+            ):
+                if ewma.value is not None:
+                    built[(name, *key)] = ewma.value
+        for pid, per_addr in list(self._tallies.items()):
+            for aid, t in list(per_addr.items()):
+                if t.ewma.value is not None:
+                    built[("rtt", pid, aid)] = t.ewma.value
+        for pid in {*self._requests, *self._probes, *self._no_logprobs} | {
+            k[0] for k in list(self._models)
+        }:
+            built.update(self._decaying(pid, now))
+        self._built = built
+
+    def forget_built(self) -> None:
+        """The build mark_built was taken for failed: every sample matters."""
+        self._built = {}
+
+    def _decaying(self, provider_id: int, now: float) -> dict[tuple[Any, ...], float]:
+        """The provider's signals that change with time alone, flags as 0 or 1.
+
+        Failure rates decay, warm models go cold and the logprobs verdict
+        expires without any new sample arriving.
+        """
+        out: dict[tuple[Any, ...], float] = {}
+        req = self._requests.get(provider_id)
+        if req is not None:
+            out[("requests", provider_id)] = req.current(now)
+            out[("provider circuit", provider_id)] = float(_provider_circuit(req, now))
+        probe = self._probes.get(provider_id)
+        if probe is not None:
+            out[("probes", provider_id)] = probe.current(now)
+        out[("no logprobs", provider_id)] = float(self.lacks_logprobs(provider_id, now))
+        for key, s in list(self._models.items()):
+            if key[0] != provider_id:
+                continue
+            out[("failures", *key)] = s.failures.current(now)
+            out[("circuit", *key)] = float(model_circuit_open(s, now))
+            out[("warm", *key[:2])] = float(self.is_warm(provider_id, key[1], now))
+        return out
+
+    def _drifted(self, provider_id: int, now: float) -> bool:
+        """Time alone moved one of the provider's signals enough to matter."""
+        return any(
+            self._rate_moved(key, value)
+            if key[0] in _RATES
+            # A flag: a flip matters.
+            else value != self._built.get(key, 0.0)
+            for key, value in self._decaying(provider_id, now).items()
+        )
+
+    def _moved(self, key: tuple[Any, ...], value: float | None) -> bool:
+        """A moving average moved enough since the build to matter."""
+        if value is None:
+            return False
+        base = self._built.get(key)
+        if base is None:
+            return True
+        return abs(value - base) > max(SIGNIFICANT_MOVE * abs(base), MIN_MOVE)
+
+    def _rate_moved(self, key: tuple[Any, ...], value: float) -> bool:
+        return abs(value - self._built.get(key, 0.0)) > RATE_MOVE
 
     # --- Health checks ---
 
@@ -243,8 +349,11 @@ class ProviderStats:
         if ok and ms is not None:
             tally.add_ok(ms, now)
         else:
+            # Only the average round trip is routed on; whether the address
+            # is live comes from the database.
             tally.add_failure(now)
-        self._changed("health check")
+        if self._moved(("rtt", provider_id, address_id), tally.ewma.value):
+            self._changed("health check")
 
     def record_check(self, provider_id: int, *, ok: bool) -> None:
         """One whole health check of a provider: did any address answer?
@@ -253,8 +362,13 @@ class ProviderStats:
         out is penalised for a while after it comes back. One dead address
         among live ones does not count against it.
         """
-        self._probes.setdefault(provider_id, DecayingRate()).add(not ok, self._clock())
-        self._changed("health check")
+        now = self._clock()
+        rate = self._probes.setdefault(provider_id, DecayingRate())
+        rate.add(not ok, now)
+        # Health checks come every cycle, so they also notice what time
+        # alone changed: a circuit closing, a model going cold.
+        if self._drifted(provider_id, now):
+            self._changed("health check")
 
     def record_rtt(self, provider_id: int, address_id: int, ms: float) -> None:
         self.record_probe(provider_id, address_id, ok=True, ms=ms)
@@ -266,9 +380,11 @@ class ProviderStats:
         per_addr = self._tallies.get(provider_id)
         if not per_addr:
             return None
+        # A copy first: a table build reads this from a worker thread while
+        # health checks may add addresses.
         values = [
             t.ewma.value
-            for aid, t in per_addr.items()
+            for aid, t in list(per_addr.items())
             if t.ewma.value is not None and (address_ids is None or aid in address_ids)
         ]
         return min(values) if values else None
@@ -298,11 +414,13 @@ class ProviderStats:
         if s is None:
             s = self._models[key] = ModelStats()
         now = self._clock()
+        req = self._requests.setdefault(provider_id, DecayingRate())
+        flags = self._flags(s, req, provider_id, model, now)
         s.requests += 1
         if not ok:
             s.errors += 1
         s.failures.add(not ok, now)
-        self._requests.setdefault(provider_id, DecayingRate()).add(not ok, now)
+        req.add(not ok, now)
         if ok:
             s.last_ok = now
             self._last_ok[(provider_id, model)] = now
@@ -312,7 +430,30 @@ class ProviderStats:
                 s.tokens_per_second.add(tokens_per_second)
             if duration_ms is not None and duration_ms >= 0:
                 s.duration_ms.add(duration_ms)
-        self._changed("request")
+        if (
+            flags != self._flags(s, req, provider_id, model, now)
+            or self._rate_moved(("failures", *key), s.failures.current(now))
+            or self._rate_moved(("requests", provider_id), req.current(now))
+            or self._moved(("ttft", *key), s.ttft_ms.value)
+            or self._moved(("tps", *key), s.tokens_per_second.value)
+            or self._moved(("duration", *key), s.duration_ms.value)
+        ):
+            self._changed("request")
+
+    def _flags(
+        self,
+        s: ModelStats,
+        req: DecayingRate,
+        provider_id: int,
+        model: str,
+        now: float,
+    ) -> tuple[bool, bool, bool]:
+        """The circuit and warm flags a request outcome can flip."""
+        return (
+            model_circuit_open(s, now),
+            _provider_circuit(req, now),
+            self.is_warm(provider_id, model, now),
+        )
 
     def model(
         self, provider_id: int, model: str, endpoint_class: str = GENERATE
@@ -339,14 +480,11 @@ class ProviderStats:
         probe = self._probes.get(provider_id)
         if req is None and probe is None:
             return HEALTHY
-        req_rate = req.current(t) if req else 0.0
-        samples = req.samples if req else 0
         return ProviderHealth(
-            request_failure_rate=req_rate,
+            request_failure_rate=req.current(t) if req else 0.0,
             probe_failure_rate=probe.current(t) if probe else 0.0,
-            request_samples=samples,
-            circuit_open=samples >= PROVIDER_CIRCUIT_MIN_SAMPLES
-            and req_rate >= PROVIDER_CIRCUIT_RATE,
+            request_samples=req.samples if req else 0,
+            circuit_open=_provider_circuit(req, t),
         )
 
     # --- Rate limits ---
