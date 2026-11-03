@@ -97,7 +97,6 @@ files = ["src", "tests", "scripts"]
 module = [
   "calib",
   "llama_router.dashboard.routes",
-  "llama_router.database",
   "llama_router.llamacpp_client",
   "llama_router.migrate_sqlite_to_postgres",
   "llama_router.ollama_client",

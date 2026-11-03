@@ -32,7 +32,7 @@ Everything lives in the `llama_router` package under `src/`:
 | `decisions.py`, `decision_service.py`, `decision_policy.py` | Decision models (`/v1/systemone`) and per-key decision policies |
 | `cloud_presets.py`, `pricing.py`, `spend.py` | Cloud service presets, request cost and spend caps |
 | `hf_download.py` | Hugging Face GGUF downloads |
-| `database.py`, `db_*.py`, `alembic/` | Async SQLAlchemy storage and migrations (SQLite, PostgreSQL, MySQL) |
+| `database.py`, `repositories/`, `db_*.py`, `alembic/` | Async SQLAlchemy storage and migrations (SQLite, PostgreSQL, MySQL) |
 | `migrate_sqlite_to_postgres.py` | The `llama-router-migrate-sqlite-pg` command |
 | `provider_secrets.py`, `auth.py` | Encryption of provider keys, API-key authentication |
 | `sentry.py` | Optional Sentry reporting |
@@ -170,7 +170,7 @@ The **API Keys** tab shows each model's first choice per mode for `/v1/chat/comp
 
 ### Explaining a route
 
-The **Route Explorer** on the **API Keys** tab shows where a request would go right now, and why, without sending it. Pick a model, an endpoint, and a service level: a routing mode, or an API key to apply that key's mode, fallback setting and pins. It walks the fallback chain and lists every provider that has the model, with its score, the live queue, the measurements behind the score, and why any provider was left out. A provider can be left out because it is offline, doesn't serve that API, is failing, is missing the endpoint, or because another provider is pinned. The explanation uses the same table and code path as real requests.
+The **Route Explorer** on the **Routing** tab (in the **Access** menu) shows where a request would go right now, and why, without sending it. Pick a model, an endpoint, and a service level: a routing mode, or an API key to apply that key's mode, fallback setting and pins. It walks the fallback chain and lists every provider that has the model, with its score, the live queue, the measurements behind the score, and why any provider was left out. A provider can be left out because it is offline, doesn't serve that API, is failing, is missing the endpoint, or because another provider is pinned. The explanation uses the same table and code path as real requests.
 
 The same is available as JSON:
 
@@ -538,11 +538,11 @@ SSO accounts continue to follow the identity provider's authentication policy.
 API keys and management keys keep their existing authentication.
 
 Set `LLAMA_ROUTER_DASHBOARD_REQUIRE_SECOND_FACTOR=false` to make enrollment
-optional. Users can enroll on their **Profile**, opened by clicking their
+optional. Users can enroll on their **Account** page, opened by clicking their
 username. Once enrolled, that account always requires its second factor even
 when the global policy is optional. Turning the policy off does not remove anyone's authenticators.
 
-The profile page lets users register several named authenticators, remove a
+The Account page lets users register several named authenticators, remove a
 replaced device and generate recovery codes. Register a replacement before
 removing the last authenticator. Enrollment and device removal revoke older
 sessions.
@@ -550,7 +550,7 @@ sessions.
 Save the ten recovery codes displayed after first enrollment. Each is a
 single-use alternative to WebAuthn **after entering the password**. Only hashes
 are stored; generating new codes invalidates the previous set. A recovery login
-opens the profile page so you can add a replacement device.
+opens the Account page so you can add a replacement device.
 
 If all devices and recovery codes are lost, an operator with access to the
 server can reset a local user's second factor:

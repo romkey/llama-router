@@ -78,7 +78,7 @@ def test_dashboard_template_escapes_interpolated_data() -> None:
         "esc(a.url)",
         "esc(md.name)",
         "esc(b.label)",
-        "esc(p.status)",
+        "esc(status)",
         "esc(model)",
         "esc(err.message || 'Failed')",
     ):

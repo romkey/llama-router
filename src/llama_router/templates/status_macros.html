@@ -1,0 +1,13 @@
+{# Status is never colour alone: each state has its own icon and text. #}
+{% set STATUS_STYLE = {
+    'idle': ('bg-success', 'check-circle-fill'),
+    'busy': ('bg-warning text-dark', 'hourglass-split'),
+    'offline': ('bg-danger', 'x-circle-fill'),
+} %}
+{% macro status_badge(status, detail=None, extra='', attrs='') %}
+{% set style = STATUS_STYLE.get(status, ('bg-secondary', 'question-circle-fill')) %}
+<span class="badge {{ style[0] }}{% if extra %} {{ extra }}{% endif %}" title="{{ detail or '' }}" {{ attrs }}><i class="bi bi-{{ style[1] }} me-1" aria-hidden="true"></i>{{ status }}</span>
+{%- endmacro %}
+{% macro live_mark(is_live, size=None) -%}
+<i class="bi {{ 'bi-check-circle-fill text-success' if is_live else 'bi-x-circle-fill text-danger' }}"{% if size %} style="font-size:{{ size }}"{% endif %} title="{{ 'Live' if is_live else 'Not responding' }}" aria-hidden="true"></i><span class="visually-hidden">{{ 'Live' if is_live else 'Not responding' }}</span>
+{%- endmacro %}

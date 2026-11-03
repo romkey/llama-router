@@ -40,7 +40,7 @@ from .mfa_store import FLOW_TTL, Credential, Flow, LocalAccount, MfaStore, diges
 from .routes import (
     _cookie_secure,
     _set_session_cookie,
-    merge_dash_template_ctx,
+    dash_page_ctx,
     templates,
 )
 
@@ -199,7 +199,7 @@ async def second_factor_page(request: Request) -> Response:
 async def security_page(request: Request) -> Response:
     user = getattr(request.state, "dashboard_user", None)
     if user is None:
-        raise HTTPException(status_code=403, detail="Sign in to view your profile")
+        raise HTTPException(status_code=403, detail="Sign in to view your account")
     credentials = []
     if not user.is_sso:
         account = await _session_account(request)
@@ -208,7 +208,7 @@ async def security_page(request: Request) -> Response:
         templates.TemplateResponse(
             request,
             "security.html",
-            merge_dash_template_ctx(
+            await dash_page_ctx(
                 request,
                 {
                     "credentials": credentials,

@@ -2,7 +2,7 @@
 {% block title %}Decisions - llama-router{% endblock %}
 
 {% block content %}
-<h2 class="mb-2"><i class="bi bi-signpost-split me-2"></i>Decisions</h2>
+<h1 class="h2 mb-2"><i class="bi bi-signpost-split me-2" aria-hidden="true"></i>Decisions</h1>
 <p class="text-muted">
     Decision questions (<code>/v1/systemone</code>, <code>/v1/decisions</code>) are answered from a model's
     first-token probabilities. Local models lean toward some answers; a calibration fit from labelled
@@ -11,8 +11,8 @@
 
 <div class="card mb-4">
     <div class="card-header d-flex align-items-center">
-        <h5 class="mb-0">Calibrations</h5>
-        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" id="cal-refresh"><i class="bi bi-arrow-clockwise"></i></button>
+        <h2 class="h5 mb-0">Calibrations</h2>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" id="cal-refresh" title="Refresh calibrations" aria-label="Refresh calibrations"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button>
     </div>
     <div class="card-body p-0">
         <div class="table-responsive">
@@ -32,7 +32,7 @@
 <div class="row g-4">
     <div class="col-lg-5">
         <div class="card">
-            <div class="card-header"><h5 class="mb-0">Question</h5></div>
+            <div class="card-header"><h2 class="h5 mb-0">Question</h2></div>
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label" for="q-model">Model</label>
@@ -67,7 +67,7 @@
     </div>
     <div class="col-lg-7">
         <div class="card mb-4">
-            <div class="card-header"><h5 class="mb-0">Fit a calibration</h5></div>
+            <div class="card-header"><h2 class="h5 mb-0">Fit a calibration</h2></div>
             <div class="card-body">
                 <label class="form-label" for="fit-examples">Labelled states</label>
                 <textarea class="form-control font-monospace" id="fit-examples" rows="8" spellcheck="false"></textarea>
@@ -83,7 +83,7 @@
             </div>
         </div>
         <div class="card">
-            <div class="card-header"><h5 class="mb-0">Try</h5></div>
+            <div class="card-header"><h2 class="h5 mb-0">Try</h2></div>
             <div class="card-body">
                 <label class="form-label" for="try-state">State</label>
                 <textarea class="form-control" id="try-state" rows="4" placeholder="Every API request returns 500 since this morning."></textarea>
@@ -126,14 +126,9 @@
         return typeof x === "number" ? x.toFixed(digits === undefined ? 3 : digits) : "—";
     }
 
-    // The database stores UTC without a zone; read it as UTC, as the
-    // localtime template filter does.
+    // The date format every page uses (base.html).
     function localTime(value) {
-        if (!value) return "—";
-        let iso = String(value).replace(" ", "T");
-        if (!/(Z|[+-]\d\d:?\d\d)$/.test(iso)) iso += "Z";
-        const t = new Date(iso);
-        return isNaN(t) ? String(value) : t.toLocaleString();
+        return window.llrTime.node(value);
     }
 
     function errorText(body, status) {
@@ -195,9 +190,9 @@
         tbody.replaceChildren(...rows.map((c) => {
             const actions = el("td", { class: "text-end text-nowrap" });
             if (!READ_ONLY) {
-                const use = el("button", { type: "button", class: "btn btn-sm btn-outline-secondary me-1", title: "Load into the question form" }, el("i", { class: "bi bi-box-arrow-in-down" }));
+                const use = el("button", { type: "button", class: "btn btn-sm btn-outline-secondary me-1", title: "Load into the question form", "aria-label": "Load " + c.model_name + " into the question form" }, el("i", { class: "bi bi-box-arrow-in-down", "aria-hidden": "true" }));
                 use.addEventListener("click", () => loadQuestion(c.model_name, c.question || {}));
-                const del = el("button", { type: "button", class: "btn btn-sm btn-outline-danger", title: "Delete" }, el("i", { class: "bi bi-trash" }));
+                const del = el("button", { type: "button", class: "btn btn-sm btn-outline-danger", title: "Delete", "aria-label": "Delete calibration for " + c.model_name }, el("i", { class: "bi bi-trash", "aria-hidden": "true" }));
                 del.addEventListener("click", async () => {
                     if (!confirm("Delete this calibration for " + c.model_name + "?")) return;
                     try {

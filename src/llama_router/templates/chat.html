@@ -2,6 +2,7 @@
 {% block title %}Chat - llama-router{% endblock %}
 
 {% block content %}
+<h1 class="visually-hidden">Chat</h1>
 <style>
     #chat-log { height: 60vh; overflow-y: auto; }
     .chat-msg { max-width: 85%; white-space: pre-wrap; word-wrap: break-word; }
@@ -9,9 +10,10 @@
     .chat-msg pre { white-space: pre; overflow-x: auto; background: var(--bs-body-bg); color: var(--bs-body-color); border: 1px solid var(--bs-border-color); border-radius: .375rem; padding: .5rem .75rem; margin: .5rem 0; }
     .chat-msg code { font-size: .875em; }
     .chat-msg :not(pre) > code { background: var(--bs-secondary-bg); color: var(--bs-body-color); border-radius: .25rem; padding: 0 .25rem; }
-    .chat-conv { cursor: pointer; }
-    .chat-conv .chat-del { visibility: hidden; }
-    .chat-conv:hover .chat-del, .chat-conv.active .chat-del { visibility: visible; }
+    .chat-conv-row { position: relative; }
+    .chat-conv-row .chat-conv { padding-right: 2.5rem; }
+    .chat-conv-row .chat-del { position: absolute; top: .5rem; right: .75rem; z-index: 3; visibility: hidden; }
+    .chat-conv-row:hover .chat-del, .chat-conv-row:focus-within .chat-del, .chat-conv-row .chat-conv.active ~ .chat-del { visibility: visible; }
 </style>
 
 <div class="row g-3">
@@ -38,7 +40,7 @@
         <form id="chat-form" class="d-flex flex-column gap-2">
             <div id="chat-attachment" class="d-none small">
                 <img id="chat-attachment-img" alt="Attached image" style="max-height: 4rem;" class="rounded me-2 align-middle">
-                <button type="button" class="btn btn-sm btn-outline-secondary" id="chat-attachment-clear"><i class="bi bi-x-lg"></i> Remove</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="chat-attachment-clear"><i class="bi bi-x-lg" aria-hidden="true"></i> Remove</button>
             </div>
             <textarea class="form-control" id="chat-input" rows="3" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
             <div class="d-flex align-items-center gap-2">
@@ -52,8 +54,8 @@
                     <i class="bi bi-paperclip"></i> Attach
                     <input type="file" accept="image/*" id="chat-file" class="d-none">
                 </label>
-                <span class="text-muted small ms-auto" id="chat-status"></span>
-                <button type="button" class="btn btn-sm btn-outline-danger d-none" id="chat-stop"><i class="bi bi-stop-fill me-1"></i>Stop</button>
+                <span class="text-muted small ms-auto" id="chat-status" role="status"></span>
+                <button type="button" class="btn btn-sm btn-outline-danger d-none" id="chat-stop"><i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Stop</button>
                 <button type="submit" class="btn btn-sm btn-primary" id="chat-send"><i class="bi bi-send me-1"></i>Send</button>
             </div>
         </form>
@@ -179,16 +181,25 @@
             return;
         }
         for (const c of data.conversations) {
-            const item = el("div", "list-group-item list-group-item-action chat-conv d-flex align-items-start gap-2");
-            if (c.id === state.convId) item.classList.add("active");
-            const text = el("div", "flex-grow-1 text-truncate");
-            text.appendChild(el("div", "text-truncate", c.title));
-            text.appendChild(el("div", "small opacity-75 text-truncate", c.model_name || ""));
-            item.appendChild(text);
+            // The chat and its delete button are siblings: a button cannot
+            // hold another button.
+            const row = el("div", "chat-conv-row");
+            const item = el("button", "list-group-item list-group-item-action chat-conv text-start w-100");
+            item.type = "button";
+            if (c.id === state.convId) {
+                item.classList.add("active");
+                item.setAttribute("aria-current", "true");
+            }
+            item.appendChild(el("div", "text-truncate", c.title));
+            item.appendChild(el("div", "small opacity-75 text-truncate", c.model_name || ""));
+            row.appendChild(item);
             const del = el("button", "btn btn-sm btn-link p-0 chat-del text-reset");
             del.type = "button";
             del.title = "Delete chat";
-            del.appendChild(el("i", "bi bi-trash"));
+            del.setAttribute("aria-label", `Delete chat ${c.title}`);
+            const icon = el("i", "bi bi-trash");
+            icon.setAttribute("aria-hidden", "true");
+            del.appendChild(icon);
             del.addEventListener("click", async (ev) => {
                 ev.stopPropagation();
                 if (state.busy || state.rendered !== state.nav) { setStatus("Wait a moment and try again."); return; }
@@ -205,9 +216,9 @@
                     loadConversations();
                 }
             });
-            item.appendChild(del);
+            row.appendChild(del);
             item.addEventListener("click", () => openConversation(c.id));
-            list.appendChild(item);
+            list.appendChild(row);
         }
     }
 

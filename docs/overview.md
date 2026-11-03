@@ -28,6 +28,8 @@ optionally Sentry and an OpenID Connect provider.
 - `src/llama_router/*_client.py`, `translate.py`: backend clients, Ollama/OpenAI translation.
 - `src/llama_router/decision*.py`: decision models and per-key policies.
 - `src/llama_router/database.py`, `db_*.py`, `alembic/`: storage, migrations (run at startup).
+  `Database` combines the per-domain repositories in `repositories/`;
+  `db_events.py` holds the change reasons its writes announce.
 - `tests/`: pytest; mostly one file per feature.
 - `scripts/decision_spike/`: one-off experiments for decision models.
 - `Dockerfile`: `dev` and `production` stages.

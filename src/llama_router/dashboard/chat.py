@@ -36,7 +36,7 @@ from ..routing_table import RoutingTable, alias_groups
 from ..v1_client import get_v1_client
 from . import deps
 from .my_keys import self_service_defaults
-from .routes import _is_admin, merge_dash_template_ctx, templates
+from .routes import _is_admin, dash_page_ctx, templates
 
 router = APIRouter()
 
@@ -64,7 +64,7 @@ def _user_id(request: Request) -> int | None:
 async def chat_page(request: Request) -> Response:
     """Chat with a model on a provider."""
     return templates.TemplateResponse(
-        request, "chat.html", merge_dash_template_ctx(request, {})
+        request, "chat.html", await dash_page_ctx(request, {})
     )
 
 

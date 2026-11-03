@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "status_macros.html" import status_badge, live_mark %}
 {% block title %}{{ info.provider.name }} - llama-router{% endblock %}
 
 {% block nav_tabs %}
@@ -11,14 +12,12 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
-        <h2>
+        <h1 class="h2">
             {{ info.provider.name }}
             {% if info.provider.is_cloud %}<span class="badge bg-warning text-dark fs-6 align-middle me-1" title="Cloud provider: prompts leave your network"><i class="bi bi-cloud me-1"></i>cloud</span>{% endif %}<span class="badge bg-info text-dark fs-6 align-middle me-1">{{ info.provider.protocol.value }}</span>{% if info.provider.flavor %}<span class="badge bg-body-secondary text-body fs-6 align-middle me-1" title="Server recognised by the last probe">{{ info.provider.flavor }}</span>{% endif %}
             {% if info.provider.has_api_key %}<span class="badge bg-secondary fs-6 align-middle me-1" title="Requests to this provider carry an API key"><i class="bi bi-key"></i></span>{% endif %}
-            <span class="badge {% if info.provider.status.value == 'idle' %}bg-success{% elif info.provider.status.value == 'busy' %}bg-warning text-dark{% elif info.provider.status.value == 'offline' %}bg-danger{% else %}bg-secondary{% endif %} fs-6 align-middle" title="{{ info.status_detail or '' }}">
-                {{ info.provider.status.value }}
-            </span>
-        </h2>
+            {{ status_badge(info.provider.status.value, info.status_detail, extra='fs-6 align-middle') }}
+        </h1>
         {% if info.status_detail %}
         <div class="text-danger small"><i class="bi bi-exclamation-triangle me-1"></i>{{ info.status_detail }}</div>
         {% endif %}
@@ -34,7 +33,7 @@
             </button>
         </form>
         <form method="post" action="/providers/{{ info.provider.id }}/remove">
-            <button class="btn btn-outline-danger" onclick="return confirm('Remove this provider?')">
+            <button class="btn btn-outline-danger" onclick='return confirm({{ ("Remove provider " ~ info.provider.name ~ "?") | tojson }})'>
                 <i class="bi bi-trash me-1"></i>Remove
             </button>
         </form>
@@ -45,7 +44,7 @@
 {% if request.query_params.get('error') %}
 <div class="alert alert-warning alert-dismissible fade show">
     <i class="bi bi-exclamation-triangle-fill me-2"></i>{{ request.query_params.get('error') }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
 </div>
 {% endif %}
 
@@ -58,7 +57,7 @@
 <!-- Addresses -->
 <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Addresses ({{ info.addresses | length }})</h5>
+        <h2 class="h5 mb-0">Addresses ({{ info.addresses | length }})</h2>
         {% if not read_only %}
         <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addAddressModal">
             <i class="bi bi-plus-lg me-1"></i>Add Address
@@ -71,7 +70,7 @@
             <table class="table table-hover mb-0 align-middle">
                 <thead>
                     <tr>
-                        <th style="width:2rem"></th>
+                        <th style="width:2rem"><span class="visually-hidden">Status</span></th>
                         <th>URL</th>
                         <th>Preferred</th>
                         {% if not read_only %}<th></th>{% endif %}
@@ -81,20 +80,16 @@
                     {% for addr in info.addresses %}
                     <tr>
                         <td>
-                            {% if addr.is_live %}
-                            <i class="bi bi-circle-fill text-success" title="Live"></i>
-                            {% else %}
-                            <i class="bi bi-circle-fill text-danger" title="Not responding"></i>
-                            {% endif %}
+                            {{ live_mark(addr.is_live) }}
                         </td>
                         <td class="small"><code>{{ addr.url if not read_only else '(hidden)' }}</code></td>
                         <td>
                             {% if not read_only %}
                             <form method="post" action="/providers/{{ info.provider.id }}/addresses/{{ addr.id }}/toggle-preferred" class="d-inline">
                                 {% if addr.is_preferred %}
-                                <button class="btn btn-sm btn-warning" title="Preferred – click to unset"><i class="bi bi-star-fill"></i></button>
+                                <button class="btn btn-sm btn-warning" title="Preferred – click to unset" aria-label="Preferred – click to unset"><i class="bi bi-star-fill"></i></button>
                                 {% else %}
-                                <button class="btn btn-sm btn-outline-secondary" title="Click to mark preferred"><i class="bi bi-star"></i></button>
+                                <button class="btn btn-sm btn-outline-secondary" title="Click to mark preferred" aria-label="Click to mark preferred"><i class="bi bi-star"></i></button>
                                 {% endif %}
                             </form>
                             {% elif addr.is_preferred %}
@@ -109,11 +104,11 @@
                                 data-edit-address
                                 data-addr-id="{{ addr.id }}"
                                 data-addr-url="{{ addr.url }}"
-                                data-addr-preferred="{{ 'true' if addr.is_preferred else 'false' }}">
+                                data-addr-preferred="{{ 'true' if addr.is_preferred else 'false' }}" aria-label="Edit">
                                 <i class="bi bi-pencil"></i>
                             </button>
                             <form method="post" action="/providers/{{ info.provider.id }}/addresses/{{ addr.id }}/remove" class="d-inline">
-                                <button class="btn btn-sm btn-outline-danger" title="Remove address" onclick="return confirm('Remove this address?')">
+                                <button class="btn btn-sm btn-outline-danger" title="Remove address" onclick='return confirm({{ ("Remove address " ~ addr.url ~ "?") | tojson }})' aria-label="Remove address {{ addr.url }}">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </form>
@@ -134,9 +129,9 @@
 {% set caps = info.provider.capabilities %}
 <div class="card mb-4" id="capabilities-card">
     <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="mb-0">Capabilities</h5>
+        <h2 class="h5 mb-0">Capabilities</h2>
         <div class="d-flex align-items-center gap-2">
-            {% if info.provider.probed_at %}<span class="small text-muted">probed {{ info.provider.probed_at | localtime }}</span>{% endif %}
+            {% if info.provider.probed_at %}<span class="small text-muted">probed {{ info.provider.probed_at | when }}</span>{% endif %}
             {% if not read_only %}
             <button type="button" class="btn btn-sm btn-outline-primary" id="probe-provider" data-provider-id="{{ info.provider.id }}">
                 <i class="bi bi-search me-1"></i>Probe endpoints
@@ -183,12 +178,12 @@
         <div class="card">
             {% set hot_names = info.hot_models | map(attribute='name') | list %}
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">
+                <h2 class="h5 mb-0">
                     Models ({{ info.models | length }})
                     {% if hot_names %}
                     <span class="badge bg-danger bg-opacity-75 rounded-pill ms-2"><i class="bi bi-fire me-1"></i>{{ hot_names | length }} hot</span>
                     {% endif %}
-                </h5>
+                </h2>
             </div>
             <div class="card-body p-0">
                 {% if info.models %}
@@ -222,12 +217,12 @@
                                 <td>{{ "%.1f GB" | format(m.size / 1073741824) if m.size else "—" }}</td>
                                 {% if not read_only %}
                                 <td class="text-nowrap">
-                                    <button class="btn btn-sm btn-outline-info btn-benchmark" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" title="Benchmark">
+                                    <button class="btn btn-sm btn-outline-info btn-benchmark" data-provider="{{ info.provider.id }}" data-model="{{ m.name }}" title="Benchmark" aria-label="Benchmark">
                                         <i class="bi bi-speedometer"></i>
                                     </button>
                                     {% if info.provider.is_ollama and not info.provider.lacks('/api/delete') %}
                                     <form method="post" action="/providers/{{ info.provider.id }}/delete-model/{{ m.name }}" class="d-inline">
-                                        <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick='return confirm({{ ("Delete " ~ m.name ~ " from this provider?") | tojson }})'>
+                                        <button class="btn btn-sm btn-outline-danger" title="Delete from provider" onclick='return confirm({{ ("Delete " ~ m.name ~ " from this provider?") | tojson }})' aria-label="Delete from provider">
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </form>
@@ -248,7 +243,7 @@
         {% if info.provider.is_ollama and not info.provider.lacks('/api/pull') and not read_only %}
         <div class="card mt-4">
             <div class="card-header">
-                <h5 class="mb-0">Pull Model</h5>
+                <h2 class="h5 mb-0">Pull Model</h2>
             </div>
             <div class="card-body">
                 <div id="pull-status-area"></div>
@@ -300,7 +295,7 @@
         <div id="benchmark-status-area" class="mb-2"></div>
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0">Benchmarks</h5>
+                <h2 class="h5 mb-0">Benchmarks</h2>
             </div>
             <div class="card-body p-0">
                 {% if info.benchmarks %}
@@ -331,7 +326,7 @@
                                 <td class="text-end">
                                     {% if not read_only %}
                                     <form method="post" action="/benchmarks/{{ b.id }}/delete" class="d-inline">
-                                        <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="return confirm('Delete this benchmark?')" title="Delete">
+                                        <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick='return confirm({{ ("Delete the " ~ b.model_name ~ " benchmark?") | tojson }})' title="Delete" aria-label="Delete {{ b.model_name }} benchmark">
                                             <i class="bi bi-x-lg"></i>
                                         </button>
                                     </form>
@@ -352,7 +347,7 @@
 
         <div class="card mt-4" id="prices-card">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Prices</h5>
+                <h2 class="h5 mb-0">Prices</h2>
                 <span class="small text-muted">USD per million tokens</span>
             </div>
             <div class="card-body">
@@ -366,7 +361,7 @@
                     <div class="col-5"><label class="form-label small text-muted mb-1" for="price-model">Model or pattern</label><input id="price-model" class="form-control form-control-sm font-monospace" placeholder="* or gpt-4o*" required></div>
                     <div class="col-3"><label class="form-label small text-muted mb-1" for="price-in">In</label><input id="price-in" type="number" min="0" step="0.001" class="form-control form-control-sm" required></div>
                     <div class="col-3"><label class="form-label small text-muted mb-1" for="price-out">Out</label><input id="price-out" type="number" min="0" step="0.001" class="form-control form-control-sm" required></div>
-                    <div class="col-1"><button class="btn btn-sm btn-outline-primary" type="submit" title="Save price"><i class="bi bi-plus-lg"></i></button></div>
+                    <div class="col-1"><button class="btn btn-sm btn-outline-primary" type="submit" title="Save price" aria-label="Save price"><i class="bi bi-plus-lg"></i></button></div>
                 </form>
                 {% endif %}
             </div>
@@ -374,7 +369,7 @@
 
         <div class="card mt-4">
             <div class="card-header">
-                <h5 class="mb-0">Info</h5>
+                <h2 class="h5 mb-0">Info</h2>
             </div>
             <ul class="list-group list-group-flush">
                 <li class="list-group-item d-flex justify-content-between">
@@ -432,7 +427,7 @@
                 {% if info.provider.created_at %}
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Added</span>
-                    <span>{{ info.provider.created_at | localtime }}</span>
+                    <span>{{ info.provider.created_at | when }}</span>
                 </li>
                 {% endif %}
             </ul>
@@ -446,8 +441,8 @@
     <div class="modal-dialog">
         <form method="post" action="/providers/{{ info.provider.id }}/edit" class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Edit Provider</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Edit Provider</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
@@ -563,8 +558,8 @@
     <div class="modal-dialog">
         <form method="post" action="/providers/{{ info.provider.id }}/addresses/save" class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Add Address</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Add Address</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
@@ -590,8 +585,8 @@
         <form id="editAddressForm" method="post" action="/providers/{{ info.provider.id }}/addresses/save" class="modal-content">
             <input type="hidden" name="address_id" id="edit-addr-id" value="">
             <div class="modal-header">
-                <h5 class="modal-title">Edit Address</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <h2 class="h5 modal-title">Edit Address</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
@@ -649,7 +644,8 @@ function loadPrices() {
             if (!DASH_READ_ONLY) {
                 var b = document.createElement('button');
                 b.className = 'btn btn-sm btn-outline-danger py-0'; b.title = 'Remove price';
-                b.innerHTML = '<i class="bi bi-trash"></i>';
+                b.setAttribute('aria-label', 'Remove price for ' + p.model_pattern);
+                b.innerHTML = '<i class="bi bi-trash" aria-hidden="true"></i>';
                 b.addEventListener('click', function() {
                     fetch('/api/providers/' + PROVIDER_ID + '/prices/' + p.id, {method: 'DELETE'}).then(loadPrices);
                 });
