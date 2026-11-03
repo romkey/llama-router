@@ -86,7 +86,7 @@ async def _backend(db: Database, seen: list[dict[str, Any]]) -> int:
         )
 
     pm = dash_deps.get_pm()
-    pm._llamacpp_clients[pid] = OpenAIClient(
+    pm.clients.llamacpp[pid] = OpenAIClient(
         "http://gpu:8000", transport=httpx.MockTransport(handler)
     )
     return pid

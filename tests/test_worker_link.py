@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
-from llama_router import provider_manager as pm_mod
+from llama_router import worker_sync
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
 from llama_router.config import settings
@@ -672,7 +672,7 @@ async def test_connect_with_failing_discovery_keeps_reachable_address_live(
 async def test_worker_health_check_steps_aside_and_is_bounded(
     link, monkeypatch
 ) -> None:
-    import llama_router.provider_manager as pm_mod
+    import llama_router.provider_health as health_mod
 
     await _connected_worker(link)
     pm, pid, db = link["pm"], link["provider_id"], link["db"]
@@ -692,7 +692,7 @@ async def test_worker_health_check_steps_aside_and_is_bounded(
     assert probed == []
 
     # A hung probe holds the lock only until the cap, then releases it.
-    monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+    monkeypatch.setattr(health_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
     pm._hot_models[pid] = [{"name": "stale"}]
 
     async def hung_probe(p, addr):
@@ -717,10 +717,10 @@ async def test_worker_health_check_steps_aside_and_is_bounded(
         caps.append(timeout)
         return await real_wait_for(coro, timeout)
 
-    monkeypatch.setattr(pm_mod.asyncio, "wait_for", spy)
+    monkeypatch.setattr(health_mod.asyncio, "wait_for", spy)
     pm._probe_address = real_probe
     await pm.check_provider(await db.get_provider(pid))
-    assert caps[0] == pm_mod._WORKER_MANUAL_TIMEOUT
+    assert caps[0] == health_mod._WORKER_MANUAL_TIMEOUT
 
 
 async def test_disconnected_worker_reason_and_no_relog(link) -> None:
@@ -786,13 +786,13 @@ async def test_disconnect_during_cycle_is_not_logged_twice(link) -> None:
 async def test_timeout_does_not_mark_reconnected_worker_offline(
     link, monkeypatch
 ) -> None:
-    import llama_router.provider_manager as pm_mod
+    import llama_router.provider_health as health_mod
 
     await _connected_worker(link)
     pm, pid, db = link["pm"], link["provider_id"], link["db"]
     await db.update_provider_status(pid, ProviderStatus.IDLE)
     provider = await db.get_provider(pid)
-    monkeypatch.setattr(pm_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
+    monkeypatch.setattr(health_mod, "_WORKER_CHECK_TIMEOUT", 0.2)
     real_get = pm.worker_hub.get
     swapped = {"on": False}
 
@@ -811,7 +811,7 @@ async def test_timeout_does_not_mark_reconnected_worker_offline(
 
     # A manual refresh in the same situation still leaves a Log row.
     swapped["on"] = False
-    monkeypatch.setattr(pm_mod, "_WORKER_MANUAL_TIMEOUT", 0.2)
+    monkeypatch.setattr(health_mod, "_WORKER_MANUAL_TIMEOUT", 0.2)
     await pm.check_provider(await db.get_provider(pid), source="refresh")
     rows = [e for e in await db.get_request_logs(50, 0) if e.endpoint == "refresh"]
     assert rows
@@ -1678,7 +1678,7 @@ async def test_purge_timer_retries_a_failed_sync(monkeypatch, clock) -> None:
     pm._schedule_purge(conn, 0.0)
     await _wait_for(lambda: len(calls) == 2)
     # The retry waits _PURGE_RETRY_S (plus the timer's second of slack).
-    assert slept == [1.0, pm_mod._PURGE_RETRY_S + 1.0]
+    assert slept == [1.0, worker_sync._PURGE_RETRY_S + 1.0]
 
 
 async def test_catalog_sync_uses_the_catalog_it_started_with(link, monkeypatch) -> None:

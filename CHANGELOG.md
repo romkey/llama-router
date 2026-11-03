@@ -106,6 +106,13 @@ described in their git tags and GitHub Releases.
 
 ### Changed
 
+- `provider_manager.py` is split up. `ClientPool` (`client_pool.py`) holds
+  each provider's clients, picks the address they use, adds upstream auth
+  headers, and closes a replaced client once its last request ends. Health
+  checks and endpoint probes move to `provider_health.py`, worker links and
+  their catalogs to `worker_sync.py`, and benchmarks to
+  `provider_benchmark.py`; `ProviderManager` combines them, so callers are
+  unchanged. The new modules pass `mypy --strict`.
 - `database.py` is split into per-domain repositories under
   `src/llama_router/repositories/` (providers, benchmarks, request log, model
   config, decisions, chat, workers, API keys, management keys, dashboard

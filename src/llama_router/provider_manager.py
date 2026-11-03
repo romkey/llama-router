@@ -8,19 +8,18 @@ import time
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from . import router_identity
+from .client_pool import ClientPool, upstream_headers
 from .config import settings
 from .database import Database
 from .httpx_errors import describe_httpx_error
 from .llamacpp_client import LlamaCppClient
 from .models import (
-    WORKER_URL_SCHEME,
     BenchmarkResult,
     HotModel,
     Provider,
@@ -29,31 +28,27 @@ from .models import (
     ProviderModel,
     ProviderProtocol,
     ProviderStatus,
-    RequestLog,
-    measured_cold_start,
-    plausible_tokens_per_second,
 )
 from .ollama_client import OllamaClient
 from .probe import (
     BlockedAddressError,
     check_not_metadata,
-    merge_results,
     normalize_base_url,
-    probe_url,
 )
+from .provider_benchmark import Benchmarking
+from .provider_health import HealthChecks
 from .provider_secrets import (
     DEFAULT_HEADER,
     ApiKeyUnavailableError,
-    auth_headers,
     decrypt_api_key,
     encrypt_api_key,
     normalize_header,
     reencrypt_legacy,
 )
-from .routing_stats import ProviderStats, retry_after_seconds
+from .routing_stats import ProviderStats
 from .upstream_url import guess_locality, split_api_base
-from .worker_link.hub import WorkerConnection, WorkerHub
-from .worker_link.protocol import EXPOSE_INDIVIDUAL
+from .worker_link.hub import WorkerHub
+from .worker_sync import WorkerSync
 
 if TYPE_CHECKING:
     from .cloud_presets import CloudPreset
@@ -61,70 +56,6 @@ if TYPE_CHECKING:
     from .translate import OllamaOverOpenAI
 
 logger = logging.getLogger(__name__)
-
-# A failed sync from the purge timer is tried again after this long.
-_PURGE_RETRY_S = 60.0
-
-# Reachability probes must be quick: one black-holed address must not stall the
-# health cycle for every other provider.
-# Request log retention runs at most this often.
-LOG_PURGE_INTERVAL_S = 3600.0
-_PROBE_TIMEOUT = httpx.Timeout(5.0)
-# Providers checked at once during startup and each health cycle.
-_CHECK_CONCURRENCY = 8
-# Upper bound on one worker health check, which runs under the worker's lock.
-_WORKER_CHECK_TIMEOUT = 20.0
-# Checks that rediscover models (manual refresh, add, edit, or a worker
-# coming back from offline) can take longer.
-_WORKER_MANUAL_TIMEOUT = 60.0
-
-
-def _failure_reason(exc: BaseException) -> str:
-    """Short, safe description of why discovery failed, for status and the Log."""
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        if code in (401, 403):
-            return (
-                f"authentication required (HTTP {code} from "
-                f"{exc.request.url.path}); set the provider's API key"
-            )
-        return f"HTTP {code} from {exc.request.url.path}"
-    if isinstance(exc, httpx.RequestError):
-        # The path only: the full URL can carry credentials and internal
-        # hostnames, and this text reaches non-admins on the dashboard.
-        # TLS and transport errors often repeat the host, so drop it too.
-        try:
-            url = exc.request.url
-        except RuntimeError:
-            return type(exc).__name__
-        text = str(exc)
-        for secret in (str(url), url.netloc.decode("ascii", "replace"), url.host):
-            if secret:
-                text = text.replace(secret, "(provider)")
-        return f"{type(exc).__name__} for {url.path}: {text}".rstrip(": ")
-    if isinstance(exc, httpx.HTTPError):
-        return type(exc).__name__
-    return str(exc) or type(exc).__name__
-
-
-def _transient_chat_benchmark_failure(exc: BaseException) -> bool:
-    """Return True if chat benchmark likely failed transiently — do not try embed."""
-    if isinstance(exc, httpx.TimeoutException):
-        return True
-    if isinstance(
-        exc,
-        (
-            httpx.ConnectError,
-            httpx.ReadError,
-            httpx.WriteError,
-            httpx.RemoteProtocolError,
-            httpx.LocalProtocolError,
-        ),
-    ):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in (408, 425, 429, 500, 502, 503, 504)
-    return False
 
 
 async def _check_provider_url(url: str) -> None:
@@ -135,18 +66,6 @@ async def _check_provider_url(url: str) -> None:
     except ValueError as exc:
         raise BlockedAddressError(str(exc)) from exc
     await check_not_metadata(url)
-
-
-def worker_protocol(targets: list[str]) -> ProviderProtocol:
-    """The one protocol a worker provider is reached by.
-
-    A worker that relays its own router offers both targets, and the router's
-    Ollama port also serves every OpenAI-style route, so the Ollama target
-    reaches everything. Use the OpenAI target only when it is all there is.
-    """
-    if "ollama" in targets or "llamacpp" not in targets:
-        return ProviderProtocol.OLLAMA
-    return ProviderProtocol.OPENAI
 
 
 def preset_settings(preset: CloudPreset) -> dict[str, Any]:
@@ -160,7 +79,13 @@ def preset_settings(preset: CloudPreset) -> dict[str, Any]:
     }
 
 
-class ProviderManager:
+class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
+    """Providers' lifecycle: settings, clients, discovery, request counts.
+
+    Health checks, worker links and benchmarks live in their own modules
+    (provider_health, worker_sync, provider_benchmark).
+    """
+
     _cached_prefixes: list[str] | None = None
 
     def __init__(self, db: Database, hub: WorkerHub | None = None):
@@ -172,21 +97,14 @@ class ProviderManager:
             self._on_worker_disconnected,
             self._on_worker_catalog,
         )
-        self._ollama_clients: dict[int, OllamaClient] = {}
-        self._llamacpp_clients: dict[int, LlamaCppClient] = {}
-        # Requests using each client right now (see acquire_provider), and the
-        # clients a rebuild replaced while still in use: those close when
-        # their last request finishes, not mid-request.
-        self._client_users: dict[OllamaClient | LlamaCppClient, int] = {}
-        self._retired: set[OllamaClient | LlamaCppClient] = set()
+        # Live round-trip and request samples that feed the routing table.
+        self.stats = ProviderStats()
+        self.clients = ClientPool(self.worker_hub, self.stats)
         self._active_requests: dict[int, int] = defaultdict(int)
         self._hot_models: dict[int, list[HotModel]] = {}
         # The model each llama.cpp upstream reports as loaded (/props).
         self._llamacpp_loaded: dict[int, set[str]] = {}
-        self._active_urls: dict[int, str] = {}
         self._router: Router | None = None
-        # Live round-trip and request samples that feed the routing table.
-        self.stats = ProviderStats()
         # When each provider last started or finished a proxied request, for
         # idle detection; providers with none count from process start.
         self._started_at = time.monotonic()
@@ -233,47 +151,6 @@ class ProviderManager:
         if self._router is not None:
             self._router.mark_dirty(reason, reload=False)
 
-    def schedule_probe(self, provider_id: int, reason: str = "auto") -> None:
-        """Probe a provider's endpoints in the background, once at a time.
-
-        Probes never run inference, so they run on add, on every edit and
-        address change, when a provider comes back, and when the last one is
-        older than LLAMA_ROUTER_PROBE_MAX_AGE_HOURS.
-        """
-        if not settings.auto_probe_enabled:
-            return
-        running = self._probing.get(provider_id)
-        if running is not None and not running.done():
-            return
-
-        async def _run() -> None:
-            try:
-                await self.probe_provider(provider_id)
-            except ValueError as exc:
-                logger.debug("Probe of provider %d skipped: %s", provider_id, exc)
-            except Exception:
-                logger.exception(
-                    "Background probe failed (provider_id=%s, %s)", provider_id, reason
-                )
-            finally:
-                self._probing.pop(provider_id, None)
-
-        self._probing[provider_id] = asyncio.create_task(
-            _run(), name=f"probe-{provider_id}"
-        )
-
-    def _probe_is_stale(self, provider: Provider) -> bool:
-        max_age = settings.probe_max_age_hours
-        if max_age <= 0:
-            return False
-        at = provider.probed_at
-        if at is None:
-            return True
-        if at.tzinfo is None:
-            at = at.replace(tzinfo=UTC)
-        age = (datetime.now(UTC) - at).total_seconds()
-        return age >= max_age * 3600
-
     @classmethod
     def _get_cache_prefixes(cls) -> list[str]:
         if cls._cached_prefixes is None:
@@ -287,10 +164,6 @@ class ProviderManager:
             ]
             cls._cached_prefixes = [p for p in raw if p]
         return cls._cached_prefixes
-
-    @staticmethod
-    def _address_url_sig(addr: ProviderAddress) -> str:
-        return addr.url.rstrip("/")
 
     async def provision_from_env(self) -> list[Provider]:
         """Create or update the providers named by LLAMA_ROUTER_PROVIDER_*_API_KEY.
@@ -407,145 +280,12 @@ class ProviderManager:
         for timer in list(self._purge_timers.values()):
             timer.cancel()
         self._purge_timers.clear()
-        for client in [
-            *self._ollama_clients.values(),
-            *self._llamacpp_clients.values(),
-            *self._retired,
-        ]:
-            await client.close()
-        self._retired.clear()
-
-    # --- Address helpers ---
-
-    def _best_address(self, addresses: list[ProviderAddress]) -> ProviderAddress | None:
-        """Pick the best address: prefer live+preferred > live > preferred > any."""
-        if not addresses:
-            return None
-        live_preferred = [a for a in addresses if a.is_live and a.is_preferred]
-        if live_preferred:
-            return live_preferred[0]
-        live = [a for a in addresses if a.is_live]
-        if live:
-            return live[0]
-        preferred = [a for a in addresses if a.is_preferred]
-        if preferred:
-            return preferred[0]
-        return addresses[0]
-
-    @staticmethod
-    def _upstream_headers(provider: Provider) -> dict[str, str] | None:
-        """Auth headers for a direct provider's upstream, or None.
-
-        Worker providers never get them: the link strips Authorization and
-        API-KEY, and the worker adds its own upstream key.
-        """
-        if provider.is_worker:
-            return None
-        headers = dict(provider.extra_headers or {})
-        if provider.api_key_enc:
-            try:
-                key = decrypt_api_key(provider.api_key_enc)
-            except ApiKeyUnavailableError as exc:
-                logger.warning("Provider %s: %s", provider.name, exc)
-            else:
-                headers.update(auth_headers(key, provider.api_key_header))
-        return headers or None
+        await self.clients.close_all()
 
     async def _rebuild_clients(self, provider: Provider) -> None:
-        """Replace the provider's clients with ones for the best live address.
-
-        Requests already running keep the old client until they finish.
-        """
-        provider_id = provider.require_id()
-        addresses = await self._db.get_addresses(provider_id)
-        addr = self._best_address(addresses)
-        if not addr:
-            await self._close_clients(provider_id)
-            self._active_urls.pop(provider_id, None)
-            return
-        kw: dict[str, Any] = {"on_response": self._response_hook(provider_id)}
-        if not provider.is_cloud:
-            # Any local provider may be another llama-router; a cloud
-            # service never is, so it is not told this router's ID.
-            kw["on_request"] = router_identity.add_path_header
-        if provider.read_timeout_s:
-            kw["timeout"] = httpx.Timeout(10.0, read=provider.read_timeout_s)
-        if provider.is_worker:
-            kw["transport"] = self.worker_hub.transport(
-                provider_id, provider.worker_target
-            )
-        else:
-            kw["headers"] = self._upstream_headers(provider)
-        # A worker's address only names it; the transport picks the socket,
-        # and a path in it (worker://<name>/<id>) must not reach the worker.
-        base = "http://worker" if provider.is_worker else addr.url
-        new: OllamaClient | LlamaCppClient
-        if provider.is_ollama:
-            new = OllamaClient(base, **kw)
-        else:
-            new = LlamaCppClient(base, **kw)
-        await self._close_clients(provider_id)
-        if isinstance(new, OllamaClient):
-            self._ollama_clients[provider_id] = new
-        else:
-            self._llamacpp_clients[provider_id] = new
-        self._active_urls[provider_id] = self._address_url_sig(addr)
-
-    def _response_hook(
-        self, provider_id: int
-    ) -> Callable[[httpx.Response], Awaitable[None]]:
-        """Every upstream response passes here: a 429 marks the provider busy."""
-
-        async def on_response(resp: httpx.Response) -> None:
-            if resp.status_code == 429:
-                seconds = retry_after_seconds(resp.headers.get("retry-after"))
-                self.stats.mark_busy(provider_id, seconds)
-                logger.info(
-                    "Provider %d rate-limited (HTTP 429); routing around it for %.0fs",
-                    provider_id,
-                    min(seconds, 300.0),
-                )
-
-        return on_response
-
-    async def _close_clients(self, provider_id: int) -> None:
-        """Drop the provider's clients; each closes once no request uses it."""
-        ollama = self._ollama_clients.pop(provider_id, None)
-        if ollama is not None:
-            await self._retire(ollama)
-        lcpp = self._llamacpp_clients.pop(provider_id, None)
-        if lcpp is not None:
-            await self._retire(lcpp)
-
-    async def _retire(self, client: OllamaClient | LlamaCppClient) -> None:
-        if self._client_users.get(client, 0) > 0:
-            self._retired.add(client)
-        else:
-            await client.close()
-
-    def _pin_clients(self, provider_id: int) -> list[OllamaClient | LlamaCppClient]:
-        pinned: list[OllamaClient | LlamaCppClient] = []
-        ollama = self._ollama_clients.get(provider_id)
-        if ollama is not None:
-            pinned.append(ollama)
-        lcpp = self._llamacpp_clients.get(provider_id)
-        if lcpp is not None:
-            pinned.append(lcpp)
-        for client in pinned:
-            self._client_users[client] = self._client_users.get(client, 0) + 1
-        return pinned
-
-    async def _unpin_clients(self, pinned: list[OllamaClient | LlamaCppClient]) -> None:
-        for client in pinned:
-            left = self._client_users.get(client, 0) - 1
-            if left > 0:
-                self._client_users[client] = left
-                continue
-            self._client_users.pop(client, None)
-            if client in self._retired:
-                self._retired.discard(client)
-                with suppress(Exception):
-                    await client.close()
+        """Point the provider's clients at its best address (see ClientPool)."""
+        addresses = await self._db.get_addresses(provider.require_id())
+        await self.clients.rebuild(provider, addresses)
 
     # --- Provider CRUD ---
 
@@ -674,7 +414,7 @@ class ProviderManager:
         so callers can display a notice.
         """
         backend_name = await self._db.get_backend_model_name(provider_id, model_name)
-        ollama = self._ollama_clients.get(provider_id)
+        ollama = self.clients.ollama.get(provider_id)
         not_found = False
         if ollama:
             try:
@@ -707,9 +447,9 @@ class ProviderManager:
                 provider_id, CLOSE_REVOKED, "worker removed"
             )
             await self._db.delete_worker(int(worker["id"]))
-        await self._close_clients(provider_id)
+        await self.clients.close(provider_id)
         self._active_requests.pop(provider_id, None)
-        self._active_urls.pop(provider_id, None)
+        self.clients.active_urls.pop(provider_id, None)
         self._hot_models.pop(provider_id, None)
         self._llamacpp_loaded.pop(provider_id, None)
         self._status_detail.pop(provider_id, None)
@@ -883,16 +623,16 @@ class ProviderManager:
         return infos
 
     def get_ollama_client(self, provider_id: int) -> OllamaClient:
-        return self._ollama_clients[provider_id]
+        return self.clients.ollama[provider_id]
 
     def get_llamacpp_client(self, provider_id: int) -> LlamaCppClient:
-        return self._llamacpp_clients[provider_id]
+        return self.clients.llamacpp[provider_id]
 
     def find_ollama_client(self, provider_id: int) -> OllamaClient | None:
-        return self._ollama_clients.get(provider_id)
+        return self.clients.ollama.get(provider_id)
 
     def find_llamacpp_client(self, provider_id: int) -> LlamaCppClient | None:
-        return self._llamacpp_clients.get(provider_id)
+        return self.clients.llamacpp.get(provider_id)
 
     def ollama_api_client(self, provider_id: int) -> OllamaClient | OllamaOverOpenAI:
         """What the Ollama API handlers call: the provider's Ollama client, or
@@ -900,10 +640,10 @@ class ProviderManager:
 
         Raises NoReachableAddressError when the provider has neither.
         """
-        client = self._ollama_clients.get(provider_id)
+        client = self.clients.ollama.get(provider_id)
         if client is not None:
             return client
-        lcpp = self._llamacpp_clients.get(provider_id)
+        lcpp = self.clients.llamacpp.get(provider_id)
         if lcpp is None:
             from .v1_client import NoReachableAddressError
 
@@ -952,13 +692,13 @@ class ProviderManager:
         The provider's clients are kept open until it ends even if an edit
         replaces them, so fetch the client inside this block, not before.
         """
-        pinned = self._pin_clients(provider_id)
+        pinned = self.clients.pin(provider_id)
         self.acquire(provider_id)
         try:
             yield
         finally:
             self.release(provider_id)
-            await self._unpin_clients(pinned)
+            await self.clients.unpin(pinned)
 
     def active_requests(self, provider_id: int) -> int:
         return self._active_requests.get(provider_id, 0)
@@ -1004,7 +744,7 @@ class ProviderManager:
 
     async def _refresh_llamacpp_loaded(self, provider: Provider) -> None:
         provider_id = provider.require_id()
-        client = self._llamacpp_clients.get(provider_id)
+        client = self.clients.llamacpp.get(provider_id)
         if not provider.is_openai or client is None or provider.lacks("/props"):
             # Only llama.cpp-style servers report their loaded model in /props.
             self._set_llamacpp_loaded(provider_id, set())
@@ -1022,11 +762,11 @@ class ProviderManager:
 
     async def _refresh_ollama_hot(self, provider: Provider) -> None:
         provider_id = provider.require_id()
-        if not provider.is_ollama or provider_id not in self._ollama_clients:
+        if not provider.is_ollama or provider_id not in self.clients.ollama:
             self._set_hot_models(provider_id, [])
             return
         try:
-            raw = await self._ollama_clients[provider_id].get_ps()
+            raw = await self.clients.ollama[provider_id].get_ps()
             hot: list[HotModel] = []
             for m in raw:
                 name = self._strip_cache_prefix(m.get("name", ""))
@@ -1079,509 +819,6 @@ class ProviderManager:
                 return self._child_reasons.get(pid, "worker is not connected")
             return "no address responded"
         return detail
-
-    async def _log_event(
-        self,
-        provider: Provider,
-        endpoint: str,
-        *,
-        ok: bool,
-        detail: str | None = None,
-        duration_ms: float = 0.0,
-    ) -> None:
-        """Record a provider lifecycle event in the dashboard Log."""
-        try:
-            await self._db.save_request_log(
-                RequestLog(
-                    provider_id=provider.require_id(),
-                    provider_name=provider.name,
-                    protocol="system",
-                    endpoint=endpoint,
-                    source_ip="internal",
-                    request_meta=None if not ok else detail,
-                    duration_ms=duration_ms,
-                    status="ok" if ok else "error",
-                    error_detail=None if ok else detail,
-                )
-            )
-        except Exception:
-            logger.exception("Could not write %s event for %s", endpoint, provider.name)
-
-    async def _check_many(
-        self, providers: list[Provider], *, rediscover: bool, source: str
-    ) -> None:
-        """Check providers concurrently; one failure never stops the others."""
-        sem = asyncio.Semaphore(_CHECK_CONCURRENCY)
-
-        async def one(p: Provider) -> None:
-            async with sem:
-                try:
-                    await self.check_provider(p, rediscover=rediscover, source=source)
-                except Exception:
-                    logger.exception("Health check failed for provider %s", p.name)
-
-        await asyncio.gather(*(one(p) for p in providers))
-
-    async def check_provider(
-        self, provider: Provider, *, rediscover: bool = False, source: str = "health"
-    ) -> ProviderStatus:
-        """Probe all addresses, update liveness, clients, models and status.
-
-        *source* is ``startup``, ``refresh`` or ``health``. Manual refreshes
-        always write a Log entry; automatic checks write one only when the
-        status or the failure reason changes, so the Log is not flooded.
-        """
-        provider.require_id()  # a provider that was never saved cannot be checked
-        if provider.is_worker:
-            return await self._check_worker(provider, rediscover, source)
-        return await self._check_provider_impl(provider, rediscover, source)
-
-    async def _check_worker(
-        self, provider: Provider, rediscover: bool, source: str
-    ) -> ProviderStatus:
-        """Check a worker provider under its lock, bounded in time.
-
-        Every state change (clients, models, hot models, liveness, status)
-        happens under the per-worker lock the connect and disconnect handlers
-        use, so a check can never interleave with them. An automatic check
-        steps aside while a handler holds the lock, and the whole check is
-        capped so a hung upstream cannot keep the lock for long.
-        """
-        pid = provider.require_id()
-        lock = self._worker_lock(pid)
-        if source == "health" and lock.locked():
-            return provider.status
-        async with lock:
-            # Re-read under the lock: a connect or disconnect handler may have
-            # changed (and logged) the status since this cycle listed providers.
-            fresh = await self._db.get_provider(pid)
-            if fresh is None:
-                return provider.status
-            self._refresh_from(provider, fresh)
-            conn = self.worker_hub.get(pid)
-            prev_status = provider.status
-            started = time.monotonic()
-            # A check that will rediscover models gets the longer cap, so one
-            # slow model listing cannot keep a connected worker offline.
-            rediscovering = rediscover or prev_status in (
-                ProviderStatus.OFFLINE,
-                ProviderStatus.UNKNOWN,
-            )
-            cap = (
-                _WORKER_MANUAL_TIMEOUT
-                if source != "health" or rediscovering
-                else _WORKER_CHECK_TIMEOUT
-            )
-            try:
-                return await asyncio.wait_for(
-                    self._check_provider_impl(
-                        provider,
-                        rediscover,
-                        source,
-                        still_current=lambda: self.worker_hub.get(pid) is conn,
-                    ),
-                    timeout=cap,
-                )
-            except TimeoutError:
-                # Commit a consistent result rather than leaving liveness
-                # written and status, reason and Log untouched.
-                logger.warning(
-                    "Check of worker %s timed out after %.0fs", provider.name, cap
-                )
-                if self.worker_hub.get(pid) is not conn:
-                    # A new socket arrived; its connect handler, waiting on the
-                    # lock, sets status. Do not mark it offline first.
-                    return await self._superseded(provider, source)
-                self._clear_loaded(pid)
-                live = [a for a in await self._db.get_addresses(pid) if a.is_live]
-                return await self._commit_check(
-                    provider,
-                    prev_status,
-                    ProviderStatus.OFFLINE,
-                    f"check timed out after {cap:.0f}s",
-                    live,
-                    source,
-                    started,
-                )
-
-    async def _check_provider_impl(
-        self,
-        provider: Provider,
-        rediscover: bool,
-        source: str,
-        *,
-        still_current: Callable[[], bool] | None = None,
-    ) -> ProviderStatus:
-        pid = provider.require_id()
-        started = time.monotonic()
-        if not provider.is_worker:
-            # The cycle's provider list can be seconds old by now.
-            fresh = await self._db.get_provider(pid)
-            if fresh is not None:
-                self._refresh_from(provider, fresh)
-        prev_status = provider.status
-
-        addresses = await self._db.get_addresses(pid)
-        results = await asyncio.gather(
-            *(self._probe_address(provider, a) for a in addresses)
-        )
-        # Write liveness before rebuilding clients: the rebuild re-reads
-        # addresses and ranks them by is_live.
-        for addr, reachable in zip(addresses, results, strict=False):
-            addr_id = addr.require_id()
-            if addr.is_live != reachable:
-                await self._db.set_address_live(addr_id, reachable)
-            addr.is_live = reachable
-        live = [a for a in addresses if a.is_live]
-        if addresses:
-            self.stats.record_check(pid, ok=bool(live))
-
-        detail: str | None = None
-        if not live:
-            status = ProviderStatus.OFFLINE
-            if provider.is_worker and not self.worker_hub.is_connected(pid):
-                detail = self._child_reasons.get(pid, "worker is not connected")
-            else:
-                urls = ", ".join(a.url for a in addresses) or "no addresses"
-                detail = f"no address responded ({urls})"
-            self._clear_loaded(pid)
-        else:
-            await self._maybe_rebuild_clients(provider, addresses)
-            needs_discovery = rediscover or prev_status in (
-                ProviderStatus.OFFLINE,
-                ProviderStatus.UNKNOWN,
-            )
-            try:
-                if needs_discovery:
-                    await self._discover_provider(provider)
-                else:
-                    await self._refresh_hot_models(provider)
-            except Exception as exc:
-                # Reachable but unusable (for example a key is required to list
-                # models). Keep it out of routing and say why.
-                status = ProviderStatus.OFFLINE
-                detail = _failure_reason(exc)
-            else:
-                busy = self._active_requests.get(pid, 0) > 0
-                status = ProviderStatus.BUSY if busy else ProviderStatus.IDLE
-
-        if still_current is not None and not still_current():
-            # A new socket arrived mid-check; its connect handler (waiting on
-            # the lock) sets status, so do not overwrite it with ours.
-            return await self._superseded(provider, source)
-        return await self._commit_check(
-            provider, prev_status, status, detail, live, source, started
-        )
-
-    async def _superseded(self, provider: Provider, source: str) -> ProviderStatus:
-        """A reconnect overtook this check: keep status, but log manual checks."""
-        if source in ("refresh", "add", "edit"):
-            await self._log_event(
-                provider,
-                source,
-                ok=True,
-                detail="worker reconnected during the check; status follows "
-                "the new connection",
-            )
-        return provider.status
-
-    @staticmethod
-    def _refresh_from(provider: Provider, fresh: Provider) -> None:
-        """Update *provider* in place from a freshly read row.
-
-        Status, type, API key and header can all change while a cycle runs
-        (for example an edit saving a key), so copy every field, not just
-        the status.
-        """
-        for name in type(fresh).model_fields:
-            setattr(provider, name, getattr(fresh, name))
-
-    async def _commit_check(
-        self,
-        provider: Provider,
-        prev_status: ProviderStatus,
-        status: ProviderStatus,
-        detail: str | None,
-        live: list[ProviderAddress],
-        source: str,
-        started: float,
-    ) -> ProviderStatus:
-        pid = provider.require_id()
-        prev_detail = self._logged_detail.get(pid)
-
-        # A provider its worker stopped sharing keeps saying why, though it
-        # has no live address.
-        if (
-            detail
-            and status == ProviderStatus.OFFLINE
-            and (live or pid in self._child_reasons)
-        ):
-            self._status_detail[pid] = detail
-        else:
-            self._status_detail.pop(pid, None)
-
-        await self._db.update_provider_status(pid, status)
-        provider.status = status
-
-        online = status != ProviderStatus.OFFLINE
-        if online:
-            self._logged_detail.pop(pid, None)
-        elif detail:
-            self._logged_detail[pid] = detail
-        was_online = prev_status not in (ProviderStatus.OFFLINE, ProviderStatus.UNKNOWN)
-        duration_ms = (time.monotonic() - started) * 1000
-        live_urls = ", ".join(a.url for a in live)
-        if source in ("refresh", "add", "edit"):
-            summary = f"online via {live_urls}" if online else (detail or "offline")
-            await self._log_event(
-                provider, source, ok=online, detail=summary, duration_ms=duration_ms
-            )
-        elif online and not was_online:
-            logger.info("Provider %s is online (%s)", provider.name, live_urls)
-            if prev_status == ProviderStatus.OFFLINE:
-                # It may have come back as a different server or version.
-                self.schedule_probe(pid, "recovered")
-            await self._log_event(
-                provider,
-                source,
-                ok=True,
-                detail=f"online via {live_urls}",
-                duration_ms=duration_ms,
-            )
-        # A provider already offline before this process started has no
-        # remembered reason: remember it without logging, so a restart does not
-        # re-log every provider that was down anyway.
-        elif not online and (
-            was_online or (prev_detail is not None and detail != prev_detail)
-        ):
-            logger.warning("Provider %s is offline: %s", provider.name, detail)
-            await self._log_event(
-                provider, source, ok=False, detail=detail, duration_ms=duration_ms
-            )
-        return status
-
-    async def _maybe_rebuild_clients(
-        self, provider: Provider, addresses: list[ProviderAddress]
-    ) -> None:
-        """Point clients at the best live address unless requests are in flight."""
-        pid = provider.require_id()
-        best = self._best_address(addresses)
-        if best is None:
-            return
-        has_clients = pid in self._ollama_clients or pid in self._llamacpp_clients
-        new_sig = self._address_url_sig(best)
-        if has_clients and (
-            provider.is_worker or new_sig == self._active_urls.get(pid)
-        ):
-            return
-        in_flight = self._active_requests.get(pid, 0)
-        if has_clients and in_flight > 0:
-            logger.info(
-                "Skipping client rebuild for provider %d — %d requests in flight",
-                pid,
-                in_flight,
-            )
-            return
-        await self._rebuild_clients(provider)
-
-    async def benchmark_provider(
-        self,
-        provider_id: int,
-        model_name: str,
-        benchmark_api: str | None = None,
-        *,
-        source: str = "manual",
-    ) -> BenchmarkResult:
-        """Run a benchmark. Raises ``RuntimeError`` with a human-readable
-        message on failure so the caller can surface it to the user.
-
-        *source* is ``manual`` or ``auto`` (the idle auto-benchmarker). When
-        the model was already loaded, the run cannot measure a cold start, so
-        its startup time is stored as unknown rather than as near zero.
-        """
-        from .request_logger import log_request
-
-        provider = await self._db.get_provider(provider_id)
-        if not provider:
-            raise RuntimeError(f"Provider {provider_id} not found")
-
-        backend_name = await self._db.get_backend_model_name(provider_id, model_name)
-        log_endpoint = "auto-benchmark" if source == "auto" else "benchmark"
-
-        start = time.monotonic()
-        protocol: str | None = None
-
-        try:
-            metrics: dict[str, float] | None = None
-
-            api_choice = (benchmark_api or "auto").strip().lower()
-            if api_choice != "auto":
-                wanted = ProviderProtocol.parse(api_choice)
-                if wanted is not provider.protocol:
-                    raise RuntimeError(
-                        f"Provider {provider.name} speaks the "
-                        f"{provider.protocol.value} API, not {wanted.value}"
-                    )
-            client: OllamaClient | LlamaCppClient | None
-            if provider.is_ollama:
-                client = self._ollama_clients.get(provider_id)
-            else:
-                client = self._llamacpp_clients.get(provider_id)
-            if client is None:
-                raise RuntimeError(f"No client available for provider {provider.name}")
-            protocol = provider.protocol.value
-            # Not counted as a request (that would reset idle detection), but
-            # the client must stay open if an edit replaces it meanwhile.
-            pinned = self._pin_clients(provider_id)
-            try:
-                metrics = await self._try_benchmark(
-                    client, backend_name, model_name, provider_id
-                )
-            finally:
-                await self._unpin_clients(pinned)
-
-            result = BenchmarkResult(
-                provider_id=provider_id,
-                model_name=model_name,
-                protocol=protocol,
-                # The backend's own load time says whether this was a cold
-                # start; the router's view of what is loaded can be stale.
-                # A cloud service has no cold start the router can measure.
-                startup_time_ms=(
-                    None
-                    if provider.is_cloud
-                    else measured_cold_start(metrics["startup_time_ms"])
-                ),
-                tokens_per_second=plausible_tokens_per_second(
-                    metrics["tokens_per_second"]
-                ),
-                source=source,
-            )
-            await self._db.save_benchmark(result)
-
-            duration = (time.monotonic() - start) * 1000
-            await log_request(
-                self._db,
-                provider=provider,
-                protocol=protocol or "unknown",
-                endpoint=log_endpoint,
-                model=model_name,
-                duration_ms=duration,
-                source_ip="internal",
-            )
-
-            return result
-        except RuntimeError:
-            duration = (time.monotonic() - start) * 1000
-            await log_request(
-                self._db,
-                provider=provider,
-                protocol=protocol or "unknown",
-                endpoint=log_endpoint,
-                model=model_name,
-                duration_ms=duration,
-                source_ip="internal",
-                status="error",
-                error_detail=f"Benchmark failed for {model_name}",
-            )
-            raise
-        except Exception as exc:
-            duration = (time.monotonic() - start) * 1000
-            detail = self._format_benchmark_error(exc, model_name, provider)
-            logger.error("Benchmark failed: %s", detail)
-            await log_request(
-                self._db,
-                provider=provider,
-                protocol=protocol or "unknown",
-                endpoint=log_endpoint,
-                model=model_name,
-                duration_ms=duration,
-                source_ip="internal",
-                status="error",
-                error_detail=detail,
-            )
-            raise RuntimeError(detail) from exc
-
-    async def _try_benchmark(
-        self,
-        client: OllamaClient | LlamaCppClient,
-        backend_name: str,
-        display_name: str,
-        provider_id: int,
-    ) -> dict[str, float]:
-        """Try chat benchmark first; fall back to embed only for non-transient errors.
-
-        LLMs that do not implement embeddings often return HTTP 501 on embed. If chat
-        failed for a timeout or 5xx while the model was loading, falling back to embed
-        surfaces that misleading 501 instead of the real chat error — so we skip embed
-        in those cases. If embed returns 501 after a prior chat error, we report both.
-        """
-        chat_err: BaseException | None = None
-        try:
-            return await client.benchmark_chat(backend_name, settings.benchmark_prompt)
-        except Exception as exc:
-            chat_err = exc
-            if _transient_chat_benchmark_failure(exc):
-                raise exc
-            detail = (
-                describe_httpx_error(exc)
-                if isinstance(exc, httpx.HTTPError)
-                else str(exc)
-            )
-            logger.info(
-                "Chat benchmark failed for %s on provider %d (%s), trying embed",
-                display_name,
-                provider_id,
-                detail,
-            )
-
-        try:
-            return await client.benchmark_embed(backend_name, settings.benchmark_prompt)
-        except Exception as embed_err:
-            if (
-                chat_err is not None
-                and isinstance(embed_err, httpx.HTTPStatusError)
-                and embed_err.response.status_code == 501
-            ):
-                ce = (
-                    describe_httpx_error(chat_err)
-                    if isinstance(chat_err, httpx.HTTPError)
-                    else str(chat_err)
-                )
-                raise RuntimeError(
-                    f"Chat benchmark failed ({ce}); this model does not support "
-                    f"embeddings, so there is no fallback. If chat failed while the "
-                    f"model was loading or the GPU was busy, retry the benchmark."
-                ) from embed_err
-            raise embed_err from chat_err
-
-    async def _format_provider_urls(self, provider_id: int) -> str:
-        addrs = await self._db.get_addresses(provider_id)
-        if not addrs:
-            return "(no addresses)"
-        return ", ".join(a.url for a in addrs)
-
-    @staticmethod
-    def _format_benchmark_error(
-        exc: Exception, model_name: str, provider: Provider
-    ) -> str:
-        if isinstance(exc, httpx.HTTPStatusError):
-            status = exc.response.status_code
-            try:
-                body = exc.response.json()
-                msg = body.get("error", exc.response.text[:200])
-            except Exception:
-                msg = exc.response.text[:200] if exc.response.text else ""
-            return (
-                f"Backend {provider.name} returned HTTP {status} "
-                f"for {model_name}: {msg}"
-            )
-        if isinstance(exc, httpx.RequestError):
-            return (
-                f"Could not reach backend {provider.name} for {model_name}: "
-                f"{describe_httpx_error(exc)}"
-            )
-        return f"Benchmark failed for {model_name} on {provider.name}: {exc}"
 
     @staticmethod
     def _strip_cache_prefix(name: str) -> str:
@@ -1669,8 +906,8 @@ class ProviderManager:
                 )
                 return []
 
-        if provider.is_ollama and provider.id in self._ollama_clients:
-            tags = await _listed(self._ollama_clients[provider.id].get_tags)
+        if provider.is_ollama and provider.id in self.clients.ollama:
+            tags = await _listed(self.clients.ollama[provider.id].get_tags)
             tags = [m for m in tags if provider.keeps_model(m.name)]
             for m in tags:
                 clean_name = self._strip_cache_prefix(m.name)
@@ -1686,8 +923,8 @@ class ProviderManager:
                     details=m.details,
                 )
 
-        if provider.is_openai and provider.id in self._llamacpp_clients:
-            lcpp_models = await _listed(self._llamacpp_clients[provider.id].get_models)
+        if provider.is_openai and provider.id in self.clients.llamacpp:
+            lcpp_models = await _listed(self.clients.llamacpp[provider.id].get_models)
             lcpp_models = [m for m in lcpp_models if provider.keeps_model(m.name)]
             for m in lcpp_models:
                 clean_name = self._strip_cache_prefix(m.name)
@@ -1707,7 +944,7 @@ class ProviderManager:
             if provider.lacks("/props"):
                 pass
             elif provider.is_worker:
-                props = await self._llamacpp_clients[provider.id].get_props()
+                props = await self.clients.llamacpp[provider.id].get_props()
                 current = self._extract_llamacpp_current_model(props)
                 if current:
                     clean_name = self._strip_cache_prefix(current)
@@ -1724,7 +961,7 @@ class ProviderManager:
             )
             timeout = httpx.Timeout(10.0)
             async with httpx.AsyncClient(
-                timeout=timeout, headers=self._upstream_headers(provider)
+                timeout=timeout, headers=upstream_headers(provider)
             ) as probe_client:
                 for addr in addresses:
                     base = split_api_base(addr.url)[0]
@@ -1785,549 +1022,3 @@ class ProviderManager:
                 name = name[: -len(".gguf")]
             return name
         return None
-
-    async def _health_check_loop(self) -> None:
-        while True:
-            await asyncio.sleep(settings.health_check_interval_seconds)
-            try:
-                await self._run_health_checks()
-            except Exception as exc:
-                detail = (
-                    describe_httpx_error(exc)
-                    if isinstance(exc, httpx.HTTPError)
-                    else str(exc)
-                )
-                logger.error("Health check cycle failed: %s", detail)
-            try:
-                await self.purge_request_logs()
-            except Exception:
-                logger.exception("Request log retention failed")
-
-    async def purge_request_logs(self, *, force: bool = False) -> int:
-        """Delete request log rows older than LLAMA_ROUTER_REQUEST_LOG_RETENTION_DAYS.
-
-        Runs from the health-check loop at most once per hour (every call
-        with *force*). Returns the number of rows deleted.
-        """
-        days = settings.request_log_retention_days
-        if days <= 0:
-            return 0
-        now = time.monotonic()
-        last = self._last_log_purge
-        if not force and last is not None and now - last < LOG_PURGE_INTERVAL_S:
-            return 0
-        self._last_log_purge = now
-        cutoff = datetime.now(UTC) - timedelta(days=days)
-        deleted = await self._db.delete_request_logs_before(cutoff)
-        if deleted:
-            logger.info("Deleted %d request log rows older than %g days", deleted, days)
-        return deleted
-
-    async def _run_health_checks(self) -> None:
-        providers = await self._db.list_providers()
-        await self._check_many(providers, rediscover=False, source="health")
-        for p in providers:
-            if (
-                p.id is not None
-                and p.status != ProviderStatus.OFFLINE
-                and self._probe_is_stale(p)
-            ):
-                self.schedule_probe(p.id, "stale")
-
-    async def _probe_address(self, provider: Provider, addr: ProviderAddress) -> bool:
-        """Check one address and record how long a successful check took.
-
-        The round trip includes connecting, so it reflects what a request to
-        that address pays before the backend starts work.
-        """
-        started = time.monotonic()
-        ok = False
-        try:
-            ok = await self._probe_address_once(provider, addr)
-            return ok
-        finally:
-            # Errors and timeouts (including a cancelled check) count as
-            # failed checks in the address's tally.
-            if provider.id is not None and addr.id is not None:
-                self.stats.record_probe(
-                    provider.id,
-                    addr.id,
-                    ok=ok,
-                    ms=(time.monotonic() - started) * 1000,
-                )
-
-    async def _probe_address_once(
-        self, provider: Provider, addr: ProviderAddress
-    ) -> bool:
-        """Check if a single address is reachable via the provider's protocol."""
-        if provider.is_worker:
-            return await self._probe_worker(provider)
-        liveness = provider.liveness_path
-        if liveness:
-            # The probe found this GET answers cheaply on this server.
-            try:
-                async with httpx.AsyncClient(
-                    timeout=_PROBE_TIMEOUT, headers=self._upstream_headers(provider)
-                ) as http:
-                    resp = await http.get(addr.url.rstrip("/") + liveness)
-                return 200 <= resp.status_code < 300
-            except httpx.HTTPError:
-                return False
-        client_cls = OllamaClient if provider.is_ollama else LlamaCppClient
-        tmp = client_cls(
-            addr.url,
-            timeout=_PROBE_TIMEOUT,
-            headers=self._upstream_headers(provider),
-        )
-        try:
-            return await tmp.is_reachable()
-        finally:
-            await tmp.close()
-
-    # --- Endpoint probing ---
-
-    async def probe_provider(self, provider_id: int) -> dict[str, Any] | None:
-        """Probe the provider's best address and store what its upstream supports.
-
-        Workers are probed through their socket.
-        """
-        provider = await self._db.get_provider(provider_id)
-        if provider is None:
-            return None
-        addresses = await self._db.get_addresses(provider_id)
-        best = self._best_address(addresses)
-        if best is None:
-            raise ValueError("provider has no address to probe")
-        results = []
-        if provider.is_worker:
-            if not self.worker_hub.is_connected(provider_id):
-                raise ValueError("worker is not connected")
-            r = await probe_url(
-                "http://worker",
-                transport=self.worker_hub.transport(
-                    provider_id, provider.worker_target
-                ),
-            )
-            r.base_url = provider.worker_address or r.base_url
-            results.append(r)
-        else:
-            results.append(
-                await probe_url(
-                    best.url,
-                    headers=self._upstream_headers(provider),
-                    key_sent=provider.has_api_key,
-                )
-            )
-        caps = merge_results(results)
-        await self._db.set_provider_capabilities(provider_id, caps)
-        await self._log_event(
-            provider,
-            "probe",
-            ok=caps["reachable"],
-            detail=(
-                (
-                    f"{len(caps['supported'])} endpoints; servers: "
-                    + (", ".join(caps["servers"]) or "unrecognised")
-                )
-                if caps["reachable"]
-                else "no response from any endpoint"
-            ),
-        )
-        return caps
-
-    # --- Workers ---
-
-    async def _probe_worker(self, provider: Provider) -> bool:
-        """A worker is live when its socket is up and its upstream answers."""
-        provider_id = provider.require_id()
-        if not self.worker_hub.is_connected(provider_id):
-            return False
-        if provider_id not in self._ollama_clients and (
-            provider_id not in self._llamacpp_clients
-        ):
-            await self._rebuild_clients(provider)
-        ollama = self._ollama_clients.get(provider_id)
-        if ollama is not None and await ollama.is_reachable(timeout=_PROBE_TIMEOUT):
-            return True
-        lcpp = self._llamacpp_clients.get(provider_id)
-        return lcpp is not None and await lcpp.is_reachable(timeout=_PROBE_TIMEOUT)
-
-    async def add_worker_provider(self, name: str) -> Provider:
-        """Create the provider record a worker attaches to when it dials in."""
-        provider = await self._db.add_provider(
-            name, ProviderProtocol.OLLAMA, worker_name=name
-        )
-        provider_id = provider.require_id()
-        url = f"{WORKER_URL_SCHEME}{name}"
-        await self._db.add_address(provider_id, url, is_preferred=True)
-        await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
-        provider.status = ProviderStatus.OFFLINE
-        return provider
-
-    def _worker_lock(self, provider_id: int) -> asyncio.Lock:
-        lock = self._worker_locks.get(provider_id)
-        if lock is None:
-            lock = self._worker_locks[provider_id] = asyncio.Lock()
-        return lock
-
-    def _is_current_worker(self, conn: WorkerConnection) -> bool:
-        return self.worker_hub.get(conn.provider_id) is conn and not conn.closed
-
-    def shares_individually(self, provider: Provider) -> bool:
-        """A worker's own row while it shares its providers one by one."""
-        if not provider.is_worker or provider.is_worker_child or provider.id is None:
-            return False
-        conn = self.worker_hub.get(provider.id)
-        return conn is not None and conn.expose == EXPOSE_INDIVIDUAL
-
-    def _alias_child(self, child: Provider) -> None:
-        if child.worker_parent_id is not None and child.worker_remote_id is not None:
-            self.worker_hub.add_child(
-                child.require_id(), child.worker_parent_id, child.worker_remote_id
-            )
-
-    async def _on_worker_connected(self, conn: WorkerConnection) -> None:
-        """Bring a freshly connected worker online.
-
-        Connect and disconnect handlers for one provider run one at a time, and
-        each re-checks that its socket is still current before writing status,
-        so a handler from an older session cannot undo a newer one.
-        """
-        provider_id = conn.provider_id
-        async with self._worker_lock(provider_id):
-            if not self._is_current_worker(conn):
-                return
-            provider = await self._db.get_provider(provider_id)
-            if provider is None or not provider.is_worker:
-                return
-            await self._bring_worker_online(conn, provider)
-        if conn.expose != EXPOSE_INDIVIDUAL:
-            # Shared as one provider now: its individual ones are unreachable.
-            for child in await self._db.list_worker_children(provider_id):
-                await self._take_child_offline(child, "worker shares as one provider")
-
-    async def _bring_worker_online(
-        self, conn: WorkerConnection, provider: Provider
-    ) -> None:
-        """Discover *provider* (the worker, or one it shares) through *conn*.
-
-        The caller holds the provider's worker lock.
-        """
-        provider_id = provider.require_id()
-        self._child_reasons.pop(provider_id, None)
-        protocol = worker_protocol(conn.protocols)
-        if protocol is not provider.protocol:
-            await self._db.update_provider(
-                provider_id,
-                provider.name,
-                protocol,
-                machine_type=provider.machine_type,
-                gpu_type=provider.gpu_type,
-                gpu_ram=provider.gpu_ram,
-            )
-            provider.protocol = protocol
-        await self._rebuild_clients(provider)
-        detail: str | None = None
-        try:
-            await self._discover_provider(provider)
-            ok = True
-        except Exception as exc:
-            ok = False
-            detail = _failure_reason(exc)
-            if self._is_current_worker(conn):
-                logger.warning(
-                    "Worker %s connected but model discovery failed: %s",
-                    provider.name,
-                    detail,
-                )
-        # Liveness means the same as in check_provider: the socket is up and
-        # the worker's upstream answers, whether or not discovery worked.
-        reachable = ok or await self._probe_worker(provider)
-        if not self._is_current_worker(conn):
-            return
-        if detail is not None and reachable:
-            self._status_detail[provider_id] = detail
-        else:
-            self._status_detail.pop(provider_id, None)
-            if ok:
-                self._logged_detail.pop(provider_id, None)
-        await self._set_worker_addresses_live(provider_id, reachable)
-        await self._db.update_provider_status(
-            provider_id, ProviderStatus.IDLE if ok else ProviderStatus.OFFLINE
-        )
-        if self.shares_individually(provider):
-            # Nothing to probe: jobs go to the providers it shares.
-            return
-        known = provider_id in self._worker_versions
-        previous = self._worker_versions.get(provider_id)
-        self._worker_versions[provider_id] = conn.software_version
-        if reachable and (
-            not known or previous != conn.software_version or provider.probed_at is None
-        ):
-            # What the worker relays depends on its version and upstream.
-            self.schedule_probe(provider_id, "worker connected")
-
-    async def _on_worker_catalog(self, conn: WorkerConnection) -> None:
-        """Match the providers on the hub to the ones the worker shares.
-
-        Syncs for one worker run one at a time, each from the latest catalog,
-        so a slow older sync can never undo what a newer one did.
-        """
-        parent_id = conn.provider_id
-        lock = self._catalog_locks.setdefault(parent_id, asyncio.Lock())
-        async with lock:
-            await self._sync_catalog(conn)
-
-    async def _sync_catalog(self, conn: WorkerConnection) -> None:
-        parent_id = conn.provider_id
-        async with self._worker_lock(parent_id):
-            # A newer frame replaces conn.catalog; this sync works from the
-            # list it started with throughout (the next sync applies the new).
-            catalog = conn.catalog
-            if not self._is_current_worker(conn) or catalog is None:
-                return
-            parent = await self._db.get_provider(parent_id)
-            if parent is None or not parent.is_worker or parent.worker_name is None:
-                return
-            existing = {
-                c.worker_remote_id: c
-                for c in await self._db.list_worker_children(parent_id)
-            }
-            # Providers the worker no longer shares give up their names first,
-            # so one shared in their place can have <worker>/<provider>.
-            shared = {int(e["id"]) for e in catalog}
-            for rid, old in existing.items():
-                if rid in shared or old.name.endswith(f"#{rid}"):
-                    continue
-                aside = f"{old.name}#{rid}"
-                if await self._name_free(aside, old.id):
-                    await self._rename(old, aside)
-            wanted: list[Provider] = []
-            # Children that could not take their name yet (another provider
-            # had it, maybe a sibling renamed later in this same catalog).
-            retry: list[tuple[Provider, str]] = []
-            for entry in catalog:
-                rid = int(entry["id"])
-                name = f"{parent.name}/{entry['name']}"
-                try:
-                    child = await self._sync_child(
-                        parent, existing.pop(rid, None), entry, name
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Worker %s: could not add or update %s: %s",
-                        parent.name,
-                        name,
-                        exc,
-                    )
-                    continue
-                if child is None:
-                    continue
-                self._unshared_since.pop(child.require_id(), None)
-                if child.name != name:
-                    retry.append((child, name))
-                self._alias_child(child)
-                if child.status in (ProviderStatus.OFFLINE, ProviderStatus.UNKNOWN):
-                    wanted.append(child)
-            for child, name in retry:
-                if await self._name_free(name, child.id):
-                    await self._rename(child, name)
-            gone, purge = self._purge_unshared(list(existing.values()), len(catalog))
-        for child in purge:
-            logger.info(
-                "Worker %s: deleting %s, no longer shared by the worker",
-                parent.name,
-                child.name,
-            )
-            await self.remove_provider(child.require_id())
-        for child in gone:
-            self.worker_hub.remove_child(child.require_id())
-            await self._take_child_offline(child, "no longer shared by the worker")
-        grace = settings.worker_unshared_purge_hours * 3600.0
-        if gone and grace > 0:
-            # Due when the longest unshared one reaches the grace period.
-            oldest = min(self._unshared_since[c.require_id()] for c in gone)
-            self._schedule_purge(conn, oldest + grace - self.clock())
-        for child in wanted:
-            async with self._worker_lock(child.require_id()):
-                if self.worker_hub.get(child.require_id()) is conn:
-                    await self._bring_worker_online(conn, child)
-
-    def _purge_unshared(
-        self, unshared: list[Provider], shared: int
-    ) -> tuple[list[Provider], list[Provider]]:
-        """Split a worker's unshared providers into those to keep (offline)
-        and those to delete: unshared for longer than
-        worker_unshared_purge_hours, and the longest unshared beyond
-        worker_max_shared_providers, so a worker cannot pile up rows."""
-        now = self.clock()
-        for child in unshared:
-            self._unshared_since.setdefault(child.require_id(), now)
-        unshared.sort(key=lambda c: self._unshared_since[c.require_id()])
-        grace = settings.worker_unshared_purge_hours * 3600.0
-        excess = max(0, shared + len(unshared) - settings.worker_max_shared_providers)
-        keep: list[Provider] = []
-        purge: list[Provider] = []
-        for i, child in enumerate(unshared):
-            since = self._unshared_since[child.require_id()]
-            if i < excess or (grace > 0 and now - since >= grace):
-                purge.append(child)
-            else:
-                keep.append(child)
-        return keep, purge
-
-    def _schedule_purge(self, conn: WorkerConnection, delay: float) -> None:
-        """Sync the worker's catalog again in *delay* seconds, when its
-        longest unshared provider is due for deletion. That sync deletes it
-        and schedules the next. One timer per worker (a running one is due no
-        later, as providers unshared since are due after it); it uses
-        whichever socket is current when it fires, so a reconnect in between
-        does not lose it."""
-        parent_id = conn.provider_id
-        timer = self._purge_timers.get(parent_id)
-        if timer is not None and not timer.done():
-            return
-
-        async def later() -> None:
-            await self.sleep(max(0.0, delay) + 1.0)
-            if self._purge_timers.get(parent_id) is asyncio.current_task():
-                del self._purge_timers[parent_id]
-            current = self.worker_hub.get(parent_id)
-            if current is None or not self._is_current_worker(current):
-                return
-            try:
-                await self._on_worker_catalog(current)
-            except Exception:
-                # The worker may not send its catalog again; try later.
-                logger.exception(
-                    "Could not delete unshared providers of worker %d", parent_id
-                )
-                self._schedule_purge(current, _PURGE_RETRY_S)
-
-        self._purge_timers[parent_id] = asyncio.create_task(
-            later(), name=f"purge-unshared-{parent_id}"
-        )
-
-    async def _name_free(self, name: str, own_id: int | None) -> bool:
-        holder = await self._db.get_provider_by_name(name)
-        return holder is None or holder.id == own_id
-
-    async def _child_name(self, name: str, rid: int, own_id: int | None) -> str | None:
-        """*name*, or ``<name>#<id on the worker>`` when another provider has it."""
-        for candidate in (name, f"{name}#{rid}"):
-            if await self._name_free(candidate, own_id):
-                return candidate
-        return None
-
-    async def _rename(self, child: Provider, name: str) -> None:
-        await self._db.update_provider(
-            child.require_id(),
-            name,
-            machine_type=child.machine_type,
-            gpu_type=child.gpu_type,
-            gpu_ram=child.gpu_ram,
-        )
-        child.name = name
-
-    async def _sync_child(
-        self,
-        parent: Provider,
-        child: Provider | None,
-        entry: dict[str, Any],
-        name: str,
-    ) -> Provider | None:
-        """Create or update the hub's row for one catalog entry."""
-        rid = int(entry["id"])
-        parent_id = parent.require_id()
-        free = await self._child_name(name, rid, child.id if child else None)
-        if free is None:
-            logger.warning(
-                "Worker %s shares %s, but providers named %s and %s#%d already "
-                "exist here; rename one of them",
-                parent.name,
-                entry["name"],
-                name,
-                name,
-                rid,
-            )
-        if child is None:
-            if free is None:
-                return None
-            child = await self._db.add_provider(
-                free,
-                parent.protocol,
-                worker_name=f"{parent.worker_name}/{rid}",
-                worker_parent_id=parent_id,
-                worker_remote_id=rid,
-            )
-            await self._db.add_address(
-                child.require_id(),
-                f"{WORKER_URL_SCHEME}{parent.worker_name}/{rid}",
-                is_preferred=True,
-            )
-            logger.info("Worker %s now shares %s", parent.name, free)
-        elif free is not None and child.name != free:
-            await self._rename(child, free)
-        if child.locality != entry["locality"]:
-            await self._db.update_provider_settings(
-                child.require_id(), locality=entry["locality"]
-            )
-            child.locality = entry["locality"]
-            await self._rebuild_clients(child)
-        return child
-
-    async def _take_child_offline(self, child: Provider, detail: str) -> None:
-        child_id = child.require_id()
-        async with self._worker_lock(child_id):
-            if self.worker_hub.is_connected(child_id):
-                return
-            await self._mark_worker_offline(child_id)
-            self._status_detail[child_id] = detail
-            self._logged_detail[child_id] = detail
-            self._child_reasons[child_id] = detail
-
-    async def _on_worker_disconnected(self, conn: WorkerConnection) -> None:
-        provider_id = conn.provider_id
-        async with self._worker_lock(provider_id):
-            if self.worker_hub.is_connected(provider_id):
-                # A newer session already took over; its handler owns status.
-                return
-            provider = await self._db.get_provider(provider_id)
-            was_online = provider is not None and provider.status not in (
-                ProviderStatus.OFFLINE,
-                ProviderStatus.UNKNOWN,
-            )
-            await self._mark_worker_offline(provider_id)
-            if provider is not None:
-                # The disconnect is the transition, so log it here; the
-                # remembered reason stops the next health check logging it again.
-                detail = "worker is not connected"
-                self._logged_detail[provider_id] = detail
-                if was_online:
-                    logger.warning("Worker %s disconnected", provider.name)
-                    await self._log_event(
-                        provider, "disconnect", ok=False, detail=detail
-                    )
-        for child in await self._db.list_worker_children(provider_id):
-            child_id = child.require_id()
-            async with self._worker_lock(child_id):
-                if not self.worker_hub.is_connected(child_id):
-                    await self._mark_worker_offline(child_id)
-                    self._child_reasons.pop(child_id, None)
-                    self._logged_detail[child_id] = "worker is not connected"
-
-    async def _set_worker_addresses_live(self, provider_id: int, live: bool) -> None:
-        for addr in await self._db.get_addresses(provider_id):
-            if addr.id is not None:
-                await self._db.set_address_live(addr.id, live)
-
-    async def _mark_worker_offline(self, provider_id: int) -> None:
-        provider = await self._db.get_provider(provider_id)
-        if provider is None:
-            return
-        await self._set_worker_addresses_live(provider_id, False)
-        await self._db.update_provider_status(provider_id, ProviderStatus.OFFLINE)
-        self._clear_loaded(provider_id)
-        # No socket means nothing answers; any "reachable but unusable" reason
-        # from the last session no longer applies.
-        self._status_detail.pop(provider_id, None)

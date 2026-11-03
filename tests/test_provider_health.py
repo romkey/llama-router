@@ -144,12 +144,12 @@ async def test_rebuild_uses_this_cycles_liveness(db, httpx_mock) -> None:
     await db.add_address(p.id, "http://backup:11434", False)
     pm = ProviderManager(db)
     await pm._rebuild_clients(p)
-    assert pm._active_urls[p.id] == "http://dead:11434"
+    assert pm.clients.active_urls[p.id] == "http://dead:11434"
 
     status = await pm.check_provider(p)
 
     assert status == ProviderStatus.IDLE
-    assert pm._active_urls[p.id] == "http://backup:11434"
+    assert pm.clients.active_urls[p.id] == "http://backup:11434"
     await pm.stop()
 
 

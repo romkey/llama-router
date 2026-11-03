@@ -29,7 +29,7 @@ from llama_router.database import Database
 from llama_router.llamacpp_client import OpenAIClient
 from llama_router.models import ProviderModel, ProviderProtocol, ProviderStatus
 from llama_router.probe import BlockedAddressError, check_not_metadata, is_metadata_ip
-from llama_router.provider_manager import _failure_reason
+from llama_router.provider_health import _failure_reason
 from llama_router.provider_secrets import session_signing_key
 from llama_router.router import Router
 
@@ -63,7 +63,7 @@ async def _provider(db: Database, name: str, locality: str) -> int:
             200, json={"choices": [{"message": {"role": "assistant", "content": name}}]}
         )
 
-    dash_deps.get_pm()._llamacpp_clients[pid] = OpenAIClient(
+    dash_deps.get_pm().clients.llamacpp[pid] = OpenAIClient(
         f"http://{name}:8000", transport=httpx.MockTransport(handler)
     )
     return pid
@@ -560,7 +560,7 @@ async def test_chat_error_detail_is_admin_only(dash_client: DashClient) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "boom"})
 
-    dash_deps.get_pm()._llamacpp_clients[pid] = OpenAIClient(
+    dash_deps.get_pm().clients.llamacpp[pid] = OpenAIClient(
         "http://secret-host.lan:8000", transport=httpx.MockTransport(handler)
     )
     body = {"provider_id": pid, "model": "chatty", "content": "hi"}
