@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, MutableMapping
 from typing import Any
 
 import httpx
@@ -13,8 +14,10 @@ from pytest_httpx import HTTPXMock
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as ollama_app
+from llama_router.auth import generate_api_key, key_hash, key_prefix
 from llama_router.background import drain
 from llama_router.database import Database
+from llama_router.limits import limiter
 from llama_router.llamacpp_api import deps as v1_deps
 from llama_router.llamacpp_api.app import app as v1_app
 from llama_router.models import (
@@ -450,3 +453,80 @@ async def test_v1_models_and_health(provider: Provider) -> None:
     assert one.json()["id"] == MODEL
     assert missing.status_code == 404
     assert health["status"] == "ok"
+
+
+class _EndlessUpstream(httpx.AsyncByteStream):
+    """Sends one SSE event, then waits until the router lets go of it."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
+        await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_client_disconnect_mid_stream_releases_everything(
+    provider: Provider, pm: ProviderManager, db: Database, httpx_mock: HTTPXMock
+) -> None:
+    plain = generate_api_key()
+    key_id = await db.create_api_key(
+        key_prefix(plain), key_hash(plain), "balanced", True
+    )
+    upstream = _EndlessUpstream()
+    httpx_mock.add_callback(
+        lambda _: httpx.Response(
+            200, stream=upstream, headers={"content-type": "text/event-stream"}
+        ),
+        url=BASE + "/v1/chat/completions",
+    )
+    body = json.dumps({"model": MODEL, "messages": [], "stream": True}).encode()
+    first_chunk = asyncio.Event()
+    sent: list[MutableMapping[str, Any]] = []
+    requested = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal requested
+        if not requested:
+            requested = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await first_chunk.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        sent.append(message)
+        if message["type"] == "http.response.body" and message.get("body"):
+            assert limiter.active_streams(key_id) == 1
+            assert pm.active_requests(_pid(provider)) == 1
+            first_chunk.set()
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/chat/completions",
+        "raw_path": b"/v1/chat/completions",
+        "root_path": "",
+        "query_string": b"stream=true",
+        "headers": [
+            (b"host", b"router"),
+            (b"content-type", b"application/json"),
+            (b"authorization", f"Bearer {plain}".encode()),
+        ],
+        "client": ("127.0.0.1", 5000),
+        "server": ("router", 80),
+    }
+    await asyncio.wait_for(v1_app(scope, receive, send), 5)
+    await drain()
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 200
+    assert first_chunk.is_set()
+    assert limiter.active_streams(key_id) == 0
+    assert pm.active_requests(_pid(provider)) == 0
+    assert upstream.closed

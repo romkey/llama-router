@@ -14,6 +14,7 @@ import pytest_asyncio
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.websockets import WebSocketDisconnect
 
 from llama_router import provider_manager as pm_mod
 from llama_router.api import deps as api_deps
@@ -1736,3 +1737,200 @@ async def test_purge_timer_waits_only_for_the_longest_unshared(
     pm._unshared_since[api.require_id()] = clock.t - 1800.0
     await pm._on_worker_catalog(conn)
     assert delays == [1800.0]
+
+
+# --- hostile or broken worker sockets ---
+
+
+class _HostileSocket:
+    """A worker socket that can stall or drop while the hub writes to it,
+    and whose incoming frames the test supplies."""
+
+    def __init__(self, *, stall: bool = False, drop: BaseException | None = None):
+        self.stall = stall
+        self.drop = drop
+        self.text: list[dict] = []
+        self.sent = asyncio.Event()
+        self.inbox: asyncio.Queue[dict] = asyncio.Queue()
+
+    async def send_text(self, data: str) -> None:
+        if self.stall:
+            await asyncio.Event().wait()
+        self.text.append(json.loads(data))
+        self.sent.set()
+
+    async def send_bytes(self, data: bytes) -> None:
+        if self.drop is not None:
+            raise self.drop
+
+    async def receive(self) -> dict:
+        return await self.inbox.get()
+
+
+def _conn_on(ws: _HostileSocket):
+    from llama_router.worker_link.hub import WorkerConnection
+
+    return WorkerConnection(
+        ws,
+        worker_id=1,
+        name="w",
+        provider_id=1,
+        protocols=["ollama"],
+        max_concurrency=2,
+        software_version=None,
+        remote_addr=None,
+    )
+
+
+def _job(read: float = 5.0, write: float = 5.0) -> httpx.Request:
+    timeout = {"connect": 5.0, "pool": 5.0, "read": read, "write": write}
+    return httpx.Request(
+        "POST",
+        "http://worker/api/chat",
+        content=b'{"model": "m"}',
+        extensions={"timeout": timeout},
+    )
+
+
+async def _read_into(response: httpx.Response, chunks: list[bytes]) -> None:
+    async for chunk in response.aiter_raw():
+        chunks.append(chunk)
+
+
+def _all_released(conn) -> bool:
+    return conn.in_flight == 0 and conn._slots._value == conn.max_concurrency
+
+
+async def test_stalled_socket_write_times_out(monkeypatch) -> None:
+    from llama_router.worker_link import hub as hub_mod
+
+    monkeypatch.setattr(hub_mod, "_CANCEL_TIMEOUT", 0.05)
+    conn = _conn_on(_HostileSocket(stall=True))
+    with pytest.raises(httpx.WriteTimeout):
+        # Bounded: telling a stuck worker to cancel must not hang either.
+        await asyncio.wait_for(conn.open("ollama", _job(write=0.05)), 2)
+    assert _all_released(conn)
+
+
+@pytest.mark.parametrize(
+    "drop", [RuntimeError("closed"), OSError("reset"), WebSocketDisconnect(1006)]
+)
+async def test_socket_closed_while_sending(drop: BaseException) -> None:
+    ws = _HostileSocket(drop=drop)
+    conn = _conn_on(ws)
+    with pytest.raises(httpx.WriteError):
+        await conn.open("ollama", _job())
+    assert _all_released(conn)
+    assert ws.text[-1] == {"type": "cancel", "id": 1}
+
+
+async def test_worker_that_never_answers_times_out() -> None:
+    ws = _HostileSocket()
+    conn = _conn_on(ws)
+    with pytest.raises(httpx.ReadTimeout):
+        await conn.open("ollama", _job(read=0.05))
+    assert _all_released(conn)
+    assert ws.text[-1] == {"type": "cancel", "id": 1}
+
+
+async def test_worker_that_stops_mid_body_times_out() -> None:
+    ws = _HostileSocket()
+    conn = _conn_on(ws)
+    opening = asyncio.create_task(conn.open("ollama", _job(read=0.05)))
+    await ws.sent.wait()
+    conn._on_text({"type": "response", "id": 1, "status": 200, "headers": []})
+    response = await opening
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"part"))
+    chunks: list[bytes] = []
+    with pytest.raises(httpx.ReadTimeout):
+        await _read_into(response, chunks)
+    assert chunks == [b"part"]
+    assert _all_released(conn)
+
+
+@pytest.mark.parametrize(
+    ("kind", "raised"),
+    [
+        ("connect", httpx.ConnectError),
+        ("timeout", httpx.ReadTimeout),
+        ("upstream", httpx.RemoteProtocolError),
+        (None, httpx.RemoteProtocolError),
+    ],
+)
+async def test_worker_error_before_headers(kind, raised) -> None:
+    ws = _HostileSocket()
+    conn = _conn_on(ws)
+    opening = asyncio.create_task(conn.open("ollama", _job()))
+    await ws.sent.wait()
+    conn._on_text({"type": "error", "id": 1, "kind": kind, "message": "boom"})
+    with pytest.raises(raised, match="worker: boom"):
+        await opening
+    assert _all_released(conn)
+
+
+async def test_worker_error_after_headers_ends_the_stream() -> None:
+    ws = _HostileSocket()
+    conn = _conn_on(ws)
+    opening = asyncio.create_task(conn.open("ollama", _job()))
+    await ws.sent.wait()
+    conn._on_text({"type": "response", "id": 1, "status": 200, "headers": []})
+    response = await opening
+    await conn._on_bytes(p.encode_binary(p.RESP_BODY, 1, b"part"))
+    conn._on_text({"type": "error", "id": 1, "kind": "upstream", "message": "gone"})
+    # A late response frame for the finished job changes nothing.
+    conn._on_text({"type": "response", "id": 1, "status": 500, "headers": []})
+    chunks: list[bytes] = []
+    with pytest.raises(httpx.ReadError, match="gone"):
+        await _read_into(response, chunks)
+    assert chunks == [b"part"]
+    assert _all_released(conn)
+
+
+_GARBAGE = [
+    {"type": "websocket.receive", "text": "not json"},
+    {"type": "websocket.receive", "text": "[1, 2]"},
+    {"type": "websocket.receive", "text": '{"id": 1}'},
+    {
+        "type": "websocket.receive",
+        "text": '{"type": "response", "id": 1, "status": "x"}',
+    },
+    {"type": "websocket.receive", "text": '{"type": "error", "id": "1"}'},
+    {"type": "websocket.receive", "text": '{"type": "mystery", "id": 1}'},
+    {"type": "websocket.receive", "bytes": b"\x03"},
+    {"type": "websocket.receive", "bytes": b""},
+    {"type": "websocket.receive", "bytes": p.encode_binary(p.RESP_BODY, 99, b"x")},
+    {"type": "websocket.receive", "bytes": p.encode_binary(77, 1, b"x")},
+]
+
+
+@pytest.mark.parametrize("after_headers", [False, True])
+async def test_undecodable_frames_are_skipped_until_the_socket_drops(
+    after_headers: bool,
+) -> None:
+    ws = _HostileSocket()
+    conn = _conn_on(ws)
+    reading = asyncio.create_task(conn.read_loop())
+    opening = asyncio.create_task(conn.open("ollama", _job()))
+    await ws.sent.wait()
+    if after_headers:
+        await ws.inbox.put(
+            {
+                "type": "websocket.receive",
+                "text": '{"type": "response", "id": 1, "status": 200}',
+            }
+        )
+        response = await opening
+    for frame in _GARBAGE:
+        await ws.inbox.put(frame)
+    await ws.inbox.put({"type": "websocket.disconnect", "code": 1006})
+    # The read loop survives every bad frame and returns on the disconnect.
+    await asyncio.wait_for(reading, 2)
+    assert not opening.done() or after_headers
+    conn.fail_all("socket closed")  # what the hub does when read_loop returns
+    if after_headers:
+        with pytest.raises(httpx.ReadError, match="disconnected"):
+            await response.aread()
+    else:
+        with pytest.raises(httpx.RemoteProtocolError, match="disconnected"):
+            await opening
+    assert _all_released(conn)

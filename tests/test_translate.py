@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 
 import httpx
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
@@ -15,6 +18,7 @@ from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.translate import (
     TranslationError,
+    _StreamTranslator,
     chat_request,
     chat_response,
     generate_request,
@@ -304,3 +308,147 @@ def test_stream_final_line_carries_timings() -> None:
     final = json.loads(out[-1])
     assert (final["eval_count"], final["eval_duration"]) == (20, 250_000_000)
     assert final["prompt_eval_duration"] == 5_000_000
+
+
+# --- property: OpenAI -> Ollama -> OpenAI keeps what both sides can express ---
+
+_json_value = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers(-(2**53), 2**53)
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | st.text(),
+    lambda inner: (
+        st.lists(inner, max_size=3)
+        | st.dictionaries(st.text(max_size=8), inner, max_size=3)
+    ),
+    max_leaves=8,
+)
+_arguments = st.dictionaries(st.text(max_size=8), _json_value, max_size=4)
+_tool_call = st.fixed_dictionaries(
+    {"name": st.text(min_size=1, max_size=16), "arguments": _arguments}
+)
+_reply = st.fixed_dictionaries(
+    {
+        "content": st.one_of(st.none(), st.text()),
+        "tool_calls": st.lists(_tool_call, max_size=3),
+    }
+)
+
+
+def _openai_message(reply: dict) -> dict:
+    message: dict = {"role": "assistant", "content": reply["content"]}
+    if reply["tool_calls"]:
+        message["tool_calls"] = [
+            {
+                "id": f"call_{i}",
+                "type": "function",
+                "function": {
+                    "name": c["name"],
+                    "arguments": json.dumps(c["arguments"]),
+                },
+            }
+            for i, c in enumerate(reply["tool_calls"])
+        ]
+    return message
+
+
+def _comparable(message: dict) -> tuple:
+    calls = [
+        (c["function"]["name"], json.loads(c["function"]["arguments"]))
+        for c in message.get("tool_calls") or []
+    ]
+    return (message.get("content") or "", calls)
+
+
+@settings(max_examples=100, deadline=None)
+@given(reply=_reply, model=st.text(max_size=20))
+def test_reply_survives_openai_to_ollama_and_back(reply: dict, model: str) -> None:
+    sent = _openai_message(reply)
+    ollama = chat_response(
+        {"choices": [{"message": sent, "finish_reason": "stop"}]}, model, 0.0
+    )
+    assert ollama["model"] == model
+    # The Ollama client sends the reply back as history on its next turn.
+    back = chat_request(
+        {"model": model, "messages": [ollama["message"], {"role": "tool"}]}
+    )
+    assistant, tool = back["messages"]
+    assert _comparable(assistant) == _comparable(sent)
+    if sent.get("tool_calls"):
+        assert tool["tool_call_id"] == assistant["tool_calls"][0]["id"]
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    reply=_reply,
+    cuts=st.lists(st.integers(min_value=0, max_value=10_000), max_size=8),
+)
+def test_streamed_reply_survives_any_chunking(reply: dict, cuts: list[int]) -> None:
+    sent = _openai_message(reply)
+    events = [
+        {"choices": [{"delta": {"content": ch}}]} for ch in (sent["content"] or "")
+    ]
+    for i, call in enumerate(sent.get("tool_calls") or []):
+        args = call["function"]["arguments"]
+        half = len(args) // 2
+        events.append(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": i,
+                                    "function": {
+                                        "name": call["function"]["name"],
+                                        "arguments": args[:half],
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        events.append(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": i, "function": {"arguments": args[half:]}}
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+    events.append({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+    sse = b"".join(f"data: {json.dumps(e)}\n\n".encode() for e in events)
+    sse += b"data: [DONE]\n\n"
+    bounds = sorted({c % (len(sse) + 1) for c in cuts} | {0, len(sse)})
+
+    tr = _StreamTranslator("m", "chat", 0.0)
+    lines: list[bytes] = []
+    for start, end in itertools.pairwise(bounds):
+        lines += tr.feed(sse[start:end])
+    lines += tr.feed(b"\n") + tr.finish()
+
+    parsed = [json.loads(line) for line in lines]
+    assert parsed[-1]["done"] is True
+    content = "".join(p["message"]["content"] for p in parsed)
+    calls = [c for p in parsed for c in p["message"].get("tool_calls", [])]
+    rebuilt = {
+        "content": content,
+        "tool_calls": [
+            {
+                "function": {
+                    "name": c["function"]["name"],
+                    "arguments": json.dumps(c["function"]["arguments"]),
+                }
+            }
+            for c in calls
+        ],
+    }
+    assert _comparable(rebuilt) == _comparable(sent)

@@ -14,6 +14,7 @@ from urllib.parse import unquote
 
 import httpx
 import pytest
+from starlette.requests import Request
 
 from llama_router import hf_download
 from llama_router.config import settings
@@ -354,6 +355,119 @@ async def test_status_hides_addresses_from_non_admins(dash_client: DashClient) -
     assert [a["url"] for a in full["providers"][0]["addresses"]] == [
         "http://10.1.2.3:11434"
     ]
+
+
+# --- Referer redirects and the generated session secret ---
+
+
+def _referer_request(referer: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/benchmarks/run",
+            "root_path": "",
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "headers": [(b"host", b"testserver"), (b"referer", referer.encode())],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("referer", "expected"),
+    [
+        ("https://evil/", "/fallback"),
+        ("http://evil/x", "/fallback"),
+        ("//evil/x", "/fallback"),
+        ("javascript:alert(1)", "/fallback"),
+        ("javascript://testserver/%0aalert(1)", "/fallback"),
+        ("http://testserver:8080/x", "/fallback"),
+        ("https://testserver/x", "/fallback"),
+        ("http://testserver:abc/x", "/fallback"),
+        ("http://[::1/x", "/fallback"),
+        ("http://testserver//evil/x", "/fallback"),
+        ("", "/fallback"),
+        ("http://testserver/x?tab=a&b=1", "/x?tab=a&b=1"),
+        ("http://TESTSERVER:80/x", "/x"),
+        ("http://testserver", "/"),
+    ],
+)
+def test_referer_redirect_stays_on_this_origin(referer: str, expected: str) -> None:
+    from llama_router.dashboard.routes import _same_origin_referer_path
+
+    assert _same_origin_referer_path(_referer_request(referer), "/fallback") == expected
+
+
+async def test_session_secret_is_generated_once_and_kept(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "session_secret", "")
+    dash_deps.init(db, None)  # type: ignore[arg-type]
+    dash_deps.invalidate_dashboard_session_secret_cache()
+    try:
+        secret = await dash_deps.get_dashboard_session_secret()
+        assert len(secret) >= 32
+        assert await db.get_app_setting("dashboard_session_secret") == secret
+        # Cached: no database work for the next request.
+        monkeypatch.setattr(db, "get_app_setting", None)
+        assert await dash_deps.get_dashboard_session_secret() == secret
+        monkeypatch.undo()
+        # A restart reads it back instead of making a new one.
+        monkeypatch.setattr(settings, "session_secret", "")
+        dash_deps.invalidate_dashboard_session_secret_cache()
+        assert await dash_deps.get_dashboard_session_secret() == secret
+        # A configured secret wins.
+        monkeypatch.setattr(settings, "session_secret", "  configured-secret  ")
+        assert await dash_deps.get_dashboard_session_secret() == "configured-secret"
+    finally:
+        dash_deps.invalidate_dashboard_session_secret_cache()
+        dash_deps._db = None
+
+
+async def test_two_routers_generating_the_session_secret_agree(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both routers read "no secret yet" before either stores one."""
+    monkeypatch.setattr(settings, "session_secret", "")
+    first, second = Database(database_url), Database(database_url)
+    await first.connect()
+    await second.connect()
+    both_read = asyncio.Barrier(2)
+
+    def racing(database: Database) -> None:
+        real = database.get_app_setting
+        raced = False
+
+        async def get(key: str) -> str | None:
+            nonlocal raced
+            value = await real(key)
+            if not raced:
+                raced = True
+                await both_read.wait()
+            return value
+
+        monkeypatch.setattr(database, "get_app_setting", get)
+
+    racing(first)
+    racing(second)
+
+    async def secret_of(database: Database) -> str:
+        # Each router process has its own module state; switch it in.
+        dash_deps.init(database, None)  # type: ignore[arg-type]
+        dash_deps.invalidate_dashboard_session_secret_cache()
+        return await dash_deps.get_dashboard_session_secret()
+
+    try:
+        a, b = await asyncio.gather(secret_of(first), secret_of(second))
+        assert a == b
+        assert await first.get_app_setting("dashboard_session_secret") == a
+    finally:
+        dash_deps.invalidate_dashboard_session_secret_cache()
+        dash_deps._db = None
+        await first.close()
+        await second.close()
 
 
 async def test_status_detail_never_carries_the_provider_url(
