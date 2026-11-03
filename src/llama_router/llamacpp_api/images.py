@@ -5,12 +5,12 @@ import time
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
 from ..auth import route_within_cap, routing_preferences_from_request
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
-from ..request_body import json_object
+from ..proxy import proxy_json
 from ..request_logger import log_request_background
 from ..v1_client import get_v1_client, upstream_form
 from . import deps
@@ -20,98 +20,15 @@ router = APIRouter()
 
 
 @router.post("/v1/images/generations")
-async def images_generations(request: Request) -> JSONResponse:
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
-    body = await json_object(request)
-    model = body.get("model")
-    if not model:
-        raise HTTPException(status_code=400, detail="model is required")
-
-    rt = deps.get_router()
-    pm = deps.get_pm()
-
-    result = await route_within_cap(rt, db, request, model, prefs, body)
-    if not result:
-        raise HTTPException(
-            status_code=404, detail=f"No available provider for model '{model}'"
-        )
-
-    provider = result.provider
-    routed = result.model_key
-
-    provider_id = provider.require_id()
-    body["model"] = result.backend_model
-    start = time.monotonic()
-    slot = await upstream_slot(request, prefs)
-    try:
-        async with slot, pm.acquire_provider(provider_id):
-            client = get_v1_client(pm, provider_id)
-            resp = await client.images_generations(body)
-            duration = (time.monotonic() - start) * 1000
-            log_request_background(
-                db,
-                provider=provider,
-                protocol="v1",
-                endpoint="/v1/images/generations",
-                request=request,
-                model=model,
-                routed_model=routed,
-                request_body=body,
-                response_body=resp,
-                duration_ms=duration,
-            )
-            return JSONResponse(content=resp)
-    except httpx.HTTPStatusError as exc:
-        duration = (time.monotonic() - start) * 1000
-        logger.warning(
-            "Backend %s returned HTTP %d for /v1/images/generations %s",
-            provider.name,
-            exc.response.status_code,
-            model,
-        )
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/images/generations",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_size=0,
-            duration_ms=duration,
-            status="error",
-            error_detail=f"HTTP {exc.response.status_code}: {exc.response.text[:400]}",
-        )
-        return forward_upstream_http_error(exc)
-    except Exception as exc:
-        duration = (time.monotonic() - start) * 1000
-        err_detail = str(exc)[:500]
-        if isinstance(exc, httpx.HTTPError):
-            err_detail = describe_httpx_error(exc)[:500]
-            logger.error(
-                "Upstream failure on /v1/images/generations "
-                "(model=%r, provider=%s): %s",
-                model,
-                provider.name,
-                describe_httpx_error(exc),
-            )
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="v1",
-            endpoint="/v1/images/generations",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_size=0,
-            duration_ms=duration,
-            status="error",
-            error_detail=err_detail,
-        )
-        raise
+async def images_generations(request: Request) -> Response:
+    return await proxy_json(
+        request,
+        protocol="v1",
+        endpoint="/v1/images/generations",
+        call=lambda client, body: client.images_generations(body),
+        stream_call=None,
+        generation=False,
+    )
 
 
 @router.post("/v1/images/edits")

@@ -380,6 +380,7 @@ def _json_request(path: str, payload: dict) -> Request:
 
 
 async def test_upstream_failure_forgets_the_session(db, pm, clock, monkeypatch):
+    from llama_router import proxy
     from llama_router.llamacpp_api import chat as chat_api
     from llama_router.llamacpp_api import deps
 
@@ -394,8 +395,8 @@ async def test_upstream_failure_forgets_the_session(db, pm, clock, monkeypatch):
                 "refused", request=httpx.Request("POST", "http://a/v1/chat/completions")
             )
 
-    monkeypatch.setattr(chat_api, "get_v1_client", lambda pm, pid: Down())
-    monkeypatch.setattr(chat_api, "log_request_background", lambda *a, **k: None)
+    monkeypatch.setattr(proxy, "get_v1_client", lambda pm, pid: Down())
+    monkeypatch.setattr(proxy, "log_request_background", lambda *a, **k: None)
 
     body = _chat()
     session = rt.session_for({}, body, None)

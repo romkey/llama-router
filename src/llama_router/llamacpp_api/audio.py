@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -17,8 +16,8 @@ from ..auth import (
 )
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
-from ..request_body import json_object
-from ..request_logger import StreamLogger, log_request_background, stream_response
+from ..proxy import proxy_json
+from ..request_logger import log_request_background
 from ..v1_client import get_v1_client, upstream_form
 from . import deps
 
@@ -29,66 +28,32 @@ router = APIRouter()
 VOICES_CACHE_TTL_S = 30.0
 # (from hub, hub's provider) -> (when fetched, voices).
 _voices_cache: dict[tuple[bool, int | None], tuple[float, list[dict[str, Any]]]] = {}
+_SPEECH_MEDIA_TYPES = {
+    "mp3": "audio/mpeg",
+    "opus": "audio/opus",
+    "aac": "audio/aac",
+    "flac": "audio/flac",
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",
+}
 
 
 @router.post("/v1/audio/speech")
 async def audio_speech(request: Request) -> Response:
     """Text-to-speech: JSON body in, streaming audio bytes out."""
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
-    body = await json_object(request)
-    model = body.get("model")
-    if not model:
-        raise HTTPException(status_code=400, detail="model is required")
-
-    rt = deps.get_router()
-    pm = deps.get_pm()
-
-    result = await route_within_cap(rt, db, request, model, prefs, body)
-    if not result:
-        raise HTTPException(
-            status_code=404, detail=f"No available provider for model '{model}'"
-        )
-
-    provider = result.provider
-    routed = result.model_key
-
-    provider_id = provider.require_id()
-    body["model"] = result.backend_model
-    start = time.monotonic()
-
-    slot = await upstream_slot(request, prefs, stream=True)
-
-    async def generate() -> AsyncIterator[bytes]:
-        async with slot, pm.acquire_provider(provider_id):
-            client = get_v1_client(pm, provider_id)
-            async for chunk in slot.stream(client.audio_speech(body)):
-                yield chunk
-
-    response_format = body.get("response_format", "mp3")
-    media_types = {
-        "mp3": "audio/mpeg",
-        "opus": "audio/opus",
-        "aac": "audio/aac",
-        "flac": "audio/flac",
-        "wav": "audio/wav",
-        "pcm": "audio/pcm",
-    }
-    media_type = media_types.get(response_format, "audio/mpeg")
-
-    logged = StreamLogger(
-        generate(),
-        db=db,
-        provider=provider,
+    return await proxy_json(
+        request,
         protocol="v1",
         endpoint="/v1/audio/speech",
-        request=request,
-        model=model,
-        routed_model=routed,
-        request_body=body,
-        start_time=start,
+        call=None,
+        stream_call=lambda client, body: client.audio_speech(body),
+        generation=False,
+        media_type=_speech_media_type,
     )
-    return await stream_response(logged, media_type)
+
+
+def _speech_media_type(body: dict[str, Any]) -> str:
+    return _SPEECH_MEDIA_TYPES.get(body.get("response_format", "mp3"), "audio/mpeg")
 
 
 @router.post("/v1/audio/transcriptions")

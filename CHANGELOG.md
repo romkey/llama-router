@@ -95,6 +95,12 @@ described in their git tags and GitHub Releases.
   users) on a shared query base; the change reasons and `@_notifies` live in
   `db_events.py`. `Database` still combines them, so callers are unchanged.
   These modules now pass `mypy --strict`.
+- The ten JSON-body proxy endpoints (`/api/chat`, `/api/generate`,
+  `/api/embeddings`, `/api/embed`, `/v1/chat/completions`, `/v1/completions`,
+  `/v1/embeddings`, `/v1/responses`, `/v1/images/generations`,
+  `/v1/audio/speech`) share one path, `proxy_json` in `proxy.py`, instead of
+  ten copies of routing, slots, logging and upstream-error handling. No
+  change in behavior.
 - Less database and disk work behind the dashboard and the registry cache.
   `/api/status`, `/api/ps`, `/metrics`, `/health` and `/v1/audio/voices` read
   every provider's models, addresses and benchmarks in four queries instead

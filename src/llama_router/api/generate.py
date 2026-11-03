@@ -1,57 +1,18 @@
 from __future__ import annotations
 
-import logging
-import time
-from collections.abc import AsyncIterator
+from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
-from ..auth import route_within_cap, routing_preferences_from_request
-from ..client_address import client_ip
-from ..decision_policy import apply_decision_policy
-from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
-from ..limits import clamp_generation_params, upstream_slot
-from ..request_body import json_object
-from ..request_logger import StreamLogger, log_request_background, stream_response
+from ..models import Provider
+from ..proxy import proxy_json
 from ..translate import OllamaOverOpenAI, TranslationError
-from . import deps
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/api/generate")
-async def generate(request: Request) -> Response:
-    db = deps.get_db()
-    prefs = await routing_preferences_from_request(db, request)
-    body = await json_object(request)
-    clamp_generation_params(body)
-    model = body.get("model")
-    if not model:
-        raise HTTPException(status_code=400, detail="model is required")
-
-    rt = deps.get_router()
-    pm = deps.get_pm()
-    model = await apply_decision_policy(
-        request, body, model, prefs, rt=rt, pm=pm, db=db
-    )
-    session = rt.session_for(request.headers, body, prefs, client_ip(request))
-
-    route_result = await route_within_cap(
-        rt, db, request, model, prefs, body, session=session
-    )
-    if not route_result:
-        raise HTTPException(
-            status_code=404, detail=f"No available provider for model '{model}'"
-        )
-
-    provider = route_result.provider
-    routed = route_result.model_key
-
-    provider_id = provider.require_id()
-    body["model"] = route_result.backend_model
+def _check_translatable(provider: Provider, body: dict[str, Any]) -> None:
     if not provider.is_ollama:
         # Served through OllamaOverOpenAI: refuse what it cannot translate
         # before a response starts.
@@ -59,103 +20,15 @@ async def generate(request: Request) -> Response:
             OllamaOverOpenAI.validate("generate", body)
         except TranslationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    stream = body.get("stream", True)
-    start = time.monotonic()
 
-    if stream:
-        slot = await upstream_slot(request, prefs, stream=True)
 
-        async def generate_chunks() -> AsyncIterator[bytes]:
-            try:
-                async with slot, pm.acquire_provider(provider_id):
-                    client = pm.ollama_api_client(provider_id)
-                    async for chunk in slot.stream(client.generate_stream(body)):
-                        yield chunk
-            except Exception:
-                rt.forget_session(session)
-                raise
-
-        logged = StreamLogger(
-            generate_chunks(),
-            db=db,
-            provider=provider,
-            protocol="ollama",
-            endpoint="/api/generate",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            start_time=start,
-        )
-        return await stream_response(logged, "application/x-ndjson")
-
-    slot = await upstream_slot(request, prefs)
-    try:
-        async with slot, pm.acquire_provider(provider_id):
-            client = pm.ollama_api_client(provider_id)
-            payload = await client.generate(body)
-            duration = (time.monotonic() - start) * 1000
-            log_request_background(
-                db,
-                provider=provider,
-                protocol="ollama",
-                endpoint="/api/generate",
-                request=request,
-                model=model,
-                routed_model=routed,
-                request_body=body,
-                response_body=payload,
-                duration_ms=duration,
-            )
-            return JSONResponse(content=payload)
-    except httpx.HTTPStatusError as exc:
-        rt.forget_session(session)
-        duration = (time.monotonic() - start) * 1000
-        logger.warning(
-            "Backend %s returned HTTP %d for /api/generate %s",
-            provider.name,
-            exc.response.status_code,
-            model,
-        )
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="ollama",
-            endpoint="/api/generate",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_size=0,
-            duration_ms=duration,
-            status="error",
-            error_detail=f"HTTP {exc.response.status_code}: {exc.response.text[:400]}",
-        )
-        return forward_upstream_http_error(exc)
-    except Exception as exc:
-        rt.forget_session(session)
-        duration = (time.monotonic() - start) * 1000
-        err_detail = str(exc)[:500]
-        if isinstance(exc, httpx.HTTPError):
-            err_detail = describe_httpx_error(exc)[:500]
-            logger.error(
-                "Upstream failure on /api/generate (model=%r, provider=%s): %s",
-                model,
-                provider.name,
-                describe_httpx_error(exc),
-            )
-        log_request_background(
-            db,
-            provider=provider,
-            protocol="ollama",
-            endpoint="/api/generate",
-            request=request,
-            model=model,
-            routed_model=routed,
-            request_body=body,
-            response_size=0,
-            duration_ms=duration,
-            status="error",
-            error_detail=err_detail,
-        )
-        raise
+@router.post("/api/generate")
+async def generate(request: Request) -> Response:
+    return await proxy_json(
+        request,
+        protocol="ollama",
+        endpoint="/api/generate",
+        call=lambda client, body: client.generate(body),
+        stream_call=lambda client, body: client.generate_stream(body),
+        check=_check_translatable,
+    )
