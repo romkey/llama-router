@@ -411,19 +411,26 @@ class Database:
     async def update_provider_status(
         self, provider_id: int, status: ProviderStatus
     ) -> None:
+        # Busy and idle only say whether a request is in flight: routing
+        # treats both as online, so a flip between them must not reload it.
+        online = (ProviderStatus.BUSY.value, ProviderStatus.IDLE.value)
         changed = await self._execute_rowcount(
             "UPDATE providers SET status = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = ? AND status != ?",
-            (status.value, provider_id, status.value),
+            "WHERE id = ? AND status != ? AND NOT (status IN (?, ?) AND ? IN (?, ?))",
+            (status.value, provider_id, status.value, *online, status.value, *online),
         )
         if changed:
             # Only a real transition matters to routing; health checks write
             # the same status every cycle.
             self._changed(CHANGE_STATUS)
         else:
+            # Record a busy/idle flip quietly, in one statement, so a
+            # concurrent change to offline is never overwritten.
             await self._execute(
-                "UPDATE providers SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (provider_id,),
+                "UPDATE providers SET status = CASE WHEN status IN (?, ?) "
+                "AND ? IN (?, ?) THEN ? ELSE status END, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (*online, status.value, *online, status.value, provider_id),
             )
 
     async def get_providers_for_model(
