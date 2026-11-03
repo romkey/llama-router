@@ -9,6 +9,21 @@ described in their git tags and GitHub Releases.
 
 ### Security
 
+- Every dashboard response now sends `X-Frame-Options: DENY`, a
+  `Content-Security-Policy` with `frame-ancestors 'none'`, `object-src 'none'`
+  and `base-uri 'self'`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: same-origin` and `Cache-Control: no-store`, plus
+  `Strict-Transport-Security` when the dashboard is served over HTTPS.
+- Non-admin dashboard users get 403 from `/metrics` (a metrics token still
+  works), `/docs`, `/redoc` and `/openapi.json`.
+- A provider's status no longer includes its full URL after a connection
+  error, only the path, so non-admins can't see internal hostnames or
+  credentials in it.
+- Dashboard chat shows non-admins a generic message when the provider fails;
+  admins and the request log keep the upstream detail.
+- The router warns once when a sign-in arrives with `X-Forwarded-For` from a
+  peer not in `LLAMA_ROUTER_TRUSTED_PROXIES`; the README now says the setting
+  is required behind a reverse proxy.
 - `/api/tags`, `/api/version`, `/api/ps`, `/v1/models` and `/v1/models/{name}`
   now need an API key, like every other API route, unless the authentication
   policy accepts requests without one. `/health` stays public.
