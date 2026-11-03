@@ -431,8 +431,11 @@ def _same_origin_referer_path(request: Request, fallback: str) -> str:
             port = 443 if u.scheme.lower() == "https" else 80
         return host, port
 
-    rh, rp = _host_port(ref)
-    bh, bp = _host_port(base)
+    try:
+        rh, rp = _host_port(ref)
+        bh, bp = _host_port(base)
+    except ValueError:  # a port that is not a number
+        return fallback
     if not rh or rh != bh or rp != bp:
         return fallback
     path = ref.path or "/"
