@@ -26,6 +26,7 @@ from .auth_core import (
     non_admin_forbidden_get_path,
     unsign_session,
 )
+from .site_icons import ICON_PATHS
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.url.path
 
-        if path in ("/health", "/healthz"):
+        if path in ("/health", "/healthz") or path in ICON_PATHS:
             return await call_next(request)
 
         if path == "/metrics" and _metrics_token_ok(request):
