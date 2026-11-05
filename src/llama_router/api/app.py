@@ -24,6 +24,7 @@ from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
 from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
+from ..worker_link.hub import deny_worker
 from ..worker_link.protocol import WS_PATH
 from ..worker_link.relay import HubRelayMiddleware
 from . import deps
@@ -53,7 +54,7 @@ async def health() -> JSONResponse:
 async def worker_socket(websocket: WebSocket) -> None:
     """Hub endpoint: member routers dial in here with their worker token."""
     if not settings.worker_hub_enabled:
-        await websocket.close(code=1008)
+        await deny_worker(websocket, 403, "this router does not accept workers")
         return
     pm = deps.get_pm()
     await pm.worker_hub.serve(websocket, deps.get_db())

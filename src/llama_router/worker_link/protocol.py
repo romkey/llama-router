@@ -54,6 +54,12 @@ def refused(status: int, body: str) -> bool:
     return status == 403 and REFUSED_PREFIX in body[:300]
 
 
+# A hub that refuses the WebSocket upgrade answers with plain HTTP and this
+# header, and a JSON body {"error": "..."}. A worker that gets an HTTP refusal
+# without it knows the reply came from something else: a proxy, or a port that
+# has no worker endpoint (Starlette answers an unknown WebSocket path with 403).
+HUB_HEADER = "X-Llama-Router-Hub"
+
 # WebSocket close codes (4000-4999 are application-defined).
 CLOSE_UNAUTHORIZED = 4401
 CLOSE_REPLACED = 4409

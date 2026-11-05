@@ -24,6 +24,7 @@ from urllib.parse import unquote
 import httpx
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
+from websockets.http11 import Response
 
 from .. import __version__, router_identity
 from ..provider_secrets import ApiKeyUnavailableError, decrypt_setting, encrypt_setting
@@ -127,6 +128,44 @@ class _Job:
         self.over_budget = False
         self.body_done = asyncio.Event()
         self.task: asyncio.Task[None] | None = None
+
+
+_WRONG_ENDPOINT = (
+    "this URL has no worker endpoint; point it at the hub's Ollama API port, "
+    "or set LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true on the hub, or route "
+    f"{p.WS_PATH} to that port (with WebSocket upgrades) in its reverse proxy"
+)
+
+
+def refusal_reason(response: Response) -> tuple[bool, str]:
+    """Explain an HTTP reply to the WebSocket upgrade.
+
+    Returns whether to treat it as a rejection (slow retry) and the message to
+    show. A hub marks its own refusals with :data:`protocol.HUB_HEADER`; a 403
+    without it usually means the URL reaches a port with no worker endpoint.
+    """
+    code = response.status_code
+    if response.headers.get(p.HUB_HEADER):
+        message = ""
+        with contextlib.suppress(ValueError, AttributeError):
+            message = str(json.loads(bytes(response.body or b"")).get("error") or "")
+        return True, f"hub refused the connection (HTTP {code}): " + (
+            message or "no reason given"
+        )
+    if code == 401:
+        return True, (
+            "hub rejected the token (HTTP 401); "
+            "check the worker token or ask the hub admin for a new one"
+        )
+    if code == 403:
+        # Older hubs refuse a bad token with a bare 403 too.
+        return True, (
+            "HTTP 403 without a hub's answer: either the token is wrong, or "
+            + _WRONG_ENDPOINT
+        )
+    if code == 404:
+        return True, f"HTTP 404: {_WRONG_ENDPOINT}"
+    return False, f"hub returned HTTP {code}"
 
 
 class _RejectedError(Exception):
@@ -253,16 +292,11 @@ class WorkerClient:
             except asyncio.CancelledError:
                 raise
             except InvalidStatus as exc:
-                code = exc.response.status_code
-                if code in (401, 403):
+                rejected, self.last_error = refusal_reason(exc.response)
+                if rejected:
                     self.state = "rejected"
-                    self.last_error = (
-                        f"hub rejected the token (HTTP {code}); "
-                        "check the worker token or ask the hub admin for a new one"
-                    )
                     delay = _REJECTED_RETRY
                 else:
-                    self.last_error = f"hub returned HTTP {code}"
                     delay = backoff
             except _RejectedError as exc:
                 self.state = "rejected"

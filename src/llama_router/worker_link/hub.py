@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
+from starlette.responses import JSONResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from .. import router_identity
@@ -50,6 +51,23 @@ def worker_token_prefix(token: str) -> str:
 def worker_token_expired(row: dict[str, Any], now: float | None = None) -> bool:
     expires = row.get("token_expires_at")
     return expires is not None and expires <= (time.time() if now is None else now)
+
+
+async def deny_worker(websocket: WebSocket, status: int, message: str) -> None:
+    """Refuse a worker before the upgrade, saying why.
+
+    The worker sees an HTTP *status* with :data:`protocol.HUB_HEADER` and
+    *message*, so it can tell the hub's refusal from a proxy's. Servers without
+    the denial-response extension fall back to a close, which reaches the
+    worker as a bare HTTP 403.
+    """
+    response = JSONResponse(
+        {"error": message}, status_code=status, headers={p.HUB_HEADER: "1"}
+    )
+    try:
+        await websocket.send_denial_response(response)
+    except RuntimeError:
+        await websocket.close(code=p.CLOSE_UNAUTHORIZED)
 
 
 def _bearer(websocket: WebSocket) -> str:
@@ -618,13 +636,15 @@ class WorkerHub:
         remote = websocket.client.host if websocket.client else None
         if not row or not row.get("enabled", True) or row.get("provider_id") is None:
             logger.warning("Rejected worker connection from %s: bad token", remote)
-            await websocket.close(code=p.CLOSE_UNAUTHORIZED)
+            await deny_worker(
+                websocket, 401, "the hub does not recognise this worker token"
+            )
             return
         if worker_token_expired(row):
             logger.warning(
                 "Rejected worker %s from %s: token expired", row.get("name"), remote
             )
-            await websocket.close(code=p.CLOSE_UNAUTHORIZED)
+            await deny_worker(websocket, 401, "the worker token has expired")
             return
 
         await websocket.accept()
