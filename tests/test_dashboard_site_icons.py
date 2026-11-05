@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from llama_router.dashboard.auth_core import hash_password
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
+from llama_router.database import Database
 
 
 @pytest.mark.asyncio
@@ -21,7 +23,9 @@ from llama_router.dashboard.middleware import invalidate_dashboard_user_count_ca
         ("/site.webmanifest", "application/manifest+json"),
     ],
 )
-async def test_icons_need_no_login(dash_client, path: str, media_type: str) -> None:
+async def test_icons_need_no_login(
+    dash_client: tuple[httpx.AsyncClient, Database], path: str, media_type: str
+) -> None:
     client, db = dash_client
     await db.create_dashboard_user("adm", hash_password("password-12345"), True)
     invalidate_dashboard_user_count_cache()
@@ -35,7 +39,9 @@ async def test_icons_need_no_login(dash_client, path: str, media_type: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_pages_link_the_icons(dash_client) -> None:
+async def test_pages_link_the_icons(
+    dash_client: tuple[httpx.AsyncClient, Database],
+) -> None:
     client, db = dash_client
     await db.create_dashboard_user("adm", hash_password("password-12345"), True)
     invalidate_dashboard_user_count_cache()
