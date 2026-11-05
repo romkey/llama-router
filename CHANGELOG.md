@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-05
+
 ### Added
 
 - The dashboard has a favicon, Apple touch icons (including `/apple-touch-icon.png`
