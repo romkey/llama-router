@@ -13,6 +13,14 @@ described in their git tags and GitHub Releases.
   and `/apple-touch-icon-precomposed.png`), Android icons and a web manifest,
   served at the site root without a login.
 
+### Fixed
+
+- A worker whose hub URL reaches a port with no worker endpoint (for example
+  a proxy pointing at the hub's dashboard port) no longer reports "hub
+  rejected the token": it says the URL has no worker endpoint and how to fix
+  it. The hub now refuses a bad or expired token with HTTP 401, and a worker
+  connection while the hub is disabled with HTTP 403, each with the reason.
+
 ## [0.29.0] - 2026-11-03
 
 ### Added

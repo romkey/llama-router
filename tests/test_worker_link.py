@@ -484,8 +484,55 @@ async def test_bad_token_is_rejected(link) -> None:
     link["workers"].append(w)
     w.start()
     await _wait_for(lambda: w.state == "rejected")
-    assert "rejected" in (w.last_error or "")
+    assert w.last_error == (
+        "hub refused the connection (HTTP 401): "
+        "the hub does not recognise this worker token"
+    )
     assert not link["pm"].worker_hub.is_connected(link["provider_id"])
+
+
+async def test_url_without_worker_endpoint_says_so(link) -> None:
+    """A port with no /worker/ws (say, the dashboard) answers with a bare 403;
+    the worker must not blame the token alone."""
+    w = link["make_worker"]()
+    w.hub_url = w.hub_url.replace(p.WS_PATH, "/not-the-worker-endpoint")
+    link["workers"].append(w)
+    w.start()
+    await _wait_for(lambda: w.state == "rejected")
+    assert "no worker endpoint" in (w.last_error or "")
+    assert "LLAMA_ROUTER_API_ON_DASHBOARD_PORT" in (w.last_error or "")
+
+
+async def test_hub_disabled_says_so(link, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "worker_hub_enabled", False)
+    w = link["make_worker"]()
+    link["workers"].append(w)
+    w.start()
+    await _wait_for(lambda: w.state == "rejected")
+    assert w.last_error == (
+        "hub refused the connection (HTTP 403): this router does not accept workers"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "rejected", "fragment"),
+    [
+        (401, {p.HUB_HEADER: "1"}, b'{"error": "nope"}', True, "(HTTP 401): nope"),
+        (403, {p.HUB_HEADER: "1"}, b"not json", True, "no reason given"),
+        (401, {}, b"", True, "rejected the token"),
+        (403, {}, b"", True, "no worker endpoint"),
+        (404, {}, b"", True, "no worker endpoint"),
+        (502, {}, b"", False, "hub returned HTTP 502"),
+    ],
+)
+def test_refusal_reason(status, headers, body, rejected, fragment) -> None:
+    from websockets.datastructures import Headers
+    from websockets.http11 import Response
+
+    resp = Response(status, "", Headers(headers), body)
+    got_rejected, message = worker_mod.refusal_reason(resp)
+    assert got_rejected is rejected
+    assert fragment in message
 
 
 async def test_expired_token_is_rejected(link) -> None:
