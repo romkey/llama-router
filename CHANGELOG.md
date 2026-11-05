@@ -7,6 +7,12 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard has a favicon, Apple touch icons (including `/apple-touch-icon.png`
+  and `/apple-touch-icon-precomposed.png`), Android icons and a web manifest,
+  served at the site root without a login.
+
 ## [0.29.0] - 2026-11-03
 
 ### Added

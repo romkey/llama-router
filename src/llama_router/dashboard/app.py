@@ -23,6 +23,7 @@ from .model_groups import router as model_groups_router
 from .my_keys import router as my_keys_router
 from .pages import merge_dash_template_ctx, templates
 from .routes import router
+from .site_icons import router as site_icons_router
 
 app = FastAPI(title="llama-router Dashboard")
 app.add_middleware(DashboardAuthMiddleware)
@@ -47,10 +48,13 @@ async def security_headers(
     """Add browser hardening headers to every dashboard response.
 
     Registered last so it wraps the auth middleware and covers its
-    redirects and refusals too. The dashboard serves no static files.
+    redirects and refusals too. The only static files are the site icons.
     """
     response = await call_next(request)
-    response.headers.update(_SECURITY_HEADERS)
+    for name, value in _SECURITY_HEADERS.items():
+        # A route that sets its own Cache-Control (the icons) keeps it.
+        if name != "Cache-Control" or name not in response.headers:
+            response.headers[name] = value
     if _cookie_secure(request):
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
@@ -120,6 +124,7 @@ async def http_exception_handler(
     )
 
 
+app.include_router(site_icons_router)
 app.include_router(router)
 app.include_router(decisions_router)
 app.include_router(model_groups_router)
