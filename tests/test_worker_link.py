@@ -1772,6 +1772,9 @@ async def test_purge_timer_waits_only_for_the_longest_unshared(
         return len(await _children(link)) == 2
 
     await _wait_for(two)
+    # Let the first catalog sync finish: still running, it would share api
+    # again from the old catalog and wipe the unshared time set below.
+    await _wait_for(lambda: pid not in pm.worker_hub._catalog_tasks)
     monkeypatch.setattr(settings, "worker_unshared_purge_hours", 1.0)
     clock = FakeClock()
     pm.clock = clock
