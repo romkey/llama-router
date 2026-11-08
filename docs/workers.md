@@ -28,6 +28,13 @@ client ──HTTP──▶ hub router ──WebSocket (outbound from worker)─�
 3. The worker connects, the hub discovers its models, and the provider goes
    idle. Rotating, disabling or deleting the worker on the hub disconnects it.
 
+The hub URL must reach the hub's **Ollama API port**, where `/worker/ws` lives.
+A reverse proxy that sends the hub's hostname to the dashboard port reaches no
+worker endpoint: the dashboard answers with a bare HTTP 403 and logs nothing,
+and the worker's **Workers** tab says the URL has no worker endpoint. Set
+`LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true` on the hub, or route `/worker/ws` to
+the Ollama port in the proxy with WebSocket upgrades passed through.
+
 ## Choosing which providers a hub may use
 
 By default a worker serves every provider its router has. The worker's
@@ -137,8 +144,15 @@ between routers of this version or later. Mixed versions still connect.
 
 Endpoint: `GET /worker/ws` on the hub's Ollama API port, upgraded to a
 WebSocket. With `LLAMA_ROUTER_API_ON_DASHBOARD_PORT=true` it is also on the
-dashboard port. The worker authenticates with `Authorization: Bearer <token>`. A
-bad token is refused before the upgrade.
+dashboard port. The worker authenticates with `Authorization: Bearer <token>`.
+
+The hub refuses before the upgrade with plain HTTP: 401 for a bad or expired
+token, 403 when `LLAMA_ROUTER_WORKER_HUB_ENABLED=false`. These replies carry an
+`X-Llama-Router-Hub: 1` header and a JSON body `{"error": "..."}` that the
+worker shows. A 401, 403 or 404 without that header came from something other
+than a hub (a proxy, or a port with no worker endpoint); hubs before 0.30
+also refused a bad token with a bare 403. The worker retries any of these
+after five minutes.
 
 Control messages are JSON text frames with a `type` field. Body bytes travel
 in binary frames laid out as one byte of kind, a four-byte big-endian request
@@ -168,7 +182,7 @@ Close codes:
 
 | Code | Meaning | Worker behaviour |
 |------|---------|------------------|
-| 4401 | Bad or expired token | Retry after five minutes |
+| 4401 | Bad or expired token (only from a server that cannot send an HTTP refusal) | Retry after five minutes |
 | 4403 | Token revoked, rotated, expired during the session, or worker disabled | Retry after five minutes |
 | 4409 | Replaced by a newer connection with the same token | Retry after 30 seconds |
 | 4400 | Protocol error | Retry after five minutes |
