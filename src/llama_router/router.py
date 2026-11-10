@@ -624,7 +624,11 @@ class Router:
                 {"provider_id": p.id, "provider": p.name, "models": allowed}
                 for p, models in table.chaos.get(protocol, ())
                 if _eligible(p, locality, hub_only)
-                and (allowed := [m for m in models if table.allows(access, m)])
+                and (
+                    allowed := [
+                        m for m in models if table.chaos_allows(access, p.id, m)
+                    ]
+                )
             ]
             if not out["chaos_pool"]:
                 out["summary"] = (
@@ -1007,7 +1011,9 @@ class Router:
             if not _eligible(provider, locality, hub_only):
                 continue
             if access is not None:
-                models = tuple(m for m in models if table.allows(access, m))
+                models = tuple(
+                    m for m in models if table.chaos_allows(access, provider.id, m)
+                )
                 if not models:
                     continue
             entries.append((provider, models))

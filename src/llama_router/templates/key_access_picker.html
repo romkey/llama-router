@@ -62,9 +62,17 @@ var KeyAccess = (function() {
             '<label class="form-check-label" for="' + id + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(label) + '</label></div>';
     }
 
+    // Set the picker to *allowed* (null: any model) and fill its lists.
     function render(prefix, allowed) {
         document.getElementById(prefix + '-access-' + (allowed ? 'some' : 'all')).checked = true;
-        toggle(prefix);
+        document.getElementById(prefix + '-access-picker').classList.toggle('d-none', !allowed);
+        return fill(prefix, allowed);
+    }
+
+    // Fill the group and model lists, ticking what *allowed* holds.
+    function fill(prefix, allowed) {
+        var picker = document.getElementById(prefix + '-access-picker');
+        picker.dataset.filled = '1';
         document.getElementById(prefix + '-access-filter').value = '';
         var wantGroups = {}, wantModels = {};
         ((allowed && allowed.groups) || []).forEach(function(g) { wantGroups[g.id] = true; });
@@ -86,8 +94,11 @@ var KeyAccess = (function() {
 
     function toggle(prefix) {
         var some = document.getElementById(prefix + '-access-some').checked;
-        document.getElementById(prefix + '-access-picker').classList.toggle('d-none', !some);
-        if (some) load();
+        var picker = document.getElementById(prefix + '-access-picker');
+        picker.classList.toggle('d-none', !some);
+        // A create form has never been filled: list the choices now, or
+        // "Only these" would save an empty list and a key that can use nothing.
+        if (some && !picker.dataset.filled) fill(prefix, null);
     }
 
     function filter(prefix) {

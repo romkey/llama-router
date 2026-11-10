@@ -564,3 +564,35 @@ async def test_route_explorer_uses_a_limited_keys_list(dash_client: DashClient) 
     )
     assert resp.status_code == 200, resp.text
     assert "may not use 'other'" in resp.json()["summary"]
+
+
+async def test_chaos_mode_serves_members_of_an_allowed_group(rt: Router) -> None:
+    prefs = RoutingPreferences(
+        mode="chaos", access=ModelAccess(groups=frozenset({"coding"}))
+    )
+    for _ in range(20):
+        r = await rt.route("coding", CHAT, prefs)
+        assert r is not None
+        assert r.model_key in ("small-coder", "big-coder")
+    out = await rt.explain("coding", CHAT, prefs)
+    pool = sorted(m for p in out["chaos_pool"] for m in p["models"])
+    assert pool == ["big-coder", "small-coder"]
+
+
+async def test_chaos_mode_keeps_a_provider_scoped_member_on_its_provider(
+    db: Database, pm: ProviderManager
+) -> None:
+    fast = await _provider(db, pm, "fast", FAST, ["coder"])
+    await _provider(db, pm, "slow", SLOW, ["coder"])
+    g = await db.create_model_group("coding")
+    assert g.id is not None
+    await db.add_model_group_member(g.id, "coder", fast.require_id())
+    rt = Router(db, pm)
+    await rt.rebuild()
+    prefs = RoutingPreferences(
+        mode="chaos", access=ModelAccess(groups=frozenset({"coding"}))
+    )
+    for _ in range(20):
+        r = await rt.route("coding", CHAT, prefs)
+        assert r is not None
+        assert r.provider.id == fast.id
