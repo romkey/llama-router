@@ -120,7 +120,7 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="saveMyKey()">Save</button>
+                <button type="button" class="btn btn-primary" id="my-edit-save" onclick="saveMyKey()" disabled>Save</button>
             </div>
         </div>
     </div>
@@ -248,12 +248,16 @@ function editMyKey(id, prefix) {
     _myEditId = id;
     document.getElementById('my-edit-prefix').textContent = prefix;
     var status = document.getElementById('my-edit-status');
+    var save = document.getElementById('my-edit-save');
+    // Save stays off until this key's settings are in the form.
+    save.disabled = true;
     status.textContent = 'Loading…';
     bootstrap.Modal.getOrCreateInstance(document.getElementById('myEditKeyModal')).show();
     fetch('/api/my-keys/' + id).then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to load key'); });
         return r.json();
     }).then(function(k) {
+        if (_myEditId !== id) return;  // another key was opened since
         document.getElementById('my-edit-label').value = k.label || '';
         document.getElementById('my-edit-mode').value = k.routing_mode;
         document.getElementById('my-edit-fallback').checked = !!k.allow_fallback;
@@ -264,11 +268,12 @@ function editMyKey(id, prefix) {
             (k.daily_spend_cap_usd == null ? '' : '; daily spend cap ' + money(k.daily_spend_cap_usd)) +
             '. An administrator sets these.';
         status.textContent = '';
-    }).catch(function(err) { status.textContent = err.message; });
+        save.disabled = false;
+    }).catch(function(err) { if (_myEditId === id) status.textContent = err.message; });
 }
 
 function saveMyKey() {
-    if (_myEditId == null) return;
+    if (_myEditId == null || document.getElementById('my-edit-save').disabled) return;
     var status = document.getElementById('my-edit-status');
     fetch('/api/my-keys/' + _myEditId, {
         method: 'PATCH',
