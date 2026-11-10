@@ -276,6 +276,7 @@ function editMyKey(id, prefix) {
             '. An administrator sets these.';
         return KeyAccess.render('my-edit', k.allowed);
     }).then(function() {
+        if (_myEditId !== id) return;
         status.textContent = '';
         save.disabled = false;
     }).catch(function(err) { if (_myEditId === id) status.textContent = err.message; });

@@ -3239,6 +3239,7 @@ function openKeyEdit(keyId, keyPrefix) {
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
         return KeyAccess.render('edit-key', k.allowed);
     }).then(function() {
+        if (_editKeyId !== keyId) return;
         status.textContent = '';
         save.disabled = false;
     }).catch(function(err) { if (_editKeyId === keyId) status.textContent = err.message; });
