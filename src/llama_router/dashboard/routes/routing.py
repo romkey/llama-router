@@ -10,6 +10,7 @@ from fastapi.responses import (
 )
 
 from ...affinity import session_key
+from ...auth import model_access
 from ...router import (
     ENDPOINT_PROTOCOLS,
     ROUTING_MODES,
@@ -104,6 +105,7 @@ async def api_explain_routing(request: Request):
             session_affinity=key.get("session_affinity"),
             key_id=key_id,
             locality=key.get("locality"),
+            access=await model_access(db, key_id),
         )
         key_info = {"id": key_id, "key_prefix": key["key_prefix"]}
     else:

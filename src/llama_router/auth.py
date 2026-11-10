@@ -234,12 +234,12 @@ async def _resolve_key(
         locality=_locality(record.get("locality")),
         daily_spend_cap_usd=record.get("daily_spend_cap_usd"),
         decision_policy=await _decision_policy(db, int(record["id"])),
-        access=await _model_access(db, int(record["id"])),
+        access=await model_access(db, int(record["id"])),
     )
     return prefs, int(record["id"])
 
 
-async def _model_access(db: Database, key_id: int) -> ModelAccess | None:
+async def model_access(db: Database, key_id: int) -> ModelAccess | None:
     """The models and groups the key may use, or None for any."""
     access = await db.get_api_key_access(key_id)
     if access is None or not access["restricted"]:

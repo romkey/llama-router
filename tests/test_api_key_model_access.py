@@ -19,6 +19,7 @@ from llama_router.auth import (
     key_prefix,
     routing_preferences_from_request,
 )
+from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.auth_core import AUTH_COOKIE, hash_password, sign_session
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.database import Database
@@ -522,3 +523,44 @@ async def test_pages_have_the_picker(dash_client: DashClient) -> None:
     page = await c.get("/my-keys", headers=_as(ann))
     assert "my-key-access-picker" in page.text
     assert "my-edit-access-picker" in page.text
+
+
+async def test_route_explorer_applies_the_key_list(rt: Router, db: Database) -> None:
+    await db.set_model_fallback("gone", "small-coder")
+    await db.set_model_fallback("small-coder", "chat")
+    await rt.rebuild()
+    prefs = _prefs(models=("gone", "chat"))
+    refused = await rt.explain("coding", CHAT, prefs)
+    assert refused["chosen"] is None
+    assert "may not use 'coding'" in refused["summary"]
+    assert refused["request"]["allowed"] == {"models": ["chat", "gone"], "groups": []}
+
+    out = await rt.explain("gone", CHAT, prefs)
+    assert out["chosen"]["model"] == "chat"
+    skipped = [s["model"] for s in out["steps"] if s["outcome"].startswith("skipped")]
+    assert skipped == ["small-coder"]
+
+    chaos = await rt.explain(
+        "chat",
+        CHAT,
+        RoutingPreferences(
+            mode="chaos", access=ModelAccess(models=frozenset({"chat"}))
+        ),
+    )
+    assert [p["models"] for p in chaos["chaos_pool"]] == [["chat"]]
+
+
+async def test_route_explorer_uses_a_limited_keys_list(dash_client: DashClient) -> None:
+    c, db = dash_client
+    admin, _, _ = await _users(db)
+    key_id, _ = await _key(db)
+    await db.set_api_key_access(key_id, True, ["chat"], [])
+    pm = dash_deps.get_pm()
+    pm.attach_router(Router(db, pm))
+    resp = await c.get(
+        "/api/routing/explain",
+        params={"model": "other", "endpoint": CHAT, "key_id": key_id},
+        headers=_as(admin),
+    )
+    assert resp.status_code == 200, resp.text
+    assert "may not use 'other'" in resp.json()["summary"]

@@ -602,6 +602,17 @@ class Router:
                 "backend_model": decision.backend_model,
                 "fell_back": decision.resolved_model != model_name,
             }
+        access = preferences.access if preferences else None
+        if access is not None:
+            out["request"]["allowed"] = {
+                "models": sorted(access.models),
+                "groups": sorted(access.groups),
+            }
+            if not table.allows(access, model_name):
+                out["summary"] = (
+                    f"Refused: this API key may not use '{model_name}' (HTTP 403)."
+                )
+                return out
         bound = self.affinity.peek(session) if session and affinity_on else None
         if session:
             out["session"] = self._explain_session(
@@ -610,9 +621,10 @@ class Router:
 
         if mode == "chaos" and model_name not in pins:
             out["chaos_pool"] = [
-                {"provider_id": p.id, "provider": p.name, "models": list(models)}
+                {"provider_id": p.id, "provider": p.name, "models": allowed}
                 for p, models in table.chaos.get(protocol, ())
                 if _eligible(p, locality, hub_only)
+                and (allowed := [m for m in models if table.allows(access, m)])
             ]
             if not out["chaos_pool"]:
                 out["summary"] = (
@@ -634,6 +646,16 @@ class Router:
         out["fallback_chain"] = list(chain)
         active = self._pm.active_requests
         for candidate_model in chain:
+            if not table.allows(access, candidate_model):
+                out["steps"].append(
+                    {
+                        "model": candidate_model,
+                        "pinned_provider_id": None,
+                        "candidates": [],
+                        "outcome": "skipped: this API key may not use it",
+                    }
+                )
+                continue
             chosen_id = (
                 decision.provider.id
                 if decision is not None and decision.resolved_model == candidate_model

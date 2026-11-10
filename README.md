@@ -446,6 +446,7 @@ By default an API key can use every model, alias and model group the router serv
 - Allowing a group lets the key ask for the group's name. It does **not** allow the group's member models by their own names; tick those too if the key should use them directly.
 - A request for anything else is refused with HTTP 403. Fallbacks never lead a key to a model it may not use, chaos mode picks only among allowed models, and if a key's decision policy picks a model the key may not use, the request runs on the model the client asked for. The decision model a policy asks its questions of is the administrator's and is not limited.
 - `/api/tags`, `/v1/models` and `/api/ps` list only what the key may use.
+- The **Route Explorer** applies the key's list when you pick a key: it says when the key may not use the model, and marks fallbacks it skips.
 - Deleting a group removes it from every key's list. A limited key whose list ends up empty can use nothing; it never becomes unlimited.
 
 Users can limit their own keys the same way on **My API keys**. In the API, `allowed` is `null` for any model, or the models and group ids:
