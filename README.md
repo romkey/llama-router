@@ -157,7 +157,7 @@ Every health check times each address. The router keeps a running tally per addr
 
 The table is rebuilt whenever one of its inputs changes: models are discovered or deleted, a provider changes status, an address goes up or down, a benchmark is added or removed, a fallback or provider is edited, a probe runs, the set of loaded models changes, or new round-trip and request measurements arrive. Changes within a quarter of a second are batched into one rebuild, and rebuilds run at most once a second. Measurement-only rebuilds reuse the last database read.
 
-Resolved API keys and the authentication policy are cached for five minutes, and keys the router does not know for 30 seconds. Creating, editing, regenerating or deleting a key, editing its pins, or changing the authentication policy takes effect on the next request; other routers sharing the database pick the change up when their cache expires.
+Resolved API keys and the authentication policy are cached for five minutes, and keys the router does not know for 30 seconds. Creating, editing, regenerating or deleting a key, editing its pins or model groups, or changing the authentication policy takes effect on the next request; other routers sharing the database pick the change up when their cache expires.
 
 Inspect the current table, with each candidate's inputs and scores, or force a rebuild:
 
@@ -437,6 +437,27 @@ curl -X PATCH http://localhost/api/keys/1 \
 Editing never changes the key itself. To replace a key that may have leaked, use **Regenerate secret** (`POST /api/keys/1/regenerate`): the key gets a new secret, shown once, and keeps its id, settings, pins, decision policy and usage history. The old secret stops working at once.
 
 `POST /api/keys/{id}/spend-cap` and `POST /api/keys/{id}/locality` still work but are deprecated; use `PATCH /api/keys/{id}`.
+
+## Limiting a Key to Some Models
+
+By default an API key can use every model, alias and model group the router serves. To limit one, choose **Only these** under "Models this key can use" when creating or editing it, and tick the groups and models it may use (or type a model name that isn't served right now).
+
+- A model is allowed under any of its aliases.
+- Allowing a group lets the key ask for the group's name. It does **not** allow the group's member models by their own names; tick those too if the key should use them directly.
+- A request for anything else is refused with HTTP 403. Fallbacks never lead a key to a model it may not use, chaos mode picks only among allowed models, and if a key's decision policy picks a model the key may not use, the request runs on the model the client asked for. The decision model a policy asks its questions of is the administrator's and is not limited.
+- `/api/tags`, `/v1/models` and `/api/ps` list only what the key may use.
+- The **Route Explorer** applies the key's list when you pick a key: it says when the key may not use the model, and marks fallbacks it skips.
+- Deleting a group removes it from every key's list. A limited key whose list ends up empty can use nothing; it never becomes unlimited.
+
+Users can limit their own keys the same way on **My API keys**. In the API, `allowed` is `null` for any model, or the models and group ids:
+
+```bash
+curl -X PATCH http://localhost/api/keys/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"allowed": {"models": ["llama3.2:latest"], "groups": [2]}}'
+```
+
+`GET /api/my-keys/allowable` lists the groups and model names a key can be limited to.
 
 ## API Key Model Pinning
 

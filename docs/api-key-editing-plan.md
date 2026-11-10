@@ -1,8 +1,14 @@
 # Plan: editing API keys, and limiting them to models and groups
 
-Status: reviewed. Two PRs: (1) edit an existing key and regenerate its
-secret, (2) choose which models and groups a key may use, when creating
-or editing it.
+Status: implemented in two PRs: (1) edit an existing key and regenerate
+its secret, (2) choose which models and groups a key may use, when
+creating or editing it. Deviations from the plan: the key's allowed groups
+are resolved to names when the key is resolved, and the auth cache is
+cleared on any model-group change, rather than keeping group ids in the
+routing preferences; the picker endpoint is `GET /api/my-keys/allowable`
+(reachable by every signed-in user); the decision model a key's policy asks
+is exempt from the key's list; `/api/ps` is filtered too; and the table has
+no CHECK constraint (MySQL refuses one on a cascading foreign key).
 
 ## Where things stand
 

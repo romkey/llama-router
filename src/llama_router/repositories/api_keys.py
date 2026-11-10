@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from ..db_events import CHANGE_API_KEYS, CHANGE_AUTH_SETTINGS, _notifies
+from ..db_sql import qmark
 from .base import Repository, _tristate
 
 logger = logging.getLogger(__name__)
@@ -154,15 +155,20 @@ class ApiKeyRepository(Repository):
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
             "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
-            "k.owner_user_id, k.label, u.username AS owner_username, "
-            "COUNT(p.id) AS pin_count "
+            "k.owner_user_id, k.label, k.restrict_models, "
+            "u.username AS owner_username, "
+            "COUNT(DISTINCT p.id) AS pin_count, "
+            "COUNT(DISTINCT a.model_name) AS allowed_model_count, "
+            "COUNT(DISTINCT a.group_id) AS allowed_group_count "
             "FROM api_keys k "
             "LEFT JOIN api_key_model_pins p ON p.api_key_id = k.id "
+            "LEFT JOIN api_key_allowed_models a ON a.api_key_id = k.id "
             "LEFT JOIN dashboard_users u ON u.id = k.owner_user_id "
             + where
             + "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
-            "k.last_used_at, k.owner_user_id, k.label, u.username "
+            "k.last_used_at, k.owner_user_id, k.label, k.restrict_models, "
+            "u.username "
             "ORDER BY k.created_at DESC, k.id DESC",
             tuple(params),
         )
@@ -183,6 +189,9 @@ class ApiKeyRepository(Repository):
                 "owner_username": r["owner_username"],
                 "label": r["label"],
                 "pin_count": int(r["pin_count"] or 0),
+                "restrict_models": bool(r["restrict_models"]),
+                "allowed_model_count": int(r["allowed_model_count"] or 0),
+                "allowed_group_count": int(r["allowed_group_count"] or 0),
             }
             for r in rows
         ]
@@ -331,6 +340,76 @@ class ApiKeyRepository(Repository):
             }
             for r in rows
         ]
+
+    async def get_api_key_access(self, key_id: int) -> dict[str, Any] | None:
+        """What the key may use: ``{"restricted": bool, "models": [names],
+        "groups": [{"id", "name"}]}``. Not restricted means any model, and
+        then the lists are empty. None if there is no such key."""
+        row = await self._select_one(
+            "SELECT restrict_models FROM api_keys WHERE id = ?", (key_id,)
+        )
+        if row is None:
+            return None
+        rows = await self._select_all(
+            "SELECT a.model_name, a.group_id, g.name AS group_name "
+            "FROM api_key_allowed_models a "
+            "LEFT JOIN model_groups g ON g.id = a.group_id "
+            "WHERE a.api_key_id = ? "
+            "ORDER BY a.model_name, g.name",
+            (key_id,),
+        )
+        return {
+            "restricted": bool(row["restrict_models"]),
+            "models": [str(r["model_name"]) for r in rows if r["model_name"]],
+            "groups": [
+                {"id": int(r["group_id"]), "name": r["group_name"]}
+                for r in rows
+                if r["group_id"] is not None
+            ],
+        }
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_access(
+        self,
+        key_id: int,
+        restricted: bool,
+        models: list[str],
+        group_ids: list[int],
+    ) -> bool:
+        """Replace what the key may use, in one transaction. Unrestricted
+        keys keep no list. Returns whether the key exists."""
+        sf = self._require_session_factory()
+        async with sf() as session, session.begin():
+
+            async def run(sql: str, *params: Any) -> None:
+                stmt, bind = qmark(sql, *params)
+                await session.execute(stmt, bind)
+
+            stmt, bind = qmark("SELECT id FROM api_keys WHERE id = ?", key_id)
+            if (await session.execute(stmt, bind)).first() is None:
+                return False
+            await run(
+                "UPDATE api_keys SET restrict_models = ? WHERE id = ?",
+                int(restricted),
+                key_id,
+            )
+            await run("DELETE FROM api_key_allowed_models WHERE api_key_id = ?", key_id)
+            if restricted:
+                for name in dict.fromkeys(models):
+                    await run(
+                        "INSERT INTO api_key_allowed_models (api_key_id, model_name) "
+                        "VALUES (?, ?)",
+                        key_id,
+                        name,
+                    )
+                for gid in dict.fromkeys(group_ids):
+                    await run(
+                        "INSERT INTO api_key_allowed_models (api_key_id, group_id) "
+                        "VALUES (?, ?)",
+                        key_id,
+                        gid,
+                    )
+        return True
 
     async def get_allow_unauthenticated(self) -> bool:
         row = await self._select_one(

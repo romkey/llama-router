@@ -32,6 +32,13 @@ from .form_values import (
     _utc_day_start,
     key_edits,
 )
+from .key_access import (
+    UNRESTRICTED,
+    allowable,
+    parse_access,
+    store_access,
+    with_access,
+)
 from .pages import dash_page_ctx, templates
 
 router = APIRouter()
@@ -49,6 +56,14 @@ async def self_service_defaults(db: Database) -> dict[str, Any]:
     raw_cap = await db.get_app_setting(CAP_SETTING)
     cap = float(raw_cap) if raw_cap else None
     return {"locality": locality, "daily_spend_cap_usd": cap}
+
+
+def _owner_or_admin(request: Request) -> None:
+    """A signed-in user, or an unconfigured dashboard's admin; not a
+    management key."""
+    user = getattr(request.state, "dashboard_user", None)
+    if user is not None and user.auth_source == management_keys.AUTH_SOURCE:
+        raise HTTPException(status_code=403, detail="Not available to management keys")
 
 
 def _owner_id(request: Request) -> int:
@@ -102,6 +117,8 @@ async def issue_my_key(request: Request) -> JSONResponse:
             detail=f"You already have {limit} API keys; revoke one to issue another",
         )
     defaults = await self_service_defaults(db)
+    # Limiting a key to some models only narrows it, so users may.
+    access = await parse_access(db, body.get("allowed"))
     plaintext, hashed = await new_api_key()
     key_id = await db.create_api_key(
         key_prefix=key_prefix(plaintext),
@@ -114,6 +131,8 @@ async def issue_my_key(request: Request) -> JSONResponse:
         owner_user_id=owner,
         label=label,
     )
+    if access is not UNRESTRICTED:
+        await store_access(db, key_id, access)
     return JSONResponse(
         {
             "id": key_id,
@@ -128,30 +147,46 @@ async def issue_my_key(request: Request) -> JSONResponse:
 
 
 async def _own_key(owner: int, key_id: int) -> dict[str, Any]:
-    key = await deps.get_db().get_api_key(key_id, owner_user_id=owner)
+    db = deps.get_db()
+    key = await db.get_api_key(key_id, owner_user_id=owner)
     if key is None:
         raise HTTPException(status_code=404, detail="API key not found")
-    return key
+    return await with_access(db, key)
 
 
-@router.get("/api/my-keys/{key_id}")
+@router.get("/api/my-keys/allowable")
+async def allowable_models(request: Request) -> JSONResponse:
+    """What a key can be limited to: model groups and known model names.
+    For the key forms on My API keys and the API Keys tab."""
+    _owner_or_admin(request)
+    db = deps.get_db()
+    served = [m.name for m in await db.get_all_provider_models()]
+    return JSONResponse(jsonable_encoder(await allowable(db, served)))
+
+
+@router.get("/api/my-keys/{key_id:int}")
 async def get_my_key(request: Request, key_id: int) -> JSONResponse:
     return JSONResponse(jsonable_encoder(await _own_key(_owner_id(request), key_id)))
 
 
-@router.patch("/api/my-keys/{key_id}")
+@router.patch("/api/my-keys/{key_id:int}")
 async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
-    """Change the key's label, routing_mode, allow_fallback or
-    session_affinity. Locality and the spend cap are an administrator's."""
+    """Change the key's label, routing_mode, allow_fallback,
+    session_affinity or allowed models. Locality and the spend cap are an
+    administrator's."""
     owner = _owner_id(request)
-    edits = key_edits(await deps.json_body(request), OWNER_KEY_FIELDS)
+    body = await deps.json_body(request)
+    edits = key_edits(body, OWNER_KEY_FIELDS)
     db = deps.get_db()
+    access = await parse_access(db, body["allowed"]) if "allowed" in body else None
     if not await db.update_api_key(key_id, edits, owner_user_id=owner):
         raise HTTPException(status_code=404, detail="API key not found")
+    if access is not None:
+        await store_access(db, key_id, access)
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
 
 
-@router.post("/api/my-keys/{key_id}/regenerate")
+@router.post("/api/my-keys/{key_id:int}/regenerate")
 async def regenerate_my_key(request: Request, key_id: int) -> JSONResponse:
     """A new secret for the key, shown once; the old one stops working."""
     owner = _owner_id(request)
@@ -163,7 +198,7 @@ async def regenerate_my_key(request: Request, key_id: int) -> JSONResponse:
     return JSONResponse({"id": key_id, "api_key": plaintext, "key_prefix": prefix})
 
 
-@router.delete("/api/my-keys/{key_id}")
+@router.delete("/api/my-keys/{key_id:int}")
 async def revoke_my_key(request: Request, key_id: int) -> JSONResponse:
     owner = _owner_id(request)
     if not await deps.get_db().delete_owned_api_key(key_id, owner):

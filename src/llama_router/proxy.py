@@ -20,7 +20,12 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .api import deps as ollama_deps
-from .auth import route_within_cap, routing_preferences_from_request
+from .auth import (
+    model_allowed,
+    require_model_access,
+    route_within_cap,
+    routing_preferences_from_request,
+)
 from .client_address import client_ip
 from .database import Database
 from .decision_policy import apply_decision_policy
@@ -93,11 +98,24 @@ async def proxy_json(
 
     rt: Router = deps.get_router()
     pm: ProviderManager = deps.get_pm()
+    await require_model_access(rt, prefs, model)
     session: str | None = None
     if generation:
-        model = await apply_decision_policy(
+        chosen = await apply_decision_policy(
             request, body, model, prefs, rt=rt, pm=pm, db=db
         )
+        if chosen != model and not await model_allowed(rt, prefs, chosen):
+            # The policy picked a model the key may not use: keep the one
+            # the client asked for, as for any choice that can't be served.
+            logger.warning(
+                "Decision policy chose %s, which API key %s may not use; "
+                "routing %s instead",
+                chosen,
+                prefs.key_id if prefs else None,
+                model,
+            )
+            chosen = model
+        model = chosen
         session = rt.session_for(request.headers, body, prefs, client_ip(request))
 
     result = await route_within_cap(

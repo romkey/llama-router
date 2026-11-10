@@ -171,6 +171,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "last_used_at",
             "owner_user_id",
             "label",
+            "restrict_models",
         ],
     ),
     (
@@ -192,6 +193,10 @@ _TABLES: list[tuple[str, list[str]]] = [
     (
         "api_key_model_pins",
         ["id", "api_key_id", "model_name", "provider_id", "created_at"],
+    ),
+    (
+        "api_key_allowed_models",
+        ["id", "api_key_id", "model_name", "group_id"],
     ),
     (
         "app_settings",
@@ -301,6 +306,7 @@ _SEQUENCE_TABLES = [
     "provider_addresses",
     "api_keys",
     "api_key_model_pins",
+    "api_key_allowed_models",
     "dashboard_users",
     "model_aliases",
     "model_groups",

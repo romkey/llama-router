@@ -16,12 +16,13 @@ router = APIRouter()
 async def list_models(request: Request) -> JSONResponse:
     """Aggregate models from all online providers, plus model groups (OpenAI
     format). A hub sees only the providers shared with it."""
-    await routing_preferences_from_request(deps.get_db(), request)
+    prefs = await routing_preferences_from_request(deps.get_db(), request)
     models = await listed_models(
         deps.get_db(),
         deps.get_router(),
         hub_only=from_hub(request),
         provider_id=hub_provider(request),
+        access=prefs.access if prefs else None,
     )
     return JSONResponse(
         content={
@@ -42,12 +43,13 @@ async def list_models(request: Request) -> JSONResponse:
 @router.get("/v1/models/{model_name:path}")
 async def get_model(model_name: str, request: Request) -> JSONResponse:
     """Return a single model or model group in OpenAI format."""
-    await routing_preferences_from_request(deps.get_db(), request)
+    prefs = await routing_preferences_from_request(deps.get_db(), request)
     models = await listed_models(
         deps.get_db(),
         deps.get_router(),
         hub_only=from_hub(request),
         provider_id=hub_provider(request),
+        access=prefs.access if prefs else None,
     )
     for m in models:
         if m["name"] == model_name:

@@ -8,7 +8,7 @@ from typing import Any
 from .database import Database
 from .models import ProviderStatus
 from .router import Router
-from .routing_table import RoutingInputs
+from .routing_table import ModelAccess, RoutingInputs, RoutingTable
 
 
 async def listed_models(
@@ -17,8 +17,12 @@ async def listed_models(
     *,
     hub_only: bool = False,
     provider_id: int | None = None,
+    access: ModelAccess | None = None,
 ) -> list[dict[str, Any]]:
     """Rows for ``/api/tags`` and ``/v1/models``, sorted by name.
+
+    With *access* (an API key limited to some models and groups) only what
+    the key may use is listed.
 
     Served models and groups come from the inputs of the current routing
     table, so listing reads no rows. A group appears once at least one member
@@ -39,11 +43,37 @@ async def listed_models(
             inputs, hub_only=hub_only, exclude_ids=exclude, only_id=provider_id
         )
     if table is None or not table.groups or provider_id is not None:
-        return models
+        return _allowed(models, table, access)
     rows = [m for m in models if m["name"] not in table.groups]
     rows += table.group_listing(hub_only)
     rows.sort(key=lambda m: str(m["name"]))
-    return rows
+    return _allowed(rows, table, access)
+
+
+def _allowed(
+    rows: list[dict[str, Any]],
+    table: RoutingTable | None,
+    access: ModelAccess | None,
+) -> list[dict[str, Any]]:
+    if access is None:
+        return rows
+    if table is None:
+        # No routing table yet: names only, without aliases.
+        names = access.models | access.groups
+        return [m for m in rows if m["name"] in names]
+    return [m for m in rows if table.allows(access, str(m["name"]))]
+
+
+async def key_allows(
+    router: Router | None, access: ModelAccess | None, name: str
+) -> bool:
+    """Whether a key limited to *access* (None: any) may use *name*."""
+    if access is None:
+        return True
+    table = await router.current_table() if router is not None else None
+    if table is None:
+        return name in access.models or name in access.groups
+    return table.allows(access, name)
 
 
 def served_models(
