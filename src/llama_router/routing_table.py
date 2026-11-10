@@ -185,6 +185,18 @@ class RoutingInputs:
     groups: list[ModelGroup] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class ModelAccess:
+    """The models and groups an API key may use, by name.
+
+    A model allows it under any of its aliases. A group allows the group's
+    name only, not its members by their own names.
+    """
+
+    models: frozenset[str] = frozenset()
+    groups: frozenset[str] = frozenset()
+
+
 def alias_groups(aliases: dict[str, str]) -> dict[str, frozenset[str]]:
     """Every name that belongs to an alias group -> all names in the group.
 
@@ -550,9 +562,24 @@ class RoutingTable:
     group_reach: dict[str, tuple[bool, bool]] = field(default_factory=dict)
     # Problems found while building, such as a group shadowing a model.
     warnings: tuple[str, ...] = ()
+    # Name -> every name of its alias group (see alias_groups).
+    alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
 
     def is_group(self, name: str) -> bool:
         return name in self.groups
+
+    def allows(self, access: ModelAccess | None, name: str) -> bool:
+        """Whether an API key limited to *access* may use *name* (None:
+        unlimited). A group name is checked against the key's groups; any
+        other name against its models, under any alias."""
+        if access is None:
+            return True
+        if name in self.groups:
+            return name in access.groups
+        names = self.alias_names.get(name)
+        if names is None:
+            return name in access.models
+        return not names.isdisjoint(access.models)
 
     def group_listing(self, hub_only: bool = False) -> list[dict[str, Any]]:
         """Model-list rows for the groups a client can use, shaped like the
@@ -683,6 +710,7 @@ class TableBase:
     prices: PriceBook | None = None
     groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 def build_table(
@@ -718,6 +746,7 @@ def reload(inputs: RoutingInputs) -> TableBase:
     grouped: dict[tuple[str, str], list[Candidate]] = {}
     backend_names: dict[tuple[int, str], str] = {}
     groups = alias_groups(inputs.aliases)
+    base.alias_names = groups
     book = PriceBook(inputs.providers, inputs.models, inputs.prices)
     base.prices = book
 
@@ -826,6 +855,7 @@ def rescore(
         prices=base.prices,
         groups=base.groups,
         warnings=base.warnings,
+        alias_names=base.alias_names,
     )
     hot: dict[int, set[str]] = {}
     rtt: dict[int, float | None] = {}

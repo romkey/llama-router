@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..auth import from_hub, hub_provider, routing_preferences_from_request
-from ..model_listing import listed_models
+from ..model_listing import key_allows, listed_models
 from . import deps
 
 router = APIRouter()
@@ -14,12 +14,13 @@ router = APIRouter()
 async def list_tags(request: Request) -> JSONResponse:
     """Aggregate models from all online providers, plus model groups (a hub
     sees only the providers shared with it)."""
-    await routing_preferences_from_request(deps.get_db(), request)
+    prefs = await routing_preferences_from_request(deps.get_db(), request)
     models = await listed_models(
         deps.get_db(),
         deps.get_router(),
         hub_only=from_hub(request),
         provider_id=hub_provider(request),
+        access=prefs.access if prefs else None,
     )
     return JSONResponse(content={"models": models})
 
@@ -36,7 +37,8 @@ async def version(request: Request) -> JSONResponse:
 async def ps(request: Request) -> JSONResponse:
     """Show which models are being served across providers (a hub sees only
     the providers shared with it)."""
-    await routing_preferences_from_request(deps.get_db(), request)
+    prefs = await routing_preferences_from_request(deps.get_db(), request)
+    access = prefs.access if prefs else None
     pm = deps.get_pm()
     infos = await pm.list_provider_infos()
     hub = from_hub(request)
@@ -49,6 +51,8 @@ async def ps(request: Request) -> JSONResponse:
             continue
         if info.active_requests > 0:
             for m in info.models:
+                if not await key_allows(deps.get_router(), access, m.name):
+                    continue
                 running.append(
                     {
                         "name": m.name,

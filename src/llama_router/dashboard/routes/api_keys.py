@@ -24,6 +24,7 @@ from ..form_values import (
     _usd,
     key_edits,
 )
+from ..key_access import UNRESTRICTED, parse_access, store_access, with_access
 from .workers import _iso
 
 router = APIRouter()
@@ -85,9 +86,10 @@ async def api_generate_key(request: Request):
     label = _key_label(body.get("label"))
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
+    access = await parse_access(db, body.get("allowed"))
     plaintext, hashed = await new_api_key()
 
-    await db.create_api_key(
+    key_id = await db.create_api_key(
         key_prefix=key_prefix(plaintext),
         key_hash=hashed,
         routing_mode=routing_mode,
@@ -97,8 +99,11 @@ async def api_generate_key(request: Request):
         daily_spend_cap_usd=cap,
         label=label,
     )
+    if access is not UNRESTRICTED:
+        await store_access(db, key_id, access)
     return JSONResponse(
         {
+            "id": key_id,
             "api_key": plaintext,
             "label": label,
             "daily_spend_cap_usd": cap,
@@ -113,22 +118,31 @@ async def api_generate_key(request: Request):
 @router.get("/api/keys/{key_id:int}")
 async def api_get_key(key_id: int):
     """One key's settings; never the key itself."""
-    key = await deps.get_db().get_api_key(key_id)
+    db = deps.get_db()
+    key = await db.get_api_key(key_id)
     if key is None:
         raise HTTPException(status_code=404, detail="API key not found")
-    return JSONResponse(jsonable_encoder(key))
+    return JSONResponse(jsonable_encoder(await with_access(db, key)))
 
 
 @router.patch("/api/keys/{key_id:int}")
 async def api_update_key(key_id: int, request: Request):
     """Change any of label, routing_mode, allow_fallback, session_affinity,
-    locality and daily_spend_cap_usd; fields left out stay as they are.
-    Works on keys users issued themselves too."""
+    locality, daily_spend_cap_usd and allowed (the models and groups the key
+    may use; null for any); fields left out stay as they are. Works on keys
+    users issued themselves too."""
     db = deps.get_db()
-    edits = key_edits(await deps.json_body(request), ADMIN_KEY_FIELDS)
+    body = await deps.json_body(request)
+    edits = key_edits(body, ADMIN_KEY_FIELDS)
+    access = await parse_access(db, body["allowed"]) if "allowed" in body else None
     if not await db.update_api_key(key_id, edits):
         raise HTTPException(status_code=404, detail="API key not found")
-    return JSONResponse(jsonable_encoder(await db.get_api_key(key_id)))
+    if access is not None:
+        await store_access(db, key_id, access)
+    key = await db.get_api_key(key_id)
+    if key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse(jsonable_encoder(await with_access(db, key)))
 
 
 @router.post("/api/keys/{key_id:int}/regenerate")

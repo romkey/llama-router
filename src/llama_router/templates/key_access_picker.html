@@ -1,0 +1,139 @@
+{#- Picker for the models and model groups an API key may use.
+
+    key_access_fields(prefix) renders the fields; key_access_script() the
+    shared JavaScript, once per page. KeyAccess.render(prefix, allowed) fills
+    a picker (allowed: null for any model, or {models, groups}) and
+    KeyAccess.value(prefix) reads it back in the same shape. -#}
+
+{% macro key_access_fields(prefix) %}
+<fieldset class="mb-2" id="{{ prefix }}-access">
+    <legend class="form-label small text-muted mb-1">Models this key can use</legend>
+    <div class="form-check form-check-inline">
+        <input class="form-check-input" type="radio" name="{{ prefix }}-access-mode" id="{{ prefix }}-access-all" value="all" checked onchange="KeyAccess.toggle('{{ prefix }}')">
+        <label class="form-check-label" for="{{ prefix }}-access-all">All models</label>
+    </div>
+    <div class="form-check form-check-inline">
+        <input class="form-check-input" type="radio" name="{{ prefix }}-access-mode" id="{{ prefix }}-access-some" value="some" onchange="KeyAccess.toggle('{{ prefix }}')">
+        <label class="form-check-label" for="{{ prefix }}-access-some">Only these</label>
+    </div>
+    <div id="{{ prefix }}-access-picker" class="border rounded p-2 mt-1 d-none">
+        <div class="small fw-semibold mb-1">Groups</div>
+        <div id="{{ prefix }}-access-groups" class="small mb-2" style="max-height: 8rem; overflow-y: auto"></div>
+        <div class="small fw-semibold mb-1">Models</div>
+        <input type="search" class="form-control form-control-sm mb-1" id="{{ prefix }}-access-filter" placeholder="Filter models" aria-label="Filter models" oninput="KeyAccess.filter('{{ prefix }}')">
+        <div id="{{ prefix }}-access-models" class="small mb-2" style="max-height: 10rem; overflow-y: auto"></div>
+        <div class="input-group input-group-sm mb-1">
+            <input type="text" class="form-control" id="{{ prefix }}-access-add" maxlength="255" placeholder="Another model name" aria-label="Another model name" onkeydown="if (event.key === 'Enter') { event.preventDefault(); KeyAccess.addModel('{{ prefix }}'); }">
+            <button class="btn btn-outline-secondary" type="button" onclick="KeyAccess.addModel('{{ prefix }}')">Add</button>
+        </div>
+        <div class="form-text mt-0">
+            Allowing a group lets the key use the group's name. It does not allow the
+            group's member models by their own names; tick those too if the key
+            should use them directly. A model is allowed under any of its aliases.
+        </div>
+    </div>
+</fieldset>
+{% endmacro %}
+
+{% macro key_access_script() %}
+<script>
+var KeyAccess = (function() {
+    var choices = null;
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+
+    function load() {
+        if (!choices) {
+            choices = fetch('/api/my-keys/allowable').then(function(r) {
+                return r.ok ? r.json() : {groups: [], models: []};
+            }).catch(function() { return {groups: [], models: []}; });
+        }
+        return choices;
+    }
+
+    function box(prefix, kind, value, label, title, checked) {
+        var id = prefix + '-access-' + kind + '-' + Math.random().toString(36).slice(2);
+        return '<div class="form-check" data-name="' + esc(String(label).toLowerCase()) + '">' +
+            '<input class="form-check-input" type="checkbox" id="' + id + '" data-kind="' + kind + '" value="' + esc(value) + '"' + (checked ? ' checked' : '') + '>' +
+            '<label class="form-check-label" for="' + id + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(label) + '</label></div>';
+    }
+
+    function render(prefix, allowed) {
+        document.getElementById(prefix + '-access-' + (allowed ? 'some' : 'all')).checked = true;
+        toggle(prefix);
+        document.getElementById(prefix + '-access-filter').value = '';
+        var wantGroups = {}, wantModels = {};
+        ((allowed && allowed.groups) || []).forEach(function(g) { wantGroups[g.id] = true; });
+        ((allowed && allowed.models) || []).forEach(function(m) { wantModels[m] = true; });
+        return load().then(function(c) {
+            var groups = document.getElementById(prefix + '-access-groups');
+            groups.innerHTML = c.groups.length ? c.groups.map(function(g) {
+                return box(prefix, 'group', g.id, g.name, 'Members: ' + (g.members || []).join(', '), wantGroups[g.id]);
+            }).join('') : '<span class="text-muted">No model groups.</span>';
+            var names = c.models.slice();
+            Object.keys(wantModels).forEach(function(m) { if (names.indexOf(m) < 0) names.push(m); });
+            names.sort();
+            var models = document.getElementById(prefix + '-access-models');
+            models.innerHTML = names.length ? names.map(function(m) {
+                return box(prefix, 'model', m, m, '', wantModels[m]);
+            }).join('') : '<span class="text-muted">No models known yet.</span>';
+        });
+    }
+
+    function toggle(prefix) {
+        var some = document.getElementById(prefix + '-access-some').checked;
+        document.getElementById(prefix + '-access-picker').classList.toggle('d-none', !some);
+        if (some) load();
+    }
+
+    function filter(prefix) {
+        var q = document.getElementById(prefix + '-access-filter').value.trim().toLowerCase();
+        document.querySelectorAll('#' + prefix + '-access-models .form-check').forEach(function(el) {
+            el.classList.toggle('d-none', q !== '' && el.dataset.name.indexOf(q) < 0);
+        });
+    }
+
+    function addModel(prefix) {
+        var input = document.getElementById(prefix + '-access-add');
+        var name = input.value.trim();
+        if (!name) return;
+        var models = document.getElementById(prefix + '-access-models');
+        var existing = Array.prototype.find.call(
+            models.querySelectorAll('input[data-kind="model"]'),
+            function(el) { return el.value === name; });
+        if (existing) {
+            existing.checked = true;
+        } else {
+            if (!models.querySelector('.form-check')) models.innerHTML = '';
+            models.insertAdjacentHTML('beforeend', box(prefix, 'model', name, name, '', true));
+        }
+        input.value = '';
+    }
+
+    function value(prefix) {
+        if (!document.getElementById(prefix + '-access-some').checked) return null;
+        var picker = document.getElementById(prefix + '-access-picker');
+        var models = [], groups = [];
+        picker.querySelectorAll('input[type="checkbox"]:checked').forEach(function(el) {
+            if (el.dataset.kind === 'group') groups.push(parseInt(el.value, 10));
+            else models.push(el.value);
+        });
+        return {models: models, groups: groups};
+    }
+
+    function summary(k) {
+        if (!k.restrict_models) return 'all models';
+        var parts = [];
+        if (k.allowed_model_count) parts.push(k.allowed_model_count + (k.allowed_model_count === 1 ? ' model' : ' models'));
+        if (k.allowed_group_count) parts.push(k.allowed_group_count + (k.allowed_group_count === 1 ? ' group' : ' groups'));
+        return parts.length ? parts.join(', ') : 'none';
+    }
+
+    return {render: render, toggle: toggle, filter: filter, addModel: addModel, value: value, summary: summary, load: load};
+})();
+</script>
+{% endmacro %}

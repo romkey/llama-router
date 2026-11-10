@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from .. import decision_service as svc
 from .. import decisions as d
-from ..auth import routing_preferences_from_request
+from ..auth import require_model_access, routing_preferences_from_request
 from ..endpoints import normalize_endpoint
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
@@ -81,6 +81,7 @@ async def serve(
     pm = deps.get_pm()
     db = deps.get_db()
 
+    await require_model_access(rt, prefs, req.model)
     for attempt in range(2):
         result = await rt.route(req.model, path, prefs)
         if not result:

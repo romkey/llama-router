@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request
 
 from .background import spawn
 from .config import settings
-from .database import AUTH_CHANGES, CHANGE_PROVIDERS, Database
+from .database import AUTH_CHANGES, CHANGE_GROUPS, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
 from .pricing import estimate_tokens
 from .provider_secrets import (
@@ -25,7 +25,7 @@ from .provider_secrets import (
     pbkdf2_peppers,
 )
 from .router import ROUTING_MODES, Router, RouteResult, RoutingPreferences
-from .routing_table import DEFAULT_MODE
+from .routing_table import DEFAULT_MODE, ModelAccess
 from .spend import RESERVATION_STATE, cap_reached, tracker_for
 from .upstream_url import LOCALITIES
 from .worker_link.relay import SCOPE_KEY as _RELAY_SCOPE_KEY
@@ -78,9 +78,9 @@ class _AuthCache:
 
     Keys are cached by their SHA-256, never in plain text. Entries expire after
     a few minutes (unknown keys and the auth setting sooner) and are dropped at
-    once when keys, pins, providers or the auth setting change here, so
-    dashboard edits apply to the next request. Other replicas sharing the
-    database pick them up when their entries expire.
+    once when keys, pins, providers, model groups or the auth setting change
+    here, so dashboard edits apply to the next request. Other replicas
+    sharing the database pick them up when their entries expire.
     """
 
     def __init__(self, db: Database) -> None:
@@ -96,7 +96,9 @@ class _AuthCache:
         db.add_change_listener(self._on_change)
 
     def _on_change(self, reason: str) -> None:
-        if reason in AUTH_CHANGES or reason == CHANGE_PROVIDERS:
+        # Groups too: a key allowed a group holds its name, which a rename
+        # or delete changes.
+        if reason in AUTH_CHANGES or reason in (CHANGE_PROVIDERS, CHANGE_GROUPS):
             self.clear()
 
     def clear(self) -> None:
@@ -232,8 +234,20 @@ async def _resolve_key(
         locality=_locality(record.get("locality")),
         daily_spend_cap_usd=record.get("daily_spend_cap_usd"),
         decision_policy=await _decision_policy(db, int(record["id"])),
+        access=await _model_access(db, int(record["id"])),
     )
     return prefs, int(record["id"])
+
+
+async def _model_access(db: Database, key_id: int) -> ModelAccess | None:
+    """The models and groups the key may use, or None for any."""
+    access = await db.get_api_key_access(key_id)
+    if access is None or not access["restricted"]:
+        return None
+    return ModelAccess(
+        models=frozenset(access["models"]),
+        groups=frozenset(str(g["name"]) for g in access["groups"]),
+    )
 
 
 async def _decision_policy(db: Database, key_id: int) -> DecisionPolicy | None:
@@ -331,6 +345,26 @@ async def _apply_spend_cap(
     return replace(prefs, locality="local", spend_capped=True)
 
 
+async def model_allowed(
+    rt: Router, prefs: RoutingPreferences | None, model: str
+) -> bool:
+    """Whether the request's API key may use *model* (keys not limited to
+    some models may use any)."""
+    if prefs is None or prefs.access is None:
+        return True
+    return (await rt.current_table()).allows(prefs.access, model)
+
+
+async def require_model_access(
+    rt: Router, prefs: RoutingPreferences | None, model: str
+) -> None:
+    """Refuse (HTTP 403) a model the request's API key may not use."""
+    if not await model_allowed(rt, prefs, model):
+        raise HTTPException(
+            status_code=403, detail=f"This API key may not use model '{model}'"
+        )
+
+
 def _is_media_endpoint(path: str) -> bool:
     return "/images/" in path or "/audio/" in path
 
@@ -356,6 +390,7 @@ async def route_within_cap(
     unpriced model) when that is not possible.
     """
     path = request.url.path
+    await require_model_access(rt, prefs, model)
     result = await rt.route(model, path, prefs, session=session)
     if (
         result is None

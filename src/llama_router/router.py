@@ -46,6 +46,7 @@ from .routing_table import (
     MODES,
     TIER_OK,
     Candidate,
+    ModelAccess,
     RoutingInputs,
     RoutingTable,
     TableBase,
@@ -116,6 +117,8 @@ class RoutingPreferences:
     # The hub asked for this one provider (the worker shares providers
     # individually): only it may serve the request, with no fallback to others.
     hub_provider: int | None = None
+    # The models and groups the API key may use; None: any.
+    access: ModelAccess | None = None
 
 
 class Router:
@@ -403,6 +406,10 @@ class Router:
         mode = preferences.mode if preferences else DEFAULT_MODE
         locality = preferences.locality if preferences else None
         hub_only = bool(preferences and preferences.hub_only)
+        access = preferences.access if preferences else None
+        if not table.allows(access, model_name):
+            # Callers refuse such a request first (HTTP 403); never route it.
+            return None
         if preferences is not None and preferences.hub_provider is not None:
             return self._route_hub_provider(
                 table,
@@ -413,10 +420,11 @@ class Router:
                 mode,
                 locality,
                 pins,
+                access,
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
-                table, model_name, ENDPOINTS[path][0], locality, hub_only
+                table, model_name, ENDPOINTS[path][0], locality, hub_only, access
             )
         if mode not in MODES:
             mode = DEFAULT_MODE
@@ -428,6 +436,9 @@ class Router:
         active = self._pm.active_requests
 
         for candidate_model in chain:
+            if not table.allows(access, candidate_model):
+                # A fallback never takes a key to a model it may not use.
+                continue
             if pins:
                 pid = pins.get(candidate_model)
                 if pid is not None:
@@ -892,14 +903,17 @@ class Router:
         mode: str,
         locality: str | None,
         pins: dict[str, int] | None = None,
+        access: ModelAccess | None = None,
     ) -> RouteResult | None:
         """Route to the one provider the hub asked for, or nowhere.
 
         The worker's API key still has its say: a model it pins to another
-        provider is not served by this one.
+        provider, or may not use, is not served by this one.
         """
         chain = table.chain(model_name) if allow_fallback else (model_name,)
         for candidate_model in chain:
+            if not table.allows(access, candidate_model):
+                continue
             pinned = pins.get(candidate_model) if pins else None
             if pinned is not None and pinned != pid:
                 logger.warning(
@@ -962,13 +976,19 @@ class Router:
         protocol: str | None,
         locality: str | None = None,
         hub_only: bool = False,
+        access: ModelAccess | None = None,
     ) -> RouteResult | None:
-        """Chaos mode: pick a random online provider and random eligible model."""
-        entries = [
-            e
-            for e in table.chaos.get(protocol, ())
-            if _eligible(e[0], locality, hub_only)
-        ]
+        """Chaos mode: pick a random online provider and random eligible model
+        (one the key may use)."""
+        entries = []
+        for provider, models in table.chaos.get(protocol, ()):
+            if not _eligible(provider, locality, hub_only):
+                continue
+            if access is not None:
+                models = tuple(m for m in models if table.allows(access, m))
+                if not models:
+                    continue
+            entries.append((provider, models))
         if not entries:
             return None
         provider, eligible = random.choice(entries)  # noqa: S311  # chaos mode

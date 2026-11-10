@@ -19,6 +19,13 @@ described in their git tags and GitHub Releases.
   working at once (`POST /api/keys/{id}/regenerate`,
   `POST /api/my-keys/{id}/regenerate`).
 
+- API keys can be limited to chosen models and model groups, when creating
+  or editing them, by admins and by users for their own keys. A model is
+  allowed under any of its aliases; a group by its own name only, not its
+  members by theirs. Other models are refused with HTTP 403, fallbacks and
+  chaos mode stay within the list, and model listings show only what the key
+  may use.
+
 ### Deprecated
 
 - `POST /api/keys/{id}/spend-cap` and `POST /api/keys/{id}/locality`; use

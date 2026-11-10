@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -315,8 +316,11 @@ async def _decide(
 
     Failures are logged here and raised as :class:`_FailedError`.
     """
+    # The decision model belongs to the key's policy, which an administrator
+    # sets: the key's own model limits don't apply to it.
+    judge_prefs = replace(prefs, access=None) if prefs is not None else None
     for attempt in range(2):
-        result = await rt.route(req.model, DECISION_PATH, prefs)
+        result = await rt.route(req.model, DECISION_PATH, judge_prefs)
         if not result:
             raise _FailedError(
                 f"no available provider for decision model {req.model!r}"

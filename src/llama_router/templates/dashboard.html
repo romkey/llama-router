@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "status_macros.html" import status_badge, live_mark %}
+{% from "key_access_picker.html" import key_access_fields, key_access_script %}
 {% block title %}Dashboard - llama-router{% endblock %}
 
 {% block content %}
@@ -784,6 +785,7 @@
                             <input id="new-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
                             <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
                         </div>
+                        {{ key_access_fields('new-key') }}
                         <div class="mb-3">
                             <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
                             <select id="new-key-affinity" class="form-select form-select-sm">
@@ -850,6 +852,7 @@
                                         <th>Sessions</th>
                                         <th>Providers</th>
                                         <th title="Spent today (UTC) / daily cap">Spend</th>
+                                        <th>Models</th>
                                         <th>Pins</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
@@ -884,6 +887,7 @@
                                             {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
                                             {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap" aria-label="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
                                         </td>
+                                        <td class="small text-nowrap">{% if not k.restrict_models %}<span class="text-muted">all</span>{% else %}{% set parts = [] %}{% if k.allowed_model_count %}{% set _ = parts.append(k.allowed_model_count ~ (' model' if k.allowed_model_count == 1 else ' models')) %}{% endif %}{% if k.allowed_group_count %}{% set _ = parts.append(k.allowed_group_count ~ (' group' if k.allowed_group_count == 1 else ' groups')) %}{% endif %}<span class="badge bg-info text-dark">{{ parts | join(', ') if parts else 'none' }}</span>{% endif %}</td>
                                         <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
                                         <td class="small text-muted">{{ k.created_at | when }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | when }}</td>
@@ -2098,6 +2102,7 @@
                         <option value="off">Off: route every request afresh</option>
                     </select>
                 </div>
+                {{ key_access_fields('edit-key') }}
                 <div id="edit-key-status" class="small text-danger" role="status"></div>
             </div>
             <div class="modal-footer">
@@ -2166,6 +2171,7 @@
 {% endblock %}
 
 {% block scripts %}
+{{ key_access_script() }}
 {% if add_provider_prefill is not none %}
 <script>
 // A failed Add Provider form: reopen the dialog with what was typed.
@@ -3132,7 +3138,7 @@ function generateApiKey() {
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label, allowed: KeyAccess.value('new-key')})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -3226,6 +3232,8 @@ function openKeyEdit(keyId, keyPrefix) {
         document.getElementById('edit-key-cap').value = k.daily_spend_cap_usd == null ? '' : k.daily_spend_cap_usd;
         document.getElementById('edit-key-affinity').value =
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
+        return KeyAccess.render('edit-key', k.allowed);
+    }).then(function() {
         status.textContent = '';
     }).catch(function(err) { status.textContent = err.message; });
 }
@@ -3243,7 +3251,8 @@ function saveKeyEdit() {
             allow_fallback: document.getElementById('edit-key-fallback').checked,
             locality: document.getElementById('edit-key-locality').value,
             daily_spend_cap_usd: cap === '' ? null : cap,
-            session_affinity: document.getElementById('edit-key-affinity').value
+            session_affinity: document.getElementById('edit-key-affinity').value,
+            allowed: KeyAccess.value('edit-key')
         })
     }).then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to save'); });
