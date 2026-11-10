@@ -80,6 +80,52 @@
     </div>
 </div>
 
+<!-- Edit one of the user's keys. Providers and spend cap are read-only. -->
+<div class="modal fade" id="myEditKeyModal" tabindex="-1" aria-labelledby="myEditKeyTitle">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="h5 modal-title" id="myEditKeyTitle">Edit key <code id="my-edit-prefix"></code></h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <label for="my-edit-label" class="form-label small text-muted mb-1">Label (optional)</label>
+                    <input id="my-edit-label" type="text" maxlength="100" class="form-control form-control-sm" autocomplete="off">
+                </div>
+                <div class="mb-2">
+                    <label for="my-edit-mode" class="form-label small text-muted mb-1">Routing priority</label>
+                    <select id="my-edit-mode" class="form-select form-select-sm">
+                        <option value="balanced">Balanced (fastest overall response)</option>
+                        <option value="latency">Minimal latency</option>
+                        <option value="throughput">Maximum tokens/sec</option>
+                        <option value="cheapest">Cheapest (lowest price per request)</option>
+                        <option value="chaos">Chaos mode (random provider/model)</option>
+                    </select>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="my-edit-fallback">
+                    <label class="form-check-label" for="my-edit-fallback">Allow fallback models</label>
+                </div>
+                <div class="mb-2">
+                    <label for="my-edit-affinity" class="form-label small text-muted mb-1">Session affinity</label>
+                    <select id="my-edit-affinity" class="form-select form-select-sm">
+                        <option value="default">Server default</option>
+                        <option value="on">On: keep each conversation on one provider</option>
+                        <option value="off">Off: route every request afresh</option>
+                    </select>
+                </div>
+                <div class="small text-muted mb-2" id="my-edit-limits"></div>
+                <div id="my-edit-status" class="small text-danger" role="status"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="my-edit-save" onclick="saveMyKey()" disabled>Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Shows a new key until the user closes it: it can't be shown again. -->
 <div class="modal fade" id="myNewKeyModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
     <div class="modal-dialog">
@@ -148,7 +194,14 @@ function loadMyKeys() {
                 '<td class="small text-nowrap">' + money(k.spent_today_usd) + cap + '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.created_at) + '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.last_used_at) + '</td>' +
-                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" title="Revoke" data-revoke-key' +
+                '<td class="text-end text-nowrap">' +
+                '<button type="button" class="btn btn-sm btn-outline-primary me-1" title="Edit" data-edit-key' +
+                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
+                    ' aria-label="Edit key ' + esc(k.key_prefix) + '"><i class="bi bi-pencil-square" aria-hidden="true"></i></button>' +
+                '<button type="button" class="btn btn-sm btn-outline-warning me-1" title="Regenerate secret" data-regenerate-key' +
+                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
+                    ' aria-label="Regenerate secret of key ' + esc(k.key_prefix) + '"><i class="bi bi-arrow-repeat" aria-hidden="true"></i></button>' +
+                '<button type="button" class="btn btn-sm btn-outline-danger" title="Revoke" data-revoke-key' +
                     ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
                     ' aria-label="Revoke key ' + esc(k.key_prefix) + '"><i class="bi bi-trash" aria-hidden="true"></i></button></td>' +
                 '</tr>';
@@ -173,16 +226,80 @@ function issueMyKey() {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
         return r.json();
     }).then(function(data) {
-        var input = document.getElementById('my-new-key');
-        input.value = data.api_key;
-        document.getElementById('my-new-key-copy').textContent = 'Copy';
-        var modalEl = document.getElementById('myNewKeyModal');
-        modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
-        modalEl.addEventListener('hidden.bs.modal', function() { input.value = ''; }, {once: true});
-        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        showNewKey(data.api_key);
         document.getElementById('my-key-label').value = '';
         loadMyKeys();
     }).catch(function(err) { alert(err.message || 'Failed to issue key'); });
+}
+
+function showNewKey(plaintext) {
+    var input = document.getElementById('my-new-key');
+    input.value = plaintext;
+    document.getElementById('my-new-key-copy').textContent = 'Copy';
+    var modalEl = document.getElementById('myNewKeyModal');
+    modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
+    modalEl.addEventListener('hidden.bs.modal', function() { input.value = ''; }, {once: true});
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+var _myEditId = null;
+
+function editMyKey(id, prefix) {
+    _myEditId = id;
+    document.getElementById('my-edit-prefix').textContent = prefix;
+    var status = document.getElementById('my-edit-status');
+    var save = document.getElementById('my-edit-save');
+    // Save stays off until this key's settings are in the form.
+    save.disabled = true;
+    status.textContent = 'Loading…';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('myEditKeyModal')).show();
+    fetch('/api/my-keys/' + id).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to load key'); });
+        return r.json();
+    }).then(function(k) {
+        if (_myEditId !== id) return;  // another key was opened since
+        document.getElementById('my-edit-label').value = k.label || '';
+        document.getElementById('my-edit-mode').value = k.routing_mode;
+        document.getElementById('my-edit-fallback').checked = !!k.allow_fallback;
+        document.getElementById('my-edit-affinity').value =
+            k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
+        document.getElementById('my-edit-limits').textContent =
+            'Providers: ' + localityLabel(k.locality) +
+            (k.daily_spend_cap_usd == null ? '' : '; daily spend cap ' + money(k.daily_spend_cap_usd)) +
+            '. An administrator sets these.';
+        status.textContent = '';
+        save.disabled = false;
+    }).catch(function(err) { if (_myEditId === id) status.textContent = err.message; });
+}
+
+function saveMyKey() {
+    if (_myEditId == null || document.getElementById('my-edit-save').disabled) return;
+    var status = document.getElementById('my-edit-status');
+    fetch('/api/my-keys/' + _myEditId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            label: document.getElementById('my-edit-label').value,
+            routing_mode: document.getElementById('my-edit-mode').value,
+            allow_fallback: document.getElementById('my-edit-fallback').checked,
+            session_affinity: document.getElementById('my-edit-affinity').value
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to save'); });
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('myEditKeyModal')).hide();
+        loadMyKeys();
+    }).catch(function(err) { status.textContent = err.message; });
+}
+
+function regenerateMyKey(id, prefix) {
+    if (!confirm('Regenerate the secret of key ' + prefix + '? The current key stops working at once; its settings stay.')) return;
+    fetch('/api/my-keys/' + id + '/regenerate', {method: 'POST'}).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    }).then(function(data) {
+        showNewKey(data.api_key);
+        loadMyKeys();
+    }).catch(function(err) { alert(err.message || 'Failed to regenerate key'); });
 }
 
 function copyMyNewKey() {
@@ -202,7 +319,11 @@ function revokeMyKey(id, prefix) {
 
 document.getElementById('my-keys-body').addEventListener('click', function(ev) {
     var btn = ev.target.closest('[data-revoke-key]');
-    if (btn) revokeMyKey(btn.dataset.id, btn.dataset.prefix);
+    if (btn) { revokeMyKey(btn.dataset.id, btn.dataset.prefix); return; }
+    btn = ev.target.closest('[data-edit-key]');
+    if (btn) { editMyKey(btn.dataset.id, btn.dataset.prefix); return; }
+    btn = ev.target.closest('[data-regenerate-key]');
+    if (btn) regenerateMyKey(btn.dataset.id, btn.dataset.prefix);
 });
 
 loadMyKeys();

@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from ..router import ROUTING_MODES
 from ..upstream_url import LOCALITIES
 
 
@@ -111,3 +112,56 @@ def _model_lines(text: str | None) -> list[str]:
                 raise ValueError("model name too long")
             out.append(name)
     return out
+
+
+ADMIN_KEY_FIELDS = (
+    "label",
+    "routing_mode",
+    "allow_fallback",
+    "session_affinity",
+    "locality",
+    "daily_spend_cap_usd",
+)
+# Locality and the spend cap of a self-issued key are an administrator's to
+# set, so its owner can't widen them.
+OWNER_KEY_FIELDS = ("label", "routing_mode", "allow_fallback", "session_affinity")
+
+
+def _routing_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode not in ROUTING_MODES:
+        raise HTTPException(status_code=400, detail="Invalid routing_mode")
+    return mode
+
+
+def _flag(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise HTTPException(status_code=400, detail=f"{name} must be true or false")
+
+
+_KEY_PARSERS: dict[str, Any] = {
+    "label": _key_label,
+    "routing_mode": _routing_mode,
+    "allow_fallback": lambda v: _flag(v, "allow_fallback"),
+    "session_affinity": _tristate,
+    "locality": _key_locality,
+    "daily_spend_cap_usd": lambda v: _usd(v, "daily spend cap"),
+}
+
+
+def key_edits(body: dict[str, Any], allowed: tuple[str, ...]) -> dict[str, Any]:
+    """The API key settings an edit request changes, validated.
+
+    Only fields present in *body* are returned (absent means unchanged). A
+    field outside *allowed* that is not a key setting at all is ignored; one
+    that is a setting the caller may not change is a 400, so the client
+    learns rather than having it silently dropped.
+    """
+    forbidden = sorted(k for k in body if k in _KEY_PARSERS and k not in allowed)
+    if forbidden:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You can't change {', '.join(forbidden)} on this key",
+        )
+    return {name: _KEY_PARSERS[name](body[name]) for name in allowed if name in body}
