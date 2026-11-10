@@ -596,3 +596,35 @@ async def test_chaos_mode_keeps_a_provider_scoped_member_on_its_provider(
         r = await rt.route("coding", CHAT, prefs)
         assert r is not None
         assert r.provider.id == fast.id
+
+
+async def test_chaos_mode_reaches_members_named_by_raw_name_or_alias(
+    db: Database, pm: ProviderManager
+) -> None:
+    """Members a group reaches through a raw name or an alias are pickable
+    in chaos mode too, as they are when the group is routed normally."""
+    added = await db.add_provider("p", ProviderProtocol.OPENAI)
+    pid = added.require_id()
+    await db.add_address(pid, FAST, is_preferred=True)
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    await db.set_provider_models(
+        pid,
+        [
+            ProviderModel(provider_id=pid, name="served", raw_name="raw:latest"),
+            ProviderModel(provider_id=pid, name="canon"),
+            ProviderModel(provider_id=pid, name="unrelated"),
+        ],
+    )
+    await db.set_model_alias("vendor/canon", "canon")
+    await _group(db, "g", "raw:latest", "vendor/canon")
+    rt = Router(db, pm)
+    await rt.rebuild()
+    prefs = RoutingPreferences(
+        mode="chaos", access=ModelAccess(groups=frozenset({"g"}))
+    )
+    seen = set()
+    for _ in range(40):
+        r = await rt.route("g", CHAT, prefs)
+        assert r is not None
+        seen.add(r.model_key)
+    assert seen == {"served", "canon"}

@@ -424,7 +424,7 @@ class Router:
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
-                table, model_name, ENDPOINTS[path][0], locality, hub_only, access
+                table, model_name, path, locality, hub_only, access
             )
         if mode not in MODES:
             mode = DEFAULT_MODE
@@ -626,7 +626,7 @@ class Router:
                 if _eligible(p, locality, hub_only)
                 and (
                     allowed := [
-                        m for m in models if table.chaos_allows(access, p.id, m)
+                        m for m in models if table.chaos_allows(access, p.id, m, path)
                     ]
                 )
             ]
@@ -999,20 +999,23 @@ class Router:
     def _route_chaos(
         table: RoutingTable,
         requested_model: str,
-        protocol: str | None,
+        path: str,
         locality: str | None = None,
         hub_only: bool = False,
         access: ModelAccess | None = None,
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model
         (one the key may use)."""
+        protocol = ENDPOINTS[path][0]
         entries = []
         for provider, models in table.chaos.get(protocol, ()):
             if not _eligible(provider, locality, hub_only):
                 continue
             if access is not None:
                 models = tuple(
-                    m for m in models if table.chaos_allows(access, provider.id, m)
+                    m
+                    for m in models
+                    if table.chaos_allows(access, provider.id, m, path)
                 )
                 if not models:
                     continue

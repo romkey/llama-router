@@ -564,10 +564,6 @@ class RoutingTable:
     warnings: tuple[str, ...] = ()
     # Name -> every name of its alias group (see alias_groups).
     alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
-    # Group name -> its members as (model, provider id or None for any).
-    group_members: dict[str, tuple[tuple[str, int | None], ...]] = field(
-        default_factory=dict
-    )
 
     def is_group(self, name: str) -> bool:
         return name in self.groups
@@ -586,22 +582,23 @@ class RoutingTable:
         return not names.isdisjoint(access.models)
 
     def chaos_allows(
-        self, access: ModelAccess | None, provider_id: int | None, model: str
+        self, access: ModelAccess | None, provider_id: int | None, model: str, path: str
     ) -> bool:
         """Whether chaos mode may give a limited key *model* on a provider.
 
         Chaos mode picks a model rather than routing a name, so besides the
-        key's own models it may pick a member of one of the key's groups
-        (on the member's provider, if it names one): asking for an allowed
-        group in chaos mode would otherwise find nothing."""
+        key's own models it may pick whatever routing one of the key's
+        groups on *path* could: the group's own candidates, which already
+        account for raw names, aliases and members tied to one provider.
+        Asking for an allowed group in chaos mode would otherwise find
+        nothing."""
         if access is None or self.allows(access, model):
             return True
-        names = self.alias_names.get(model) or frozenset({model})
-        for group in access.groups:
-            for member, pid in self.group_members.get(group, ()):
-                if member in names and (pid is None or pid == provider_id):
-                    return True
-        return False
+        return any(
+            c.provider_id == provider_id and c.model == model
+            for group in access.groups
+            for c in self.all_candidates.get((group, path), ())
+        )
 
     def group_listing(self, hub_only: bool = False) -> list[dict[str, Any]]:
         """Model-list rows for the groups a client can use, shaped like the
@@ -733,9 +730,6 @@ class TableBase:
     groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
-    group_members: dict[str, tuple[tuple[str, int | None], ...]] = field(
-        default_factory=dict
-    )
 
 
 def build_table(
@@ -881,7 +875,6 @@ def rescore(
         groups=base.groups,
         warnings=base.warnings,
         alias_names=base.alias_names,
-        group_members=base.group_members,
     )
     hot: dict[int, set[str]] = {}
     rtt: dict[int, float | None] = {}
@@ -998,9 +991,6 @@ def _add_groups(
     for model, path in grouped:
         model_buckets.setdefault(model, []).append(path)
     for g in inputs.groups:
-        table.group_members[g.name] = tuple(
-            (m.model_name, m.provider_id) for m in g.members
-        )
         table.groups[g.name] = tuple(
             member_label(
                 m.model_name,
