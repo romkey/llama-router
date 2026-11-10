@@ -888,6 +888,14 @@
                                         <td class="small text-muted">{{ k.created_at | when }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | when }}</td>
                                         <td class="text-end">
+                                            {% if not read_only %}
+                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyEdit({{ k.id }}, {{ k.key_prefix | tojson }})' title="Edit key" aria-label="Edit key {{ k.key_prefix }}">
+                                                <i class="bi bi-pencil-square"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-warning me-1" onclick='regenerateApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Regenerate secret" aria-label="Regenerate secret of key {{ k.key_prefix }}">
+                                                <i class="bi bi-arrow-repeat"></i>
+                                            </button>
+                                            {% endif %}
                                             <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPins({{ k.id }}, {{ k.key_prefix | tojson }})' title="Manage pinned routes" aria-label="Manage pinned routes">
                                                 <i class="bi bi-diagram-3"></i>
                                             </button>
@@ -2043,6 +2051,63 @@
     </div>
 </div>
 
+<!-- Edit API Key Modal -->
+<div class="modal fade" id="apiKeyEditModal" tabindex="-1" aria-labelledby="apiKeyEditTitle">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="h5 modal-title" id="apiKeyEditTitle">Edit API key <code id="edit-key-prefix"></code></h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <label for="edit-key-label" class="form-label small text-muted mb-1">Label (optional)</label>
+                    <input id="edit-key-label" type="text" maxlength="100" class="form-control form-control-sm" autocomplete="off">
+                </div>
+                <div class="mb-2">
+                    <label for="edit-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
+                    <select id="edit-key-mode" class="form-select form-select-sm">
+                        <option value="balanced">Balanced (fastest overall response)</option>
+                        <option value="latency">Minimal latency</option>
+                        <option value="throughput">Maximum tokens/sec</option>
+                        <option value="cheapest">Cheapest (lowest price per request)</option>
+                        <option value="chaos">Chaos mode (random provider/model)</option>
+                    </select>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="edit-key-fallback">
+                    <label class="form-check-label" for="edit-key-fallback">Allow fallback models</label>
+                </div>
+                <div class="mb-2">
+                    <label for="edit-key-locality" class="form-label small text-muted mb-1">Providers</label>
+                    <select id="edit-key-locality" class="form-select form-select-sm">
+                        <option value="any">Local or cloud</option>
+                        <option value="local">Local only: prompts never leave your network</option>
+                        <option value="cloud">Cloud only</option>
+                    </select>
+                </div>
+                <div class="mb-2">
+                    <label for="edit-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
+                    <input id="edit-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
+                </div>
+                <div class="mb-2">
+                    <label for="edit-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
+                    <select id="edit-key-affinity" class="form-select form-select-sm">
+                        <option value="default">Server default ({{ 'on' if session_affinity_default else 'off' }})</option>
+                        <option value="on">On: keep each conversation on one provider</option>
+                        <option value="off">Off: route every request afresh</option>
+                    </select>
+                </div>
+                <div id="edit-key-status" class="small text-danger" role="status"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveKeyEdit()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- New API Key Modal: static backdrop so a stray click can't dismiss it;
      the page reloads only after it is closed. -->
 <div class="modal fade" id="newApiKeyModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
@@ -3139,6 +3204,71 @@ function setKeyLocality(keyId, locality) {
     }).then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
     }).catch(function(err) { alert(err.message || 'Failed to update key'); location.reload(); });
+}
+
+var _editKeyId = null;
+
+function openKeyEdit(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
+    _editKeyId = keyId;
+    document.getElementById('edit-key-prefix').textContent = keyPrefix || ('id=' + keyId);
+    var status = document.getElementById('edit-key-status');
+    status.textContent = 'Loading…';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('apiKeyEditModal')).show();
+    fetch('/api/keys/' + keyId).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to load key'); });
+        return r.json();
+    }).then(function(k) {
+        document.getElementById('edit-key-label').value = k.label || '';
+        document.getElementById('edit-key-mode').value = k.routing_mode;
+        document.getElementById('edit-key-fallback').checked = !!k.allow_fallback;
+        document.getElementById('edit-key-locality').value = k.locality || 'any';
+        document.getElementById('edit-key-cap').value = k.daily_spend_cap_usd == null ? '' : k.daily_spend_cap_usd;
+        document.getElementById('edit-key-affinity').value =
+            k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
+        status.textContent = '';
+    }).catch(function(err) { status.textContent = err.message; });
+}
+
+function saveKeyEdit() {
+    if (_editKeyId == null) return;
+    var status = document.getElementById('edit-key-status');
+    var cap = document.getElementById('edit-key-cap').value;
+    fetch('/api/keys/' + _editKeyId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            label: document.getElementById('edit-key-label').value,
+            routing_mode: document.getElementById('edit-key-mode').value,
+            allow_fallback: document.getElementById('edit-key-fallback').checked,
+            locality: document.getElementById('edit-key-locality').value,
+            daily_spend_cap_usd: cap === '' ? null : cap,
+            session_affinity: document.getElementById('edit-key-affinity').value
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed to save'); });
+        location.reload();
+    }).catch(function(err) { status.textContent = err.message; });
+}
+
+function regenerateApiKey(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
+    if (!confirm('Regenerate the secret of key ' + keyPrefix + '? The current key stops working at once; its settings stay.')) return;
+    fetch('/api/keys/' + keyId + '/regenerate', {method: 'POST'})
+    .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    })
+    .then(function(data) {
+        var modalEl = document.getElementById('newApiKeyModal');
+        var input = document.getElementById('generated-api-key');
+        input.value = data.api_key;
+        document.getElementById('generated-api-key-copy').textContent = 'Copy';
+        modalEl.addEventListener('hidden.bs.modal', function() { location.reload(); }, {once: true});
+        modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    })
+    .catch(function(err) { alert(err.message || 'Failed to regenerate key'); });
 }
 
 function copyGeneratedKey() {

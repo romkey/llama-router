@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
@@ -11,22 +10,27 @@ from fastapi.responses import (
     JSONResponse,
 )
 
-from ...auth import generate_api_key, key_prefix
-from ...provider_secrets import key_hash
+from ...auth import key_prefix, new_api_key
 from ...router import (
     ROUTING_MODES,
 )
 from ...routing_table import DEFAULT_MODE
 from .. import deps
-from ..form_values import _key_label, _key_locality, _tristate, _usd
+from ..form_values import (
+    ADMIN_KEY_FIELDS,
+    _key_label,
+    _key_locality,
+    _tristate,
+    _usd,
+    key_edits,
+)
 from .workers import _iso
 
 router = APIRouter()
 
 
 async def _api_key_exists(db, key_id: int) -> bool:
-    keys = await db.list_api_keys()
-    return any(int(k["id"]) == int(key_id) for k in keys)
+    return await db.get_api_key(key_id) is not None
 
 
 @router.get("/api/keys")
@@ -81,9 +85,7 @@ async def api_generate_key(request: Request):
     label = _key_label(body.get("label"))
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
-    # PBKDF2 is slow; keep it off the event loop.
-    plaintext = generate_api_key()
-    hashed = await asyncio.to_thread(key_hash, plaintext)
+    plaintext, hashed = await new_api_key()
 
     await db.create_api_key(
         key_prefix=key_prefix(plaintext),
@@ -108,6 +110,41 @@ async def api_generate_key(request: Request):
     )
 
 
+@router.get("/api/keys/{key_id:int}")
+async def api_get_key(key_id: int):
+    """One key's settings; never the key itself."""
+    key = await deps.get_db().get_api_key(key_id)
+    if key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse(jsonable_encoder(key))
+
+
+@router.patch("/api/keys/{key_id:int}")
+async def api_update_key(key_id: int, request: Request):
+    """Change any of label, routing_mode, allow_fallback, session_affinity,
+    locality and daily_spend_cap_usd; fields left out stay as they are.
+    Works on keys users issued themselves too."""
+    db = deps.get_db()
+    edits = key_edits(await deps.json_body(request), ADMIN_KEY_FIELDS)
+    if not await db.update_api_key(key_id, edits):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse(jsonable_encoder(await db.get_api_key(key_id)))
+
+
+@router.post("/api/keys/{key_id:int}/regenerate")
+async def api_regenerate_key(key_id: int):
+    """Give the key a new secret, shown once. Its settings, pins, policy and
+    usage history stay; the old secret stops working at once."""
+    plaintext, hashed = await new_api_key()
+    db = deps.get_db()
+    if not await db.regenerate_api_key(key_id, key_prefix(plaintext), hashed):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse(
+        {"id": key_id, "api_key": plaintext, "key_prefix": key_prefix(plaintext)}
+    )
+
+
+# Deprecated: PATCH /api/keys/{key_id} changes these and everything else.
 @router.post("/api/keys/{key_id}/spend-cap")
 async def api_set_key_spend_cap(key_id: int, request: Request):
     """Body: {daily_spend_cap_usd: number or null}. Past the cap, the key is

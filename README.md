@@ -157,7 +157,7 @@ Every health check times each address. The router keeps a running tally per addr
 
 The table is rebuilt whenever one of its inputs changes: models are discovered or deleted, a provider changes status, an address goes up or down, a benchmark is added or removed, a fallback or provider is edited, a probe runs, the set of loaded models changes, or new round-trip and request measurements arrive. Changes within a quarter of a second are batched into one rebuild, and rebuilds run at most once a second. Measurement-only rebuilds reuse the last database read.
 
-Resolved API keys and the authentication policy are cached for five minutes, and keys the router does not know for 30 seconds. Creating or deleting a key, editing its pins, or changing the authentication policy takes effect on the next request; other routers sharing the database pick the change up when their cache expires.
+Resolved API keys and the authentication policy are cached for five minutes, and keys the router does not know for 30 seconds. Creating, editing, regenerating or deleting a key, editing its pins, or changing the authentication policy takes effect on the next request; other routers sharing the database pick the change up when their cache expires.
 
 Inspect the current table, with each candidate's inputs and scores, or force a rebuild:
 
@@ -424,6 +424,20 @@ curl -X PATCH http://localhost/api/model-groups/1 \
 curl -X DELETE http://localhost/api/model-groups/1
 ```
 
+## Editing API Keys
+
+Every setting chosen when a key was created can be changed afterwards: its label, routing priority, fallback, session affinity, providers and daily spend cap. Use **Edit** on the **API Keys** tab, or the API (fields left out stay as they are):
+
+```bash
+curl -X PATCH http://localhost/api/keys/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"routing_mode":"latency","daily_spend_cap_usd":5}'
+```
+
+Editing never changes the key itself. To replace a key that may have leaked, use **Regenerate secret** (`POST /api/keys/1/regenerate`): the key gets a new secret, shown once, and keeps its id, settings, pins, decision policy and usage history. The old secret stops working at once.
+
+`POST /api/keys/{id}/spend-cap` and `POST /api/keys/{id}/locality` still work but are deprecated; use `PATCH /api/keys/{id}`.
+
 ## API Key Model Pinning
 
 API keys can optionally pin specific models to specific providers. When a pinned model is requested with that key, llama-router always chooses the configured provider for that model (if available), bypassing latency/throughput scoring.
@@ -445,7 +459,7 @@ curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 
 ## Keys Users Issue Themselves
 
-Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback and session affinity. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can revoke their own keys, and deleting a user deletes the keys they issued.
+Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback and session affinity. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can edit their own keys' label, routing priority, fallback and session affinity (`PATCH /api/my-keys/{id}`), regenerate their secrets (`POST /api/my-keys/{id}/regenerate`) and revoke them; providers and spend cap stay as the admin set them. Deleting a user deletes the keys they issued.
 
 ## Management Keys
 

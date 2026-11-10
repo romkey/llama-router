@@ -7,6 +7,23 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- API keys can be edited after they are created: label, routing priority,
+  fallback, session affinity, providers and daily spend cap, from **Edit** on
+  the API Keys tab or `PATCH /api/keys/{id}`. Users can edit the label,
+  routing priority, fallback and session affinity of keys they issued
+  themselves on **My API keys** (`PATCH /api/my-keys/{id}`).
+- **Regenerate secret** gives a key a new secret, shown once, keeping its id,
+  settings, pins, decision policy and usage history; the old secret stops
+  working at once (`POST /api/keys/{id}/regenerate`,
+  `POST /api/my-keys/{id}/regenerate`).
+
+### Deprecated
+
+- `POST /api/keys/{id}/spend-cap` and `POST /api/keys/{id}/locality`; use
+  `PATCH /api/keys/{id}`.
+
 ## [0.29.1] - 2026-11-05
 
 ### Added

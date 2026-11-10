@@ -55,6 +55,13 @@ def generate_api_key() -> str:
     return "lrk_" + token_urlsafe(32)
 
 
+async def new_api_key() -> tuple[str, str]:
+    """A new key and the fingerprint to store for it. PBKDF2 is slow, so
+    the hash runs off the event loop."""
+    plaintext = generate_api_key()
+    return plaintext, await asyncio.to_thread(key_hash, plaintext)
+
+
 def well_formed_key(key: str) -> bool:
     """Whether *key* has the shape of a key :func:`generate_api_key` makes."""
     return _KEY_FORMAT.fullmatch(key) is not None

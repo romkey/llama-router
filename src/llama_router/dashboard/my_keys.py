@@ -1,31 +1,37 @@
 """API keys dashboard users issue to themselves for model access.
 
-Any signed-in user may issue, list and revoke their own keys on ``/my-keys``.
-They choose how the key is routed (priority, fallback, session affinity);
-which providers it may use and its daily spend cap come from defaults an
-administrator sets, so a user can't give themselves cloud spending an admin
-didn't allow. Admins see these keys, with their owner, on the API Keys tab
-and can change them there like any other key. Deleting a user deletes the
-keys they issued.
+Any signed-in user may issue, list, edit, regenerate and revoke their own
+keys on ``/my-keys``. They choose how the key is routed (priority, fallback,
+session affinity) and can change that later; which providers it may use and
+its daily spend cap come from defaults an administrator sets, so a user
+can't give themselves cloud spending an admin didn't allow. Admins see
+these keys, with their owner, on the API Keys tab and can change them there
+like any other key. Deleting a user deletes the keys they issued.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from ..auth import generate_api_key, key_prefix
+from ..auth import key_prefix, new_api_key
 from ..config import settings
 from ..database import Database
-from ..provider_secrets import key_hash
 from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
 from . import deps, management_keys
-from .form_values import _key_label, _key_locality, _tristate, _usd, _utc_day_start
+from .form_values import (
+    OWNER_KEY_FIELDS,
+    _key_label,
+    _key_locality,
+    _tristate,
+    _usd,
+    _utc_day_start,
+    key_edits,
+)
 from .pages import dash_page_ctx, templates
 
 router = APIRouter()
@@ -96,9 +102,7 @@ async def issue_my_key(request: Request) -> JSONResponse:
             detail=f"You already have {limit} API keys; revoke one to issue another",
         )
     defaults = await self_service_defaults(db)
-    # PBKDF2 is slow; keep it off the event loop.
-    plaintext = generate_api_key()
-    hashed = await asyncio.to_thread(key_hash, plaintext)
+    plaintext, hashed = await new_api_key()
     key_id = await db.create_api_key(
         key_prefix=key_prefix(plaintext),
         key_hash=hashed,
@@ -121,6 +125,42 @@ async def issue_my_key(request: Request) -> JSONResponse:
             **defaults,
         }
     )
+
+
+async def _own_key(owner: int, key_id: int) -> dict[str, Any]:
+    key = await deps.get_db().get_api_key(key_id, owner_user_id=owner)
+    if key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return key
+
+
+@router.get("/api/my-keys/{key_id}")
+async def get_my_key(request: Request, key_id: int) -> JSONResponse:
+    return JSONResponse(jsonable_encoder(await _own_key(_owner_id(request), key_id)))
+
+
+@router.patch("/api/my-keys/{key_id}")
+async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
+    """Change the key's label, routing_mode, allow_fallback or
+    session_affinity. Locality and the spend cap are an administrator's."""
+    owner = _owner_id(request)
+    edits = key_edits(await deps.json_body(request), OWNER_KEY_FIELDS)
+    db = deps.get_db()
+    if not await db.update_api_key(key_id, edits, owner_user_id=owner):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
+
+
+@router.post("/api/my-keys/{key_id}/regenerate")
+async def regenerate_my_key(request: Request, key_id: int) -> JSONResponse:
+    """A new secret for the key, shown once; the old one stops working."""
+    owner = _owner_id(request)
+    plaintext, hashed = await new_api_key()
+    db = deps.get_db()
+    prefix = key_prefix(plaintext)
+    if not await db.regenerate_api_key(key_id, prefix, hashed, owner_user_id=owner):
+        raise HTTPException(status_code=404, detail="API key not found")
+    return JSONResponse({"id": key_id, "api_key": plaintext, "key_prefix": prefix})
 
 
 @router.delete("/api/my-keys/{key_id}")

@@ -11,6 +11,19 @@ from .base import Repository, _tristate
 
 logger = logging.getLogger(__name__)
 
+# Settings ``update_api_key`` may change: everything chosen at creation
+# except the secret and the owner.
+EDITABLE_FIELDS = frozenset(
+    {
+        "label",
+        "routing_mode",
+        "allow_fallback",
+        "session_affinity",
+        "locality",
+        "daily_spend_cap_usd",
+    }
+)
+
 
 class ApiKeyRepository(Repository):
     @_notifies(CHANGE_API_KEYS)
@@ -48,29 +61,95 @@ class ApiKeyRepository(Repository):
         )
 
     @_notifies(CHANGE_API_KEYS)
-    async def set_api_key_spend_cap(self, key_id: int, cap_usd: float | None) -> bool:
-        """USD a key may spend per UTC day before it is limited to local."""
-        return bool(
-            await self._execute_rowcount(
-                "UPDATE api_keys SET daily_spend_cap_usd = ? WHERE id = ?",
-                (cap_usd, key_id),
-            )
-        )
+    async def update_api_key(
+        self,
+        key_id: int,
+        fields: dict[str, Any],
+        *,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        """Change the settings in *fields* (keys from ``EDITABLE_FIELDS``);
+        the others stay. With *owner_user_id*, only a key that user issued to
+        themselves matches. Returns whether the key was found."""
+        unknown = set(fields) - EDITABLE_FIELDS
+        if unknown:
+            raise ValueError(f"not editable: {', '.join(sorted(unknown))}")
+        values = dict(fields)
+        if "allow_fallback" in values:
+            values["allow_fallback"] = int(bool(values["allow_fallback"]))
+        if values.get("session_affinity") is not None:
+            values["session_affinity"] = int(bool(values["session_affinity"]))
+        names = sorted(values)
+        where = " WHERE id = ?"
+        params: list[Any] = [values[n] for n in names] + [key_id]
+        if owner_user_id is not None:
+            where += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        if not names:
+            # Nothing to change: report whether the key exists.
+            return await self._key_exists(key_id, owner_user_id)
+        # Column names come from EDITABLE_FIELDS, never from the caller.
+        assignments = ", ".join(f"{n} = ?" for n in names)
+        sql = "UPDATE api_keys SET " + assignments + where  # noqa: S608
+        if await self._execute_rowcount(sql, tuple(params)):
+            return True
+        # MySQL counts only rows whose values changed; look before saying 404.
+        return await self._key_exists(key_id, owner_user_id)
+
+    async def _key_exists(self, key_id: int, owner_user_id: int | None) -> bool:
+        return await self.get_api_key(key_id, owner_user_id=owner_user_id) is not None
 
     @_notifies(CHANGE_API_KEYS)
+    async def regenerate_api_key(
+        self,
+        key_id: int,
+        key_prefix: str,
+        key_hash: str,
+        *,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        """Give the key a new secret; its id and settings stay. The old
+        secret stops working at once."""
+        sql = "UPDATE api_keys SET key_prefix = ?, key_hash = ? WHERE id = ?"
+        params: tuple[Any, ...] = (key_prefix, key_hash, key_id)
+        if owner_user_id is not None:
+            sql += " AND owner_user_id = ?"
+            params += (owner_user_id,)
+        return bool(await self._execute_rowcount(sql, params))
+
+    async def set_api_key_spend_cap(self, key_id: int, cap_usd: float | None) -> bool:
+        """USD a key may spend per UTC day before it is limited to local."""
+        return await self.update_api_key(key_id, {"daily_spend_cap_usd": cap_usd})
+
     async def set_api_key_locality(self, key_id: int, locality: str | None) -> bool:
         """Limit a key to local or cloud providers (None: either)."""
-        return bool(
-            await self._execute_rowcount(
-                "UPDATE api_keys SET locality = ? WHERE id = ?", (locality, key_id)
-            )
-        )
+        return await self.update_api_key(key_id, {"locality": locality})
+
+    async def get_api_key(
+        self, key_id: int, *, owner_user_id: int | None = None
+    ) -> dict[str, Any] | None:
+        """One key in the shape ``list_api_keys`` returns, or None."""
+        keys = await self._list_api_keys(key_id=key_id, owner_user_id=owner_user_id)
+        return keys[0] if keys else None
 
     async def list_api_keys(
         self, owner_user_id: int | None = None
     ) -> list[dict[str, Any]]:
         """All keys, or only those *owner_user_id* issued to themselves."""
-        where = "WHERE k.owner_user_id = ? " if owner_user_id is not None else ""
+        return await self._list_api_keys(owner_user_id=owner_user_id)
+
+    async def _list_api_keys(
+        self, *, key_id: int | None = None, owner_user_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if key_id is not None:
+            conditions.append("k.id = ?")
+            params.append(key_id)
+        if owner_user_id is not None:
+            conditions.append("k.owner_user_id = ?")
+            params.append(owner_user_id)
+        where = ("WHERE " + " AND ".join(conditions) + " ") if conditions else ""
         rows = await self._select_all(
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
@@ -85,7 +164,7 @@ class ApiKeyRepository(Repository):
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
             "k.last_used_at, k.owner_user_id, k.label, u.username "
             "ORDER BY k.created_at DESC, k.id DESC",
-            (owner_user_id,) if owner_user_id is not None else (),
+            tuple(params),
         )
         return [
             {
