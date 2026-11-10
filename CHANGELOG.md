@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-10
+
 ### Added
 
 - API keys can be edited after they are created: label, routing priority,
