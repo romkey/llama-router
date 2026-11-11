@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-11-11
+
 ### Added
 
 - Reranking: `POST /v1/rerank` on the OpenAI API, also answered on
