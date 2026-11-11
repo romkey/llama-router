@@ -7,6 +7,14 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- Reranking: `POST /v1/rerank` on the OpenAI API, also answered on
+  `/rerank`, `/v1/reranking`, `/reranking` and `/v2/rerank`. Requests go to a
+  provider whose probe found a rerank route (llama.cpp, vLLM and others), on
+  the route it serves. Reranking timings are kept as their own endpoint kind,
+  and workers run rerank jobs.
+
 ## [0.30.0] - 2026-11-10
 
 ### Added

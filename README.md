@@ -120,7 +120,9 @@ The header never widens or flips a key's setting. The request log records whethe
 
 Each provider speaks one protocol: Ollama or OpenAI-compatible. To use both APIs of one server, add it twice. Routing always knows the endpoint. OpenAI-style routes such as `/v1/chat/completions` go to any provider, since Ollama serves them too. Ollama routes (`/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`) go to Ollama providers and, translated, to OpenAI-compatible ones, so Ollama clients can use llama.cpp, vLLM and cloud services. Translation carries messages, images, tools and tool calls, `format`, the common sampling options and token counts; `suffix` and `raw` are refused with 400, and Ollama-only options such as `top_k` and `num_ctx` are dropped. Set `LLAMA_ROUTER_OLLAMA_API_TRANSLATION=false` to keep Ollama routes on Ollama providers. For each provider the table records whether its last probe found the endpoint, and a provider whose probe found it missing is used only when nothing else can serve the request.
 
-Measurements are kept per kind of endpoint: text generation, embeddings, images, audio and decisions. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
+Reranking is served on `POST /v1/rerank`, and on `/rerank`, `/v1/reranking`, `/reranking` and `/v2/rerank`, which are the same route. The body is the one llama.cpp, vLLM, Jina and Cohere use: `model`, `query`, a non-empty `documents` list and an optional `top_n`; a request without a query or documents is refused with 400. It goes to providers whose last probe found any of those routes, on the route the probe found (`/v1/rerank` when nothing was probed). Ollama has no rerank API, so an Ollama provider is used for it only when nothing else serves the model.
+
+Measurements are kept per kind of endpoint: text generation, embeddings, reranking, images, audio and decisions. A provider that is fast at chat but slow at embeddings is ranked accordingly on each. Failures on one kind count against the model only on that kind, and against the provider as a whole.
 
 Candidates fall into three tiers, and a request goes to the best tier that has anyone in it:
 
@@ -679,7 +681,7 @@ LLAMA_ROUTER_WORKER_TOKEN=lrw_...
 
 The hub listens at `/worker/ws` on the Ollama API port (11434). A hub URL of `https://host`, `wss://host`, or `http://host:11434` all work. Use TLS when workers connect over the internet; a reverse proxy in front of port 11434 is the easiest way. With `API_ON_DASHBOARD_PORT=true` the socket is on the dashboard port too, so one proxy in front of port 80 serves the dashboard, the APIs and workers, and the hub URL is just `https://host`.
 
-**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
+**What a worker serves.** Jobs run against the worker's own Ollama and OpenAI APIs, so the worker shares whatever providers it has. Only chat, generate, completions, embeddings, reranking, responses, images, audio, decisions, and model listing are allowed. Model pulls and deletes from the hub are refused unless `WORKER_ALLOW_ADMIN=true`. To point a worker straight at a local Ollama instead of its own router, set `WORKER_OLLAMA_URL`.
 
 **Reliability.** The worker reconnects with capped exponential backoff and jitter, and WebSocket pings detect dead links within about 40 seconds. A revoked or rotated token stops reconnect attempts for five minutes at a time. Each machine needs its own token; a second connection with the same token replaces the first.
 

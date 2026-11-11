@@ -24,6 +24,7 @@ from .decisions import router as decisions_router
 from .embeddings import router as embeddings_router
 from .images import router as images_router
 from .models import router as models_router
+from .rerank import router as rerank_router
 from .responses import router as responses_router
 
 # No interactive docs or schema on the public API ports; the dashboard
@@ -79,4 +80,5 @@ app.include_router(decisions_router)
 app.include_router(embeddings_router)
 app.include_router(images_router)
 app.include_router(models_router)
+app.include_router(rerank_router)
 app.include_router(responses_router)
