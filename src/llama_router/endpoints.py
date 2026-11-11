@@ -15,7 +15,9 @@ AUDIO = "audio"
 # One-token decision questions (see decisions.py): a few hundred milliseconds,
 # nothing like a chat completion, so their timings are kept apart.
 DECIDE = "decide"
-CLASSES = (GENERATE, EMBED, IMAGE, AUDIO, DECIDE)
+# Reranking: one query scored against a list of documents.
+RERANK = "rerank"
+CLASSES = (GENERATE, EMBED, IMAGE, AUDIO, DECIDE, RERANK)
 
 # path -> (protocol, class). Ollama native routes need an Ollama-capable
 # provider (protocol "ollama"); OpenAI-style routes take any provider (None).
@@ -28,6 +30,8 @@ ENDPOINTS: dict[str, tuple[str | None, str]] = {
     "/v1/completions": (None, GENERATE),
     "/v1/responses": (None, GENERATE),
     "/v1/embeddings": (None, EMBED),
+    # Reranking, under every name servers give it (see RERANK_ALIASES).
+    "/v1/rerank": (None, RERANK),
     "/v1/images/generations": (None, IMAGE),
     "/v1/images/edits": (None, IMAGE),
     "/v1/audio/speech": (None, AUDIO),
@@ -44,6 +48,14 @@ DECISION_PATHS = tuple(p for p, (_proto, cls) in ENDPOINTS.items() if cls == DEC
 ENDPOINT_PROTOCOLS: dict[str, str | None] = {p: v[0] for p, v in ENDPOINTS.items()}
 
 
+# Other names of the rerank route: llama.cpp also serves /reranking, and vLLM
+# and Cohere-style clients use /v2/rerank. All take the same body.
+RERANK_PATH = "/v1/rerank"
+RERANK_ALIASES = frozenset(
+    {"/rerank", "/v1/rerank", "/reranking", "/v1/reranking", "/v2/rerank"}
+)
+
+
 class UnknownEndpointError(ValueError):
     pass
 
@@ -52,6 +64,8 @@ def normalize_endpoint(path: str | None) -> str | None:
     """Upstream path a request is served on: bare OpenAI routes gain /v1."""
     if not path:
         return None
+    if path in RERANK_ALIASES:
+        return RERANK_PATH
     if path.startswith("/v1/") or path.startswith("/api/"):
         return path
     return "/v1" + path

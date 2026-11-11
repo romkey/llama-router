@@ -54,6 +54,12 @@ _INFERENCE_PATHS = {
         "/v1/completions",
         "/v1/embeddings",
         "/v1/responses",
+        # Reranking and its aliases.
+        "/v1/rerank",
+        "/rerank",
+        "/v1/reranking",
+        "/reranking",
+        "/v2/rerank",
         "/v1/images/generations",
         "/v1/images/edits",
         "/v1/audio/speech",

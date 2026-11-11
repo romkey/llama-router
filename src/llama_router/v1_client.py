@@ -158,6 +158,12 @@ class V1Client:
         ollama = self._require_ollama()
         return await ollama.v1_embeddings(upstream_body(body))
 
+    # --- rerank ---
+
+    async def rerank(self, body: dict[str, Any], path: str) -> dict[str, Any]:
+        """Rerank on upstream route *path* (``/v1/rerank`` or an alias)."""
+        return await self.post_json(path, body, op=f"rerank ({path})")
+
     # --- responses ---
 
     async def responses_stream(self, body: dict[str, Any]) -> AsyncIterator[bytes]:

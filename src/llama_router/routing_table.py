@@ -22,6 +22,7 @@ from .endpoints import (
     DECISION_PATHS,
     ENDPOINTS,
     GENERATE,
+    RERANK_PATH,
     normalize_endpoint,  # noqa: F401  (re-exported for callers)
 )
 from .models import (
@@ -324,6 +325,8 @@ def endpoint_support(
     otherwise wherever chat completions are, unless the provider has lately
     answered a decision question without logprobs.
     """
+    if path == RERANK_PATH:
+        return rerank_support(provider)
     native = provider.endpoint_state(path)
     if path not in DECISION_PATHS or native == ENDPOINT_SUPPORTED:
         return native
@@ -336,6 +339,28 @@ def endpoint_support(
     ):
         return ENDPOINT_MISSING
     return provider.endpoint_state(DECISION_UPSTREAM)
+
+
+# Upstream rerank routes, most usual first. Each also counts under its bare
+# form (``/rerank``); all take the same body.
+RERANK_UPSTREAMS = ("/v1/rerank", "/v1/reranking", "/v2/rerank")
+
+
+def rerank_support(provider: Provider) -> str:
+    """Supported when the upstream serves any rerank route, else what the
+    probe said of ``/v1/rerank``."""
+    if rerank_upstream_path(provider) is not None:
+        return ENDPOINT_SUPPORTED
+    return provider.endpoint_state(RERANK_PATH)
+
+
+def rerank_upstream_path(provider: Provider) -> str | None:
+    """The rerank route the provider's upstream serves; None when its probe
+    found none."""
+    for p in RERANK_UPSTREAMS:
+        if provider.endpoint_state(p) == ENDPOINT_SUPPORTED:
+            return p
+    return None
 
 
 def native_decision_path(provider: Provider, path: str) -> str | None:

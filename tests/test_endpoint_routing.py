@@ -198,6 +198,7 @@ def test_endpoint_classes():
     assert endpoint_class("/api/embeddings") == "embed"
     assert endpoint_class("/v1/images/edits") == "image"
     assert endpoint_class("/v1/audio/transcriptions") == "audio"
+    assert endpoint_class("/reranking") == "rerank"
 
 
 # --- provider health score ---
