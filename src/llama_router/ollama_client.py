@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .httpx_errors import describe_httpx_error, raise_for_stream_status
+from .json_io import json_kwargs
 from .models import ProviderModel
 
 if TYPE_CHECKING:
@@ -134,7 +135,9 @@ class OllamaClient:
     async def chat_stream(self, body: dict) -> AsyncIterator[bytes]:
         body["stream"] = True
         try:
-            async with self._http.stream("POST", "/api/chat", json=body) as resp:
+            async with self._http.stream(
+                "POST", "/api/chat", **await json_kwargs(body)
+            ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
@@ -149,14 +152,18 @@ class OllamaClient:
 
     async def chat(self, body: dict) -> dict:
         body["stream"] = False
-        resp = await self._post("/api/chat", op="Ollama chat (/api/chat)", json=body)
+        resp = await self._post(
+            "/api/chat", op="Ollama chat (/api/chat)", **await json_kwargs(body)
+        )
         resp.raise_for_status()
         return resp.json()
 
     async def generate_stream(self, body: dict) -> AsyncIterator[bytes]:
         body["stream"] = True
         try:
-            async with self._http.stream("POST", "/api/generate", json=body) as resp:
+            async with self._http.stream(
+                "POST", "/api/generate", **await json_kwargs(body)
+            ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
@@ -172,20 +179,26 @@ class OllamaClient:
     async def generate(self, body: dict) -> dict:
         body["stream"] = False
         resp = await self._post(
-            "/api/generate", op="Ollama generate (/api/generate)", json=body
+            "/api/generate",
+            op="Ollama generate (/api/generate)",
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
 
     async def embeddings(self, body: dict) -> dict:
         resp = await self._post(
-            "/api/embeddings", op="Ollama embeddings (/api/embeddings)", json=body
+            "/api/embeddings",
+            op="Ollama embeddings (/api/embeddings)",
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
 
     async def embed(self, body: dict) -> dict:
-        resp = await self._post("/api/embed", op="Ollama embed (/api/embed)", json=body)
+        resp = await self._post(
+            "/api/embed", op="Ollama embed (/api/embed)", **await json_kwargs(body)
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -312,7 +325,7 @@ class OllamaClient:
         body["stream"] = True
         try:
             async with self._http.stream(
-                "POST", "/v1/chat/completions", json=body
+                "POST", "/v1/chat/completions", **await json_kwargs(body)
             ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
@@ -331,7 +344,7 @@ class OllamaClient:
         resp = await self._post(
             "/v1/chat/completions",
             op="OpenAI-compatible chat (/v1/chat/completions)",
-            json=body,
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -339,7 +352,9 @@ class OllamaClient:
     async def v1_completions_stream(self, body: dict) -> AsyncIterator[bytes]:
         body["stream"] = True
         try:
-            async with self._http.stream("POST", "/v1/completions", json=body) as resp:
+            async with self._http.stream(
+                "POST", "/v1/completions", **await json_kwargs(body)
+            ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
@@ -357,7 +372,7 @@ class OllamaClient:
         resp = await self._post(
             "/v1/completions",
             op="OpenAI-compatible completions (/v1/completions)",
-            json=body,
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -366,7 +381,7 @@ class OllamaClient:
         resp = await self._post(
             "/v1/embeddings",
             op="OpenAI-compatible embeddings (/v1/embeddings)",
-            json=body,
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -374,7 +389,9 @@ class OllamaClient:
     async def v1_responses_stream(self, body: dict) -> AsyncIterator[bytes]:
         body["stream"] = True
         try:
-            async with self._http.stream("POST", "/v1/responses", json=body) as resp:
+            async with self._http.stream(
+                "POST", "/v1/responses", **await json_kwargs(body)
+            ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
@@ -392,7 +409,7 @@ class OllamaClient:
         resp = await self._post(
             "/v1/responses",
             op="OpenAI-compatible responses (/v1/responses)",
-            json=body,
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -401,7 +418,7 @@ class OllamaClient:
         resp = await self._post(
             "/v1/images/generations",
             op="OpenAI-compatible image generation (/v1/images/generations)",
-            json=body,
+            **await json_kwargs(body),
             timeout=httpx.Timeout(10.0, read=600.0),
         )
         resp.raise_for_status()
@@ -423,7 +440,7 @@ class OllamaClient:
             async with self._http.stream(
                 "POST",
                 "/v1/audio/speech",
-                json=body,
+                **await json_kwargs(body),
                 timeout=httpx.Timeout(10.0, read=600.0),
             ) as resp:
                 await raise_for_stream_status(resp)
@@ -524,7 +541,7 @@ class OllamaClient:
         resp = await self._post(
             "/api/chat",
             op=f"Ollama chat benchmark for {model!r}",
-            json=body,
+            **await json_kwargs(body),
             timeout=httpx.Timeout(30.0, read=120.0),
         )
         elapsed_ns = (time.monotonic() - start) * 1_000_000_000
@@ -546,7 +563,7 @@ class OllamaClient:
         resp = await self._post(
             "/api/embed",
             op=f"Ollama embed benchmark for {model!r}",
-            json=body,
+            **await json_kwargs(body),
             timeout=httpx.Timeout(30.0, read=120.0),
         )
         resp.raise_for_status()

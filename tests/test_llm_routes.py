@@ -634,10 +634,10 @@ async def test_deeply_nested_body_is_bad_request(
 ) -> None:
     # How deep the parser gets before RecursionError depends on the stack, so
     # raise it directly.
-    async def too_deep(self: Any) -> Any:
+    async def too_deep(raw: bytes) -> Any:
         raise RecursionError("maximum recursion depth exceeded")
 
-    monkeypatch.setattr("starlette.requests.Request.json", too_deep)
+    monkeypatch.setattr("llama_router.request_body.loads", too_deep)
     async with _client(v1_app) as c:
         resp = await c.post("/v1/chat/completions", json={"model": MODEL})
     assert resp.status_code == 400
