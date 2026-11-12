@@ -19,6 +19,18 @@ described in their git tags and GitHub Releases.
   the API Keys tab, on **My API keys** or with `strict_pins` in
   `PATCH /api/keys/{id}` and `PATCH /api/my-keys/{id}`; **Explain** reports
   the refusal and takes `strict_pins` in its query.
+- **Failover within a request**: when the chosen provider can't be reached
+  (connect error, connect or pool timeout) or turns the request away (HTTP
+  429, 502, 503) before anything reached the client, the request is routed
+  again without that provider and sent to the next one. Read timeouts,
+  failures after the first streamed chunk, other 4xx answers, strict-pinned
+  models and hub requests for one provider are never retried. Every attempt
+  is checked again against the key's model access, locality, spend cap and
+  hub scope; the previous attempt's spend estimate is released first, and
+  the upstream slot and request deadline cover all attempts. Each failed
+  attempt is logged against its provider. `LLAMA_ROUTER_UPSTREAM_FAILOVER_ATTEMPTS`
+  (default 1; 0 turns it off). Decision requests skip a provider that
+  answered without logprobs the same way.
 - Users can pin models of their own keys to providers on **My API keys**
   (`GET`/`POST`/`DELETE /api/my-keys/{id}/pins`), including seeing and
   removing pins an admin set. A pin must name a model the key may use and a

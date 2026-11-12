@@ -134,6 +134,8 @@ Candidates fall into three tiers, and a request goes to the best tier that has a
 
 Every provider has a health score from 0 to 100. It drops with the share of recent requests that failed for reasons on the provider's side, such as errors, timeouts, 401, 404 and 429. Client mistakes such as HTTP 400 don't count. It also drops when a whole health check fails, meaning no address answered, so a provider that keeps dropping out is penalized for a while after it comes back. One dead address among live ones doesn't count. Failures fade with a two-minute half-life.
 
+When a provider can't be reached (a connect error or connect timeout) or turns a request away as busy (HTTP 429, 502 or 503) before anything was sent to the client, the router tries the next provider for the same request instead of returning the error. By default it tries one other provider (`LLAMA_ROUTER_UPSTREAM_FAILOVER_ATTEMPTS`). It never retries after a read timeout or the first streamed chunk, a strict-pinned model, or a hub request for one provider. The retry is checked against the key's model limits, locality and spend cap like the first attempt, and both attempts appear in the request log.
+
 The score's failure rate adds a penalty to every routing mode. A provider failing at least half of its recent requests across all models, over at least five, has its circuit opened. It is then used only if no healthier provider can serve the request, and is retried as its failures age out.
 
 ### Health-check latency

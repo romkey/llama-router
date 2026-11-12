@@ -385,6 +385,7 @@ async def route_within_cap(
     body: Any,
     *,
     session: str | None = None,
+    exclude: frozenset[int] = frozenset(),
 ) -> RouteResult | None:
     """Route the request, holding its estimated cost against the key's cap.
 
@@ -395,12 +396,13 @@ async def route_within_cap(
     with no price (its cost could not be counted), the request is routed to
     local providers instead, or refused (HTTP 429 over the cap, 403 for an
     unpriced model) when that is not possible. A key with strict pins is
-    refused rather than moved off a pinned model's provider.
+    refused rather than moved off a pinned model's provider. *exclude* names
+    providers that already failed this request.
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
     try:
-        result = await rt.route(model, path, prefs, session=session)
+        result = await rt.route(model, path, prefs, session=session, exclude=exclude)
     except PinUnavailableError as exc:
         if (
             prefs is not None
@@ -448,6 +450,7 @@ async def route_within_cap(
                 path,
                 replace(prefs, locality="local", spend_capped=True),
                 session=session,
+                exclude=exclude,
             )
         except PinUnavailableError:
             # A strict cloud pin further down the fallback chain: the cap
