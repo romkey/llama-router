@@ -46,7 +46,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
 | `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
-| `MAX_PINS_PER_KEY` | `50` | Most model pins a user may set on one of their own keys on My API keys (0: no limit). A pin's model must be one the key may use, and its provider inside the key's locality. Pins an admin sets don't count |
+| `MAX_PINS_PER_KEY` | `50` | Most model pins a user may set on one of their own keys on My API keys (0: no limit). A pin's model must be one the key may use, and its provider inside the key's locality. Every pin on the key counts, an admin's too; changing an existing pin is always allowed |
 | `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `DASHBOARD_WEBAUTHN_ORIGIN` | *(empty)* | Fixed external origin, e.g. `https://llm.example.org`, without a path or trailing slash. Enables WebAuthn enrollment. Must use a hostname and HTTPS; `http://localhost:PORT` is allowed for development. The hostname becomes the relying party ID; changing it requires re-enrollment |
 | `DASHBOARD_REQUIRE_SECOND_FACTOR` | `false` | Require a second factor for every local dashboard user, including admins. Requires `DASHBOARD_WEBAUTHN_ORIGIN`. Users without an authenticator must enroll after entering their password, before dashboard access. Existing password-only sessions must sign in again. SSO accounts are exempt |
@@ -193,6 +193,46 @@ deprecated `HUGGING_FACE_HUB_TOKEN` and `HUGGINGFACE_HUB_CACHE`.
 | `SENTRY_TRACES_SAMPLE_RATE` | `0.0` | Performance transaction sampling rate, `0.0` to `1.0` |
 | `SENTRY_PROFILES_SAMPLE_RATE` | `0.0` | Profiling sampling rate, `0.0` to `1.0` |
 | `SENTRY_SEND_DEFAULT_PII` | `false` | Include user and IP headers where available |
+
+## One router process
+
+llama-router runs as one process with one event loop. Do not add uvicorn
+workers or run several routers on one database. Each process keeps its own:
+
+- API key cache (300 s)
+- daily spend totals and reservations
+- in-flight request counts, which routing ranks on
+- session affinity bindings
+- per-key concurrency and stream limits
+- 429 cooldowns
+- dashboard login throttle
+- worker hub sockets
+
+With two processes, a key could spend twice its cap, hold twice its
+concurrency, and lose its session affinity on every other request. A router
+that finds another process's live lease in the database logs an error at
+startup and keeps running.
+
+Fairness between clients comes from the per-key limits, not from more
+processes. `UPSTREAM_MAX_CONCURRENCY_PER_KEY` caps one key's upstream calls in
+flight, and `MAX_STREAMS_PER_KEY` caps its open streams, so one busy key
+can't take every slot. JSON bodies over 1 MB are parsed and serialised in a
+worker thread, so a large image or document doesn't hold the loop for every
+other request.
+
+**When to revisit:** the `llama_router_event_loop_lag_seconds` histogram (see
+[metrics.md](metrics.md)) shows how late the loop wakes a task that sleeps a
+fixed interval, which is how long any request may wait behind others. Revisit
+when its p99 stays above 50 ms, or when the process uses most of one CPU core.
+For example:
+
+```promql
+histogram_quantile(0.99, rate(llama_router_event_loop_lag_seconds_bucket[5m])) > 0.05
+```
+
+The next step then is several router processes behind a proxy that sends each
+API key to the same process every time, so each key's limits, spend and
+sessions stay in one place.
 
 ## Other
 

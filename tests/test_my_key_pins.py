@@ -198,6 +198,12 @@ async def test_owner_pin_limit(
         headers=_as(ann),
     )
     assert resp.status_code == 409
+    # An administrator's pin counts too, but the owner may still change it.
+    await c.delete(f"{base}/a", headers=_as(ann))
+    await db.set_api_key_model_pin(key["id"], "b", lan.require_id())
+    assert (await c.post(base, json=first, headers=_as(ann))).status_code == 409
+    again = {"model_name": "b", "provider_id": lan.require_id()}
+    assert (await c.post(base, json=again, headers=_as(ann))).status_code == 200
 
 
 async def test_allowable_lists_providers_per_model_without_secrets(
