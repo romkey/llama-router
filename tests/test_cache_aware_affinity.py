@@ -279,3 +279,37 @@ async def test_handlers_bind_the_estimated_prompt(
     binding = rt.affinity.peek(SESSION)
     assert binding is not None
     assert binding.prompt_tokens == estimate_tokens(body, 0)[0] > 500
+
+
+async def test_group_session_only_moves_to_its_own_member_model(
+    db: Database, pm: ProviderManager, clock: FakeClock
+) -> None:
+    """A group's session keeps its member model: with no other provider of
+    that model, a long queue doesn't move it to another member."""
+    ids: dict[str, int] = {}
+    for name in ("x", "y"):
+        p = await db.add_provider(f"p-{name}", ProviderProtocol.OLLAMA)
+        pid = p.require_id()
+        await db.update_provider_status(pid, ProviderStatus.IDLE)
+        await db.set_provider_models(pid, [ProviderModel(provider_id=pid, name=name)])
+        ids[name] = pid
+    group = await db.create_model_group("g")
+    assert group.id is not None
+    for name in ("x", "y"):
+        await db.add_model_group_member(group.id, name)
+    rt = Router(
+        db,
+        pm,
+        affinity=SessionAffinity(1800, 1000, clock),
+        session_affinity=True,
+        cache_aware=True,
+    )
+    first = await rt.route("g", CHAT, session=SESSION, prompt_tokens=20)
+    assert first is not None
+    bound = first.provider.require_id()
+    pm._active_requests[bound] = 50
+    again = await rt.route("g", CHAT, session=SESSION, prompt_tokens=20)
+    assert again is not None
+    assert again.provider.id == bound
+    assert again.resolved_model == first.resolved_model
+    assert rt.affinity.overflows == 0

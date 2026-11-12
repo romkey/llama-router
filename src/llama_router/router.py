@@ -554,7 +554,10 @@ class Router:
                             chosen = c
                             break
                 if chosen is not None and sticky is not None and self.cache_aware:
-                    alt = _pick(ranked, mode, active)
+                    # Only another provider of the bound member model: a
+                    # group's session keeps its model when it moves.
+                    same = tuple(c for c in ranked if c.model == chosen.model)
+                    alt = _pick(same, mode, active)
                     if alt is not chosen:
                         weighing = self._weigh(sticky, chosen, alt, active)
                         if weighing.moved:
