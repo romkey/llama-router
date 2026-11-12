@@ -328,9 +328,12 @@ async def _decide(
                 req.model, DECISION_PATH, judge_prefs, exclude=frozenset(tried)
             )
         except PinUnavailableError as exc:
-            # A strict pin on the decision model: no answer, so the request
-            # goes on as the client sent it.
-            raise _FailedError(str(exc)) from exc
+            if not tried:
+                # A strict pin on the decision model: no answer, so the
+                # request goes on as the client sent it.
+                raise _FailedError(str(exc)) from exc
+            # The strictly pinned provider did answer, without logprobs.
+            result = None
         if not result and tried:
             raise _FailedError(
                 f"no provider of decision model {req.model!r} returned logprobs"

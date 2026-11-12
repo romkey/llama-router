@@ -31,7 +31,7 @@ from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
 from ..request_body import json_object
 from ..request_logger import log_request_background
-from ..router import RoutingPreferences
+from ..router import PinUnavailableError, RoutingPreferences
 from . import deps
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,13 @@ async def serve(
     # Providers that answered without logprobs; the second attempt skips them.
     tried: set[int] = set()
     for attempt in range(2):
-        result = await rt.route(req.model, path, prefs, exclude=frozenset(tried))
+        try:
+            result = await rt.route(req.model, path, prefs, exclude=frozenset(tried))
+        except PinUnavailableError:
+            if not tried:
+                raise
+            # The strictly pinned provider did answer, without logprobs.
+            result = None
         if not result and tried:
             raise HTTPException(
                 status_code=502,
