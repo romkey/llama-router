@@ -46,6 +46,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
 | `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
+| `MAX_PINS_PER_KEY` | `50` | Most model pins a user may set on one of their own keys on My API keys (0: no limit). A pin's model must be one the key may use, and its provider inside the key's locality. Every pin on the key counts, an admin's too; changing an existing pin is always allowed |
 | `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `DASHBOARD_WEBAUTHN_ORIGIN` | *(empty)* | Fixed external origin, e.g. `https://llm.example.org`, without a path or trailing slash. Enables WebAuthn enrollment. Must use a hostname and HTTPS; `http://localhost:PORT` is allowed for development. The hostname becomes the relying party ID; changing it requires re-enrollment |
 | `DASHBOARD_REQUIRE_SECOND_FACTOR` | `false` | Require a second factor for every local dashboard user, including admins. Requires `DASHBOARD_WEBAUTHN_ORIGIN`. Users without an authenticator must enroll after entering their password, before dashboard access. Existing password-only sessions must sign in again. SSO accounts are exempt |
@@ -102,6 +103,7 @@ turns the limit off.
 | `UPSTREAM_MAX_CONCURRENCY_PER_KEY` | `32` | Upstream calls in flight at once for one API key. Requests without a key share only the global limit |
 | `UPSTREAM_QUEUE_TIMEOUT_SECONDS` | `30` | When those are full, a request waits this long (never past its deadline) for a slot, then gets 429 with `Retry-After` |
 | `MAX_STREAMS_PER_KEY` | `16` | Streamed responses open at once for one API key; one more gets 429 straight away |
+| `UPSTREAM_FAILOVER_ATTEMPTS` | `1` | Other providers one request may try when its provider fails before anything reached the client: a connect error, a connect or pool timeout, or HTTP 429, 502 or 503. Never after a read timeout or the first streamed chunk, after other 4xx answers or upstream 401/403, for a strict-pinned model, or for a hub request for one provider. Every attempt is routed and checked again (model access, locality, spend cap, hub scope), within one upstream slot and the request deadline. `0` turns failover off |
 | `REQUEST_DEADLINE_SECONDS` | `1800` | A proxied request must finish this long after it arrives. Before the response starts it gets 504; a stream already under way is ended |
 
 ## Benchmarks

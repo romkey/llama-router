@@ -23,6 +23,7 @@ from ..form_values import (
     _tristate,
     _usd,
     key_edits,
+    strict_pins_flag,
 )
 from ..key_access import UNRESTRICTED, parse_access, store_access, with_access
 from .workers import _iso
@@ -84,6 +85,7 @@ async def api_generate_key(request: Request):
     locality = _key_locality(body.get("locality"))
     cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     label = _key_label(body.get("label"))
+    strict_pins = strict_pins_flag(body)
     if routing_mode not in ROUTING_MODES:
         raise HTTPException(status_code=400, detail="Invalid routing_mode")
     access = await parse_access(db, body.get("allowed"))
@@ -98,6 +100,7 @@ async def api_generate_key(request: Request):
         locality=locality,
         daily_spend_cap_usd=cap,
         label=label,
+        strict_pins=strict_pins,
     )
     if access is not UNRESTRICTED:
         await store_access(db, key_id, access)
@@ -111,6 +114,7 @@ async def api_generate_key(request: Request):
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,
             "locality": locality,
+            "strict_pins": strict_pins,
         }
     )
 
@@ -128,9 +132,9 @@ async def api_get_key(key_id: int):
 @router.patch("/api/keys/{key_id:int}")
 async def api_update_key(key_id: int, request: Request):
     """Change any of label, routing_mode, allow_fallback, session_affinity,
-    locality, daily_spend_cap_usd and allowed (the models and groups the key
-    may use; null for any); fields left out stay as they are. Works on keys
-    users issued themselves too."""
+    locality, daily_spend_cap_usd, strict_pins and allowed (the models and
+    groups the key may use; null for any); fields left out stay as they are.
+    Works on keys users issued themselves too."""
     db = deps.get_db()
     body = await deps.json_body(request)
     edits = key_edits(body, ADMIN_KEY_FIELDS)

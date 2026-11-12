@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # queue would cost more than re-reading the conversation's prompt
     # elsewhere. False keeps a session on its provider whatever the queue.
     session_affinity_cache_aware: bool = True
+    # Other providers a request may fail over to when its provider can't be
+    # reached or is overloaded (connect error, connect or pool timeout, HTTP
+    # 429, 502 or 503) before anything was sent to the client. 0: none.
+    upstream_failover_attempts: int = 1
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0
@@ -208,6 +212,10 @@ class Settings(BaseSettings):
     # Most API keys one dashboard user may issue themselves on /my-keys
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20
+    # Most model pins a dashboard user may set on one of their own keys on
+    # /my-keys (0: no limit). Every pin on the key counts, an admin's too;
+    # changing an existing pin is always allowed.
+    max_pins_per_key: int = 50
     # Most chat conversations one dashboard user may keep (0: no limit).
     max_chat_conversations_per_user: int = 500
     # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.

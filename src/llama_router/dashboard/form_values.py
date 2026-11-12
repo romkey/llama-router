@@ -121,10 +121,18 @@ ADMIN_KEY_FIELDS = (
     "session_affinity",
     "locality",
     "daily_spend_cap_usd",
+    "strict_pins",
 )
 # Locality and the spend cap of a self-issued key are an administrator's to
-# set, so its owner can't widen them.
-OWNER_KEY_FIELDS = ("label", "routing_mode", "allow_fallback", "session_affinity")
+# set, so its owner can't widen them. Strict pins only ever refuse, so the
+# owner may turn them on or off.
+OWNER_KEY_FIELDS = (
+    "label",
+    "routing_mode",
+    "allow_fallback",
+    "session_affinity",
+    "strict_pins",
+)
 
 
 def _routing_mode(value: Any) -> str:
@@ -147,7 +155,13 @@ _KEY_PARSERS: dict[str, Any] = {
     "session_affinity": _tristate,
     "locality": _key_locality,
     "daily_spend_cap_usd": lambda v: _usd(v, "daily spend cap"),
+    "strict_pins": lambda v: _flag(v, "strict_pins"),
 }
+
+
+def strict_pins_flag(body: dict[str, Any]) -> bool:
+    """``strict_pins`` from a new key's body: off when absent."""
+    return _flag(body["strict_pins"], "strict_pins") if "strict_pins" in body else False
 
 
 def key_edits(body: dict[str, Any], allowed: tuple[str, ...]) -> dict[str, Any]:

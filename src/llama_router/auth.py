@@ -24,7 +24,13 @@ from .provider_secrets import (
     key_hash_previous,
     pbkdf2_peppers,
 )
-from .router import ROUTING_MODES, Router, RouteResult, RoutingPreferences
+from .router import (
+    ROUTING_MODES,
+    PinUnavailableError,
+    Router,
+    RouteResult,
+    RoutingPreferences,
+)
 from .routing_table import DEFAULT_MODE, ModelAccess
 from .spend import RESERVATION_STATE, cap_reached, tracker_for
 from .upstream_url import LOCALITIES
@@ -229,6 +235,7 @@ async def _resolve_key(
         mode=mode,
         allow_fallback=bool(record["allow_fallback"]),
         pinned_providers={str(p["model_name"]): int(p["provider_id"]) for p in pins},
+        strict_pins=bool(record.get("strict_pins")),
         session_affinity=record.get("session_affinity"),
         key_id=int(record["id"]),
         locality=_locality(record.get("locality")),
@@ -378,6 +385,7 @@ async def route_within_cap(
     body: Any,
     *,
     session: str | None = None,
+    exclude: frozenset[int] = frozenset(),
 ) -> RouteResult | None:
     """Route the request, holding its estimated cost against the key's cap.
 
@@ -387,15 +395,34 @@ async def route_within_cap(
     not fit under the cap, or an image or audio request lands on a cloud model
     with no price (its cost could not be counted), the request is routed to
     local providers instead, or refused (HTTP 429 over the cap, 403 for an
-    unpriced model) when that is not possible.
+    unpriced model) when that is not possible. A key with strict pins is
+    refused rather than moved off a pinned model's provider. *exclude* names
+    providers that already failed this request.
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
     # Remembered with the session's binding: the prompt its provider caches.
     prompt_tokens = estimate_tokens(body, 0)[0] if session is not None else 0
-    result = await rt.route(
-        model, path, prefs, session=session, prompt_tokens=prompt_tokens
-    )
+    try:
+        result = await rt.route(
+            model,
+            path,
+            prefs,
+            session=session,
+            prompt_tokens=prompt_tokens,
+            exclude=exclude,
+        )
+    except PinUnavailableError as exc:
+        if (
+            prefs is not None
+            and prefs.spend_capped
+            and exc.outside_locality
+            and prefs.daily_spend_cap_usd is not None
+        ):
+            # Over the cap the key was narrowed to local providers, which
+            # left its strict cloud pin out: the cap refused it, not the pin.
+            raise cap_reached(prefs.daily_spend_cap_usd) from exc
+        raise
     if (
         result is None
         or prefs is None
@@ -424,17 +451,28 @@ async def route_within_cap(
         status = 429
         reason = f"daily spend cap of ${cap:.2f} reached for this API key"
     local = None
-    if prefs.locality != "cloud":
-        local = await rt.route(
-            model,
-            path,
-            replace(prefs, locality="local", spend_capped=True),
-            session=session,
-            prompt_tokens=prompt_tokens,
-        )
+    # A strict pin is never rerouted away from its provider, even to local.
+    if prefs.locality != "cloud" and not _strictly_pinned(prefs, result):
+        try:
+            local = await rt.route(
+                model,
+                path,
+                replace(prefs, locality="local", spend_capped=True),
+                session=session,
+                prompt_tokens=prompt_tokens,
+                exclude=exclude,
+            )
+        except PinUnavailableError:
+            # A strict cloud pin further down the fallback chain: the cap
+            # is what refused the request, so say so.
+            local = None
     if local is None:
         raise HTTPException(status_code=status, detail=reason)
     return local
+
+
+def _strictly_pinned(prefs: RoutingPreferences, result: RouteResult) -> bool:
+    return prefs.strict_pins and result.resolved_model in prefs.pinned_providers
 
 
 def client_api_key(request: Request) -> str:

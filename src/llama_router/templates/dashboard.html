@@ -786,6 +786,11 @@
                             <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
                         </div>
                         {{ key_access_fields('new-key') }}
+                        <div class="form-check form-switch mb-2">
+                            <input class="form-check-input" type="checkbox" role="switch" id="new-key-strict" aria-describedby="new-key-strict-help">
+                            <label class="form-check-label" for="new-key-strict">Pins are strict</label>
+                            <div class="form-text" id="new-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
+                        </div>
                         <div class="mb-3">
                             <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
                             <select id="new-key-affinity" class="form-select form-select-sm">
@@ -888,7 +893,7 @@
                                             {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap" aria-label="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
                                         </td>
                                         <td class="small text-nowrap">{% if not k.restrict_models %}<span class="text-muted">all</span>{% else %}{% set parts = [] %}{% if k.allowed_model_count %}{% set _ = parts.append(k.allowed_model_count ~ (' model' if k.allowed_model_count == 1 else ' models')) %}{% endif %}{% if k.allowed_group_count %}{% set _ = parts.append(k.allowed_group_count ~ (' group' if k.allowed_group_count == 1 else ' groups')) %}{% endif %}<span class="badge bg-info text-dark">{{ parts | join(', ') if parts else 'none' }}</span>{% endif %}</td>
-                                        <td><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span></td>
+                                        <td class="text-nowrap"><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span>{% if k.strict_pins %} <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>{% endif %}</td>
                                         <td class="small text-muted">{{ k.created_at | when }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | when }}</td>
                                         <td class="text-end">
@@ -2102,6 +2107,11 @@
                         <option value="off">Off: route every request afresh</option>
                     </select>
                 </div>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" role="switch" id="edit-key-strict" aria-describedby="edit-key-strict-help">
+                    <label class="form-check-label" for="edit-key-strict">Pins are strict</label>
+                    <div class="form-text" id="edit-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
+                </div>
                 {{ key_access_fields('edit-key') }}
                 <div id="edit-key-status" class="small text-danger" role="status"></div>
             </div>
@@ -3138,7 +3148,7 @@ function generateApiKey() {
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label, allowed: KeyAccess.value('new-key')})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label, strict_pins: document.getElementById('new-key-strict').checked, allowed: KeyAccess.value('new-key')})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -3233,6 +3243,7 @@ function openKeyEdit(keyId, keyPrefix) {
         document.getElementById('edit-key-label').value = k.label || '';
         document.getElementById('edit-key-mode').value = k.routing_mode;
         document.getElementById('edit-key-fallback').checked = !!k.allow_fallback;
+        document.getElementById('edit-key-strict').checked = !!k.strict_pins;
         document.getElementById('edit-key-locality').value = k.locality || 'any';
         document.getElementById('edit-key-cap').value = k.daily_spend_cap_usd == null ? '' : k.daily_spend_cap_usd;
         document.getElementById('edit-key-affinity').value =
@@ -3259,6 +3270,7 @@ function saveKeyEdit() {
             locality: document.getElementById('edit-key-locality').value,
             daily_spend_cap_usd: cap === '' ? null : cap,
             session_affinity: document.getElementById('edit-key-affinity').value,
+            strict_pins: document.getElementById('edit-key-strict').checked,
             allowed: KeyAccess.value('edit-key')
         })
     }).then(function(r) {
