@@ -204,6 +204,9 @@ class Settings(BaseSettings):
     # Most API keys one dashboard user may issue themselves on /my-keys
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20
+    # Most model pins a dashboard user may set on one of their own keys on
+    # /my-keys (0: no limit). Pins an admin sets don't count against it.
+    max_pins_per_key: int = 50
     # Most chat conversations one dashboard user may keep (0: no limit).
     max_chat_conversations_per_user: int = 500
     # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.

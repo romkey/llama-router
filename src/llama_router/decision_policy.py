@@ -40,6 +40,7 @@ from .httpx_errors import describe_httpx_error
 from .limits import upstream_slot
 from .provider_manager import ProviderManager
 from .request_logger import log_request_background
+from .router import PinUnavailableError
 
 if TYPE_CHECKING:
     from .router import Router, RoutingPreferences
@@ -320,7 +321,12 @@ async def _decide(
     # sets: the key's own model limits don't apply to it.
     judge_prefs = replace(prefs, access=None) if prefs is not None else None
     for attempt in range(2):
-        result = await rt.route(req.model, DECISION_PATH, judge_prefs)
+        try:
+            result = await rt.route(req.model, DECISION_PATH, judge_prefs)
+        except PinUnavailableError as exc:
+            # A strict pin on the decision model: no answer, so the request
+            # goes on as the client sent it.
+            raise _FailedError(str(exc)) from exc
         if not result:
             raise _FailedError(
                 f"no available provider for decision model {req.model!r}"

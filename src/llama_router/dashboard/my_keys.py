@@ -2,7 +2,8 @@
 
 Any signed-in user may issue, list, edit, regenerate and revoke their own
 keys on ``/my-keys``. They choose how the key is routed (priority, fallback,
-session affinity) and can change that later; which providers it may use and
+session affinity, strict pins, which provider serves a model) and can change
+that later; which providers it may use and
 its daily spend cap come from defaults an administrator sets, so a user
 can't give themselves cloud spending an admin didn't allow. Admins see
 these keys, with their owner, on the API Keys tab and can change them there
@@ -17,9 +18,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from ..auth import key_prefix, new_api_key
+from ..auth import key_prefix, model_access, new_api_key
 from ..config import settings
 from ..database import Database
+from ..models import Provider
 from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
 from . import deps, management_keys
@@ -31,6 +33,7 @@ from .form_values import (
     _usd,
     _utc_day_start,
     key_edits,
+    strict_pins_flag,
 )
 from .key_access import (
     UNRESTRICTED,
@@ -40,6 +43,7 @@ from .key_access import (
     with_access,
 )
 from .pages import dash_page_ctx, templates
+from .routes.api_keys import validate_pin_model_name
 
 router = APIRouter()
 
@@ -109,6 +113,7 @@ async def issue_my_key(request: Request) -> JSONResponse:
     allow_fallback = bool(body.get("allow_fallback", True))
     session_affinity = _tristate(body.get("session_affinity"))
     label = _key_label(body.get("label"))
+    strict_pins = strict_pins_flag(body)
     db = deps.get_db()
     limit = settings.max_api_keys_per_user
     if limit > 0 and len(await db.list_api_keys(owner_user_id=owner)) >= limit:
@@ -130,6 +135,7 @@ async def issue_my_key(request: Request) -> JSONResponse:
         daily_spend_cap_usd=defaults["daily_spend_cap_usd"],
         owner_user_id=owner,
         label=label,
+        strict_pins=strict_pins,
     )
     if access is not UNRESTRICTED:
         await store_access(db, key_id, access)
@@ -141,6 +147,7 @@ async def issue_my_key(request: Request) -> JSONResponse:
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
             "session_affinity": session_affinity,
+            "strict_pins": strict_pins,
             **defaults,
         }
     )
@@ -156,12 +163,37 @@ async def _own_key(owner: int, key_id: int) -> dict[str, Any]:
 
 @router.get("/api/my-keys/allowable")
 async def allowable_models(request: Request) -> JSONResponse:
-    """What a key can be limited to: model groups and known model names.
-    For the key forms on My API keys and the API Keys tab."""
+    """What a key can be limited to: model groups and known model names,
+    and for each model or group the providers serving it (id, name and
+    locality only), for choosing a pin. For the key forms on My API keys
+    and the API Keys tab."""
     _owner_or_admin(request)
     db = deps.get_db()
-    served = [m.name for m in await db.get_all_provider_models()]
-    return JSONResponse(jsonable_encoder(await allowable(db, served)))
+    served = await db.get_all_provider_models()
+    out = await allowable(db, [m.name for m in served])
+    providers = {p.id: p for p in await db.list_providers() if p.id is not None}
+    serving: dict[str, set[int]] = {}
+    for m in served:
+        if m.provider_id in providers:
+            serving.setdefault(m.name, set()).add(m.provider_id)
+    for g in out["groups"]:
+        ids = set().union(*(serving.get(n, set()) for n in g["members"]))
+        if ids:
+            serving[g["name"]] = ids
+    out["providers"] = {
+        name: [_provider_summary(providers[i]) for i in _by_name(ids, providers)]
+        for name, ids in sorted(serving.items())
+    }
+    return JSONResponse(jsonable_encoder(out))
+
+
+def _provider_summary(p: Provider) -> dict[str, Any]:
+    """What a key's owner may see of a provider: never addresses or keys."""
+    return {"id": p.id, "name": p.name, "locality": p.locality}
+
+
+def _by_name(ids: set[int], providers: dict[int, Provider]) -> list[int]:
+    return sorted(ids, key=lambda i: (providers[i].name, i))
 
 
 @router.get("/api/my-keys/{key_id:int}")
@@ -172,7 +204,7 @@ async def get_my_key(request: Request, key_id: int) -> JSONResponse:
 @router.patch("/api/my-keys/{key_id:int}")
 async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
     """Change the key's label, routing_mode, allow_fallback,
-    session_affinity or allowed models. Locality and the spend cap are an
+    session_affinity, strict_pins or allowed models. Locality and the spend cap are an
     administrator's."""
     owner = _owner_id(request)
     body = await deps.json_body(request)
@@ -184,6 +216,86 @@ async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
     if access is not None:
         await store_access(db, key_id, access)
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
+
+
+@router.get("/api/my-keys/{key_id:int}/pins")
+async def list_my_key_pins(request: Request, key_id: int) -> JSONResponse:
+    """The key's pins, including any an administrator set."""
+    key = await _own_key(_owner_id(request), key_id)
+    return JSONResponse(
+        {"pins": await deps.get_db().list_api_key_model_pins(key["id"])}
+    )
+
+
+@router.post("/api/my-keys/{key_id:int}/pins")
+async def set_my_key_pin(request: Request, key_id: int) -> JSONResponse:
+    """Body: {model_name, provider_id}. Pins the model (or model group) to
+    the provider for this key. Only a model the key may use and a provider
+    inside the key's locality can be pinned; the key's locality and model
+    limits are an administrator's, so a pin can't widen them."""
+    key = await _own_key(_owner_id(request), key_id)
+    body = await deps.json_body(request)
+    model_name = validate_pin_model_name(body.get("model_name"))
+    provider_id = _provider_id(body.get("provider_id"))
+    db = deps.get_db()
+    provider = await db.get_provider(provider_id)
+    if provider is None:
+        raise HTTPException(status_code=400, detail="Provider not found")
+    locality = key.get("locality")
+    if locality is not None and provider.locality != locality:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provider {provider.name} is {provider.locality}; "
+            f"this key may only use {locality} providers",
+        )
+    if not await _key_may_use(db, key_id, model_name):
+        raise HTTPException(
+            status_code=400, detail=f"This API key may not use model '{model_name}'"
+        )
+    pins = await db.list_api_key_model_pins(key_id)
+    limit = settings.max_pins_per_key
+    if (
+        limit > 0
+        and len(pins) >= limit
+        and all(p["model_name"] != model_name for p in pins)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"This key already has {limit} pins; remove one to add another",
+        )
+    await db.set_api_key_model_pin(key_id, model_name, provider_id)
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/my-keys/{key_id:int}/pins/{model_name:path}")
+async def delete_my_key_pin(
+    request: Request, key_id: int, model_name: str
+) -> JSONResponse:
+    """Remove a pin, including one an administrator set on the key."""
+    await _own_key(_owner_id(request), key_id)
+    await deps.get_db().remove_api_key_model_pin(key_id, model_name)
+    return JSONResponse({"ok": True})
+
+
+def _provider_id(raw: Any) -> int:
+    if raw is None or isinstance(raw, bool):
+        raise HTTPException(status_code=400, detail="provider_id is required")
+    try:
+        return int(raw)
+    except TypeError, ValueError:
+        raise HTTPException(
+            status_code=400, detail="provider_id must be an integer"
+        ) from None
+
+
+async def _key_may_use(db: Database, key_id: int, model: str) -> bool:
+    access = await model_access(db, key_id)
+    if access is None:
+        return True
+    rt = deps.get_pm().router
+    if rt is not None:
+        return (await rt.current_table()).allows(access, model)
+    return model in access.models or model in access.groups
 
 
 @router.post("/api/my-keys/{key_id:int}/regenerate")

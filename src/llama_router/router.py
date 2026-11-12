@@ -94,11 +94,40 @@ class RouteResult:
         self.model_key = model_key or resolved_model
 
 
+class PinUnavailableError(Exception):
+    """A key with strict pins asked for a pinned model its pinned provider
+    can't serve right now. The request is refused (HTTP 503), never routed
+    to another provider or down the fallback chain."""
+
+    def __init__(
+        self,
+        model: str,
+        provider_id: int,
+        reason: str,
+        *,
+        outside_locality: bool = False,
+    ):
+        self.model = model
+        self.provider_id = provider_id
+        self.reason = reason
+        # The pinned provider serves the model but is outside the key's
+        # locality: for a key past its spend cap (narrowed to local), that
+        # is the cap's doing, and the caller answers 429 instead.
+        self.outside_locality = outside_locality
+        super().__init__(
+            f"Model '{model}' is pinned to provider {provider_id}, which is "
+            f"unavailable ({reason}); this API key's pins are strict"
+        )
+
+
 @dataclass(slots=True)
 class RoutingPreferences:
     mode: str = DEFAULT_MODE  # "latency", "throughput", "balanced" or "chaos"
     allow_fallback: bool = True
     pinned_providers: dict[str, int] = field(default_factory=dict)
+    # A pinned model whose pinned provider can't serve it is refused
+    # (PinUnavailableError) rather than routed to another provider.
+    strict_pins: bool = False
     # None follows the router's default (LLAMA_ROUTER_SESSION_AFFINITY_ENABLED).
     session_affinity: bool | None = None
     # The API key these came from, which scopes session affinity.
@@ -377,7 +406,9 @@ class Router:
         normal choice is made and the session is bound to it. Pins and chaos
         mode take precedence.
 
-        Raises :class:`UnknownEndpointError` for a path the router does not proxy.
+        Raises :class:`UnknownEndpointError` for a path the router does not
+        proxy, and :class:`PinUnavailableError` when a key with strict pins
+        names a pinned model its pinned provider can't serve.
         """
         table = await self.current_table()
         return self.route_with(
@@ -399,6 +430,7 @@ class Router:
         With *record* false the session binding is consulted but not changed,
         as :meth:`explain` needs.
         """
+        strict = bool(preferences and preferences.strict_pins)
         path = resolve_endpoint(endpoint)
         if session is not None and not self.affinity_enabled(preferences):
             session = None
@@ -421,6 +453,7 @@ class Router:
                 locality,
                 pins,
                 access,
+                strict,
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
@@ -443,23 +476,22 @@ class Router:
                 pid = pins.get(candidate_model)
                 if pid is not None:
                     pinned = self._pinned(table, candidate_model, path, pid, mode)
-                    if pinned is not None and not _eligible(
-                        pinned.provider, locality, hub_only
-                    ):
+                    why = None
+                    outside = False
+                    if pinned is None:
+                        why = "it does not serve the model on this endpoint now"
+                    elif not _eligible(pinned.provider, locality, hub_only):
                         # The key's locality outranks its pin: never send a
                         # local-only key's request to a cloud provider, nor a
                         # hub's request to a provider kept from it.
-                        logger.warning(
-                            "Pin for %s ignored: %s",
-                            candidate_model,
-                            _why_ineligible(
-                                pinned.provider,
-                                locality,
-                                hub_only,
-                                pinned.provider.name,
-                            ),
-                        )
+                        why = _why_ineligible(pinned.provider, locality, hub_only, "it")
+                        outside = not _locality_ok(pinned.provider, locality)
+                        logger.warning("Pin for %s ignored: %s", candidate_model, why)
                         pinned = None
+                    if pinned is None and strict:
+                        raise PinUnavailableError(
+                            candidate_model, pid, why or "", outside_locality=outside
+                        )
                     if pinned is not None:
                         if record and table.is_group(candidate_model):
                             self._count_group(candidate_model, pinned)
@@ -550,9 +582,13 @@ class Router:
         request would get.
         """
         table = await self.current_table()
-        decision = self.route_with(
-            table, model_name, endpoint, preferences, session=session, record=False
-        )
+        try:
+            decision = self.route_with(
+                table, model_name, endpoint, preferences, session=session, record=False
+            )
+        except PinUnavailableError:
+            # explain_with walks to the same refused pin and says so.
+            decision = None
         return self.explain_with(
             table, decision, model_name, endpoint, preferences, session=session
         )
@@ -575,6 +611,7 @@ class Router:
         allow_fallback = preferences.allow_fallback if preferences else True
         locality = preferences.locality if preferences else None
         hub_only = bool(preferences and preferences.hub_only)
+        strict = bool(preferences and preferences.strict_pins)
         out: dict[str, Any] = {
             "request": {
                 "model": model_name,
@@ -587,6 +624,7 @@ class Router:
                 "protocol": protocol or "any",
                 "allow_fallback": allow_fallback,
                 "pins": pins,
+                "strict_pins": strict,
                 "session_affinity": affinity_on,
             },
             "table_version": table.version,
@@ -683,8 +721,23 @@ class Router:
                 locality,
                 hub_only,
                 chosen_model,
+                strict,
             )
             out["steps"].append(step)
+            if step.get("refused"):
+                # route_with raised PinUnavailableError here: no other
+                # provider, and no further fallback.
+                out["refused"] = {
+                    "status": 503,
+                    "model": candidate_model,
+                    "pinned_provider_id": step["pinned_provider_id"],
+                }
+                out["summary"] = (
+                    f"Refused (HTTP 503): '{candidate_model}' is pinned to a "
+                    "provider that is unavailable, and this API key's pins "
+                    "are strict."
+                )
+                return out
             if decision is not None and decision.resolved_model == candidate_model:
                 break
         out["summary"] = _summary(out, model_name)
@@ -704,6 +757,7 @@ class Router:
         locality: str | None = None,
         hub_only: bool = False,
         chosen_model: str | None = None,
+        strict: bool = False,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         if table.is_group(model):
@@ -728,6 +782,8 @@ class Router:
                     pinned.provider, locality, hub_only, pinned.provider.name
                 )
                 pinned = None
+        # A strict pin that can't be honoured refuses the request outright.
+        refused = pid is not None and pinned is None and strict
         skipped = 0
 
         for c in all_cands:
@@ -749,6 +805,11 @@ class Router:
                 row["excluded"] = _why_ineligible(c.provider, locality, hub_only)
                 if not _locality_ok(c.provider, locality):
                     skipped += 1
+            elif refused:
+                row["excluded"] = (
+                    "another provider is pinned for this model; "
+                    "this key's pins are strict"
+                )
             elif pinned is not None:
                 if c is not pinned:
                     row["excluded"] = "another provider is pinned for this model"
@@ -797,7 +858,10 @@ class Router:
         def where(provider: str, member: str | None) -> str:
             return f"{member} on {provider}" if is_group and member else provider
 
-        if pinned is not None:
+        if refused:
+            step["refused"] = True
+            step["outcome"] = "pinned provider unavailable; this key's pins are strict"
+        elif pinned is not None:
             step["outcome"] = f"pinned to {where(pinned.provider.name, pinned.model)}"
         elif (
             eligible
@@ -930,11 +994,14 @@ class Router:
         locality: str | None,
         pins: dict[str, int] | None = None,
         access: ModelAccess | None = None,
+        strict: bool = False,
     ) -> RouteResult | None:
         """Route to the one provider the hub asked for, or nowhere.
 
         The worker's API key still has its say: a model it pins to another
-        provider, or may not use, is not served by this one.
+        provider, or may not use, is not served by this one. With strict
+        pins, such a model is refused rather than tried further down the
+        fallback chain.
         """
         chain = table.chain(model_name) if allow_fallback else (model_name,)
         for candidate_model in chain:
@@ -948,9 +1015,25 @@ class Router:
                     candidate_model,
                     pinned,
                 )
+                if strict:
+                    raise PinUnavailableError(
+                        candidate_model,
+                        pinned,
+                        f"the hub asked for provider {pid}",
+                    )
                 continue
             c = self._pinned(table, candidate_model, path, pid, mode)
             if c is None or not _eligible(c.provider, locality, hub_only=True):
+                if strict and pinned is not None:
+                    raise PinUnavailableError(
+                        candidate_model,
+                        pinned,
+                        "it does not serve the model on this endpoint now"
+                        if c is None
+                        else _why_ineligible(c.provider, locality, True, "it"),
+                        outside_locality=c is not None
+                        and not _locality_ok(c.provider, locality),
+                    )
                 continue
             return RouteResult(
                 c.provider,

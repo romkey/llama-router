@@ -22,6 +22,7 @@ EDITABLE_FIELDS = frozenset(
         "session_affinity",
         "locality",
         "daily_spend_cap_usd",
+        "strict_pins",
     }
 )
 
@@ -39,15 +40,17 @@ class ApiKeyRepository(Repository):
         daily_spend_cap_usd: float | None = None,
         owner_user_id: int | None = None,
         label: str | None = None,
+        strict_pins: bool = False,
     ) -> int:
         """*owner_user_id* is the dashboard user who issued the key to
         themselves; None for a key an admin issued. *label* is a free-text
-        name shown beside the prefix."""
+        name shown beside the prefix. *strict_pins* refuses a request whose
+        pinned provider can't serve it instead of routing it elsewhere."""
         return await self._insert_get_id(
             "INSERT INTO api_keys "
             "(key_prefix, key_hash, routing_mode, allow_fallback, session_affinity, "
-            "locality, daily_spend_cap_usd, owner_user_id, label) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "locality, daily_spend_cap_usd, owner_user_id, label, strict_pins) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 key_prefix,
                 key_hash,
@@ -58,6 +61,7 @@ class ApiKeyRepository(Repository):
                 daily_spend_cap_usd,
                 owner_user_id,
                 label,
+                int(strict_pins),
             ),
         )
 
@@ -78,6 +82,8 @@ class ApiKeyRepository(Repository):
         values = dict(fields)
         if "allow_fallback" in values:
             values["allow_fallback"] = int(bool(values["allow_fallback"]))
+        if "strict_pins" in values:
+            values["strict_pins"] = int(bool(values["strict_pins"]))
         if values.get("session_affinity") is not None:
             values["session_affinity"] = int(bool(values["session_affinity"]))
         names = sorted(values)
@@ -155,7 +161,7 @@ class ApiKeyRepository(Repository):
             "SELECT "
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
             "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
-            "k.owner_user_id, k.label, k.restrict_models, "
+            "k.owner_user_id, k.label, k.restrict_models, k.strict_pins, "
             "u.username AS owner_username, "
             "COUNT(DISTINCT p.id) AS pin_count, "
             "COUNT(DISTINCT a.model_name) AS allowed_model_count, "
@@ -168,7 +174,7 @@ class ApiKeyRepository(Repository):
             + "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
             "k.last_used_at, k.owner_user_id, k.label, k.restrict_models, "
-            "u.username "
+            "k.strict_pins, u.username "
             "ORDER BY k.created_at DESC, k.id DESC",
             tuple(params),
         )
@@ -190,6 +196,7 @@ class ApiKeyRepository(Repository):
                 "label": r["label"],
                 "pin_count": int(r["pin_count"] or 0),
                 "restrict_models": bool(r["restrict_models"]),
+                "strict_pins": bool(r["strict_pins"]),
                 "allowed_model_count": int(r["allowed_model_count"] or 0),
                 "allowed_group_count": int(r["allowed_group_count"] or 0),
             }
@@ -220,7 +227,7 @@ class ApiKeyRepository(Repository):
     async def lookup_api_key(self, key_hash: str) -> dict[str, Any] | None:
         row = await self._select_one(
             "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
-            "locality, daily_spend_cap_usd FROM api_keys "
+            "locality, daily_spend_cap_usd, strict_pins FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -238,6 +245,7 @@ class ApiKeyRepository(Repository):
             "session_affinity": _tristate(row["session_affinity"]),
             "locality": row["locality"],
             "daily_spend_cap_usd": row["daily_spend_cap_usd"],
+            "strict_pins": bool(row["strict_pins"]),
         }
 
     async def touch_api_key(self, key_id: int) -> None:
