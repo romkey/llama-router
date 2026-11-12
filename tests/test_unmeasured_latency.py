@@ -128,3 +128,27 @@ async def test_cloud_models_count_as_loaded_but_not_instant(
     # Scored as the measured provider, not as an instant first token.
     assert by_id[cid].ttft_estimate_ms == pytest.approx(150.0)
     assert by_id[cid].scores["latency"] >= by_id[local].scores["latency"]
+
+
+async def test_peers_listed_under_another_name_count_toward_the_estimate(
+    db: Database, pm: ProviderManager
+) -> None:
+    """A provider that lists the model under an alias is ranked with the
+    others; their measured first-token times are its estimate too."""
+    fast = await _hot(db, pm, "fast")
+    slow = await _hot(db, pm, "slow")
+    p = await db.add_provider("tagged", ProviderProtocol.OLLAMA)
+    tagged = p.require_id()
+    await db.update_provider_status(tagged, ProviderStatus.IDLE)
+    await db.set_provider_models(
+        tagged, [ProviderModel(provider_id=tagged, name="m-q4")]
+    )
+    pm._set_hot_models(tagged, [{"name": "m-q4"}])
+    await db.set_model_alias("m-q4", "m")
+    pm.stats.record_request(fast, "m", ok=True, ttft_ms=100.0)
+    pm.stats.record_request(slow, "m", ok=True, ttft_ms=300.0)
+
+    ranked = await _ranked(Router(db, pm), "latency")
+    estimate = next(c for c in ranked if c.provider_id == tagged)
+    assert estimate.model == "m-q4"
+    assert estimate.ttft_estimate_ms == pytest.approx(200.0)

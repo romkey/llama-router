@@ -122,7 +122,8 @@ class Candidate:
     rtt_ms: float | None = None
     ttft_ms: float | None = None
     # Stand-in for an unmeasured hot candidate's ttft_ms: the median measured
-    # on the model's other providers (see rescore). None: UNKNOWN_HOT_TTFT_MS.
+    # on the other providers it is ranked with, aliases included (see
+    # rescore). None: UNKNOWN_HOT_TTFT_MS.
     ttft_estimate_ms: float | None = None
     service_ms: float | None = None
     model_failure_rate: float = 0.0
@@ -967,9 +968,7 @@ def rescore(
         new.rtt_ms = rtt[pid]
         new.ttft_ms = ms.ttft_ms.value if ms else None
         new.ttft_estimate_ms = (
-            _median(measured.get((c.model, c.endpoint), {}).values())
-            if new.ttft_ms is None
-            else None
+            _median(measured.get(id(c), {}).values()) if new.ttft_ms is None else None
         )
         new.service_ms = ms.duration_ms.value if ms else None
         new.model_failure_rate = model_rate
@@ -1012,19 +1011,25 @@ def rescore(
 
 def _measured_ttft(
     base: TableBase, stats: ProviderStats | None
-) -> dict[tuple[str, str], dict[int, float]]:
-    """(model, endpoint) -> provider id -> live time to first token, for
-    every candidate with a sample."""
-    out: dict[tuple[str, str], dict[int, float]] = {}
+) -> dict[int, dict[tuple[int, str], float]]:
+    """Candidate (by ``id``) -> live time to first token of every measured
+    candidate it is ranked against, keyed by (provider id, model).
+
+    Peers are the candidates of each (model, endpoint) bucket the candidate
+    is in, so an alias or tag of a model counts the providers listed under
+    other names in the same bucket."""
+    out: dict[int, dict[tuple[int, str], float]] = {}
     if stats is None:
         return out
     for cands in base.candidates.values():
+        peers: dict[tuple[int, str], float] = {}
         for c in cands:
             ms = stats.model(c.provider_id, c.model, c.endpoint_class)
             if ms is not None and ms.ttft_ms.value is not None:
-                out.setdefault((c.model, c.endpoint), {})[c.provider_id] = (
-                    ms.ttft_ms.value
-                )
+                peers[(c.provider_id, c.model)] = ms.ttft_ms.value
+        if peers:
+            for c in cands:
+                out.setdefault(id(c), {}).update(peers)
     return out
 
 
