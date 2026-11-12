@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .httpx_errors import describe_httpx_error, raise_for_stream_status
+from .json_io import json_kwargs
 from .models import ProviderModel
 from .upstream_url import split_api_base
 
@@ -195,7 +196,7 @@ class OpenAIClient:
         body["stream"] = True
         try:
             async with self._http.stream(
-                "POST", "/v1/chat/completions", json=body
+                "POST", "/v1/chat/completions", **await json_kwargs(body)
             ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
@@ -214,14 +215,16 @@ class OpenAIClient:
         resp = await self._post(
             "/v1/chat/completions",
             op="llama.cpp chat completions (/v1/chat/completions)",
-            json=body,
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
 
     async def embeddings(self, body: dict) -> dict:
         resp = await self._post(
-            "/v1/embeddings", op="llama.cpp embeddings (/v1/embeddings)", json=body
+            "/v1/embeddings",
+            op="llama.cpp embeddings (/v1/embeddings)",
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -229,7 +232,9 @@ class OpenAIClient:
     async def completions_stream(self, body: dict) -> AsyncIterator[bytes]:
         body["stream"] = True
         try:
-            async with self._http.stream("POST", "/v1/completions", json=body) as resp:
+            async with self._http.stream(
+                "POST", "/v1/completions", **await json_kwargs(body)
+            ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
@@ -245,7 +250,9 @@ class OpenAIClient:
     async def completions(self, body: dict) -> dict:
         body["stream"] = False
         resp = await self._post(
-            "/v1/completions", op="llama.cpp completions (/v1/completions)", json=body
+            "/v1/completions",
+            op="llama.cpp completions (/v1/completions)",
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -255,7 +262,9 @@ class OpenAIClient:
     async def responses_stream(self, body: dict) -> AsyncIterator[bytes]:
         body["stream"] = True
         try:
-            async with self._http.stream("POST", "/v1/responses", json=body) as resp:
+            async with self._http.stream(
+                "POST", "/v1/responses", **await json_kwargs(body)
+            ) as resp:
                 await raise_for_stream_status(resp)
                 async for chunk in resp.aiter_bytes():
                     yield chunk
@@ -271,7 +280,9 @@ class OpenAIClient:
     async def responses(self, body: dict) -> dict:
         body["stream"] = False
         resp = await self._post(
-            "/v1/responses", op="llama.cpp responses (/v1/responses)", json=body
+            "/v1/responses",
+            op="llama.cpp responses (/v1/responses)",
+            **await json_kwargs(body),
         )
         resp.raise_for_status()
         return resp.json()
@@ -282,7 +293,7 @@ class OpenAIClient:
         resp = await self._post(
             "/v1/images/generations",
             op="llama.cpp image generation (/v1/images/generations)",
-            json=body,
+            **await json_kwargs(body),
             timeout=httpx.Timeout(10.0, read=600.0),
         )
         resp.raise_for_status()
@@ -308,7 +319,7 @@ class OpenAIClient:
             async with self._http.stream(
                 "POST",
                 "/v1/audio/speech",
-                json=body,
+                **await json_kwargs(body),
                 timeout=httpx.Timeout(10.0, read=600.0),
             ) as resp:
                 await raise_for_stream_status(resp)
@@ -353,7 +364,7 @@ class OpenAIClient:
         resp = await self._post(
             "/v1/chat/completions",
             op=f"llama.cpp chat benchmark for {model!r}",
-            json=body,
+            **await json_kwargs(body),
             timeout=httpx.Timeout(30.0, read=120.0),
         )
         elapsed_s = time.monotonic() - start
@@ -369,7 +380,7 @@ class OpenAIClient:
         resp = await self._post(
             "/v1/embeddings",
             op=f"llama.cpp embed benchmark for {model!r}",
-            json=body,
+            **await json_kwargs(body),
             timeout=httpx.Timeout(30.0, read=120.0),
         )
         elapsed_s = time.monotonic() - start

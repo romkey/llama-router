@@ -17,6 +17,7 @@ from typing import Any
 
 from . import __version__
 from .models import ProviderInfo, ProviderStatus
+from .single_process import LOOP_LAG
 
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 PREFIX = "llama_router_"
@@ -74,6 +75,32 @@ class Family:
                 yield f"{self.name}{{{body}}} {_fmt(value)}"
             else:
                 yield f"{self.name} {_fmt(value)}"
+
+
+class Histogram(Family):
+    """A histogram family: cumulative ``_bucket`` lines, ``_sum`` and ``_count``."""
+
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        buckets: list[tuple[float, int]],
+        total: float,
+        count: int,
+    ) -> None:
+        super().__init__(name, "histogram", help_text)
+        self.buckets = buckets
+        self.total = total
+        self.count = count
+
+    def lines(self) -> Iterable[str]:
+        yield f"# HELP {self.name} {_escape(self.help)}"
+        yield f"# TYPE {self.name} histogram"
+        for bound, n in self.buckets:
+            le = "+Inf" if math.isinf(bound) else repr(float(bound))
+            yield f'{self.name}_bucket{{le="{le}"}} {n}'
+        yield f"{self.name}_sum {_fmt(float(self.total))}"
+        yield f"{self.name}_count {self.count}"
 
 
 def render(families: Iterable[Family]) -> str:
@@ -395,6 +422,17 @@ def collect(
         )
         link_jobs.add(int(worker_link.get("jobs_total") or 0))
         families += [link_up, link_jobs]
+
+    families.append(
+        Histogram(
+            "event_loop_lag_seconds",
+            "How late the event loop woke a task sleeping a fixed interval: "
+            "how long any request may wait behind others in this process.",
+            LOOP_LAG.cumulative(),
+            LOOP_LAG.sum,
+            LOOP_LAG.count,
+        )
+    )
 
     if auto_benchmark is not None:
         runs = Family(

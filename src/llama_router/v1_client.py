@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from starlette.datastructures import FormData, UploadFile
 
+from .json_io import json_kwargs
+
 if TYPE_CHECKING:
     from .llamacpp_client import LlamaCppClient
     from .ollama_client import OllamaClient
@@ -107,7 +109,7 @@ class V1Client:
         client: LlamaCppClient | OllamaClient = (
             self._llamacpp if self._llamacpp is not None else self._require_ollama()
         )
-        resp = await client._post(path, op=op, json=upstream_body(body))
+        resp = await client._post(path, op=op, **await json_kwargs(upstream_body(body)))
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
         return out

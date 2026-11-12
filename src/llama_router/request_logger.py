@@ -23,6 +23,7 @@ from .config import settings
 from .database import Database
 from .endpoints import endpoint_class
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
+from .json_io import json_size
 from .limits import DeadlineExceeded
 from .models import Provider, RequestLog
 from .pricing import Price, estimate_tokens
@@ -375,9 +376,25 @@ def _raw_body_size(request: Request) -> int | None:
     return int(length) if length.isdigit() else None
 
 
+async def _measure(kwargs: dict[str, Any]) -> None:
+    """Fill a queued row's body sizes, serialising large bodies in a worker
+    thread so the log writer never holds the event loop on one."""
+    response_body = kwargs.get("response_body")
+    if response_body is not None and not kwargs.get("response_size"):
+        kwargs["response_size"] = await json_size(response_body)
+    request_body = kwargs.get("request_body")
+    if (
+        kwargs.get("request_size") is None
+        and kwargs.get("request") is None
+        and request_body is not None
+    ):
+        kwargs["request_size"] = await json_size(request_body)
+
+
 def _payload_size(body: Any) -> int:
     """Approximate size of a JSON body in bytes, for bodies the router has
-    only as parsed JSON (responses, internal requests)."""
+    only as parsed JSON (responses, internal requests). Small bodies only:
+    callers measure large ones with :func:`json_io.json_size` first."""
     try:
         return len(json.dumps(body).encode())
     except Exception:
@@ -499,6 +516,11 @@ async def log_request(
     A successful priced cloud request whose response reports no usage is
     charged an estimate from *request_body* rather than nothing.
     """
+    # Measured here, off the event loop when large, so _build_entry won't.
+    if response_body is not None and not response_size:
+        response_size = await json_size(response_body)
+    if request_size is None and request is None and request_body is not None:
+        request_size = await json_size(request_body)
     await db.save_request_log(
         _build_entry(
             db,
@@ -753,6 +775,7 @@ class _LogWriter:
         by_db: dict[Database, list[RequestLog]] = {}
         for db, kwargs in batch:
             try:
+                await _measure(kwargs)
                 by_db.setdefault(db, []).append(_build_entry(db, **kwargs))
             except Exception:
                 logger.exception("Could not build a request log row")
