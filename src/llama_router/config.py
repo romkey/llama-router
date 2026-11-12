@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Most sessions one API key (or one client address, without a key) may
     # hold, so one client cannot push everyone else's sessions out.
     session_affinity_max_sessions_per_key: int = 200
+    # Other providers a request may fail over to when its provider can't be
+    # reached or is overloaded (connect error, connect or pool timeout, HTTP
+    # 429, 502 or 503) before anything was sent to the client. 0: none.
+    upstream_failover_attempts: int = 1
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0

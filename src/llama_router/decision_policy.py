@@ -320,13 +320,21 @@ async def _decide(
     # The decision model belongs to the key's policy, which an administrator
     # sets: the key's own model limits don't apply to it.
     judge_prefs = replace(prefs, access=None) if prefs is not None else None
+    # Providers that answered without logprobs; the second attempt skips them.
+    tried: set[int] = set()
     for attempt in range(2):
         try:
-            result = await rt.route(req.model, DECISION_PATH, judge_prefs)
+            result = await rt.route(
+                req.model, DECISION_PATH, judge_prefs, exclude=frozenset(tried)
+            )
         except PinUnavailableError as exc:
             # A strict pin on the decision model: no answer, so the request
             # goes on as the client sent it.
             raise _FailedError(str(exc)) from exc
+        if not result and tried:
+            raise _FailedError(
+                f"no provider of decision model {req.model!r} returned logprobs"
+            )
         if not result:
             raise _FailedError(
                 f"no available provider for decision model {req.model!r}"
@@ -379,7 +387,7 @@ async def _decide(
             pm.stats.record_logprobs(provider_id, ok=False)
             failure = failed("backend returned no logprobs", sample=False)
             if attempt == 0:
-                await rt.rebuild()
+                tried.add(provider_id)
                 continue
             raise failure from e
         except d.DecisionError as e:

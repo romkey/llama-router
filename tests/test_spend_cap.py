@@ -67,6 +67,7 @@ class _FakeRouter:
         prefs: RoutingPreferences | None = None,
         *,
         session: str | None = None,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         locality = prefs.locality if prefs else None
         self.asked.append(locality)

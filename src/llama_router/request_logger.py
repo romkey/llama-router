@@ -900,27 +900,59 @@ async def stream_response(logged: StreamLogger, media_type: str) -> Response:
     instead of a 200 whose body stops short (which clients report as a
     transfer-length error).
     """
+    try:
+        first, stream = await prime_stream(logged)
+    except httpx.HTTPStatusError as exc:
+        return forward_upstream_http_error(exc)
+    return stream_body(first, stream, media_type)
+
+
+async def prime_stream(
+    logged: StreamLogger,
+) -> tuple[bytes | None, AsyncGenerator[bytes] | None]:
+    """Start *logged* and wait for its first chunk, before anything reaches
+    the client. Returns the chunk and the rest of the stream, or two Nones
+    for an empty stream. A failure before the first chunk is raised (and
+    already logged), so the caller may answer it or try another provider."""
     stream = logged.__aiter__()
     try:
         first = await stream.__anext__()
     except StopAsyncIteration:
-        return StreamingResponse(iter(()), media_type=media_type)
-    except httpx.HTTPStatusError as exc:
-        return forward_upstream_http_error(exc)
+        return None, None
     except BaseException:
         await stream.aclose()
         raise
+    return first, stream
+
+
+def stream_body(
+    first: bytes | None,
+    stream: AsyncGenerator[bytes] | None,
+    media_type: str,
+    on_close: Callable[[], None] | None = None,
+) -> Response:
+    """The response for a stream :func:`prime_stream` started. *on_close*
+    runs once the body has been sent or abandoned."""
+    if first is None or stream is None:
+        if on_close is not None:
+            on_close()
+        return StreamingResponse(iter(()), media_type=media_type)
+    rest = stream
 
     async def chunks() -> AsyncIterator[bytes]:
         try:
             yield first
-            async for chunk in stream:
+            async for chunk in rest:
                 yield chunk
         except DeadlineExceeded:
             # Already logged as the request's error; end the body rather than
             # abort the connection.
             logger.warning("Stream ended at the request deadline")
         finally:
-            await stream.aclose()
+            try:
+                await rest.aclose()
+            finally:
+                if on_close is not None:
+                    on_close()
 
     return StreamingResponse(chunks(), media_type=media_type)

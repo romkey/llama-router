@@ -691,6 +691,35 @@ class RoutingTable:
         memo[key] = ranked
         return ranked
 
+    def ranked_excluding(
+        self,
+        model: str,
+        endpoint: str,
+        mode: str,
+        locality: str | None,
+        hub_only: bool,
+        exclude: frozenset[int],
+    ) -> tuple[Candidate, ...]:
+        """:meth:`ranked_for` without the providers in *exclude* (ones that
+        already failed this request). The best tier is taken from what is
+        left, so a failing provider's healthier-tier peers are not needed
+        for a weaker one to be tried. Not memoized: only retries use it."""
+        if not exclude:
+            return self.ranked_for(model, endpoint, mode, locality, hub_only)
+        cands = self.all_candidates.get((model, endpoint))
+        if not cands or mode not in MODES:
+            return ()
+        return _rank(
+            [
+                c
+                for c in cands
+                if c.provider_id not in exclude
+                and (locality is None or c.provider.locality == locality)
+                and (c.provider.hub_shared or not hub_only)
+            ],
+            mode,
+        )
+
     def backend_name(self, provider_id: int, model: str) -> str:
         return self.backend_names.get((provider_id, model), model)
 

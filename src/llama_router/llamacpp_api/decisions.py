@@ -82,8 +82,15 @@ async def serve(
     db = deps.get_db()
 
     await require_model_access(rt, prefs, req.model)
+    # Providers that answered without logprobs; the second attempt skips them.
+    tried: set[int] = set()
     for attempt in range(2):
-        result = await rt.route(req.model, path, prefs)
+        result = await rt.route(req.model, path, prefs, exclude=frozenset(tried))
+        if not result and tried:
+            raise HTTPException(
+                status_code=502,
+                detail="No provider for this model returned logprobs",
+            )
         if not result:
             raise HTTPException(
                 status_code=404,
@@ -126,7 +133,7 @@ async def serve(
                 provider.name,
             )
             if attempt == 0:
-                await rt.rebuild()
+                tried.add(provider_id)
                 continue
             raise HTTPException(
                 status_code=502,

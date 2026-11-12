@@ -390,6 +390,7 @@ class Router:
         preferences: RoutingPreferences | None = None,
         *,
         session: str | None = None,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Pick the best provider for *model_name* on *endpoint*.
 
@@ -409,10 +410,13 @@ class Router:
         Raises :class:`UnknownEndpointError` for a path the router does not
         proxy, and :class:`PinUnavailableError` when a key with strict pins
         names a pinned model its pinned provider can't serve.
+
+        *exclude* names providers that already failed this request; they are
+        not chosen again (see ``proxy_json``'s failover).
         """
         table = await self.current_table()
         return self.route_with(
-            table, model_name, endpoint, preferences, session=session
+            table, model_name, endpoint, preferences, session=session, exclude=exclude
         )
 
     def route_with(
@@ -424,6 +428,7 @@ class Router:
         *,
         session: str | None = None,
         record: bool = True,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Route against *table*. Synchronous: no I/O, no awaits.
 
@@ -457,7 +462,7 @@ class Router:
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
-                table, model_name, path, locality, hub_only, access
+                table, model_name, path, locality, hub_only, access, exclude
             )
         if mode not in MODES:
             mode = DEFAULT_MODE
@@ -478,7 +483,10 @@ class Router:
                     pinned = self._pinned(table, candidate_model, path, pid, mode)
                     why = None
                     outside = False
-                    if pinned is None:
+                    if pinned is not None and pid in exclude:
+                        why = "it already failed this request"
+                        pinned = None
+                    elif pinned is None:
                         why = "it does not serve the model on this endpoint now"
                     elif not _eligible(pinned.provider, locality, hub_only):
                         # The key's locality outranks its pin: never send a
@@ -508,7 +516,9 @@ class Router:
                             pinned.model,
                             _group_of(table, candidate_model),
                         )
-            ranked = table.ranked_for(candidate_model, path, mode, locality, hub_only)
+            ranked = table.ranked_excluding(
+                candidate_model, path, mode, locality, hub_only, exclude
+            )
             if not ranked:
                 continue
             ranked = self._not_busy(ranked)
@@ -1086,13 +1096,14 @@ class Router:
         locality: str | None = None,
         hub_only: bool = False,
         access: ModelAccess | None = None,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model
-        (one the key may use)."""
+        (one the key may use), other than the providers in *exclude*."""
         protocol = ENDPOINTS[path][0]
         entries = []
         for provider, models in table.chaos.get(protocol, ()):
-            if not _eligible(provider, locality, hub_only):
+            if not _eligible(provider, locality, hub_only) or provider.id in exclude:
                 continue
             if access is not None:
                 models = tuple(
