@@ -162,6 +162,18 @@ async def run() -> int:
     lease = ProcessLease(db)
     await lease.start()
     LOOP_LAG.start()
+    try:
+        return await _serve(db)
+    finally:
+        # Also when start-up fails: a lease left behind would make the
+        # next start look like a second process.
+        await LOOP_LAG.stop()
+        await lease.stop()
+        await db.close()
+
+
+async def _serve(db: Database) -> int:
+    """Start everything on *db* and serve until told to stop."""
     # Before any provider is contacted: relayed requests carry the ID.
     rid = await router_identity.load(db)
     logger.info("Router ID %s", rid)
@@ -281,8 +293,6 @@ async def run() -> int:
         logger.error("Shutting down: %s", exc)
         return 1
     finally:
-        await LOOP_LAG.stop()
-        await lease.stop()
         await worker_link.stop()
         await auto_bench.stop()
         await rt.stop()
@@ -292,7 +302,6 @@ async def run() -> int:
         # database closes.
         await background.drain()
         await stop_log_writer()
-        await db.close()
     return 0
 
 

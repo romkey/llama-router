@@ -18,24 +18,36 @@ from typing import Any
 LARGE_JSON_BYTES = 1_000_000
 
 
+def _str_bytes(s: str) -> int:
+    """At least the bytes *s* takes as UTF-8 JSON, without encoding it:
+    ASCII is one byte a character, anything else up to four."""
+    return len(s) + 2 if s.isascii() else 4 * len(s) + 2
+
+
 def approx_json_size(value: Any, limit: int = LARGE_JSON_BYTES) -> int:
-    """A cheap lower bound on *value*'s JSON size, counting string lengths
-    and a few bytes per item. Stops once it reaches *limit*: large bodies
-    are large because of a few long strings, so this visits few nodes."""
+    """A cheap estimate of *value*'s UTF-8 JSON size, never below it for
+    strings (non-ASCII text counts four bytes a character) and with numbers
+    at their printed length. Stops once it reaches *limit*: large bodies are
+    large because of a few long strings or long arrays, so it stays cheap
+    for the bodies it has to say are small."""
     total = 0
     stack = [value]
     while stack:
         v = stack.pop()
         if isinstance(v, str):
-            total += len(v) + 2
+            total += _str_bytes(v)
         elif isinstance(v, dict):
             total += 2
             for k, item in v.items():
-                total += len(k) + 4 if isinstance(k, str) else 4
+                total += (_str_bytes(k) if isinstance(k, str) else 8) + 2
                 stack.append(item)
         elif isinstance(v, (list, tuple)):
             total += 2
             stack.extend(v)
+        elif isinstance(v, bool) or v is None:
+            total += 6
+        elif isinstance(v, (int, float)):
+            total += len(repr(v)) + 1
         else:
             total += 8
         if total >= limit:

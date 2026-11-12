@@ -181,6 +181,15 @@ async def test_large_logged_bodies_are_measured_off_the_loop(
     assert threads == []
 
 
+def test_size_estimate_counts_utf8_and_numbers() -> None:
+    cjk = "漢" * (json_io.LARGE_JSON_BYTES // 3 + 1)  # 3 bytes each in UTF-8
+    assert len(json.dumps(cjk, ensure_ascii=False).encode()) > json_io.LARGE_JSON_BYTES
+    assert json_io.approx_json_size({"prompt": cjk}) >= json_io.LARGE_JSON_BYTES
+    floats = [0.12345678901234567] * 60_000  # about 1.2 MB as JSON
+    assert len(json.dumps(floats)) > json_io.LARGE_JSON_BYTES
+    assert json_io.approx_json_size({"embedding": floats}) >= json_io.LARGE_JSON_BYTES
+
+
 def test_size_estimate_stops_at_the_limit() -> None:
     assert json_io.approx_json_size({"a": [1, "bc"]}) < 50
     assert json_io.approx_json_size({"a": BIG}) >= json_io.LARGE_JSON_BYTES

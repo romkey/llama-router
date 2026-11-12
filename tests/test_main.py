@@ -178,3 +178,28 @@ async def test_run_closes_everything_when_a_server_fails(
     assert await asyncio.wait_for(main_mod.run(), 10) == 1
     with pytest.raises(RuntimeError):
         await dash_deps.get_db()._select_one("SELECT 1", ())
+
+
+async def test_failed_startup_gives_the_process_lease_up(
+    isolated_run: list[uvicorn.Config],
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str,
+) -> None:
+    from llama_router import router_identity
+    from llama_router.single_process import LEASE_KEY, LOOP_LAG
+
+    async def broken(db: Database) -> str:
+        raise RuntimeError("start-up failed")
+
+    monkeypatch.setattr(router_identity, "load", broken)
+    with pytest.raises(RuntimeError, match="start-up failed"):
+        await asyncio.wait_for(main_mod.run(), 10)
+    assert LOOP_LAG._task is None
+    db = Database(database_url)
+    await db.connect()
+    try:
+        # Otherwise a restart within the lease's lifetime would be taken
+        # for a second router process.
+        assert not await db.get_app_setting(LEASE_KEY)
+    finally:
+        await db.close()
