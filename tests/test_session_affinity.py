@@ -53,6 +53,9 @@ def _router(db, pm, clock, **kw) -> Router:
             kw.pop("ttl_s", 1800), kw.pop("max_sessions", 1000), clock
         ),
         session_affinity=kw.pop("session_affinity", True),
+        # The always-stay behaviour these tests describe; cache-aware
+        # affinity has its own tests.
+        cache_aware=kw.pop("cache_aware", False),
     )
 
 

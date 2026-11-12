@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Most sessions one API key (or one client address, without a key) may
     # hold, so one client cannot push everyone else's sessions out.
     session_affinity_max_sessions_per_key: int = 200
+    # Move a session off its provider when the extra wait in that provider's
+    # queue would cost more than re-reading the conversation's prompt
+    # elsewhere. False keeps a session on its provider whatever the queue.
+    session_affinity_cache_aware: bool = True
     # Longest a key's decision policy (tiered routing, gates) may take before
     # the request goes on without it.
     decision_policy_timeout_seconds: float = 3.0

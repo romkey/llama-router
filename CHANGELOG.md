@@ -7,6 +7,19 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Changed
+
+- Session affinity weighs the prompt cache against the queue. A bound
+  session stays on its provider unless the extra wait there (requests ahead
+  of it, at the balanced-mode queue weight) costs more than the next choice
+  would take to re-read the conversation's prompt, from the estimated prompt
+  tokens and that provider's running prompt speed (llama.cpp `timings`,
+  Ollama `prompt_eval_*`; 500 tokens/s until measured). A cloud provider's
+  cache counts for nothing. `LLAMA_ROUTER_SESSION_AFFINITY_CACHE_AWARE=false`
+  restores always-stay. Moves are counted as
+  `session_affinity_overflows_total` and in the affinity stats, and
+  **Explain** shows both numbers.
+
 ## [0.30.1] - 2026-11-11
 
 ### Added

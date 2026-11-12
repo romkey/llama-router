@@ -391,7 +391,11 @@ async def route_within_cap(
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
-    result = await rt.route(model, path, prefs, session=session)
+    # Remembered with the session's binding: the prompt its provider caches.
+    prompt_tokens = estimate_tokens(body, 0)[0] if session is not None else 0
+    result = await rt.route(
+        model, path, prefs, session=session, prompt_tokens=prompt_tokens
+    )
     if (
         result is None
         or prefs is None
@@ -426,6 +430,7 @@ async def route_within_cap(
             path,
             replace(prefs, locality="local", spend_capped=True),
             session=session,
+            prompt_tokens=prompt_tokens,
         )
     if local is None:
         raise HTTPException(status_code=status, detail=reason)

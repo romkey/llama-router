@@ -366,8 +366,17 @@ def collect(
                 "gauge",
                 "Conversations currently bound to a provider.",
             )
-            sessions.add(int(affinity.stats().get("sessions") or 0))
+            affinity_stats = affinity.stats()
+            sessions.add(int(affinity_stats.get("sessions") or 0))
             families.append(sessions)
+            overflows = Family(
+                "session_affinity_overflows_total",
+                "counter",
+                "Sessions moved off an eligible provider because its queue "
+                "cost more than the prompt cache it held.",
+            )
+            overflows.add(int(affinity_stats.get("overflows") or 0))
+            families.append(overflows)
 
     if worker_link is not None:
         link_up = Family(
