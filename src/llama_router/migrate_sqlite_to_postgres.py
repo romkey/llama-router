@@ -172,6 +172,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "owner_user_id",
             "label",
             "restrict_models",
+            "strict_pins",
         ],
     ),
     (

@@ -36,6 +36,11 @@
                     <input class="form-check-input" type="checkbox" id="my-key-fallback" checked>
                     <label class="form-check-label" for="my-key-fallback">Allow fallback models</label>
                 </div>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" role="switch" id="my-key-strict" aria-describedby="my-key-strict-help">
+                    <label class="form-check-label" for="my-key-strict">Pins are strict</label>
+                    <div class="form-text" id="my-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
+                </div>
                 <div class="mb-3">
                     <label for="my-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
                     <select id="my-key-affinity" class="form-select form-select-sm">
@@ -67,6 +72,7 @@
                                 <th>Priority</th>
                                 <th>Providers</th>
                                 <th>Models</th>
+                                <th>Pins</th>
                                 <th title="Spent today (UTC) / daily cap">Spend</th>
                                 <th>Created</th>
                                 <th>Last used</th>
@@ -74,7 +80,7 @@
                             </tr>
                         </thead>
                         <tbody id="my-keys-body">
-                            <tr><td colspan="8" class="text-muted small">Loading…</td></tr>
+                            <tr><td colspan="9" class="text-muted small">Loading…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -110,6 +116,11 @@
                     <input class="form-check-input" type="checkbox" id="my-edit-fallback">
                     <label class="form-check-label" for="my-edit-fallback">Allow fallback models</label>
                 </div>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" role="switch" id="my-edit-strict" aria-describedby="my-edit-strict-help">
+                    <label class="form-check-label" for="my-edit-strict">Pins are strict</label>
+                    <div class="form-text" id="my-edit-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
+                </div>
                 <div class="mb-2">
                     <label for="my-edit-affinity" class="form-label small text-muted mb-1">Session affinity</label>
                     <select id="my-edit-affinity" class="form-select form-select-sm">
@@ -125,6 +136,45 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" id="my-edit-save" onclick="saveMyKey()" disabled>Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pin models of one of the user's keys to providers. -->
+<div class="modal fade" id="myPinsModal" tabindex="-1" aria-labelledby="myPinsTitle">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="h5 modal-title" id="myPinsTitle">Pins of key <code id="my-pins-prefix"></code></h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-2">
+                    A pin sends every request for the model to one provider.
+                    <span id="my-pins-strict"></span>
+                </p>
+                <table class="table table-sm mb-3">
+                    <thead><tr><th>Model</th><th>Provider</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                    <tbody id="my-pins-body"><tr><td colspan="3" class="text-muted small">Loading…</td></tr></tbody>
+                </table>
+                <div class="row g-2 align-items-end">
+                    <div class="col-sm-5">
+                        <label for="my-pin-model" class="form-label small text-muted mb-1">Model or group</label>
+                        <select id="my-pin-model" class="form-select form-select-sm"></select>
+                    </div>
+                    <div class="col-sm-5">
+                        <label for="my-pin-provider" class="form-label small text-muted mb-1">Provider</label>
+                        <select id="my-pin-provider" class="form-select form-select-sm"></select>
+                    </div>
+                    <div class="col-sm-2">
+                        <button type="button" class="btn btn-sm btn-primary w-100" onclick="addMyPin()">Pin</button>
+                    </div>
+                </div>
+                <div id="my-pins-status" class="small text-danger mt-2" role="status"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
             </div>
         </div>
     </div>
@@ -187,7 +237,7 @@ function loadMyKeys() {
         document.getElementById('my-keys-count').textContent = data.keys.length;
         var body = document.getElementById('my-keys-body');
         if (!data.keys.length) {
-            body.innerHTML = '<tr><td colspan="8" class="text-muted small">No keys yet.</td></tr>';
+            body.innerHTML = '<tr><td colspan="9" class="text-muted small">No keys yet.</td></tr>';
             return;
         }
         body.innerHTML = data.keys.map(function(k) {
@@ -197,10 +247,15 @@ function loadMyKeys() {
                 '<td>' + esc(MODE_LABELS[k.routing_mode] || k.routing_mode) + '</td>' +
                 '<td>' + esc(localityLabel(k.locality)) + '</td>' +
                 '<td class="small">' + esc(KeyAccess.summary(k)) + '</td>' +
+                '<td class="small text-nowrap">' + esc(pinSummary(k)) + '</td>' +
                 '<td class="small text-nowrap">' + money(k.spent_today_usd) + cap + '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.created_at) + '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.last_used_at) + '</td>' +
                 '<td class="text-end text-nowrap">' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Pins" data-pins-key' +
+                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
+                    ' data-locality="' + esc(k.locality || '') + '" data-strict="' + (k.strict_pins ? '1' : '') + '"' +
+                    ' aria-label="Pins of key ' + esc(k.key_prefix) + '"><i class="bi bi-pin-angle" aria-hidden="true"></i></button>' +
                 '<button type="button" class="btn btn-sm btn-outline-primary me-1" title="Edit" data-edit-key' +
                     ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
                     ' aria-label="Edit key ' + esc(k.key_prefix) + '"><i class="bi bi-pencil-square" aria-hidden="true"></i></button>' +
@@ -214,7 +269,7 @@ function loadMyKeys() {
         }).join('');
     }).catch(function(err) {
         document.getElementById('my-keys-body').innerHTML =
-            '<tr><td colspan="8" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
+            '<tr><td colspan="9" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
     });
 }
 
@@ -226,6 +281,7 @@ function issueMyKey() {
             routing_mode: document.getElementById('my-key-mode').value,
             allow_fallback: document.getElementById('my-key-fallback').checked,
             session_affinity: document.getElementById('my-key-affinity').value,
+            strict_pins: document.getElementById('my-key-strict').checked,
             label: document.getElementById('my-key-label').value,
             allowed: KeyAccess.value('my-key')
         })
@@ -268,6 +324,7 @@ function editMyKey(id, prefix) {
         document.getElementById('my-edit-label').value = k.label || '';
         document.getElementById('my-edit-mode').value = k.routing_mode;
         document.getElementById('my-edit-fallback').checked = !!k.allow_fallback;
+        document.getElementById('my-edit-strict').checked = !!k.strict_pins;
         document.getElementById('my-edit-affinity').value =
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
         document.getElementById('my-edit-limits').textContent =
@@ -293,6 +350,7 @@ function saveMyKey() {
             routing_mode: document.getElementById('my-edit-mode').value,
             allow_fallback: document.getElementById('my-edit-fallback').checked,
             session_affinity: document.getElementById('my-edit-affinity').value,
+            strict_pins: document.getElementById('my-edit-strict').checked,
             allowed: KeyAccess.value('my-edit')
         })
     }).then(function(r) {
@@ -320,6 +378,99 @@ function copyMyNewKey() {
         .catch(function() { el.select(); });
 }
 
+function pinSummary(k) {
+    if (!k.pin_count) return 'none';
+    return k.pin_count + (k.pin_count === 1 ? ' pin' : ' pins') + (k.strict_pins ? ', strict' : '');
+}
+
+var _myPins = {id: null, locality: '', allowable: null};
+
+function jsonOrThrow(r) {
+    if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.statusText); });
+    return r.json();
+}
+
+function openMyPins(id, prefix, locality, strict) {
+    _myPins.id = id;
+    _myPins.locality = locality;
+    document.getElementById('my-pins-prefix').textContent = prefix;
+    document.getElementById('my-pins-strict').textContent = strict
+        ? 'This key\'s pins are strict: if the pinned provider is unavailable, the request is refused with 503.'
+        : 'If the pinned provider is unavailable, another provider serves the model.';
+    document.getElementById('my-pins-status').textContent = '';
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('myPinsModal')).show();
+    var allowable = _myPins.allowable
+        ? Promise.resolve(_myPins.allowable)
+        : fetch('/api/my-keys/allowable').then(jsonOrThrow).then(function(a) { _myPins.allowable = a; return a; });
+    Promise.all([allowable, fetch('/api/my-keys/' + id).then(jsonOrThrow)]).then(function(res) {
+        if (_myPins.id !== id) return;
+        fillPinModels(res[0], res[1].allowed);
+        loadMyPins();
+    }).catch(function(err) { document.getElementById('my-pins-status').textContent = err.message; });
+}
+
+function fillPinModels(a, allowed) {
+    var names = Object.keys(a.providers || {}).filter(function(n) {
+        if (!allowed) return true;
+        return (allowed.models || []).indexOf(n) >= 0 ||
+            (allowed.groups || []).some(function(g) { return g.name === n; });
+    });
+    var sel = document.getElementById('my-pin-model');
+    sel.innerHTML = names.map(function(n) { return '<option value="' + esc(n) + '">' + esc(n) + '</option>'; }).join('') ||
+        '<option value="">No models to pin</option>';
+    sel.onchange = fillPinProviders;
+    fillPinProviders();
+}
+
+function fillPinProviders() {
+    var model = document.getElementById('my-pin-model').value;
+    var list = ((_myPins.allowable || {}).providers || {})[model] || [];
+    var loc = _myPins.locality;
+    var sel = document.getElementById('my-pin-provider');
+    sel.innerHTML = list.filter(function(p) { return !loc || p.locality === loc; }).map(function(p) {
+        return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + esc(p.locality) + ')</option>';
+    }).join('') || '<option value="">No provider this key may use</option>';
+}
+
+function loadMyPins() {
+    var id = _myPins.id;
+    fetch('/api/my-keys/' + id + '/pins').then(jsonOrThrow).then(function(d) {
+        if (_myPins.id !== id) return;
+        var body = document.getElementById('my-pins-body');
+        body.innerHTML = d.pins.length ? d.pins.map(function(p) {
+            return '<tr><td><code>' + esc(p.model_name) + '</code></td><td>' + esc(p.provider_name) + '</td>' +
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-remove-pin="' + esc(p.model_name) + '"' +
+                ' aria-label="Remove pin of ' + esc(p.model_name) + '"><i class="bi bi-x-lg" aria-hidden="true"></i></button></td></tr>';
+        }).join('') : '<tr><td colspan="3" class="text-muted small">No pins.</td></tr>';
+    }).catch(function(err) { document.getElementById('my-pins-status').textContent = err.message; });
+}
+
+function addMyPin() {
+    var status = document.getElementById('my-pins-status');
+    var model = document.getElementById('my-pin-model').value;
+    var provider = document.getElementById('my-pin-provider').value;
+    if (!model || !provider) { status.textContent = 'Choose a model and a provider.'; return; }
+    status.textContent = '';
+    fetch('/api/my-keys/' + _myPins.id + '/pins', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model_name: model, provider_id: Number(provider)})
+    }).then(jsonOrThrow).then(function() { loadMyPins(); loadMyKeys(); })
+      .catch(function(err) { status.textContent = err.message; });
+}
+
+function removeMyPin(model) {
+    var status = document.getElementById('my-pins-status');
+    fetch('/api/my-keys/' + _myPins.id + '/pins/' + encodeURIComponent(model), {method: 'DELETE'})
+        .then(jsonOrThrow).then(function() { loadMyPins(); loadMyKeys(); })
+        .catch(function(err) { status.textContent = err.message; });
+}
+
+document.getElementById('my-pins-body').addEventListener('click', function(ev) {
+    var btn = ev.target.closest('[data-remove-pin]');
+    if (btn) removeMyPin(btn.dataset.removePin);
+});
+
 function revokeMyKey(id, prefix) {
     if (!confirm('Revoke key ' + prefix + '? Programs using it stop working at once.')) return;
     fetch('/api/my-keys/' + id, {method: 'DELETE'}).then(function(r) {
@@ -333,6 +484,8 @@ document.getElementById('my-keys-body').addEventListener('click', function(ev) {
     if (btn) { revokeMyKey(btn.dataset.id, btn.dataset.prefix); return; }
     btn = ev.target.closest('[data-edit-key]');
     if (btn) { editMyKey(btn.dataset.id, btn.dataset.prefix); return; }
+    btn = ev.target.closest('[data-pins-key]');
+    if (btn) { openMyPins(btn.dataset.id, btn.dataset.prefix, btn.dataset.locality, !!btn.dataset.strict); return; }
     btn = ev.target.closest('[data-regenerate-key]');
     if (btn) regenerateMyKey(btn.dataset.id, btn.dataset.prefix);
 });

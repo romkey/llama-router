@@ -58,6 +58,8 @@ async def api_explain_routing(request: Request):
     and either ``mode`` (balanced, latency, throughput, chaos) with optional
     ``allow_fallback`` and ``session_affinity``, or ``key_id`` to use an API
     key's mode, fallback, session affinity setting and pins (admins only).
+    ``strict_pins`` (true/false) treats the pins as strict or not; with
+    ``key_id`` it defaults to the key's own setting.
     ``session_id`` shows how a client sending that ``X-Session-ID`` would be
     routed, including its current binding. Without ``key_id``, ``client_ip``
     names the client address, which scopes anonymous sessions.
@@ -102,6 +104,7 @@ async def api_explain_routing(request: Request):
             pinned_providers={
                 str(p["model_name"]): int(p["provider_id"]) for p in pins
             },
+            strict_pins=_query_flag(q.get("strict_pins"), bool(key.get("strict_pins"))),
             session_affinity=key.get("session_affinity"),
             key_id=key_id,
             locality=key.get("locality"),
@@ -119,6 +122,7 @@ async def api_explain_routing(request: Request):
         prefs = RoutingPreferences(
             mode=mode,
             allow_fallback=allow not in ("0", "false", "no", "off"),
+            strict_pins=_query_flag(q.get("strict_pins"), False),
             session_affinity=_tristate(q.get("session_affinity")),
             locality=_key_locality(q.get("locality")),
         )
@@ -143,6 +147,18 @@ async def api_explain_routing(request: Request):
     result = await rt.explain(model, normalized, prefs, session=session)
     result["api_key"] = key_info
     return JSONResponse(result)
+
+
+def _query_flag(raw: str | None, default: bool) -> bool:
+    """A true/false query parameter; absent or empty keeps *default*."""
+    value = (raw or "").strip().lower()
+    if not value:
+        return default
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise HTTPException(status_code=400, detail="strict_pins must be true or false")
 
 
 @router.post("/api/routing-table/rebuild")

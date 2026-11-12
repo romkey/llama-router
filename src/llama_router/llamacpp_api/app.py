@@ -13,6 +13,7 @@ from ..httpx_errors import install_upstream_error_handlers
 from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
+from ..routing_errors import install_routing_error_handlers
 from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
 from ..worker_link.relay import HubRelayMiddleware
@@ -72,6 +73,7 @@ async def http_exception_handler(
 
 
 install_upstream_error_handlers(app)
+install_routing_error_handlers(app, deps.get_db, "v1")
 
 app.include_router(audio_router)
 app.include_router(chat_router)

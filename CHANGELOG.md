@@ -9,6 +9,22 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Strict pins**: an API key setting (off by default, for new and existing
+  keys). Off, a pinned model whose pinned provider is offline, no longer
+  lists the model or is outside the key's locality is served by another
+  provider, as before. On, the request is refused with HTTP 503 and
+  `Retry-After`, never sent elsewhere and never down the fallback chain, and
+  the refusal is written to the request log. A strict key over its daily
+  spend cap with a cloud pin gets 429 rather than a local reroute. Set it on
+  the API Keys tab, on **My API keys** or with `strict_pins` in
+  `PATCH /api/keys/{id}` and `PATCH /api/my-keys/{id}`; **Explain** reports
+  the refusal and takes `strict_pins` in its query.
+- Users can pin models of their own keys to providers on **My API keys**
+  (`GET`/`POST`/`DELETE /api/my-keys/{id}/pins`), including seeing and
+  removing pins an admin set. A pin must name a model the key may use and a
+  provider inside the key's locality. `GET /api/my-keys/allowable` now lists,
+  per model, the providers serving it (id, name and locality only).
+  `LLAMA_ROUTER_MAX_PINS_PER_KEY` (default 50) limits the pins per key.
 - `llama_router_event_loop_lag_seconds`, a histogram of how late the event
   loop wakes a task sleeping a fixed interval: how long any request may wait
   behind others.

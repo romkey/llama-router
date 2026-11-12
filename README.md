@@ -480,9 +480,14 @@ curl http://localhost/api/keys/1/pins
 curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 ```
 
+When the pinned provider can't serve the model (it is offline, no longer lists the model, or is outside the key's locality), what happens depends on the key's **Pins are strict** setting (`strict_pins`):
+
+- **Off** (the default): another provider serves the model, as if there were no pin.
+- **On**: the request is refused with HTTP 503 and `Retry-After`. It is never sent to another provider or down the fallback chain, even with fallback allowed, and the refusal goes to the request log. A strict key past its daily spend cap with a cloud pin gets 429 rather than being moved to a local provider.
+
 ## Keys Users Issue Themselves
 
-Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback and session affinity. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can edit their own keys' label, routing priority, fallback and session affinity (`PATCH /api/my-keys/{id}`), regenerate their secrets (`POST /api/my-keys/{id}/regenerate`) and revoke them; providers and spend cap stay as the admin set them. Deleting a user deletes the keys they issued.
+Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback, session affinity and strict pins. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can edit their own keys' label, routing priority, fallback, session affinity and strict pins (`PATCH /api/my-keys/{id}`), pin models to providers (**Pins**, or `GET`/`POST`/`DELETE /api/my-keys/{id}/pins`, which also shows and removes pins an admin set; a pin must name a model the key may use and a provider inside its locality, at most `LLAMA_ROUTER_MAX_PINS_PER_KEY` per key), regenerate their secrets (`POST /api/my-keys/{id}/regenerate`) and revoke them; providers and spend cap stay as the admin set them. Deleting a user deletes the keys they issued.
 
 ## Management Keys
 

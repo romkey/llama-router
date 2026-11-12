@@ -507,6 +507,11 @@ async def test_allowable_lists_groups_and_models(
             "groups": [{"id": gid, "name": "coding", "members": ["a"]}],
             # A model hidden by a group of its name isn't offered.
             "models": ["a", "b"],
+            # Who serves each, for choosing a pin; a group by its members.
+            "providers": {
+                name: [{"id": pid, "name": "p", "locality": "local"}]
+                for name in ("a", "b", "coding")
+            },
         }
 
 
