@@ -14,7 +14,7 @@ from llama_router.models import (
 from llama_router.provider_manager import ProviderManager
 from llama_router.router import Router
 from llama_router.routing_stats import ProviderStats
-from llama_router.routing_table import UNKNOWN_HOT_TTFT_MS, Candidate
+from llama_router.routing_table import UNKNOWN_HOT_TTFT_MS, Candidate, _hot_ttft_ms
 from tests.conftest import FakeClock
 
 CHAT = "/v1/chat/completions"
@@ -152,3 +152,26 @@ async def test_peers_listed_under_another_name_count_toward_the_estimate(
     estimate = next(c for c in ranked if c.provider_id == tagged)
     assert estimate.model == "m-q4"
     assert estimate.ttft_estimate_ms == pytest.approx(200.0)
+
+
+async def test_other_group_members_do_not_count_toward_the_estimate(
+    db: Database, pm: ProviderManager
+) -> None:
+    """A group puts different models in one bucket; their times are not this
+    model's."""
+    untried = await _hot(db, pm, "untried")
+    p = await db.add_provider("other", ProviderProtocol.OLLAMA)
+    other = p.require_id()
+    await db.update_provider_status(other, ProviderStatus.IDLE)
+    await db.set_provider_models(other, [ProviderModel(provider_id=other, name="n")])
+    pm._set_hot_models(other, [{"name": "n"}])
+    group = await db.create_model_group("g")
+    assert group.id is not None
+    await db.add_model_group_member(group.id, "m")
+    await db.add_model_group_member(group.id, "n")
+    pm.stats.record_request(other, "n", ok=True, ttft_ms=5.0)
+
+    ranked = await _ranked(Router(db, pm), "latency")
+    estimate = next(c for c in ranked if c.provider_id == untried)
+    assert estimate.ttft_estimate_ms is None
+    assert _hot_ttft_ms(estimate) == UNKNOWN_HOT_TTFT_MS

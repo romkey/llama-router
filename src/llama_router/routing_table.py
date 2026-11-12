@@ -1016,12 +1016,15 @@ def _measured_ttft(
     candidate it is ranked against, keyed by (provider id, model).
 
     Peers are the candidates of each (model, endpoint) bucket the candidate
-    is in, so an alias or tag of a model counts the providers listed under
-    other names in the same bucket."""
+    is in, so an alias of a model counts the providers listed under other
+    names in the same bucket. A model group's bucket is left out: its other
+    members are different models."""
     out: dict[int, dict[tuple[int, str], float]] = {}
     if stats is None:
         return out
-    for cands in base.candidates.values():
+    for (name, _path), cands in base.candidates.items():
+        if name in base.groups:
+            continue
         peers: dict[tuple[int, str], float] = {}
         for c in cands:
             ms = stats.model(c.provider_id, c.model, c.endpoint_class)
