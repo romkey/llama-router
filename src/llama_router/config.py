@@ -205,7 +205,8 @@ class Settings(BaseSettings):
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20
     # Most model pins a dashboard user may set on one of their own keys on
-    # /my-keys (0: no limit). Pins an admin sets don't count against it.
+    # /my-keys (0: no limit). Every pin on the key counts, an admin's too;
+    # changing an existing pin is always allowed.
     max_pins_per_key: int = 50
     # Most chat conversations one dashboard user may keep (0: no limit).
     max_chat_conversations_per_user: int = 500
