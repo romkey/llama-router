@@ -60,6 +60,7 @@ All names start with `llama_router_`. Provider metrics carry the labels
 | `routing_table_built_timestamp_seconds` | gauge | | When the table was last rebuilt |
 | `routing_table_build_milliseconds` | gauge | | How long the last rebuild took |
 | `session_affinity_sessions` | gauge | | Conversations currently bound to a provider |
+| `event_loop_lag_seconds` | histogram | | How late the event loop woke a task sleeping a fixed half second: how long any request may wait behind others in this process. A p99 above 50 ms sustained is the signal to revisit running one process (see "One router process" in configuration.md) |
 | `model_group_available` | gauge | `group` | 1 while at least one member of the model group can be served |
 | `model_group_routes_total` | counter | provider, `group`, `model` | Requests for a model group since start-up, by the member model and provider chosen |
 | `auto_benchmark_runs_total` | counter | `outcome` | Automatic benchmarks since start-up: completed, failed, interrupted |

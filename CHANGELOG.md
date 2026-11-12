@@ -7,6 +7,24 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- `llama_router_event_loop_lag_seconds`, a histogram of how late the event
+  loop wakes a task sleeping a fixed interval: how long any request may wait
+  behind others.
+- A router that finds another process's live lease in the database logs an
+  error at startup naming the state each process keeps for itself (API key
+  cache, spend totals, in-flight counts, affinity, limits, 429 cooldowns,
+  login throttle, worker hub sockets). It only warns.
+- docs/configuration.md explains why llama-router runs as one process, which
+  per-key limits provide fairness, and when to revisit that.
+
+### Changed
+
+- JSON request bodies over 1 MB are parsed, sent upstream and measured for
+  the request log in a worker thread, so a large image or document no longer
+  holds the event loop. Bad bodies get the same 400s as before.
+
 ### Fixed
 
 - Latency scoring no longer treats a loaded model with no measured time to
