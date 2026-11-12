@@ -442,12 +442,17 @@ async def route_within_cap(
     local = None
     # A strict pin is never rerouted away from its provider, even to local.
     if prefs.locality != "cloud" and not _strictly_pinned(prefs, result):
-        local = await rt.route(
-            model,
-            path,
-            replace(prefs, locality="local", spend_capped=True),
-            session=session,
-        )
+        try:
+            local = await rt.route(
+                model,
+                path,
+                replace(prefs, locality="local", spend_capped=True),
+                session=session,
+            )
+        except PinUnavailableError:
+            # A strict cloud pin further down the fallback chain: the cap
+            # is what refused the request, so say so.
+            local = None
     if local is None:
         raise HTTPException(status_code=status, detail=reason)
     return local

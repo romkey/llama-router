@@ -385,3 +385,41 @@ async def test_handler_serves_elsewhere_when_pins_are_not_strict(
     )
     assert resp.status_code == 200, resp.text
     assert upstream.called == [other.require_id()]
+
+
+class _PinnedFallback(_CloudOnly):
+    """Cloud for the requested model; locally, its fallback is strictly
+    pinned to a cloud provider."""
+
+    async def route(
+        self,
+        model: str,
+        endpoint: str,
+        prefs: RoutingPreferences | None = None,
+        *,
+        session: str | None = None,
+    ) -> RouteResult | None:
+        locality = prefs.locality if prefs else None
+        self.asked.append(locality)
+        if locality == "local":
+            raise PinUnavailableError(
+                "fallback", 1, "it is cloud", outside_locality=True
+            )
+        return RouteResult(self.cloud, model)
+
+
+async def test_cap_reroute_hitting_a_strict_fallback_pin_is_still_429(
+    db: Database,
+) -> None:
+    body = {"messages": [{"role": "user", "content": "hello"}], "max_tokens": 1000}
+    rt = _PinnedFallback()
+    prefs = RoutingPreferences(
+        key_id=5,
+        daily_spend_cap_usd=0.01,
+        pinned_providers={"fallback": 1},
+        strict_pins=True,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await route_within_cap(cast(Router, rt), db, _request(), "m", prefs, body)
+    assert exc.value.status_code == 429
+    assert rt.asked == [None, "local"]
