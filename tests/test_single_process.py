@@ -28,6 +28,15 @@ from llama_router.single_process import (
 BIG = "x" * (json_io.LARGE_JSON_BYTES + 10)
 
 
+def _guard_errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The guard's own errors; database drivers log warnings of their own."""
+    return [
+        r
+        for r in caplog.records
+        if r.name == "llama_router.single_process" and r.levelno >= logging.ERROR
+    ]
+
+
 # --- Event loop lag ---
 
 
@@ -190,9 +199,9 @@ async def test_second_process_logs_the_guard_error(
     second = ProcessLease(db, clock=lambda: now[0], host="box-b", pid=1)
     with caplog.at_level(logging.ERROR, logger="llama_router.single_process"):
         await first.beat()
-        assert not caplog.records
+        assert not _guard_errors(caplog)
         await second.beat()
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    errors = _guard_errors(caplog)
     assert len(errors) == 1
     message = errors[0].getMessage()
     assert "box-a" in message
@@ -205,8 +214,9 @@ async def test_second_process_logs_the_guard_error(
         await first.beat()
         await second.beat()
         await first.beat()
-    assert len(caplog.records) == 1
-    assert "box-b" in caplog.records[0].getMessage()
+    errors = _guard_errors(caplog)
+    assert len(errors) == 1
+    assert "box-b" in errors[0].getMessage()
 
 
 async def test_stale_or_own_previous_lease_is_not_a_second_process(
@@ -220,7 +230,7 @@ async def test_stale_or_own_previous_lease_is_not_a_second_process(
         await ProcessLease(db, clock=lambda: now[0], host="box-b", pid=7).beat()
         # A restarted container: same host and PID, new process.
         await ProcessLease(db, clock=lambda: now[0], host="box-b", pid=7).beat()
-    assert not caplog.records
+    assert not _guard_errors(caplog)
 
 
 async def test_stopping_gives_the_lease_up(db: Database) -> None:
