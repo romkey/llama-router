@@ -151,7 +151,7 @@ Every health check times each address. The router keeps a running tally per addr
 | Startup time and tokens per second | Benchmarks, replaced by measured speed once real requests report it |
 | Model already loaded | Ollama `/api/ps`, or a successful request in the last four minutes |
 | Network round trip | Timed health-check probes, best live address |
-| Time to first token | Measured on streamed requests |
+| Time to first token | Measured on streamed requests. A loaded model not yet measured on a provider counts as the median of the model's other measured providers, or 500 ms when none is measured, so an untried provider never outranks one known to be fast |
 | Service time | Measured end to end on embedding, image and audio requests |
 | Recent failures | Per model and kind of endpoint, and for the provider as a whole. See **Provider health** |
 | Endpoint support | The last probe of the API the request would reach |

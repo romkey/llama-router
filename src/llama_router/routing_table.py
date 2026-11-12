@@ -12,7 +12,7 @@ anything.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -62,6 +62,11 @@ PROTOCOLS: tuple[str | None, ...] = (None, "ollama", "openai")
 # balanced mode uses a typical model load instead.
 UNKNOWN_STARTUP_MS = 1_000_000.0
 BALANCED_UNKNOWN_STARTUP_MS = 10_000.0
+# Time to first token assumed for a loaded model nobody has measured on its
+# provider, when no other provider of the model has been measured either.
+# Unmeasured is not instant: an untried provider must not outrank one whose
+# real time to first token is known.
+UNKNOWN_HOT_TTFT_MS = 500.0
 # Balanced mode estimates the time to finish a typical response.
 NOMINAL_TOKENS = 256
 UNKNOWN_TPS = 10.0
@@ -116,6 +121,10 @@ class Candidate:
     bench_tps: float | None = None
     rtt_ms: float | None = None
     ttft_ms: float | None = None
+    # Stand-in for an unmeasured hot candidate's ttft_ms: the median measured
+    # on the other providers it is ranked with, aliases included (see
+    # rescore). None: UNKNOWN_HOT_TTFT_MS.
+    ttft_estimate_ms: float | None = None
     service_ms: float | None = None
     model_failure_rate: float = 0.0
     health: ProviderHealth = HEALTHY
@@ -146,6 +155,11 @@ class Candidate:
             "tokens_per_second": self.tokens_per_second,
             "rtt_ms": None if self.rtt_ms is None else round(self.rtt_ms, 2),
             "ttft_ms": None if self.ttft_ms is None else round(self.ttft_ms, 2),
+            "ttft_estimate_ms": (
+                None
+                if self.ttft_estimate_ms is None
+                else round(self.ttft_estimate_ms, 2)
+            ),
             "service_ms": (
                 None if self.service_ms is None else round(self.service_ms, 2)
             ),
@@ -442,13 +456,22 @@ def combined_failure_rate(model_rate: float, health: ProviderHealth) -> float:
 def _cold_ms(c: Candidate) -> tuple[float, float]:
     """Startup cost for (latency, balanced) scoring."""
     if c.is_hot:
-        hot = c.ttft_ms if c.ttft_ms is not None else 0.0
+        hot = _hot_ttft_ms(c)
         return hot, hot
     if c.startup_ms is not None:
         return c.startup_ms, c.startup_ms
     if c.ttft_ms is not None:
         return c.ttft_ms, c.ttft_ms
     return UNKNOWN_STARTUP_MS, BALANCED_UNKNOWN_STARTUP_MS
+
+
+def _hot_ttft_ms(c: Candidate) -> float:
+    """Time to first token of a loaded model: measured, else estimated."""
+    if c.ttft_ms is not None:
+        return c.ttft_ms
+    if c.ttft_estimate_ms is not None:
+        return c.ttft_estimate_ms
+    return UNKNOWN_HOT_TTFT_MS
 
 
 def _add_cheapest(c: Candidate) -> None:
@@ -939,6 +962,10 @@ def rescore(
         rtt[pid] = stats.rtt_ms(pid, live_ids) if stats and live_ids else None
         table.health[pid] = stats.provider_health(pid, now) if stats else HEALTHY
 
+    # Measured time to first token per (model, endpoint), for estimating the
+    # candidates of that model nobody has measured yet.
+    measured = _measured_ttft(base, stats)
+
     # A candidate can sit in several buckets (aliases, groups): score it once.
     scored: dict[int, Candidate | None] = {}
 
@@ -969,6 +996,9 @@ def rescore(
         )
         new.rtt_ms = rtt[pid]
         new.ttft_ms = ms.ttft_ms.value if ms else None
+        new.ttft_estimate_ms = (
+            _median(measured.get(id(c), {}).values()) if new.ttft_ms is None else None
+        )
         new.service_ms = ms.duration_ms.value if ms else None
         new.model_failure_rate = model_rate
         new.health = health
@@ -1006,6 +1036,43 @@ def rescore(
     table.built_at = time.time()
     table.build_ms = (time.perf_counter() - started) * 1000
     return table
+
+
+def _measured_ttft(
+    base: TableBase, stats: ProviderStats | None
+) -> dict[int, dict[tuple[int, str], float]]:
+    """Candidate (by ``id``) -> live time to first token of every measured
+    candidate it is ranked against, keyed by (provider id, model).
+
+    Peers are the candidates of each (model, endpoint) bucket the candidate
+    is in, so an alias of a model counts the providers listed under other
+    names in the same bucket. A model group's bucket is left out: its other
+    members are different models."""
+    out: dict[int, dict[tuple[int, str], float]] = {}
+    if stats is None:
+        return out
+    for (name, _path), cands in base.candidates.items():
+        if name in base.groups:
+            continue
+        peers: dict[tuple[int, str], float] = {}
+        for c in cands:
+            ms = stats.model(c.provider_id, c.model, c.endpoint_class)
+            if ms is not None and ms.ttft_ms.value is not None:
+                peers[(c.provider_id, c.model)] = ms.ttft_ms.value
+        if peers:
+            for c in cands:
+                out.setdefault(id(c), {}).update(peers)
+    return out
+
+
+def _median(values: Iterable[float]) -> float | None:
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
 
 
 def _sorted(cands: list[Candidate], mode: str) -> tuple[Candidate, ...]:

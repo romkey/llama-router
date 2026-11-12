@@ -180,7 +180,9 @@ async def test_background_rebuild_coalesces_bursts(db: Database, pm: ProviderMan
 async def test_hot_model_beats_faster_cold_start(db: Database, pm: ProviderManager):
     cold = await _provider(db, "cold", ["m"])
     hot = await _provider(db, "hot", ["m"])
-    await _bench(db, cold.id, "m", startup=50, tps=50)
+    # A real cold start: longer than a loaded model's first token, measured
+    # or not (UNKNOWN_HOT_TTFT_MS).
+    await _bench(db, cold.id, "m", startup=1500, tps=50)
     await _bench(db, hot.id, "m", startup=5000, tps=50)
     rt = Router(db, pm)
     assert (
@@ -281,7 +283,7 @@ async def test_recent_success_counts_as_warm(
 ):
     cold = await _provider(db, "cold", ["m"])
     warm = await _provider(db, "warm", ["m"])
-    await _bench(db, cold.id, "m", startup=100, tps=50)
+    await _bench(db, cold.id, "m", startup=1000, tps=50)
     await _bench(db, warm.id, "m", startup=4000, tps=50)
     pm.stats.record_request(warm.id, "m", ok=True)
     rt = Router(db, pm)

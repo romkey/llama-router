@@ -63,6 +63,15 @@ described in their git tags and GitHub Releases.
   `session_affinity_overflows_total` and in the affinity stats, and
   **Explain** shows both numbers.
 
+### Fixed
+
+- Latency scoring no longer treats a loaded model with no measured time to
+  first token as instant. Cloud models always count as loaded, so an untried
+  provider used to outrank measured ones. Such a candidate now counts as the
+  median time to first token measured on the model's other providers for
+  that endpoint, or 500 ms when none is measured; a real sample replaces the
+  estimate on the next rescore. **Explain** shows it as `ttft_estimate_ms`.
+
 ## [0.30.1] - 2026-11-11
 
 ### Added
