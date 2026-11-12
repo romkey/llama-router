@@ -81,6 +81,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `SESSION_AFFINITY_MAX_SESSIONS` | `10000` | Most sessions remembered at once; the least recently used are dropped first |
 | `SPEND_ESTIMATE_COMPLETION_TOKENS` | `4096` | Output tokens assumed for a priced cloud request that sets no `max_tokens`. On a key with a daily spend cap, the estimated cost is held against the cap while the request runs; a response that reports no usage is charged the estimate |
 | `SESSION_AFFINITY_MAX_SESSIONS_PER_KEY` | `200` | Most sessions one API key (or one client address, for requests without a key) may hold; its least recently used go first |
+| `SESSION_AFFINITY_CACHE_AWARE` | `true` | Move a session off its provider when the extra wait in that provider's queue would cost more than the next choice re-reading the conversation's prompt (estimated prompt tokens over that provider's measured prompt speed, 500 tokens/s until measured; nothing for a cloud provider's cache). `false` keeps a session on its provider whatever the queue |
 | `DECISION_POLICY_TIMEOUT_SECONDS` | `3.0` | Longest an API key's decision policy may take. After that a policy with gates refuses the request (503); a tier-only policy routes it as asked |
 | `DECISION_POLICY_FAIL_OPEN` | `false` | When a policy with gates cannot be decided (no provider, error, timeout), let the request through unchecked instead of refusing it |
 | `DECISION_MAX_QUESTIONS` | `8` | Most questions in one decision request (each is one backend call); a policy may have one gate fewer |

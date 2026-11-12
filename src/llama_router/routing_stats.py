@@ -52,6 +52,9 @@ SIGNIFICANT_MOVE = 0.10
 MIN_MOVE = 1.0
 RATE_MOVE = 0.10
 _RATES = frozenset({"requests", "probes", "failures"})
+# Prompt tokens per second assumed for a provider and model never measured,
+# when weighing a session's prompt cache against the queue in front of it.
+UNKNOWN_PROMPT_TPS = 500.0
 
 
 @dataclass(slots=True)
@@ -250,6 +253,9 @@ class ProviderStats:
         self._no_logprobs: dict[int, float] = {}
         # Every signal as the routing table last built saw it (mark_built).
         self._built: dict[tuple[Any, ...], float] = {}
+        # Prompt processing speed per (provider, model), tokens per second.
+        # Only session affinity reads it, so it never rescores the table.
+        self._prompt_tps: dict[tuple[int, str], Ewma] = {}
 
     def now(self) -> float:
         return self._clock()
@@ -440,6 +446,22 @@ class ProviderStats:
         ):
             self._changed("request")
 
+    def record_prompt_speed(
+        self, provider_id: int, model: str, tokens_per_second: float
+    ) -> None:
+        """Prompt tokens per second the provider reported for one request
+        (llama.cpp ``timings``, Ollama ``prompt_eval_*``)."""
+        if tokens_per_second <= 0:
+            return
+        self._prompt_tps.setdefault((provider_id, model), Ewma()).add(tokens_per_second)
+
+    def prompt_tps(self, provider_id: int, model: str) -> float:
+        """Running prompt speed on the provider, else UNKNOWN_PROMPT_TPS."""
+        ewma = self._prompt_tps.get((provider_id, model))
+        if ewma is None or ewma.value is None or ewma.value <= 0:
+            return UNKNOWN_PROMPT_TPS
+        return ewma.value
+
     def _flags(
         self,
         s: ModelStats,
@@ -542,6 +564,8 @@ class ProviderStats:
             del self._models[key]
         for ok_key in [k for k in self._last_ok if k[0] == provider_id]:
             del self._last_ok[ok_key]
+        for tps_key in [k for k in self._prompt_tps if k[0] == provider_id]:
+            del self._prompt_tps[tps_key]
 
 
 def _r(v: float | None) -> float | None:

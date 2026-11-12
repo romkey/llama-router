@@ -72,7 +72,14 @@ _MAX_REASONS = 20
 class RouteResult:
     """Wraps a routing decision, including which model was actually resolved."""
 
-    __slots__ = ("backend_model", "group", "model_key", "provider", "resolved_model")
+    __slots__ = (
+        "affinity",
+        "backend_model",
+        "group",
+        "model_key",
+        "provider",
+        "resolved_model",
+    )
 
     def __init__(
         self,
@@ -92,6 +99,43 @@ class RouteResult:
         # The model's discovered name, which live stats are keyed by. Differs
         # from resolved_model when the client asked by raw (backend) name.
         self.model_key = model_key or resolved_model
+        # When a bound session's provider was weighed against a less busy
+        # one: the costs compared and whether the session moved.
+        self.affinity: AffinityWeighing | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AffinityWeighing:
+    """Stay on a session's provider, or move to a less busy one?
+
+    *extra_wait_ms* is how much longer the request would queue on the bound
+    provider than on the alternative; *cache_value_ms* how long the
+    alternative would take to read the prompt the bound provider has
+    cached. The session moves when waiting costs more.
+    """
+
+    bound_provider_id: int
+    alternative_provider_id: int
+    alternative: str
+    prompt_tokens: int
+    prompt_tps: float
+    extra_wait_ms: float
+    cache_value_ms: float
+
+    @property
+    def moved(self) -> bool:
+        return self.extra_wait_ms > self.cache_value_ms
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "alternative_provider_id": self.alternative_provider_id,
+            "alternative": self.alternative,
+            "prompt_tokens": self.prompt_tokens,
+            "prompt_tokens_per_second": round(self.prompt_tps, 1),
+            "extra_wait_ms": round(self.extra_wait_ms, 1),
+            "cache_value_ms": round(self.cache_value_ms, 1),
+            "moved": self.moved,
+        }
 
 
 class PinUnavailableError(Exception):
@@ -160,6 +204,7 @@ class Router:
         min_interval_s: float = REBUILD_MIN_INTERVAL_S,
         affinity: SessionAffinity | None = None,
         session_affinity: bool | None = None,
+        cache_aware: bool | None = None,
     ):
         self._db = db
         self._pm = provider_manager
@@ -189,6 +234,13 @@ class Router:
             settings.session_affinity_enabled
             if session_affinity is None
             else session_affinity
+        )
+        # Weigh a bound session's queue against its prompt cache; off, a
+        # session stays on its provider whatever the queue.
+        self.cache_aware = (
+            settings.session_affinity_cache_aware
+            if cache_aware is None
+            else cache_aware
         )
         db.add_change_listener(self._on_db_change)
         provider_manager.stats.add_listener(self._on_stats_change)
@@ -390,6 +442,7 @@ class Router:
         preferences: RoutingPreferences | None = None,
         *,
         session: str | None = None,
+        prompt_tokens: int = 0,
         exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Pick the best provider for *model_name* on *endpoint*.
@@ -403,9 +456,12 @@ class Router:
 
         *session* is the request's affinity key from :meth:`session_for`. A
         session already bound to a provider stays there while that provider
-        is among the eligible candidates, whatever its queue; otherwise the
+        is among the eligible candidates, unless (with cache-aware affinity)
+        the extra wait in its queue would cost more than the next choice
+        re-reading the prompt the bound provider has cached; otherwise the
         normal choice is made and the session is bound to it. Pins and chaos
-        mode take precedence.
+        mode take precedence. *prompt_tokens* is this request's estimated
+        prompt, remembered with the binding for the next request.
 
         Raises :class:`UnknownEndpointError` for a path the router does not
         proxy, and :class:`PinUnavailableError` when a key with strict pins
@@ -416,7 +472,13 @@ class Router:
         """
         table = await self.current_table()
         return self.route_with(
-            table, model_name, endpoint, preferences, session=session, exclude=exclude
+            table,
+            model_name,
+            endpoint,
+            preferences,
+            session=session,
+            prompt_tokens=prompt_tokens,
+            exclude=exclude,
         )
 
     def route_with(
@@ -428,6 +490,7 @@ class Router:
         *,
         session: str | None = None,
         record: bool = True,
+        prompt_tokens: int = 0,
         exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Route against *table*. Synchronous: no I/O, no awaits.
@@ -524,6 +587,7 @@ class Router:
             ranked = self._not_busy(ranked)
             chosen = None
             sticky = None
+            weighing = None
             if session is not None:
                 affinity = self.affinity
                 sticky = affinity.get(session) if record else affinity.peek(session)
@@ -532,11 +596,41 @@ class Router:
                         if sticky.matches(c.provider_id, c.model):
                             chosen = c
                             break
+                if chosen is not None and sticky is not None and self.cache_aware:
+                    # Only another provider of the bound member model: a
+                    # group's session keeps its model when it moves.
+                    same = tuple(c for c in ranked if c.model == chosen.model)
+                    alt = _pick(same, mode, active)
+                    if alt is not chosen:
+                        weighing = self._weigh(sticky, chosen, alt, active)
+                        if weighing.moved:
+                            chosen = alt
             if chosen is None:
                 chosen = _pick(ranked, mode, active)
             if session is not None and record:
-                self.affinity.bind(session, chosen.provider_id, sticky, chosen.model)
-                if sticky is not None and not sticky.matches(
+                moved = weighing is not None and weighing.moved
+                self.affinity.bind(
+                    session,
+                    chosen.provider_id,
+                    sticky,
+                    chosen.model,
+                    prompt_tokens,
+                    overflow=moved,
+                )
+                if moved and weighing is not None and sticky is not None:
+                    logger.info(
+                        "Session %s moved from provider %d to %s on %s: "
+                        "%.0f ms more queueing outweighs %.0f ms to re-read "
+                        "its %d-token prompt",
+                        short_key(session),
+                        sticky.provider_id,
+                        chosen.model,
+                        chosen.provider.name,
+                        weighing.extra_wait_ms,
+                        weighing.cache_value_ms,
+                        weighing.prompt_tokens,
+                    )
+                elif sticky is not None and not sticky.matches(
                     chosen.provider_id, chosen.model
                 ):
                     logger.info(
@@ -566,14 +660,45 @@ class Router:
             group = _group_of(table, candidate_model)
             if group is not None and record:
                 self._count_group(group, chosen)
-            return RouteResult(
+            result = RouteResult(
                 chosen.provider,
                 candidate_model,
                 chosen.backend_model,
                 chosen.model,
                 group,
             )
+            result.affinity = weighing
+            return result
         return None
+
+    def _weigh(
+        self,
+        bound: Binding,
+        here: Candidate,
+        alt: Candidate,
+        active: Callable[[int], int],
+    ) -> AffinityWeighing:
+        """Compare the bound candidate *here* with the normal choice *alt*.
+
+        The cache is worth the time *alt* would spend reading the prompt the
+        bound provider holds; a cloud provider's cache is not ours to count
+        on, so it is worth nothing. Waiting costs the extra requests ahead in
+        the bound provider's queue, each at its balanced-mode queue weight.
+        """
+        tps = self._pm.stats.prompt_tps(alt.provider_id, alt.model)
+        cache_ms = 0.0 if here.provider.is_cloud else bound.prompt_tokens / tps * 1000.0
+        extra = (
+            active(here.provider_id) - active(alt.provider_id)
+        ) * here.queue_weight["balanced"]
+        return AffinityWeighing(
+            bound_provider_id=here.provider_id,
+            alternative_provider_id=alt.provider_id,
+            alternative=alt.provider.name,
+            prompt_tokens=bound.prompt_tokens,
+            prompt_tps=tps,
+            extra_wait_ms=float(extra),
+            cache_value_ms=cache_ms,
+        )
 
     async def explain(
         self,
@@ -939,6 +1064,23 @@ class Router:
         ):
             info["honored"] = True
             info["reason"] = "the session stays on the provider that served it"
+            if decision.affinity is not None:
+                w = decision.affinity
+                info["weighing"] = w.to_dict()
+                info["reason"] += (
+                    f": {w.extra_wait_ms:.0f} ms more queueing than on "
+                    f"{w.alternative} is less than the {w.cache_value_ms:.0f} ms "
+                    f"it would take to re-read the {w.prompt_tokens}-token prompt"
+                )
+        elif decision is not None and decision.affinity is not None:
+            w = decision.affinity
+            info["weighing"] = w.to_dict()
+            info["reason"] = (
+                f"the bound provider's queue costs {w.extra_wait_ms:.0f} ms more "
+                f"than {w.alternative}'s, more than the {w.cache_value_ms:.0f} ms "
+                f"it takes to re-read the {w.prompt_tokens}-token prompt there, "
+                "so the next request moves the session"
+            )
         else:
             info["reason"] = (
                 "the bound provider is not an eligible candidate, so the next "

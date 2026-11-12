@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Most sessions one API key (or one client address, without a key) may
     # hold, so one client cannot push everyone else's sessions out.
     session_affinity_max_sessions_per_key: int = 200
+    # Move a session off its provider when the extra wait in that provider's
+    # queue would cost more than re-reading the conversation's prompt
+    # elsewhere. False keeps a session on its provider whatever the queue.
+    session_affinity_cache_aware: bool = True
     # Other providers a request may fail over to when its provider can't be
     # reached or is overloaded (connect error, connect or pool timeout, HTTP
     # 429, 502 or 503) before anything was sent to the client. 0: none.

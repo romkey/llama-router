@@ -188,11 +188,13 @@ def _scope_of(key: str) -> str:
 
 
 class Binding(NamedTuple):
-    """Where a session was last served: the provider, and the model it ran
-    there (None matches any model on the provider)."""
+    """Where a session was last served: the provider, the model it ran there
+    (None matches any model on the provider), and the estimated prompt
+    tokens of that request, which the provider's prompt cache now holds."""
 
     provider_id: int
     model: str | None = None
+    prompt_tokens: int = 0
 
     def matches(self, provider_id: int, model: str) -> bool:
         return self.provider_id == provider_id and (
@@ -230,6 +232,9 @@ class SessionAffinity:
         self.hits = 0  # request went to its bound provider
         self.misses = 0  # new session, bound to the normal choice
         self.rebinds = 0  # bound provider was not eligible; moved
+        # Moved off an eligible provider because waiting in its queue would
+        # cost more than rebuilding the prompt cache elsewhere.
+        self.overflows = 0
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -263,17 +268,25 @@ class SessionAffinity:
         provider_id: int,
         previous: Binding | None = None,
         model: str | None = None,
+        prompt_tokens: int = 0,
+        *,
+        overflow: bool = False,
     ) -> None:
-        """Record that *key* was routed to *model* on *provider_id*.
+        """Record that *key* was routed to *model* on *provider_id* with a
+        prompt of about *prompt_tokens*.
 
         *previous* is what :meth:`get` returned for this request, used only
-        for the hit, miss and rebind counters.
+        for the hit, miss and rebind counters. *overflow* says the session
+        left an eligible provider whose queue was too long (counted as an
+        overflow, not a rebind).
         """
         now = self._clock()
         if previous is None:
             self.misses += 1
         elif previous.provider_id == provider_id and previous.model in (None, model):
             self.hits += 1
+        elif overflow:
+            self.overflows += 1
         else:
             self.rebinds += 1
         entries = self._entries
@@ -281,7 +294,7 @@ class SessionAffinity:
         scoped = self._per_scope.setdefault(scope, OrderedDict())
         scoped[key] = None
         scoped.move_to_end(key)
-        entries[key] = (Binding(provider_id, model), now)
+        entries[key] = (Binding(provider_id, model, max(0, prompt_tokens)), now)
         entries.move_to_end(key)
         for _ in range(_SWEEP_BATCH):
             first = next(iter(entries), None)
@@ -337,6 +350,7 @@ class SessionAffinity:
             "hits": self.hits,
             "misses": self.misses,
             "rebinds": self.rebinds,
+            "overflows": self.overflows,
             "ttl_seconds": self.ttl_s,
             "max_sessions": self.max_sessions,
             "max_sessions_per_key": self.max_per_key,

@@ -401,8 +401,17 @@ async def route_within_cap(
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
+    # Remembered with the session's binding: the prompt its provider caches.
+    prompt_tokens = estimate_tokens(body, 0)[0] if session is not None else 0
     try:
-        result = await rt.route(model, path, prefs, session=session, exclude=exclude)
+        result = await rt.route(
+            model,
+            path,
+            prefs,
+            session=session,
+            prompt_tokens=prompt_tokens,
+            exclude=exclude,
+        )
     except PinUnavailableError as exc:
         if (
             prefs is not None
@@ -450,6 +459,7 @@ async def route_within_cap(
                 path,
                 replace(prefs, locality="local", spend_capped=True),
                 session=session,
+                prompt_tokens=prompt_tokens,
                 exclude=exclude,
             )
         except PinUnavailableError:
