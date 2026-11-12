@@ -192,6 +192,46 @@ deprecated `HUGGING_FACE_HUB_TOKEN` and `HUGGINGFACE_HUB_CACHE`.
 | `SENTRY_PROFILES_SAMPLE_RATE` | `0.0` | Profiling sampling rate, `0.0` to `1.0` |
 | `SENTRY_SEND_DEFAULT_PII` | `false` | Include user and IP headers where available |
 
+## One router process
+
+llama-router runs as one process with one event loop. Do not add uvicorn
+workers or run several routers on one database. Each process keeps its own:
+
+- API key cache (300 s)
+- daily spend totals and reservations
+- in-flight request counts, which routing ranks on
+- session affinity bindings
+- per-key concurrency and stream limits
+- 429 cooldowns
+- dashboard login throttle
+- worker hub sockets
+
+With two processes, a key could spend twice its cap, hold twice its
+concurrency, and lose its session affinity on every other request. A router
+that finds another process's live lease in the database logs an error at
+startup and keeps running.
+
+Fairness between clients comes from the per-key limits, not from more
+processes. `UPSTREAM_MAX_CONCURRENCY_PER_KEY` caps one key's upstream calls in
+flight, and `MAX_STREAMS_PER_KEY` caps its open streams, so one busy key
+can't take every slot. JSON bodies over 1 MB are parsed and serialised in a
+worker thread, so a large image or document doesn't hold the loop for every
+other request.
+
+**When to revisit:** the `llama_router_event_loop_lag_seconds` histogram (see
+[metrics.md](metrics.md)) shows how late the loop wakes a task that sleeps a
+fixed interval, which is how long any request may wait behind others. Revisit
+when its p99 stays above 50 ms, or when the process uses most of one CPU core.
+For example:
+
+```promql
+histogram_quantile(0.99, rate(llama_router_event_loop_lag_seconds_bucket[5m])) > 0.05
+```
+
+The next step then is several router processes behind a proxy that sends each
+API key to the same process every time, so each key's limits, spend and
+sessions stay in one place.
+
 ## Other
 
 | Variable | Default | Meaning |

@@ -33,6 +33,7 @@ from .request_logger import (
 from .router import Router
 from .sentry import init_sentry
 from .shared_port import SharedPortApp
+from .single_process import LOOP_LAG, ProcessLease
 from .worker_link.worker import WorkerLinkManager
 
 logger = logging.getLogger("llama_router")
@@ -157,6 +158,10 @@ async def run() -> int:
 
     db = Database()
     await db.connect()
+    # Warns when another router process already uses this database.
+    lease = ProcessLease(db)
+    await lease.start()
+    LOOP_LAG.start()
     # Before any provider is contacted: relayed requests carry the ID.
     rid = await router_identity.load(db)
     logger.info("Router ID %s", rid)
@@ -276,6 +281,8 @@ async def run() -> int:
         logger.error("Shutting down: %s", exc)
         return 1
     finally:
+        await LOOP_LAG.stop()
+        await lease.stop()
         await worker_link.stop()
         await auto_bench.stop()
         await rt.stop()
