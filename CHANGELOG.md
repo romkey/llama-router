@@ -9,6 +9,34 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Strict pins**: an API key setting (off by default, for new and existing
+  keys). Off, a pinned model whose pinned provider is offline, no longer
+  lists the model or is outside the key's locality is served by another
+  provider, as before. On, the request is refused with HTTP 503 and
+  `Retry-After`, never sent elsewhere and never down the fallback chain, and
+  the refusal is written to the request log. A strict key over its daily
+  spend cap with a cloud pin gets 429 rather than a local reroute. Set it on
+  the API Keys tab, on **My API keys** or with `strict_pins` in
+  `PATCH /api/keys/{id}` and `PATCH /api/my-keys/{id}`; **Explain** reports
+  the refusal and takes `strict_pins` in its query.
+- **Failover within a request**: when the chosen provider can't be reached
+  (connect error, connect or pool timeout) or turns the request away (HTTP
+  429, 502, 503) before anything reached the client, the request is routed
+  again without that provider and sent to the next one. Read timeouts,
+  failures after the first streamed chunk, other 4xx answers, strict-pinned
+  models and hub requests for one provider are never retried. Every attempt
+  is checked again against the key's model access, locality, spend cap and
+  hub scope; the previous attempt's spend estimate is released first, and
+  the upstream slot and request deadline cover all attempts. Each failed
+  attempt is logged against its provider. `LLAMA_ROUTER_UPSTREAM_FAILOVER_ATTEMPTS`
+  (default 1; 0 turns it off). Decision requests skip a provider that
+  answered without logprobs the same way.
+- Users can pin models of their own keys to providers on **My API keys**
+  (`GET`/`POST`/`DELETE /api/my-keys/{id}/pins`), including seeing and
+  removing pins an admin set. A pin must name a model the key may use and a
+  provider inside the key's locality. `GET /api/my-keys/allowable` now lists,
+  per model, the providers serving it (id, name and locality only).
+  `LLAMA_ROUTER_MAX_PINS_PER_KEY` (default 50) limits the pins per key.
 - `llama_router_event_loop_lag_seconds`, a histogram of how late the event
   loop wakes a task sleeping a fixed interval: how long any request may wait
   behind others.
@@ -24,6 +52,16 @@ described in their git tags and GitHub Releases.
 - JSON request bodies over 1 MB are parsed, sent upstream and measured for
   the request log in a worker thread, so a large image or document no longer
   holds the event loop. Bad bodies get the same 400s as before.
+- Session affinity weighs the prompt cache against the queue. A bound
+  session stays on its provider unless the extra wait there (requests ahead
+  of it, at the balanced-mode queue weight) costs more than the next choice
+  would take to re-read the conversation's prompt, from the estimated prompt
+  tokens and that provider's running prompt speed (llama.cpp `timings`,
+  Ollama `prompt_eval_*`; 500 tokens/s until measured). A cloud provider's
+  cache counts for nothing. `LLAMA_ROUTER_SESSION_AFFINITY_CACHE_AWARE=false`
+  restores always-stay. Moves are counted as
+  `session_affinity_overflows_total` and in the affinity stats, and
+  **Explain** shows both numbers.
 
 ### Fixed
 

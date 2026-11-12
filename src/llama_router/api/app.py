@@ -22,6 +22,7 @@ from ..llamacpp_api.models import router as v1_models_router
 from ..llamacpp_api.responses import router as v1_responses_router
 from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
+from ..routing_errors import install_routing_error_handlers
 from ..spend import SpendReservationMiddleware
 from ..timing import RequestTimingMiddleware
 from ..worker_link.hub import deny_worker
@@ -88,6 +89,7 @@ async def http_exception_handler(
 
 
 install_upstream_error_handlers(app)
+install_routing_error_handlers(app, deps.get_db, "ollama")
 
 app.include_router(chat_router)
 app.include_router(generate_router)

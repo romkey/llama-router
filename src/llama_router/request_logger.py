@@ -48,6 +48,11 @@ _EVAL_COUNT_RE = re.compile(rb'"eval_count"\s*:\s*(\d+)')
 _EVAL_DURATION_RE = re.compile(rb'"eval_duration"\s*:\s*(\d+)')
 _PREDICTED_PER_SECOND_RE = re.compile(rb'"predicted_per_second"\s*:\s*([0-9.eE+-]+)')
 _COMPLETION_TOKENS_RE = re.compile(rb'"completion_tokens"\s*:\s*(\d+)')
+# Final-chunk fields that give prompt processing speed: Ollama's count and
+# nanoseconds, llama.cpp's rate.
+_PROMPT_EVAL_COUNT_RE = re.compile(rb'"prompt_eval_count"\s*:\s*(\d+)')
+_PROMPT_EVAL_DURATION_RE = re.compile(rb'"prompt_eval_duration"\s*:\s*(\d+)')
+_PROMPT_PER_SECOND_RE = re.compile(rb'"prompt_per_second"\s*:\s*([0-9.eE+-]+)')
 # Token counts in a stream's last chunks: OpenAI usage, Responses API usage,
 # Ollama's final chunk.
 _PROMPT_TOKEN_RES = tuple(
@@ -291,6 +296,7 @@ def _record_outcome(
     tokens_per_second: float | None = None,
     duration_ms: float | None = None,
     request_body: Any = None,
+    prompt_tokens_per_second: float | None = None,
 ) -> None:
     stats = _stats
     if stats is None or provider is None or provider.id is None or not model:
@@ -311,6 +317,44 @@ def _record_outcome(
         tokens_per_second=tokens_per_second,
         duration_ms=duration_ms,
     )
+    if ok and prompt_tokens_per_second:
+        stats.record_prompt_speed(provider.id, model, prompt_tokens_per_second)
+
+
+def _prompt_tps_from_body(body: Any) -> float | None:
+    """Prompt processing speed reported in a non-streamed response, if any:
+    Ollama's ``prompt_eval_count`` over ``prompt_eval_duration``, or
+    llama.cpp's ``timings``."""
+    if not isinstance(body, dict):
+        return None
+    count, dur = body.get("prompt_eval_count"), body.get("prompt_eval_duration")
+    if isinstance(count, int) and isinstance(dur, int) and count > 0 and dur > 0:
+        return count / (dur / 1e9)
+    timings = body.get("timings")
+    if isinstance(timings, dict):
+        pps = timings.get("prompt_per_second")
+        if isinstance(pps, (int, float)) and pps > 0:
+            return float(pps)
+        n, ms = timings.get("prompt_n"), timings.get("prompt_ms")
+        if isinstance(n, int) and isinstance(ms, (int, float)) and n > 0 and ms > 0:
+            return n / (ms / 1000)
+    return None
+
+
+def _prompt_tps_from_tail(tail: bytes) -> float | None:
+    """Prompt processing speed from the last chunks of a stream, if reported."""
+    count = _PROMPT_EVAL_COUNT_RE.search(tail)
+    dur = _PROMPT_EVAL_DURATION_RE.search(tail)
+    if count and dur and int(count.group(1)) > 0 and int(dur.group(1)) > 0:
+        return int(count.group(1)) / (int(dur.group(1)) / 1e9)
+    pps = _PROMPT_PER_SECOND_RE.search(tail)
+    if pps:
+        try:
+            v = float(pps.group(1))
+        except ValueError:
+            return None
+        return v if v > 0 else None
+    return None
 
 
 def refusal_worth_logging(request: Request, status_code: int) -> bool:
@@ -550,6 +594,9 @@ def _build_entry(
             ),
             duration_ms=duration_ms,
             request_body=request_body,
+            prompt_tokens_per_second=(
+                _prompt_tps_from_body(response_body) if status == "ok" else None
+            ),
         )
     ip = source_ip or (client_ip(request) if request else "internal")
     if api_key_id is None and request is not None:
@@ -872,13 +919,14 @@ class StreamLogger:
             duration = (ended - self._start) * 1000
             ttft_ms = None
             tps = None
-            prompt_tokens, completion_tokens = usage_from_tail(b"".join(self._tail))
+            prompt_tps = None
+            tail = b"".join(self._tail)
+            prompt_tokens, completion_tokens = usage_from_tail(tail)
             if self._first_chunk_at is not None:
                 ttft_ms = (self._first_chunk_at - self._start) * 1000
                 if status == "ok":
-                    tps = _tps_from_tail(
-                        b"".join(self._tail), (ended - self._first_chunk_at) * 1000
-                    )
+                    tps = _tps_from_tail(tail, (ended - self._first_chunk_at) * 1000)
+                    prompt_tps = _prompt_tps_from_tail(tail)
             _record_outcome(
                 self._provider,
                 self._routed_model or self._model,
@@ -889,6 +937,7 @@ class StreamLogger:
                 tokens_per_second=tps,
                 duration_ms=duration,
                 request_body=self._request_body,
+                prompt_tokens_per_second=prompt_tps,
             )
             try:
                 log_request_background(
@@ -923,27 +972,59 @@ async def stream_response(logged: StreamLogger, media_type: str) -> Response:
     instead of a 200 whose body stops short (which clients report as a
     transfer-length error).
     """
+    try:
+        first, stream = await prime_stream(logged)
+    except httpx.HTTPStatusError as exc:
+        return forward_upstream_http_error(exc)
+    return stream_body(first, stream, media_type)
+
+
+async def prime_stream(
+    logged: StreamLogger,
+) -> tuple[bytes | None, AsyncGenerator[bytes] | None]:
+    """Start *logged* and wait for its first chunk, before anything reaches
+    the client. Returns the chunk and the rest of the stream, or two Nones
+    for an empty stream. A failure before the first chunk is raised (and
+    already logged), so the caller may answer it or try another provider."""
     stream = logged.__aiter__()
     try:
         first = await stream.__anext__()
     except StopAsyncIteration:
-        return StreamingResponse(iter(()), media_type=media_type)
-    except httpx.HTTPStatusError as exc:
-        return forward_upstream_http_error(exc)
+        return None, None
     except BaseException:
         await stream.aclose()
         raise
+    return first, stream
+
+
+def stream_body(
+    first: bytes | None,
+    stream: AsyncGenerator[bytes] | None,
+    media_type: str,
+    on_close: Callable[[], None] | None = None,
+) -> Response:
+    """The response for a stream :func:`prime_stream` started. *on_close*
+    runs once the body has been sent or abandoned."""
+    if first is None or stream is None:
+        if on_close is not None:
+            on_close()
+        return StreamingResponse(iter(()), media_type=media_type)
+    rest = stream
 
     async def chunks() -> AsyncIterator[bytes]:
         try:
             yield first
-            async for chunk in stream:
+            async for chunk in rest:
                 yield chunk
         except DeadlineExceeded:
             # Already logged as the request's error; end the body rather than
             # abort the connection.
             logger.warning("Stream ended at the request deadline")
         finally:
-            await stream.aclose()
+            try:
+                await rest.aclose()
+            finally:
+                if on_close is not None:
+                    on_close()
 
     return StreamingResponse(chunks(), media_type=media_type)

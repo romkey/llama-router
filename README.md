@@ -81,7 +81,7 @@ Pins on the key override the mode for the pinned models.
 
 Coding agents such as Claude Code, Cursor, Continue, aider and Codex send a conversation as a series of requests. Each one repeats the same long system prompt and history. llama.cpp and Ollama only reuse their prompt cache when the next request reaches the same backend. Without affinity, two equally good providers can take turns serving one conversation, and each re-reads the whole prompt every time.
 
-With session affinity, the router remembers which provider served each conversation. Later requests in that conversation go to the same provider, even when another provider is idle. A session moves only when its provider stops being eligible: it goes offline, its circuit opens, or it no longer serves the model. It then stays on its new provider. Pins and chaos mode take precedence over affinity.
+With session affinity, the router remembers which provider served each conversation. Later requests in that conversation go to the same provider, whose prompt cache already holds the conversation. A session moves when its provider stops being eligible: it goes offline, its circuit opens, or it no longer serves the model. It also moves when its provider is busy enough that waiting costs more than the cache saves: the router compares the extra queueing on the bound provider with how long the next choice would take to re-read the conversation's prompt (from the provider's measured prompt speed). A long conversation waits out a short queue; a short one moves at the first extra request. A cloud provider's cache counts for nothing. `LLAMA_ROUTER_SESSION_AFFINITY_CACHE_AWARE=false` keeps every session on its provider whatever the queue. A session that moved stays on its new provider. Pins and chaos mode take precedence over affinity.
 
 The router identifies a conversation by the first of these it finds:
 
@@ -133,6 +133,8 @@ Candidates fall into three tiers, and a request goes to the best tier that has a
 ### Provider health
 
 Every provider has a health score from 0 to 100. It drops with the share of recent requests that failed for reasons on the provider's side, such as errors, timeouts, 401, 404 and 429. Client mistakes such as HTTP 400 don't count. It also drops when a whole health check fails, meaning no address answered, so a provider that keeps dropping out is penalized for a while after it comes back. One dead address among live ones doesn't count. Failures fade with a two-minute half-life.
+
+When a provider can't be reached (a connect error or connect timeout) or turns a request away as busy (HTTP 429, 502 or 503) before anything was sent to the client, the router tries the next provider for the same request instead of returning the error. By default it tries one other provider (`LLAMA_ROUTER_UPSTREAM_FAILOVER_ATTEMPTS`). It never retries after a read timeout or the first streamed chunk, a strict-pinned model, or a hub request for one provider. The retry is checked against the key's model limits, locality and spend cap like the first attempt, and both attempts appear in the request log.
 
 The score's failure rate adds a penalty to every routing mode. A provider failing at least half of its recent requests across all models, over at least five, has its circuit opened. It is then used only if no healthier provider can serve the request, and is retried as its failures age out.
 
@@ -480,9 +482,14 @@ curl http://localhost/api/keys/1/pins
 curl -X DELETE http://localhost/api/keys/1/pins/llama3.2:latest
 ```
 
+When the pinned provider can't serve the model (it is offline, no longer lists the model, or is outside the key's locality), what happens depends on the key's **Pins are strict** setting (`strict_pins`):
+
+- **Off** (the default): another provider serves the model, as if there were no pin.
+- **On**: the request is refused with HTTP 503 and `Retry-After`. It is never sent to another provider or down the fallback chain, even with fallback allowed, and the refusal goes to the request log. A strict key past its daily spend cap with a cloud pin gets 429 rather than being moved to a local provider.
+
 ## Keys Users Issue Themselves
 
-Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback and session affinity. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can edit their own keys' label, routing priority, fallback and session affinity (`PATCH /api/my-keys/{id}`), regenerate their secrets (`POST /api/my-keys/{id}/regenerate`) and revoke them; providers and spend cap stay as the admin set them. Deleting a user deletes the keys they issued.
+Every signed-in dashboard user, admin or not, can issue themselves API keys under **My API keys** (top right). They pick the routing priority, fallback, session affinity and strict pins. Which providers the key may use and its daily spend cap come from limits an admin sets on the **API Keys** tab; until then, self-issued keys can use local providers only. Admins see each key's owner in the keys table and can change or revoke it there. Users can edit their own keys' label, routing priority, fallback, session affinity and strict pins (`PATCH /api/my-keys/{id}`), pin models to providers (**Pins**, or `GET`/`POST`/`DELETE /api/my-keys/{id}/pins`, which also shows and removes pins an admin set; a pin must name a model the key may use and a provider inside its locality, at most `LLAMA_ROUTER_MAX_PINS_PER_KEY` per key), regenerate their secrets (`POST /api/my-keys/{id}/regenerate`) and revoke them; providers and spend cap stay as the admin set them. Deleting a user deletes the keys they issued.
 
 ## Management Keys
 

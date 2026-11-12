@@ -611,3 +611,32 @@ def test_model_names_put_given_names_first_then_aliases():
     assert model_names(["m", None, "m"], aliases) == ["m", "fast", "quick"]
     assert model_names(["x"], aliases) == ["x"]
     assert model_names(["m"], None) == ["m"]
+
+
+async def test_strict_pin_without_logprobs_is_still_a_502(
+    db: Database,
+    pm: ProviderManager,
+    router: Router,
+    httpx_mock,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from llama_router.llamacpp_api import decisions as decisions_api
+    from llama_router.router import RoutingPreferences
+
+    pinned = await _provider(
+        db, pm, "pinned", "http://bad.test:8080", _caps("/v1/chat/completions")
+    )
+    prefs = RoutingPreferences(pinned_providers={MODEL: pinned.id}, strict_pins=True)
+
+    async def strict(db: Database, request: object) -> RoutingPreferences:
+        return prefs
+
+    monkeypatch.setattr(decisions_api, "routing_preferences_from_request", strict)
+    cb, _ = _backend(with_logprobs=False)
+    httpx_mock.add_callback(
+        cb, url="http://bad.test:8080/v1/chat/completions", is_reusable=True
+    )
+    resp = await _post("/v1/systemone", BODY)
+    # The pinned provider answered, without logprobs: not a 503 "unavailable".
+    assert resp.status_code == 502
+    assert "logprobs" in resp.json()["detail"]

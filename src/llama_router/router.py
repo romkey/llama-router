@@ -72,7 +72,14 @@ _MAX_REASONS = 20
 class RouteResult:
     """Wraps a routing decision, including which model was actually resolved."""
 
-    __slots__ = ("backend_model", "group", "model_key", "provider", "resolved_model")
+    __slots__ = (
+        "affinity",
+        "backend_model",
+        "group",
+        "model_key",
+        "provider",
+        "resolved_model",
+    )
 
     def __init__(
         self,
@@ -92,6 +99,69 @@ class RouteResult:
         # The model's discovered name, which live stats are keyed by. Differs
         # from resolved_model when the client asked by raw (backend) name.
         self.model_key = model_key or resolved_model
+        # When a bound session's provider was weighed against a less busy
+        # one: the costs compared and whether the session moved.
+        self.affinity: AffinityWeighing | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AffinityWeighing:
+    """Stay on a session's provider, or move to a less busy one?
+
+    *extra_wait_ms* is how much longer the request would queue on the bound
+    provider than on the alternative; *cache_value_ms* how long the
+    alternative would take to read the prompt the bound provider has
+    cached. The session moves when waiting costs more.
+    """
+
+    bound_provider_id: int
+    alternative_provider_id: int
+    alternative: str
+    prompt_tokens: int
+    prompt_tps: float
+    extra_wait_ms: float
+    cache_value_ms: float
+
+    @property
+    def moved(self) -> bool:
+        return self.extra_wait_ms > self.cache_value_ms
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "alternative_provider_id": self.alternative_provider_id,
+            "alternative": self.alternative,
+            "prompt_tokens": self.prompt_tokens,
+            "prompt_tokens_per_second": round(self.prompt_tps, 1),
+            "extra_wait_ms": round(self.extra_wait_ms, 1),
+            "cache_value_ms": round(self.cache_value_ms, 1),
+            "moved": self.moved,
+        }
+
+
+class PinUnavailableError(Exception):
+    """A key with strict pins asked for a pinned model its pinned provider
+    can't serve right now. The request is refused (HTTP 503), never routed
+    to another provider or down the fallback chain."""
+
+    def __init__(
+        self,
+        model: str,
+        provider_id: int,
+        reason: str,
+        *,
+        outside_locality: bool = False,
+    ):
+        self.model = model
+        self.provider_id = provider_id
+        self.reason = reason
+        # The pinned provider serves the model but is outside the key's
+        # locality: for a key past its spend cap (narrowed to local), that
+        # is the cap's doing, and the caller answers 429 instead.
+        self.outside_locality = outside_locality
+        super().__init__(
+            f"Model '{model}' is pinned to provider {provider_id}, which is "
+            f"unavailable ({reason}); this API key's pins are strict"
+        )
 
 
 @dataclass(slots=True)
@@ -99,6 +169,9 @@ class RoutingPreferences:
     mode: str = DEFAULT_MODE  # "latency", "throughput", "balanced" or "chaos"
     allow_fallback: bool = True
     pinned_providers: dict[str, int] = field(default_factory=dict)
+    # A pinned model whose pinned provider can't serve it is refused
+    # (PinUnavailableError) rather than routed to another provider.
+    strict_pins: bool = False
     # None follows the router's default (LLAMA_ROUTER_SESSION_AFFINITY_ENABLED).
     session_affinity: bool | None = None
     # The API key these came from, which scopes session affinity.
@@ -131,6 +204,7 @@ class Router:
         min_interval_s: float = REBUILD_MIN_INTERVAL_S,
         affinity: SessionAffinity | None = None,
         session_affinity: bool | None = None,
+        cache_aware: bool | None = None,
     ):
         self._db = db
         self._pm = provider_manager
@@ -160,6 +234,13 @@ class Router:
             settings.session_affinity_enabled
             if session_affinity is None
             else session_affinity
+        )
+        # Weigh a bound session's queue against its prompt cache; off, a
+        # session stays on its provider whatever the queue.
+        self.cache_aware = (
+            settings.session_affinity_cache_aware
+            if cache_aware is None
+            else cache_aware
         )
         db.add_change_listener(self._on_db_change)
         provider_manager.stats.add_listener(self._on_stats_change)
@@ -361,6 +442,8 @@ class Router:
         preferences: RoutingPreferences | None = None,
         *,
         session: str | None = None,
+        prompt_tokens: int = 0,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Pick the best provider for *model_name* on *endpoint*.
 
@@ -373,15 +456,29 @@ class Router:
 
         *session* is the request's affinity key from :meth:`session_for`. A
         session already bound to a provider stays there while that provider
-        is among the eligible candidates, whatever its queue; otherwise the
+        is among the eligible candidates, unless (with cache-aware affinity)
+        the extra wait in its queue would cost more than the next choice
+        re-reading the prompt the bound provider has cached; otherwise the
         normal choice is made and the session is bound to it. Pins and chaos
-        mode take precedence.
+        mode take precedence. *prompt_tokens* is this request's estimated
+        prompt, remembered with the binding for the next request.
 
-        Raises :class:`UnknownEndpointError` for a path the router does not proxy.
+        Raises :class:`UnknownEndpointError` for a path the router does not
+        proxy, and :class:`PinUnavailableError` when a key with strict pins
+        names a pinned model its pinned provider can't serve.
+
+        *exclude* names providers that already failed this request; they are
+        not chosen again (see ``proxy_json``'s failover).
         """
         table = await self.current_table()
         return self.route_with(
-            table, model_name, endpoint, preferences, session=session
+            table,
+            model_name,
+            endpoint,
+            preferences,
+            session=session,
+            prompt_tokens=prompt_tokens,
+            exclude=exclude,
         )
 
     def route_with(
@@ -393,12 +490,15 @@ class Router:
         *,
         session: str | None = None,
         record: bool = True,
+        prompt_tokens: int = 0,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Route against *table*. Synchronous: no I/O, no awaits.
 
         With *record* false the session binding is consulted but not changed,
         as :meth:`explain` needs.
         """
+        strict = bool(preferences and preferences.strict_pins)
         path = resolve_endpoint(endpoint)
         if session is not None and not self.affinity_enabled(preferences):
             session = None
@@ -421,10 +521,11 @@ class Router:
                 locality,
                 pins,
                 access,
+                strict,
             )
         if mode == "chaos" and not (pins and model_name in pins):
             return self._route_chaos(
-                table, model_name, path, locality, hub_only, access
+                table, model_name, path, locality, hub_only, access, exclude
             )
         if mode not in MODES:
             mode = DEFAULT_MODE
@@ -443,23 +544,25 @@ class Router:
                 pid = pins.get(candidate_model)
                 if pid is not None:
                     pinned = self._pinned(table, candidate_model, path, pid, mode)
-                    if pinned is not None and not _eligible(
-                        pinned.provider, locality, hub_only
-                    ):
+                    why = None
+                    outside = False
+                    if pinned is not None and pid in exclude:
+                        why = "it already failed this request"
+                        pinned = None
+                    elif pinned is None:
+                        why = "it does not serve the model on this endpoint now"
+                    elif not _eligible(pinned.provider, locality, hub_only):
                         # The key's locality outranks its pin: never send a
                         # local-only key's request to a cloud provider, nor a
                         # hub's request to a provider kept from it.
-                        logger.warning(
-                            "Pin for %s ignored: %s",
-                            candidate_model,
-                            _why_ineligible(
-                                pinned.provider,
-                                locality,
-                                hub_only,
-                                pinned.provider.name,
-                            ),
-                        )
+                        why = _why_ineligible(pinned.provider, locality, hub_only, "it")
+                        outside = not _locality_ok(pinned.provider, locality)
+                        logger.warning("Pin for %s ignored: %s", candidate_model, why)
                         pinned = None
+                    if pinned is None and strict:
+                        raise PinUnavailableError(
+                            candidate_model, pid, why or "", outside_locality=outside
+                        )
                     if pinned is not None:
                         if record and table.is_group(candidate_model):
                             self._count_group(candidate_model, pinned)
@@ -476,12 +579,15 @@ class Router:
                             pinned.model,
                             _group_of(table, candidate_model),
                         )
-            ranked = table.ranked_for(candidate_model, path, mode, locality, hub_only)
+            ranked = table.ranked_excluding(
+                candidate_model, path, mode, locality, hub_only, exclude
+            )
             if not ranked:
                 continue
             ranked = self._not_busy(ranked)
             chosen = None
             sticky = None
+            weighing = None
             if session is not None:
                 affinity = self.affinity
                 sticky = affinity.get(session) if record else affinity.peek(session)
@@ -490,11 +596,41 @@ class Router:
                         if sticky.matches(c.provider_id, c.model):
                             chosen = c
                             break
+                if chosen is not None and sticky is not None and self.cache_aware:
+                    # Only another provider of the bound member model: a
+                    # group's session keeps its model when it moves.
+                    same = tuple(c for c in ranked if c.model == chosen.model)
+                    alt = _pick(same, mode, active)
+                    if alt is not chosen:
+                        weighing = self._weigh(sticky, chosen, alt, active)
+                        if weighing.moved:
+                            chosen = alt
             if chosen is None:
                 chosen = _pick(ranked, mode, active)
             if session is not None and record:
-                self.affinity.bind(session, chosen.provider_id, sticky, chosen.model)
-                if sticky is not None and not sticky.matches(
+                moved = weighing is not None and weighing.moved
+                self.affinity.bind(
+                    session,
+                    chosen.provider_id,
+                    sticky,
+                    chosen.model,
+                    prompt_tokens,
+                    overflow=moved,
+                )
+                if moved and weighing is not None and sticky is not None:
+                    logger.info(
+                        "Session %s moved from provider %d to %s on %s: "
+                        "%.0f ms more queueing outweighs %.0f ms to re-read "
+                        "its %d-token prompt",
+                        short_key(session),
+                        sticky.provider_id,
+                        chosen.model,
+                        chosen.provider.name,
+                        weighing.extra_wait_ms,
+                        weighing.cache_value_ms,
+                        weighing.prompt_tokens,
+                    )
+                elif sticky is not None and not sticky.matches(
                     chosen.provider_id, chosen.model
                 ):
                     logger.info(
@@ -524,14 +660,45 @@ class Router:
             group = _group_of(table, candidate_model)
             if group is not None and record:
                 self._count_group(group, chosen)
-            return RouteResult(
+            result = RouteResult(
                 chosen.provider,
                 candidate_model,
                 chosen.backend_model,
                 chosen.model,
                 group,
             )
+            result.affinity = weighing
+            return result
         return None
+
+    def _weigh(
+        self,
+        bound: Binding,
+        here: Candidate,
+        alt: Candidate,
+        active: Callable[[int], int],
+    ) -> AffinityWeighing:
+        """Compare the bound candidate *here* with the normal choice *alt*.
+
+        The cache is worth the time *alt* would spend reading the prompt the
+        bound provider holds; a cloud provider's cache is not ours to count
+        on, so it is worth nothing. Waiting costs the extra requests ahead in
+        the bound provider's queue, each at its balanced-mode queue weight.
+        """
+        tps = self._pm.stats.prompt_tps(alt.provider_id, alt.model)
+        cache_ms = 0.0 if here.provider.is_cloud else bound.prompt_tokens / tps * 1000.0
+        extra = (
+            active(here.provider_id) - active(alt.provider_id)
+        ) * here.queue_weight["balanced"]
+        return AffinityWeighing(
+            bound_provider_id=here.provider_id,
+            alternative_provider_id=alt.provider_id,
+            alternative=alt.provider.name,
+            prompt_tokens=bound.prompt_tokens,
+            prompt_tps=tps,
+            extra_wait_ms=float(extra),
+            cache_value_ms=cache_ms,
+        )
 
     async def explain(
         self,
@@ -550,9 +717,13 @@ class Router:
         request would get.
         """
         table = await self.current_table()
-        decision = self.route_with(
-            table, model_name, endpoint, preferences, session=session, record=False
-        )
+        try:
+            decision = self.route_with(
+                table, model_name, endpoint, preferences, session=session, record=False
+            )
+        except PinUnavailableError:
+            # explain_with walks to the same refused pin and says so.
+            decision = None
         return self.explain_with(
             table, decision, model_name, endpoint, preferences, session=session
         )
@@ -575,6 +746,7 @@ class Router:
         allow_fallback = preferences.allow_fallback if preferences else True
         locality = preferences.locality if preferences else None
         hub_only = bool(preferences and preferences.hub_only)
+        strict = bool(preferences and preferences.strict_pins)
         out: dict[str, Any] = {
             "request": {
                 "model": model_name,
@@ -587,6 +759,7 @@ class Router:
                 "protocol": protocol or "any",
                 "allow_fallback": allow_fallback,
                 "pins": pins,
+                "strict_pins": strict,
                 "session_affinity": affinity_on,
             },
             "table_version": table.version,
@@ -683,8 +856,23 @@ class Router:
                 locality,
                 hub_only,
                 chosen_model,
+                strict,
             )
             out["steps"].append(step)
+            if step.get("refused"):
+                # route_with raised PinUnavailableError here: no other
+                # provider, and no further fallback.
+                out["refused"] = {
+                    "status": 503,
+                    "model": candidate_model,
+                    "pinned_provider_id": step["pinned_provider_id"],
+                }
+                out["summary"] = (
+                    f"Refused (HTTP 503): '{candidate_model}' is pinned to a "
+                    "provider that is unavailable, and this API key's pins "
+                    "are strict."
+                )
+                return out
             if decision is not None and decision.resolved_model == candidate_model:
                 break
         out["summary"] = _summary(out, model_name)
@@ -704,6 +892,7 @@ class Router:
         locality: str | None = None,
         hub_only: bool = False,
         chosen_model: str | None = None,
+        strict: bool = False,
     ) -> dict[str, Any]:
         step: dict[str, Any] = {"model": model, "pinned_provider_id": None}
         if table.is_group(model):
@@ -728,6 +917,8 @@ class Router:
                     pinned.provider, locality, hub_only, pinned.provider.name
                 )
                 pinned = None
+        # A strict pin that can't be honoured refuses the request outright.
+        refused = pid is not None and pinned is None and strict
         skipped = 0
 
         for c in all_cands:
@@ -749,6 +940,11 @@ class Router:
                 row["excluded"] = _why_ineligible(c.provider, locality, hub_only)
                 if not _locality_ok(c.provider, locality):
                     skipped += 1
+            elif refused:
+                row["excluded"] = (
+                    "another provider is pinned for this model; "
+                    "this key's pins are strict"
+                )
             elif pinned is not None:
                 if c is not pinned:
                     row["excluded"] = "another provider is pinned for this model"
@@ -797,7 +993,10 @@ class Router:
         def where(provider: str, member: str | None) -> str:
             return f"{member} on {provider}" if is_group and member else provider
 
-        if pinned is not None:
+        if refused:
+            step["refused"] = True
+            step["outcome"] = "pinned provider unavailable; this key's pins are strict"
+        elif pinned is not None:
             step["outcome"] = f"pinned to {where(pinned.provider.name, pinned.model)}"
         elif (
             eligible
@@ -865,6 +1064,23 @@ class Router:
         ):
             info["honored"] = True
             info["reason"] = "the session stays on the provider that served it"
+            if decision.affinity is not None:
+                w = decision.affinity
+                info["weighing"] = w.to_dict()
+                info["reason"] += (
+                    f": {w.extra_wait_ms:.0f} ms more queueing than on "
+                    f"{w.alternative} is less than the {w.cache_value_ms:.0f} ms "
+                    f"it would take to re-read the {w.prompt_tokens}-token prompt"
+                )
+        elif decision is not None and decision.affinity is not None:
+            w = decision.affinity
+            info["weighing"] = w.to_dict()
+            info["reason"] = (
+                f"the bound provider's queue costs {w.extra_wait_ms:.0f} ms more "
+                f"than {w.alternative}'s, more than the {w.cache_value_ms:.0f} ms "
+                f"it takes to re-read the {w.prompt_tokens}-token prompt there, "
+                "so the next request moves the session"
+            )
         else:
             info["reason"] = (
                 "the bound provider is not an eligible candidate, so the next "
@@ -930,11 +1146,14 @@ class Router:
         locality: str | None,
         pins: dict[str, int] | None = None,
         access: ModelAccess | None = None,
+        strict: bool = False,
     ) -> RouteResult | None:
         """Route to the one provider the hub asked for, or nowhere.
 
         The worker's API key still has its say: a model it pins to another
-        provider, or may not use, is not served by this one.
+        provider, or may not use, is not served by this one. With strict
+        pins, such a model is refused rather than tried further down the
+        fallback chain.
         """
         chain = table.chain(model_name) if allow_fallback else (model_name,)
         for candidate_model in chain:
@@ -948,9 +1167,25 @@ class Router:
                     candidate_model,
                     pinned,
                 )
+                if strict:
+                    raise PinUnavailableError(
+                        candidate_model,
+                        pinned,
+                        f"the hub asked for provider {pid}",
+                    )
                 continue
             c = self._pinned(table, candidate_model, path, pid, mode)
             if c is None or not _eligible(c.provider, locality, hub_only=True):
+                if strict and pinned is not None:
+                    raise PinUnavailableError(
+                        candidate_model,
+                        pinned,
+                        "it does not serve the model on this endpoint now"
+                        if c is None
+                        else _why_ineligible(c.provider, locality, True, "it"),
+                        outside_locality=c is not None
+                        and not _locality_ok(c.provider, locality),
+                    )
                 continue
             return RouteResult(
                 c.provider,
@@ -1003,13 +1238,14 @@ class Router:
         locality: str | None = None,
         hub_only: bool = False,
         access: ModelAccess | None = None,
+        exclude: frozenset[int] = frozenset(),
     ) -> RouteResult | None:
         """Chaos mode: pick a random online provider and random eligible model
-        (one the key may use)."""
+        (one the key may use), other than the providers in *exclude*."""
         protocol = ENDPOINTS[path][0]
         entries = []
         for provider, models in table.chaos.get(protocol, ()):
-            if not _eligible(provider, locality, hub_only):
+            if not _eligible(provider, locality, hub_only) or provider.id in exclude:
                 continue
             if access is not None:
                 models = tuple(
