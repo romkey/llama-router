@@ -16,6 +16,8 @@ from collections.abc import Iterable
 from typing import Any
 
 from . import __version__
+from .capacity import LEVELS
+from .limits import limiter
 from .models import ProviderInfo, ProviderStatus
 from .single_process import LOOP_LAG
 
@@ -476,7 +478,9 @@ def collect(
         queued = Family(
             "provider_queued_requests",
             "gauge",
-            "Requests waiting for one of the provider's concurrent-request slots.",
+            "Requests waiting for one of the provider's concurrent-request "
+            "slots, by queue level (1 latency, 2 balanced, 3 throughput and "
+            "cheapest).",
         )
         refused = Family(
             "provider_queue_timeouts_total",
@@ -493,12 +497,24 @@ def collect(
                 continue
             labels = _provider_labels(owner)
             limit_fam.add(gate.limit, **labels)
-            queued.add(gate.queued, **labels)
+            for level in LEVELS:
+                queued.add(gate.queued_at(level), **labels, level=level)
             refused.add(gate.refused, **labels)
             waits.observe_series(
                 gate.waits.cumulative(), gate.waits.total, gate.waits.count, **labels
             )
         families += [limit_fam, queued, refused, waits]
+
+    upstream = limiter.global_gate()
+    if upstream is not None:
+        upstream_queued = Family(
+            "upstream_queued_requests",
+            "gauge",
+            "Requests waiting for a global upstream slot, by queue level.",
+        )
+        for level in LEVELS:
+            upstream_queued.add(upstream.queued_at(level), level=level)
+        families.append(upstream_queued)
 
     if auto_benchmark is not None:
         runs = Family(

@@ -170,7 +170,7 @@ async def proxy_json(
                 held = failover.reservation()
                 # Waits in line when the provider is at its max_concurrent
                 # limit; the stream holds the slot until it ends.
-                gate = await pm.take_slot(provider_id, slot.deadline)
+                gate = await pm.take_slot(provider_id, slot.deadline, slot.level)
 
                 async def chunks(
                     pid: int = provider_id, gate: SlotGate | None = gate
@@ -230,7 +230,9 @@ async def proxy_json(
                 held = failover.reservation()
                 start = time.monotonic()
                 try:
-                    async with pm.acquire_provider(provider_id, deadline=slot.deadline):
+                    async with pm.acquire_provider(
+                        provider_id, deadline=slot.deadline, level=slot.level
+                    ):
                         reply = await call(client(provider_id), body)
                 except ProviderAtCapacity:
                     # Not the provider's failure: it was never sent the request.

@@ -14,7 +14,13 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from . import router_identity
-from .capacity import CapacityLimits, SlotGate
+from .capacity import (
+    DEFAULT_LEVEL,
+    CapacityLimits,
+    ProviderAtCapacity,
+    QueueTimeout,
+    SlotGate,
+)
 from .client_pool import ClientPool, upstream_headers
 from .config import settings
 from .database import Database
@@ -692,11 +698,15 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         self._last_activity[provider_id] = time.monotonic()
 
     async def take_slot(
-        self, provider_id: int, deadline: float | None = None
+        self,
+        provider_id: int,
+        deadline: float | None = None,
+        level: int = DEFAULT_LEVEL,
     ) -> SlotGate | None:
         """Take one of the provider's ``max_concurrent`` slots, waiting in
-        line when all are in use (:class:`ProviderAtCapacity` when the wait
-        runs past the queue timeout or *deadline*).
+        line at *level* (see :func:`~.capacity.queue_level`) when there is
+        none (:class:`ProviderAtCapacity` when the wait runs past the queue
+        timeout or *deadline*).
 
         Returns the gate to release, or None for a provider without a limit.
         Never suspends when a slot is free.
@@ -704,7 +714,24 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         gate = self.capacity.gate(provider_id)
         if gate is None:
             return None
-        await gate.acquire(deadline, provider_id)
+        try:
+            waited = await gate.acquire(deadline, level)
+        except QueueTimeout:
+            logger.info(
+                "Provider %d at capacity (%d): request at queue level %d "
+                "timed out waiting",
+                provider_id,
+                gate.limit,
+                level,
+            )
+            raise ProviderAtCapacity(provider_id, gate.limit) from None
+        if waited > 0:
+            logger.debug(
+                "Request waited %.3fs at queue level %d for provider %d",
+                waited,
+                level,
+                provider_id,
+            )
         return gate
 
     @asynccontextmanager
@@ -715,6 +742,7 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         deadline: float | None = None,
         slot: SlotGate | None = None,
         slot_taken: bool = False,
+        level: int = DEFAULT_LEVEL,
     ) -> AsyncIterator[None]:
         """Take a slot on the provider (see :meth:`take_slot`), then count
         the request against it for its duration.
@@ -726,7 +754,7 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         replaces them, so fetch the client inside this block, not before.
         """
         if not slot_taken:
-            slot = await self.take_slot(provider_id, deadline)
+            slot = await self.take_slot(provider_id, deadline, level)
         try:
             pinned = self.clients.pin(provider_id)
             self.acquire(provider_id)
@@ -746,9 +774,9 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         gate = self.capacity.gate(provider_id)
         return gate.queued if gate is not None else 0
 
-    def has_room(self, provider_id: int) -> bool:
-        """A request sent to the provider now would not wait for a slot."""
-        return self.capacity.has_room(provider_id)
+    def has_room(self, provider_id: int, level: int = DEFAULT_LEVEL) -> bool:
+        """A request at *level* sent to the provider now would not wait."""
+        return self.capacity.has_room(provider_id, level)
 
     def active_requests(self, provider_id: int) -> int:
         return self._active_requests.get(provider_id, 0)

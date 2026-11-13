@@ -9,6 +9,19 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Queue order follows the routing mode**: requests waiting for an upstream
+  slot (the global and per-key limits) or a provider's "Max concurrent
+  requests" slot are served by level, first come first served within one:
+  latency keys first; balanced, chaos and requests without a key next;
+  throughput and cheapest keys last. Throughput and cheapest never take the
+  last free slot of a provider or limit of 2 or more, so a latency or
+  balanced request arriving next finds one (with a limit of 1 they take a
+  free slot when no one waits). Nothing already running is pre-empted, and
+  a free slot is still taken without waiting. No new setting: the key's
+  routing mode sets it, from its next request. Logs and
+  `llama_router_provider_queued_requests` / the new
+  `llama_router_upstream_queued_requests` carry the level; **Explain**
+  shows `queue_level`.
 - **Provider capacity limits**: "Max concurrent requests" on a provider's
   edit form (`providers.max_concurrent`; blank, the default, is no limit, as
   before). Routing sets a provider at its limit aside while another ranked

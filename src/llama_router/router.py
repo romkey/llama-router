@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import router_identity, routing_table
 from .affinity import Binding, SessionAffinity, session_key, short_key
-from .capacity import CapacityLimits
+from .capacity import DEFAULT_LEVEL, CapacityLimits, queue_level
 from .config import settings
 from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
@@ -430,18 +430,20 @@ class Router:
         ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
         return ready or ranked
 
-    def _with_room(self, ranked: tuple[Candidate, ...]) -> tuple[Candidate, ...]:
-        """Drop providers at their ``max_concurrent`` limit while another
-        has room; when every one is full, keep them all (the request queues
-        on the one chosen)."""
+    def _with_room(
+        self, ranked: tuple[Candidate, ...], level: int = DEFAULT_LEVEL
+    ) -> tuple[Candidate, ...]:
+        """Drop providers at their ``max_concurrent`` limit (for a request
+        at queue *level*) while another has room; when every one is full,
+        keep them all (the request queues on the one chosen)."""
         capacity = self._pm.capacity
         if not capacity.any_limited():
             return ranked
         room = capacity.has_room
-        if all(room(c.provider_id) for c in ranked):
+        free = tuple(c for c in ranked if room(c.provider_id, level))
+        if len(free) == len(ranked) or not free:
             return ranked
-        free = tuple(c for c in ranked if room(c.provider_id))
-        return free or ranked
+        return free
 
     def price_for(self, provider_id: int, model: str) -> Price | None:
         """The model's price on the provider from the current table, or None."""
@@ -605,7 +607,7 @@ class Router:
             )
             if not ranked:
                 continue
-            ranked = self._with_room(self._not_busy(ranked))
+            ranked = self._with_room(self._not_busy(ranked), queue_level(mode))
             chosen = None
             sticky = None
             weighing = None
@@ -772,6 +774,7 @@ class Router:
             "request": {
                 "model": model_name,
                 "mode": mode,
+                "queue_level": queue_level(mode),
                 "locality": locality or "any",
                 "hub_only": hub_only,
                 "spend_capped": bool(preferences and preferences.spend_capped),
@@ -922,7 +925,8 @@ class Router:
         all_cands = table.all_candidates.get((model, path), ())
         ranked = table.ranked_for(model, path, mode, locality, hub_only)
         ready = self._not_busy(ranked)
-        roomy = self._with_room(ready)
+        level = queue_level(mode)
+        roomy = self._with_room(ready, level)
         capacity = self._pm.capacity
         busy = self._pm.stats.busy_for
         ranked_ids = {c.provider_id for c in ranked}
@@ -1051,7 +1055,7 @@ class Router:
                     " (every provider has a problem; using the least bad)"
                 )
             first_id = eligible[0]["provider_id"]
-            if not capacity.has_room(first_id):
+            if not capacity.has_room(first_id, level):
                 step["outcome"] += (
                     f"; all at capacity; would queue on {eligible[0]['provider']} "
                     f"({_capacity_text(capacity, first_id)})"
