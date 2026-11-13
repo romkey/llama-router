@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 
+from ..audit import AuditMiddleware
 from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request
 from ..spend import SpendReservationMiddleware
@@ -31,6 +32,9 @@ app.add_middleware(DashboardAuthMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
 # Releases a chat turn's held token estimate if it ends unlogged or failed.
 app.add_middleware(SpendReservationMiddleware)
+# Outermost: sees the routed endpoint and the signed-in user once the route
+# has answered, and writes its audit entry.
+app.add_middleware(AuditMiddleware)
 
 _SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",

@@ -307,11 +307,27 @@ _TABLES: list[tuple[str, list[str]]] = [
         ],
     ),
     ("dashboard_recovery_codes", ["code_hash", "user_id"]),
+    (
+        "audit_log",
+        [
+            "id",
+            "at",
+            "actor_kind",
+            "actor_id",
+            "actor_name",
+            "action",
+            "target_kind",
+            "target_id",
+            "summary",
+            "client_ip",
+        ],
+    ),
     # Login proofs are intentionally not copied; sign in again after migration.
 ]
 
 # Tables with a PostgreSQL sequence on ``id`` (reset after copy).
 _SEQUENCE_TABLES = [
+    "audit_log",
     "providers",
     "workers",
     "provider_models",

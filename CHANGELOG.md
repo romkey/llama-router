@@ -9,6 +9,20 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Audit trail**: every state-changing dashboard action (users, API keys
+  with their pins, limits, policies, renewals and pauses, management keys,
+  providers and prices, workers and their tokens, model groups, aliases,
+  fallbacks, benchmarks, pulls, the registry cache, the anonymous-access
+  switch, sign-in security changes and system options) writes an entry:
+  when, who (a dashboard user, a management key as itself, or the router),
+  the action, its target, the fields changed with old and new values, and
+  the client's address. Secrets (keys, tokens, passwords, provider
+  credentials and headers) are recorded only as "changed". Admins read it
+  on the new **Audit** page (Access menu) with filters, or with
+  `GET /api/audit`, which management keys may use with the new `audit:read`
+  privilege; users see the entries for their own keys on **My API keys**.
+  `LLAMA_ROUTER_AUDIT_RETENTION_DAYS` (default 365) prunes it with the
+  request log. Signing in and users' own chats are not recorded.
 - **API key expiry, renewal and pausing**. A key may have an expiry
   (`expires_at`, editable on both key forms; blank is never): past it the
   key gets 401 "API key expired" and is kept. Keys users issue themselves

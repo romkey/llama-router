@@ -75,6 +75,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `QUIET_HEALTH_CHECKS` | `false` | Leave successful `GET /healthz` and `GET /health` requests out of the access log. Failed ones are still logged |
 | `TRUSTED_PROXIES` | (empty) | Reverse proxies whose `X-Forwarded-For` header is believed, as IPs or CIDRs separated by commas (e.g. `127.0.0.1,10.0.0.0/8`). Empty ignores the header: the TCP peer is the client in the request log and for anonymous session affinity |
 | `REQUEST_LOG_RETENTION_DAYS` | `30` | Delete request log rows older than this, checked hourly; `0` keeps them forever |
+| `AUDIT_RETENTION_DAYS` | `365` | Delete audit trail entries older than this, with the request log; `0` keeps them forever |
 | `CIRCUIT_TIMEOUT_MAX_TOKENS` | `4096` | A read timeout on a request asking for more output tokens than this (`max_tokens`, `num_predict`...) is blamed on the request and does not count toward the provider's circuit breaker |
 | `AUTO_PROBE_ENABLED` | `true` | Probe a provider's endpoints on add, edit, address change and recovery. Probes never run inference |
 | `PROBE_MAX_AGE_HOURS` | `24` | Probe again when the last probe is older than this; `0` turns periodic re-probing off |

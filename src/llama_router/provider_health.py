@@ -466,13 +466,24 @@ class HealthChecks:
         with *force*). Returns the number of rows deleted.
         """
         days = settings.request_log_retention_days
-        if days <= 0:
+        audit_days = settings.audit_retention_days
+        if days <= 0 and audit_days <= 0:
             return 0
         now = time.monotonic()
         last = self._last_log_purge
         if not force and last is not None and now - last < LOG_PURGE_INTERVAL_S:
             return 0
         self._last_log_purge = now
+        if audit_days > 0:
+            gone = await self._db.delete_audit_entries_before(
+                datetime.now(UTC) - timedelta(days=audit_days)
+            )
+            if gone:
+                logger.info(
+                    "Deleted %d audit entries older than %d days", gone, audit_days
+                )
+        if days <= 0:
+            return 0
         cutoff = datetime.now(UTC) - timedelta(days=days)
         deleted = await self._db.delete_request_logs_before(cutoff)
         if deleted:

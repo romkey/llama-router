@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     trusted_proxies: str = ""
     # Request log rows older than this many days are deleted (0 keeps them all).
     request_log_retention_days: float = 30.0
+    # Days audit trail entries are kept (0: forever); pruned with the
+    # request log.
+    audit_retention_days: int = 365
     # A read timeout on a request that asked for more output tokens than this
     # is blamed on the request, not the provider, so it does not count
     # toward the provider's circuit breaker.

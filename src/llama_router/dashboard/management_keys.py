@@ -41,6 +41,7 @@ PRIVILEGES: dict[str, str] = {
     "models:read": "Read model aliases, fallbacks, groups and the routing table",
     "models:write": "Change model aliases, fallbacks and groups; rebuild routing",
     "status:read": "Read router status (GET /api/status)",
+    "audit:read": "Read the audit trail (GET /api/audit)",
 }
 
 # Area -> path prefixes it covers. A prefix matches itself and anything
@@ -56,7 +57,10 @@ _AREAS: dict[str, tuple[str, ...]] = {
     ),
 }
 # Area -> exact paths, read only.
-_EXACT_READ: dict[str, tuple[str, ...]] = {"status": ("/api/status",)}
+_EXACT_READ: dict[str, tuple[str, ...]] = {
+    "status": ("/api/status",),
+    "audit": ("/api/audit",),
+}
 
 _READ_METHODS = frozenset({"GET", "HEAD"})
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

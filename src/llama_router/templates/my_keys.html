@@ -97,6 +97,12 @@
                 </div>
             </div>
         </div>
+            <div class="card mt-3">
+            <div class="card-header"><h2 class="h6 mb-0">Recent changes to your keys</h2></div>
+            <div class="card-body p-0">
+                <ul class="list-group list-group-flush small" id="my-keys-audit"><li class="list-group-item text-muted">Loading…</li></ul>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -573,6 +579,15 @@ document.getElementById('my-keys-body').addEventListener('click', function(ev) {
 });
 
 loadMyKeys();
+fetch('/api/my-keys/audit').then(function(r) { return r.ok ? r.json() : {entries: []}; }).then(function(d) {
+    var el = document.getElementById('my-keys-audit');
+    if (!d.entries.length) { el.innerHTML = '<li class="list-group-item text-muted">No changes yet.</li>'; return; }
+    el.innerHTML = d.entries.map(function(e) {
+        return '<li class="list-group-item">' + llrTime.html(e.at) + ' · ' + esc(e.actor_name || e.actor_kind) +
+            ' · <code>' + esc(e.action) + '</code> key ' + esc(e.target_id) +
+            (e.summary ? '<div class="text-muted text-break">' + esc(e.summary) + '</div>' : '') + '</li>';
+    }).join('');
+});
 </script>
 {% endif %}
 {% endblock %}

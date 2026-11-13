@@ -31,6 +31,7 @@ from joserfc import jwt
 from joserfc.errors import InvalidKeyIdError, JoseError
 from joserfc.jwk import KeySet
 
+from .. import audit
 from ..config import Settings, settings
 from ..database import Database
 from ..key_lifecycle import REASON_NOT_MEMBER, hold_user_keys
@@ -561,7 +562,15 @@ async def sign_in(
         )
         if known is not None:
             # Lost the group: their keys stop too, until an admin lifts it.
-            await hold_user_keys(db, int(known["id"]), REASON_NOT_MEMBER)
+            n = await hold_user_keys(db, int(known["id"]), REASON_NOT_MEMBER)
+            if n:
+                await audit.record(
+                    None,
+                    "user.keys_held",
+                    ("user", int(known["id"])),
+                    f"{n} key{'' if n == 1 else 's'} held: {REASON_NOT_MEMBER}",
+                    db=db,
+                )
         raise OIDCError("not_member", f"sub {claims.get('sub')!r} not in group")
     issuer = str(claims["iss"])
     subject = str(claims["sub"])
