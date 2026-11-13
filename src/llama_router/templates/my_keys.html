@@ -33,6 +33,11 @@
                     </select>
                             <div class="form-text" id="my-key-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
                 </div>
+                <div class="mb-2">
+                    <label for="my-key-expires" class="form-label small text-muted mb-1">Expires</label>
+                    <input id="my-key-expires" type="date" class="form-control form-control-sm" aria-describedby="my-key-expires-help">
+                    <div class="form-text" id="my-key-expires-help">{% if max_key_lifetime_days %}Within {{ max_key_lifetime_days }} days; blank uses the longest allowed.{% else %}Blank: never.{% endif %}</div>
+                </div>
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="my-key-fallback" checked>
                     <label class="form-check-label" for="my-key-fallback">Allow fallback models</label>
@@ -79,6 +84,7 @@
                                 <th>Pins</th>
                                 <th title="Spent today (UTC) / daily cap">Spend</th>
                                 <th title="Tokens today (UTC) / the key's own daily limit">Tokens</th>
+                                <th>Status</th>
                                 <th>Created</th>
                                 <th>Last used</th>
                                 <th><span class="visually-hidden">Actions</span></th>
@@ -117,6 +123,10 @@
                         <option value="chaos">Chaos mode (random provider/model)</option>
                     </select>
                             <div class="form-text" id="my-edit-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
+                </div>
+                <div class="mb-2">
+                    <label for="my-edit-expires" class="form-label small text-muted mb-1">Expires</label>
+                    <input id="my-edit-expires" type="date" class="form-control form-control-sm">
                 </div>
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="my-edit-fallback">
@@ -230,6 +240,22 @@ function localityLabel(l) {
 
 function money(v) { return '$' + Number(v || 0).toFixed(2); }
 
+var renewalMode = 'allowed';
+var STATUS_CLASS = {active: 'text-bg-success', expiring: 'text-bg-warning', expired: 'text-bg-danger',
+    renewal_requested: 'text-bg-info', paused: 'text-bg-secondary', held: 'text-bg-dark'};
+function statusBadge(k) {
+    return '<span class="badge ' + (STATUS_CLASS[k.key_status] || 'text-bg-light') + '"' +
+        (k.pause_reason ? ' title="' + esc(k.pause_reason) + '"' : '') + '>' + esc(k.key_label || k.key_status) + '</span>';
+}
+
+function myKeyAction(id, action, ask) {
+    if (ask && !confirm(ask)) return;
+    fetch('/api/my-keys/' + id + '/' + action, {method: 'POST'}).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        loadMyKeys();
+    }).catch(function(err) { alert(err.message); });
+}
+
 function renderQuota(q) {
     var card = document.getElementById('my-quota-card');
     if (!q) { card.hidden = true; return; }
@@ -255,10 +281,11 @@ function loadMyKeys() {
             (d.daily_spend_cap_usd == null ? '' : ', with a daily spend cap of ' + money(d.daily_spend_cap_usd)) +
             '. An administrator sets these.';
         renderQuota(data.quota);
+        renewalMode = (data.lifecycle || {}).renewal_mode || 'allowed';
         document.getElementById('my-keys-count').textContent = data.keys.length;
         var body = document.getElementById('my-keys-body');
         if (!data.keys.length) {
-            body.innerHTML = '<tr><td colspan="10" class="text-muted small">No keys yet.</td></tr>';
+            body.innerHTML = '<tr><td colspan="11" class="text-muted small">No keys yet.</td></tr>';
             return;
         }
         body.innerHTML = data.keys.map(function(k) {
@@ -274,9 +301,23 @@ function loadMyKeys() {
                     (k.daily_token_limit ? ' <span class="text-muted">/ ' + esc(Number(k.daily_token_limit).toLocaleString()) + '</span>' : '') +
                     (k.requests_per_minute ? '<div class="text-muted">' + esc(k.requests_this_minute || 0) + ' / ' + esc(k.requests_per_minute) + ' this minute</div>' : '') +
                 '</td>' +
+                '<td class="small text-nowrap">' + statusBadge(k) +
+                    (k.expires_at ? '<div class="text-muted">until ' + llrTime.html(k.expires_at) + '</div>' : '') +
+                    (k.renewal_denied_reason ? '<div class="text-danger">renewal denied: ' + esc(k.renewal_denied_reason) + '</div>' : '') +
+                '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.created_at) + '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.last_used_at) + '</td>' +
                 '<td class="text-end text-nowrap">' +
+                (renewalMode === 'off' ? '' :
+                '<button type="button" class="btn btn-sm btn-outline-success me-1" data-renew-key' +
+                    ' title="' + (renewalMode === 'approval' ? 'Ask for a renewal' : 'Renew: a new expiry, same secret') + '"' +
+                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
+                    ' aria-label="Renew key ' + esc(k.key_prefix) + '"><i class="bi bi-calendar-plus" aria-hidden="true"></i></button>') +
+                (k.pause_locked ? '' :
+                '<button type="button" class="btn btn-sm btn-outline-secondary me-1" data-' + (k.paused_at ? 'unpause' : 'pause') + '-key' +
+                    ' title="' + (k.paused_at ? 'Unpause' : 'Pause') + '"' +
+                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
+                    ' aria-label="' + (k.paused_at ? 'Unpause' : 'Pause') + ' key ' + esc(k.key_prefix) + '"><i class="bi bi-' + (k.paused_at ? 'play' : 'pause') + '-fill" aria-hidden="true"></i></button>') +
                 '<button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Pins" data-pins-key' +
                     ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
                     ' data-locality="' + esc(k.locality || '') + '" data-strict="' + (k.strict_pins ? '1' : '') + '"' +
@@ -294,7 +335,7 @@ function loadMyKeys() {
         }).join('');
     }).catch(function(err) {
         document.getElementById('my-keys-body').innerHTML =
-            '<tr><td colspan="9" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
+            '<tr><td colspan="11" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
     });
 }
 
@@ -308,6 +349,7 @@ function issueMyKey() {
             session_affinity: document.getElementById('my-key-affinity').value,
             strict_pins: document.getElementById('my-key-strict').checked,
             label: document.getElementById('my-key-label').value,
+            expires_at: document.getElementById('my-key-expires').value || null,
             allowed: KeyAccess.value('my-key')
         })
     }).then(function(r) {
@@ -350,6 +392,9 @@ function editMyKey(id, prefix) {
         document.getElementById('my-edit-mode').value = k.routing_mode;
         document.getElementById('my-edit-fallback').checked = !!k.allow_fallback;
         document.getElementById('my-edit-strict').checked = !!k.strict_pins;
+        var exp = document.getElementById('my-edit-expires');
+        exp.value = k.expires_at ? String(k.expires_at).slice(0, 10) : '';
+        exp.dataset.original = exp.value;
         document.getElementById('my-edit-affinity').value =
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
         document.getElementById('my-edit-limits').textContent =
@@ -376,6 +421,7 @@ function saveMyKey() {
             allow_fallback: document.getElementById('my-edit-fallback').checked,
             session_affinity: document.getElementById('my-edit-affinity').value,
             strict_pins: document.getElementById('my-edit-strict').checked,
+            expires_at: (function(el) { return el.value === (el.dataset.original || '') ? undefined : (el.value || null); })(document.getElementById('my-edit-expires')),
             allowed: KeyAccess.value('my-edit')
         })
     }).then(function(r) {
@@ -511,6 +557,17 @@ document.getElementById('my-keys-body').addEventListener('click', function(ev) {
     if (btn) { editMyKey(btn.dataset.id, btn.dataset.prefix); return; }
     btn = ev.target.closest('[data-pins-key]');
     if (btn) { openMyPins(btn.dataset.id, btn.dataset.prefix, btn.dataset.locality, !!btn.dataset.strict); return; }
+    btn = ev.target.closest('[data-renew-key]');
+    if (btn) {
+        myKeyAction(btn.dataset.id, 'renew', renewalMode === 'approval'
+            ? 'Ask an administrator to renew key ' + btn.dataset.prefix + '?'
+            : 'Renew key ' + btn.dataset.prefix + '? It gets a new expiry from today; the secret stays.');
+        return;
+    }
+    btn = ev.target.closest('[data-pause-key]');
+    if (btn) { myKeyAction(btn.dataset.id, 'pause', 'Pause key ' + btn.dataset.prefix + '? Requests with it get 403 until you unpause it.'); return; }
+    btn = ev.target.closest('[data-unpause-key]');
+    if (btn) { myKeyAction(btn.dataset.id, 'unpause'); return; }
     btn = ev.target.closest('[data-regenerate-key]');
     if (btn) regenerateMyKey(btn.dataset.id, btn.dataset.prefix);
 });

@@ -19,6 +19,7 @@ from fastapi.responses import (
 from ...auth import invalidate_auth_cache
 from ...client_address import client_ip
 from ...config import settings
+from ...key_lifecycle import REASON_UNAPPROVED, hold_user_keys
 from ...quotas import (
     QUOTA_FIELDS,
     UserLimits,
@@ -75,6 +76,7 @@ async def users_page(request: Request):
             {
                 "dashboard_users": users,
                 "quota_defaults": defaults.to_dict(),
+                "current_user_id": int(user.id),
                 "mfa_required": settings.dashboard_require_second_factor,
                 "users_exist": bool(users),
                 "management_keys": mgmt_keys,
@@ -317,6 +319,46 @@ async def users_usage(request: Request) -> JSONResponse:
             }
         )
     return JSONResponse({"users": out, "defaults": defaults.to_dict()})
+
+
+@router.post("/users/{user_id}/unapprove")
+async def users_unapprove(request: Request, user_id: int):
+    """Send an account back to waiting for approval: its sessions end and
+    its API keys are held ("owner not approved") until an admin lifts the
+    hold; approving again does not lift it."""
+    _require_admin(request)
+    db = deps.get_db()
+    user = getattr(request.state, "dashboard_user", None)
+    if user is not None and int(user.id) == user_id:
+        return RedirectResponse(url="/users?error=self", status_code=303)
+    if not await db.unapprove_dashboard_user(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    await hold_user_keys(db, user_id, REASON_UNAPPROVED, by_user_id=_actor(request))
+    logger.info("Dashboard user %d un-approved", user_id)
+    return RedirectResponse(url="/users?updated=1", status_code=303)
+
+
+def _actor(request: Request) -> int | None:
+    user = getattr(request.state, "dashboard_user", None)
+    if user is None or user.auth_source == management_keys.AUTH_SOURCE:
+        return None
+    return int(user.id)
+
+
+@router.post("/users/{user_id}/pause-keys")
+@router.post("/api/users/{user_id}/pause-keys")
+async def users_pause_keys(request: Request, user_id: int):
+    """Hold every API key the user issued (an admin must lift each)."""
+    _require_admin(request)
+    db = deps.get_db()
+    if await db.get_dashboard_user_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    n = await hold_user_keys(
+        db, user_id, "paused by an administrator", by_user_id=_actor(request)
+    )
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"user_id": user_id, "held": n})
+    return RedirectResponse(url="/users?updated=1", status_code=303)
 
 
 @router.post("/users/{user_id}/sign-out")

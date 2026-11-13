@@ -9,6 +9,33 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **API key expiry, renewal and pausing**. A key may have an expiry
+  (`expires_at`, editable on both key forms; blank is never): past it the
+  key gets 401 "API key expired" and is kept. Keys users issue themselves
+  must expire within `LLAMA_ROUTER_MAX_KEY_LIFETIME_DAYS` (default 0, no
+  limit); admins may issue keys that never expire. **Renew** gives a key a
+  new expiry from now (`LLAMA_ROUTER_KEY_RENEWAL_DAYS`), the same secret;
+  an admin option on the API Keys tab says whether owners may renew
+  (`allowed`, the default), must ask (`approval`: a **Renewal requests**
+  list, approve or deny with a reason the owner sees) or may not (`off`).
+  A paused key gets 403 "API key paused" and keeps its settings, pins and
+  history. Owners pause and unpause their own keys; an admin pause can
+  **require an admin to unpause** (a hold; ticked by default, a system-wide
+  option), which an owner can neither lift nor overwrite. The router holds a
+  user's keys itself when an admin revokes their approval (**Revoke
+  approval** on the Users tab), when single sign-on refuses them for group
+  membership, and, with `LLAMA_ROUTER_OIDC_KEY_MAX_IDLE_DAYS` (default 0,
+  off), when an SSO user has not signed in for that long (checked hourly).
+  Signing in again never lifts a hold. **Pause all keys** on the Users tab
+  (`POST /api/users/{id}/pause-keys`) holds every key a user issued. Key
+  lists show each key's status: active, expires in N days, expired,
+  renewal requested, paused or held. New endpoints:
+  `POST /api/my-keys/{id}/renew|pause|unpause`, `POST /api/keys/{id}/renew`,
+  `.../renewal/approve`, `.../renewal/deny`, `.../pause` (`{locked,
+  reason}`), `.../unpause`, `GET /api/keys/renewal-requests`,
+  `PUT /api/keys/lifecycle-settings`. Expiry and pause state are in the
+  cached key record (one comparison per request); every change applies to
+  the key's next request. Regenerating a secret keeps expiry and pause.
 - **Per-user quotas**: on the Users tab an admin sets, per user, tokens per
   UTC day (prompt plus completion, local and cloud), requests per minute
   (a fixed one-minute window) and a daily spend cap in USD across all of the

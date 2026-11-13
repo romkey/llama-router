@@ -13,6 +13,7 @@ import platform
 import sys
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,7 @@ async def _configure_everything(db: Database) -> tuple[str, int]:
     await db.update_api_key(
         key_id, {"daily_token_limit": 1_000_000, "requests_per_minute": 1_000}
     )
+    await db.set_api_key_expiry(key_id, datetime.now(UTC) + timedelta(days=30))
     await db.set_api_key_model_pin(key_id, "other", a)
     return plaintext, key_id
 
