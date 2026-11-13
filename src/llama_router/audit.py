@@ -331,15 +331,24 @@ class AuditMiddleware:
                     chunks.append(body)
             return message
 
+        failed_form = False
+
         async def watch(message: Any) -> None:
-            nonlocal status
+            nonlocal status, failed_form
             if message.get("type") == "http.response.start":
                 status = int(message.get("status", 0))
+                for name, value in message.get("headers") or ():
+                    # Forms answer a refused change by redirecting with
+                    # ?error=...: nothing changed.
+                    if name.lower() == b"location" and b"error=" in value:
+                        failed_form = True
             await send(message)
 
         await self.app(scope, keep, watch)
-        if not 200 <= status < 400:
+        if not 200 <= status < 400 or failed_form:
             return
+        if scope.get("endpoint") is None:
+            return  # turned away before routing (sign-in, forbidden)
         state = scope.get("state")
         if isinstance(state, Mapping) and state.get(_STATE_KEY):
             return

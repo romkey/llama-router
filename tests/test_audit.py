@@ -255,3 +255,13 @@ def test_migration_round_trip(tmp_path: Path) -> None:
     assert "audit_log" not in tables()
     command.upgrade(cfg, "head")
     assert "audit_log" in tables()
+
+
+async def test_refused_form_change_writes_nothing(dash_client: DashClient) -> None:
+    c, db = dash_client
+    admin, ann = await _users(db)
+    resp = await c.post(
+        f"/users/{ann}/limits", data={"daily_token_limit": "0"}, headers=_as(admin)
+    )
+    assert "error=" in resp.headers["location"]
+    assert await db.list_audit_log() == []
