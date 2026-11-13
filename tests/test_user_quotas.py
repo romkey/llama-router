@@ -648,3 +648,32 @@ async def test_unlogged_decision_holds_are_released_at_request_end(
         90, key_id=None, key_limit=None, user_id=uid, user_limit=100
     )
     assert not isinstance(again, str)
+
+
+async def test_logged_decision_holds_are_left_for_the_writer(db: Database) -> None:
+    from starlette.requests import Request
+
+    from llama_router.request_logger import log_request_background
+    from llama_router.spend import EXTRA_RESERVATIONS_STATE, keep_for_release
+
+    uid = await _user(db)
+    tracker = tracker_for(db)
+    held = await tracker.reserve_tokens(
+        90, key_id=None, key_limit=None, user_id=uid, user_limit=100
+    )
+    assert not isinstance(held, str)
+    request = Request({"type": "http", "state": {}, "headers": []})
+    keep_for_release(request, held)
+    request_logger.start_log_writer()
+    log_request_background(
+        db,
+        provider=None,
+        protocol="v1",
+        endpoint="/v1/decisions",
+        request=request,
+        model="m",
+        duration_ms=1.0,
+        token_reservation=held,
+    )
+    assert getattr(request.state, EXTRA_RESERVATIONS_STATE) == []
+    await request_logger.stop_log_writer()

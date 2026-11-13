@@ -29,6 +29,7 @@ from .models import Provider, RequestLog
 from .pricing import Price, estimate_tokens
 from .routing_stats import ProviderStats
 from .spend import (
+    EXTRA_RESERVATIONS_STATE,
     RESERVATION_STATE,
     TOKEN_RESERVATION_STATE,
     Reservation,
@@ -719,6 +720,14 @@ def log_request_background(
             kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
         if kwargs.get("user_id") is None:
             kwargs["user_id"] = getattr(request.state, "quota_user_id", None)
+        # Holds handed to this entry are the writer's to settle now; the end
+        # of the request must not release them before it does.
+        kept = getattr(request.state, EXTRA_RESERVATIONS_STATE, None)
+        if isinstance(kept, list):
+            for name in ("token_reservation", "spend_reservation"):
+                held = kwargs.get(name)
+                if held is not None and held in kept:
+                    kept.remove(held)
         if kwargs.get("spend_reservation") is None:
             kwargs["spend_reservation"] = _take_reservation(request)
         if kwargs.get("token_reservation") is None and kwargs.get("status") != "error":
