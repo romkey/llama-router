@@ -30,7 +30,7 @@ from .config import settings
 from .database import CHANGE_DECISIONS, Database
 from .provider_manager import ProviderManager
 from .routing_table import alias_groups, native_decision_path
-from .spend import cap_reached, tracker_for
+from .spend import cap_reached, token_limit_reached, tracker_for
 from .v1_client import get_v1_client
 from .worker_link.protocol import refused as worker_refused
 
@@ -253,70 +253,100 @@ async def emulate(
     }
 
 
-def estimated_cost(price: Price | None, request: d.DecisionRequest) -> float:
-    """An upper estimate of what answering *request* costs in USD: every
-    question's prompt, state included, and one completion token each."""
-    if price is None:
-        return 0.0
+def estimated_tokens(request: d.DecisionRequest) -> tuple[int, int]:
+    """An upper estimate of (prompt, completion) tokens answering *request*
+    takes: every question's prompt, state included, and one completion token
+    each."""
     prompt_tokens = 0
     for q in request.questions.values():
         for m in d.build_prompt(request.state, q).messages:
             prompt_tokens += len(m["content"]) // _CHARS_PER_TOKEN + 1
             prompt_tokens += _TOKENS_PER_MESSAGE
-    return price.cost(prompt_tokens, len(request.questions))
+    return prompt_tokens, len(request.questions)
 
 
-async def check_spend_cap(
+def estimated_cost(price: Price | None, request: d.DecisionRequest) -> float:
+    """An upper estimate of what answering *request* costs in USD."""
+    if price is None:
+        return 0.0
+    return price.cost(*estimated_tokens(request))
+
+
+async def hold_quota(
     db: Database,
     rt: Router,
     prefs: RoutingPreferences | None,
     result: RouteResult,
     request: d.DecisionRequest,
-) -> None:
-    """Refuse *request* (429, as a key past its cap is) when its estimated
-    cost on the routed provider would take the key past its daily spend cap.
+) -> dict[str, Any]:
+    """Hold *request*'s estimated tokens against the key's and its owner's
+    daily token limits, and its estimated cost on the routed provider
+    against their spend caps, or refuse it (429) when either would not fit.
 
-    A request fans out into one call per question, so it is checked as a
-    whole before any of them is sent.
+    A request fans out into one call per question, so it is held as a whole
+    before any of them is sent. Returns the holds as request log fields
+    (``token_reservation``, ``spend_reservation``), which the log settles.
     """
     if prefs is None or prefs.key_id is None:
-        return
+        return {}
+    tracker = tracker_for(db)
+    out: dict[str, Any] = {}
+    owner = prefs.owner_user_id
+    if prefs.daily_token_limit is not None or (
+        owner is not None and prefs.user_daily_token_limit is not None
+    ):
+        held = await tracker.reserve_tokens(
+            sum(estimated_tokens(request)),
+            key_id=prefs.key_id,
+            key_limit=prefs.daily_token_limit,
+            user_id=owner,
+            user_limit=prefs.user_daily_token_limit,
+        )
+        if isinstance(held, str):
+            tracker.refusals[held] += 1
+            limit = (
+                prefs.daily_token_limit
+                if held == "key_tokens"
+                else prefs.user_daily_token_limit
+            )
+            raise token_limit_reached(
+                int(limit or 0),
+                "this API key" if held == "key_tokens" else "this user",
+            )
+        out["token_reservation"] = held
     cap = prefs.daily_spend_cap_usd
-    user_cap = (
-        prefs.user_daily_spend_cap_usd if prefs.owner_user_id is not None else None
-    )
+    user_cap = prefs.user_daily_spend_cap_usd if owner is not None else None
     if cap is None and user_cap is None:
-        return
+        return out
     price = rt.price_for(
         result.provider.require_id(), result.model_key or request.model
     )
     estimate = estimated_cost(price, request)
     if estimate <= 0:
-        return
-    tracker = tracker_for(db)
-    if user_cap is not None and prefs.owner_user_id is not None:
-        user_spent = await tracker.user_committed_today(prefs.owner_user_id)
-        if user_spent + estimate > user_cap:
-            logger.info(
-                "Refusing a decision request from key %s: its owner would pass "
-                "their $%.2f cap",
-                prefs.key_id,
-                user_cap,
-            )
-            raise cap_reached(user_cap, whose="this user")
-    if cap is None:
-        return
-    spent = await tracker.committed_today(prefs.key_id)
-    if spent + estimate > cap:
-        logger.info(
-            "Refusing a decision request from key %s: $%.4f spent, about $%.4f "
-            "more would pass the $%.2f cap",
-            prefs.key_id,
-            spent,
-            estimate,
-            cap,
-        )
-        raise cap_reached(cap)
+        return out
+    spend = await tracker.reserve(
+        prefs.key_id, cap, estimate, user_id=owner, user_cap=user_cap
+    )
+    if spend is not None:
+        out["spend_reservation"] = spend
+        return out
+    tokens = out.get("token_reservation")
+    if tokens is not None:
+        tokens.release()
+    key_over = (
+        cap is not None and await tracker.committed_today(prefs.key_id) + estimate > cap
+    )
+    shown, whose = (cap, "this API key") if key_over else (user_cap, "this user")
+    logger.info(
+        "Refusing a decision request from key %s: about $%.4f more would "
+        "pass %s's $%.2f cap",
+        prefs.key_id,
+        estimate,
+        whose,
+        shown or 0.0,
+    )
+    tracker.refusals["key_spend" if key_over else "user_spend"] += 1
+    raise cap_reached(shown or 0.0, whose=whose)
 
 
 async def native(

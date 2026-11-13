@@ -22,7 +22,7 @@ from fastapi import Request
 
 from .config import settings
 from .database import Database
-from .pricing import estimate_tokens
+from .pricing import _max_output_tokens, estimate_tokens
 from .spend import (
     TOKEN_RESERVATION_STATE,
     TokenReservation,
@@ -197,6 +197,11 @@ async def reserve_tokens(
         key_limit=key_limit,
         user_id=user_id,
         user_limit=user_limit,
+        # A request that sets its output limit must fit whole; one without
+        # (its completion is a guess) may run on what is left.
+        minimum=(
+            None if isinstance(body, dict) and _max_output_tokens(body) else prompt + 1
+        ),
     )
     if isinstance(held_or_why, str):
         tracker.refusals[held_or_why] += 1

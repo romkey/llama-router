@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import pytest
 from alembic import command
+from fastapi import HTTPException
 
 from llama_router import metrics, proxy, request_logger
 from llama_router.auth import (
@@ -517,3 +518,85 @@ async def test_dashboard_chat_counts_against_the_signed_in_user(
     second = await c.post("/api/chat/send", json=body, headers=_as(ann))
     assert second.status_code == 429
     await request_logger.stop_log_writer()
+
+
+# --- review regressions ---
+
+
+async def test_listing_models_is_not_charged(
+    db: Database, v1: httpx.AsyncClient, up: Upstream
+) -> None:
+    await _provider(db, "local")
+    uid = await _user(db, requests_per_minute=1, daily_token_limit=1)
+    key, _ = await _key(db, uid)
+    headers = {"Authorization": f"Bearer {key}"}
+    for _ in range(3):
+        assert (await v1.get("/v1/models", headers=headers)).status_code == 200
+
+
+async def test_request_without_output_limit_runs_on_what_is_left(
+    db: Database, v1: httpx.AsyncClient, up: Upstream
+) -> None:
+    await _provider(db, "local")
+    uid = await _user(db, daily_token_limit=100)  # far below the 4096 guess
+    key, _ = await _key(db, uid)
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    resp = await v1.post(CHAT, json=body, headers={"Authorization": f"Bearer {key}"})
+    assert resp.status_code == 200, resp.text
+    await request_logger.flush_request_log()
+    assert tracker_for(db).usage(user_id=uid).tokens == 50
+
+
+async def test_cancelled_request_counts_its_estimate(db: Database) -> None:
+    from llama_router.request_logger import STATUS_CANCELLED, _build_entry
+
+    uid = await _user(db)
+    tracker = tracker_for(db)
+    await tracker.user_tokens_committed(uid)
+    held = await tracker.reserve_tokens(
+        70, key_id=None, key_limit=None, user_id=uid, user_limit=1000
+    )
+    assert not isinstance(held, str)
+    _build_entry(
+        db,
+        provider=None,
+        protocol="v1",
+        endpoint=CHAT,
+        model="m",
+        duration_ms=1.0,
+        status=STATUS_CANCELLED,
+        user_id=uid,
+        token_reservation=held,
+    )
+    assert tracker.usage(user_id=uid).tokens == 70
+
+
+async def test_decision_requests_hold_tokens(db: Database) -> None:
+    from llama_router import decision_service as svc
+    from llama_router import decisions as d
+    from llama_router.router import RouteResult, RoutingPreferences
+    from tests.test_decision_policy import INJECTION
+
+    uid = await _user(db)
+    prefs = RoutingPreferences(key_id=1, owner_user_id=uid, user_daily_token_limit=10)
+    req = d.DecisionRequest.model_validate(
+        {
+            "model": "judge",
+            "state": "x" * 400,
+            "questions": {"a": INJECTION["question"]},
+        }
+    )
+
+    class Rt:
+        def price_for(self, pid: int, model: str) -> None:
+            return None
+
+    from llama_router.models import Provider
+
+    result = RouteResult(Provider(id=1, name="p"), "judge")
+    with pytest.raises(HTTPException) as err:
+        await svc.hold_quota(db, Rt(), prefs, result, req)  # type: ignore[arg-type]
+    assert err.value.status_code == 429
+    prefs.user_daily_token_limit = 100_000
+    held = await svc.hold_quota(db, Rt(), prefs, result, req)  # type: ignore[arg-type]
+    assert held["token_reservation"].tokens > 0

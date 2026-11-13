@@ -347,15 +347,27 @@ async def routing_preferences_from_request(
         request.state.api_key_id = prefs.key_id
         if prefs.owner_user_id is not None:
             request.state.quota_user_id = prefs.owner_user_id
-        prefs = await apply_quotas(db, prefs)
+        prefs = await _apply_spend_cap(db, prefs)
     return prefs
 
 
-async def apply_quotas(db: Database, prefs: RoutingPreferences) -> RoutingPreferences:
-    """Per-minute rates, daily tokens and spend caps of the key and its
-    owner: refuse a request past a limit (429), or narrow it to local
-    providers past a spend cap. Arithmetic only once today's totals are
-    loaded."""
+_CHARGED_STATE = "quota_charged"
+
+
+async def charge_quotas(
+    db: Database, request: Request, prefs: RoutingPreferences | None
+) -> None:
+    """Count a model request against its key's and owner's per-minute
+    limits, and refuse it (429) when either has used its daily tokens.
+
+    Only requests that run a model are charged, once each (a failover's
+    second routing is not); listing models or reading the version is free.
+    Arithmetic only once today's totals are loaded.
+    """
+    if prefs is None or prefs.key_id is None:
+        return
+    if getattr(request.state, _CHARGED_STATE, False):
+        return
     owner = prefs.owner_user_id
     check_rate(
         db,
@@ -364,6 +376,7 @@ async def apply_quotas(db: Database, prefs: RoutingPreferences) -> RoutingPrefer
         user_id=owner,
         user_rpm=prefs.user_requests_per_minute,
     )
+    request.state.quota_charged = True
     await check_tokens_left(
         db,
         key_id=prefs.key_id,
@@ -371,7 +384,6 @@ async def apply_quotas(db: Database, prefs: RoutingPreferences) -> RoutingPrefer
         user_id=owner,
         user_limit=prefs.user_daily_token_limit,
     )
-    return await _apply_spend_cap(db, prefs)
 
 
 def spend_cap_of(prefs: RoutingPreferences) -> float | None:
@@ -468,6 +480,7 @@ async def route_within_cap(
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
+    await charge_quotas(db, request, prefs)
     if prefs is not None:
         await reserve_tokens(
             db,

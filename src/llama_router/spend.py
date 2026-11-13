@@ -56,7 +56,7 @@ class Reservation:
     """An estimated cost held against a key's (and its owner's) cap while
     its request runs."""
 
-    key_id: int
+    key_id: int | None
     amount: float
     day: datetime
     tracker: SpendTracker = field(repr=False)
@@ -232,7 +232,7 @@ class SpendTracker:
 
     async def reserve(
         self,
-        key_id: int,
+        key_id: int | None,
         cap: float | None,
         amount: float,
         *,
@@ -240,8 +240,9 @@ class SpendTracker:
         user_cap: float | None = None,
     ) -> Reservation | None:
         """Hold *amount* against the key's *cap* and its owner's *user_cap*
-        (None: no cap); None if it would not fit under either."""
-        spent = await self.spent_today(key_id)
+        (None: no cap; no key for a dashboard chat); None if it would not
+        fit under either."""
+        spent = await self.spent_today(key_id) if key_id is not None else 0.0
         user_spent = (
             await self._user_usage(user_id)
             if user_id is not None and user_cap is not None
@@ -249,14 +250,15 @@ class SpendTracker:
         )
         # No await from here on: the check and the hold happen together.
         today = self._roll()
-        held = self._reserved.get(key_id, 0.0)
+        held = self._reserved.get(key_id, 0.0) if key_id is not None else 0.0
         if cap is not None and spent + held + amount > cap:
             return None
         if user_spent is not None and user_cap is not None and user_id is not None:
             user_held = self._user_reserved.get(user_id, 0.0)
             if user_spent.cost + user_held + amount > user_cap:
                 return None
-        self._reserved[key_id] = held + amount
+        if key_id is not None:
+            self._reserved[key_id] = held + amount
         if user_id is not None:
             self._user_reserved[user_id] = (
                 self._user_reserved.get(user_id, 0.0) + amount
@@ -278,7 +280,8 @@ class SpendTracker:
         today = self._roll()
         if reservation.day != today:
             return
-        _take(self._reserved, reservation.key_id, reservation.amount)
+        if reservation.key_id is not None:
+            _take(self._reserved, reservation.key_id, reservation.amount)
         if reservation.user_id is not None:
             _take(self._user_reserved, reservation.user_id, reservation.amount)
 
@@ -318,8 +321,14 @@ class SpendTracker:
         key_limit: int | None,
         user_id: int | None,
         user_limit: int | None,
+        minimum: int | None = None,
     ) -> TokenReservation | str:
         """Hold *tokens* against the key's and the user's daily token limits.
+
+        When *tokens* does not fit but *minimum* (the part the request is
+        sure to use, its prompt) does, everything left is held instead, so
+        a request without an output limit may still run on the remainder
+        while no other request can share it.
 
         Returns the reservation, or which limit it would pass
         (``"key_tokens"`` or ``"user_tokens"``).
@@ -336,14 +345,19 @@ class SpendTracker:
         )
         # No await from here on: the checks and the holds happen together.
         today = self._roll()
+        rooms: list[tuple[str, int]] = []
         if key_usage is not None and key_id is not None and key_limit is not None:
             held = self._key_tokens_held.get(key_id, 0)
-            if key_usage.tokens + held + tokens > key_limit:
-                return "key_tokens"
+            rooms.append(("key_tokens", key_limit - key_usage.tokens - held))
         if user_usage is not None and user_id is not None and user_limit is not None:
             held = self._user_tokens_held.get(user_id, 0)
-            if user_usage.tokens + held + tokens > user_limit:
-                return "user_tokens"
+            rooms.append(("user_tokens", user_limit - user_usage.tokens - held))
+        floor = tokens if minimum is None else min(tokens, minimum)
+        for name, room in rooms:
+            if room < floor or room <= 0:
+                return name
+        if rooms:
+            tokens = min(tokens, *(room for _, room in rooms))
         if key_id is not None:
             held_now = self._key_tokens_held.get(key_id, 0)
             self._key_tokens_held[key_id] = held_now + tokens

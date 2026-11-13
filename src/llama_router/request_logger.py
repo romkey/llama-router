@@ -662,8 +662,9 @@ def _build_entry(
     )
     if token_reservation is not None:
         token_reservation.release()
-        if tokens is None and status == "ok":
-            # The response reported no usage: count the estimate.
+        if tokens is None and status in ("ok", STATUS_CANCELLED):
+            # The response reported no usage (or was stopped before its
+            # usage arrived): count the estimate.
             tokens = token_reservation.tokens
     if charge or tokens:
         tracker.add(api_key_id, charge, user_id=user_id, tokens=tokens or 0)
