@@ -206,10 +206,14 @@ class Alerts:
 
     # --- observations ---
 
-    def provider_status(self, provider_id: int, name: str, online: bool) -> None:
-        """A provider's state; alerts on a change (the first one seen sets
-        the baseline)."""
-        before = self._provider_online.get(provider_id)
+    def provider_status(
+        self, provider_id: int, name: str, online: bool, *, was: bool | None = None
+    ) -> None:
+        """A provider's state; alerts on a change. *was* is the stored state
+        before this write (None: never checked), so the first change after a
+        restart is reported too; a provider seen for the first time sets the
+        baseline."""
+        before = self._provider_online.get(provider_id, was)
         self._provider_online[provider_id] = online
         if before is None or before == online:
             return

@@ -203,3 +203,12 @@ async def test_lasting_states_repeat_at_most_daily(
     clock[0] += 3600
     alerts.quota_reached("tokens", "User 1", "user:1")
     assert await _events(hook) == ["key_expiring", "quota_reached"]
+
+
+async def test_first_change_after_restart_is_reported(db: Database, hook: Hook) -> None:
+    p = await db.add_provider("gpu", ProviderProtocol.OLLAMA)
+    pid = p.require_id()
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    alerts.reset()  # a restart: nothing in memory
+    await db.update_provider_status(pid, ProviderStatus.OFFLINE)
+    assert await _events(hook) == ["provider_offline"]

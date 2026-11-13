@@ -215,6 +215,13 @@ class ProviderRepository(Repository):
         # Busy and idle only say whether a request is in flight: routing
         # treats both as online, so a flip between them must not reload it.
         online = (ProviderStatus.BUSY.value, ProviderStatus.IDLE.value)
+        before = (
+            await self._select_one(
+                "SELECT name, status FROM providers WHERE id = ?", (provider_id,)
+            )
+            if alerts.configured
+            else None
+        )
         changed = await self._execute_rowcount(
             "UPDATE providers SET status = ?, updated_at = CURRENT_TIMESTAMP "
             "WHERE id = ? AND status != ? AND NOT (status IN (?, ?) AND ? IN (?, ?))",
@@ -224,14 +231,12 @@ class ProviderRepository(Repository):
             # Only a real transition matters to routing; health checks write
             # the same status every cycle.
             self._changed(CHANGE_STATUS)
-            if alerts.configured:
-                row = await self._select_one(
-                    "SELECT name FROM providers WHERE id = ?", (provider_id,)
-                )
+            if before is not None:
                 alerts.provider_status(
                     provider_id,
-                    str(row["name"]) if row else str(provider_id),
+                    str(before["name"]),
                     status not in (ProviderStatus.OFFLINE, ProviderStatus.UNKNOWN),
+                    was=_online_or_none(before["status"]),
                 )
         else:
             # Record a busy/idle flip quietly, in one statement, so a
@@ -435,6 +440,13 @@ class ProviderRepository(Repository):
             }
             for row in rows
         ]
+
+
+def _online_or_none(status: Any) -> bool | None:
+    """Whether a stored status is online; None for unknown (never checked)."""
+    if status in (None, ProviderStatus.UNKNOWN.value):
+        return None
+    return status != ProviderStatus.OFFLINE.value
 
 
 def _row_to_provider(row: Mapping[str, Any]) -> Provider:
