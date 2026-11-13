@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "status_macros.html" import status_badge, live_mark %}
+{% from "status_macros.html" import status_badge, live_mark, key_status_badge %}
 {% from "key_access_picker.html" import key_access_fields, key_access_script %}
 {% block title %}Dashboard - llama-router{% endblock %}
 
@@ -786,6 +786,11 @@
                             <input id="new-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
                             <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
                         </div>
+                        <div class="mb-2">
+                            <label for="new-key-expires" class="form-label small text-muted mb-1">Expires (optional)</label>
+                            <input id="new-key-expires" type="date" class="form-control form-control-sm" aria-describedby="new-key-expires-help">
+                            <div class="form-text" id="new-key-expires-help">Blank: never. An expired key gets 401 until renewed; it is kept.</div>
+                        </div>
                         {{ key_access_fields('new-key') }}
                         <div class="form-check form-switch mb-2">
                             <input class="form-check-input" type="checkbox" role="switch" id="new-key-strict" aria-describedby="new-key-strict-help">
@@ -838,8 +843,49 @@
                         {% endif %}
                     </div>
                 </div>
+                {% if key_lifecycle and not read_only %}
+                <div class="card mt-3" id="key-lifecycle">
+                    <div class="card-header"><h2 class="h6 mb-0"><i class="bi bi-hourglass-split me-2"></i>Expiry and renewal</h2></div>
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <label for="key-renewal-mode" class="form-label small text-muted mb-1">Owners renewing their keys</label>
+                            <select id="key-renewal-mode" class="form-select form-select-sm" aria-describedby="key-renewal-help">
+                                <option value="allowed" {% if key_lifecycle.renewal_mode == 'allowed' %}selected{% endif %}>Allowed: owners renew at once</option>
+                                <option value="approval" {% if key_lifecycle.renewal_mode == 'approval' %}selected{% endif %}>Approval: owners ask, an admin decides</option>
+                                <option value="off" {% if key_lifecycle.renewal_mode == 'off' %}selected{% endif %}>Off: only admins renew</option>
+                            </select>
+                            <div class="form-text" id="key-renewal-help">A renewal sets the expiry to {{ key_lifecycle.renewal_days }} days from then{% if key_lifecycle.max_key_lifetime_days %}; keys users issue must expire within {{ key_lifecycle.max_key_lifetime_days }} days{% endif %}.</div>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="key-holds-default" {% if key_lifecycle.holds_by_default %}checked{% endif %}>
+                            <label class="form-check-label" for="key-holds-default">When an admin pauses a key, require an admin to unpause it (default)</label>
+                        </div>
+                        <button class="btn btn-sm btn-primary" onclick="saveKeyLifecycle()">Save</button>
+                        <span class="small text-muted ms-2" id="key-lifecycle-status" aria-live="polite"></span>
+                    </div>
+                </div>
+                {% endif %}
             </div>
             <div class="col-lg-7">
+                {% set renewals = api_keys | selectattr('renewal_requested_at') | list %}
+                {% if renewals %}
+                <div class="card mb-3 border-warning" id="renewal-requests">
+                    <div class="card-header"><h2 class="h5 mb-0">Renewal requests <span class="badge bg-warning text-dark">{{ renewals | length }}</span></h2></div>
+                    <ul class="list-group list-group-flush">
+                        {% for k in renewals %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <span><code>{{ k.key_prefix }}</code>{% if k.label %} <span class="text-muted small">{{ k.label }}</span>{% endif %} · {{ k.owner_username or 'admin' }} · <span class="small text-muted">asked {{ k.renewal_requested_at | when(relative=true) }}{% if k.expires_at %}; {{ k.key_label }}{% endif %}</span></span>
+                            {% if not read_only %}
+                            <span>
+                                <button class="btn btn-sm btn-success" onclick='decideRenewal({{ k.id }}, true)'>Approve</button>
+                                <button class="btn btn-sm btn-outline-danger" onclick='decideRenewal({{ k.id }}, false)'>Deny</button>
+                            </span>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
                 <div class="card">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h2 class="h5 mb-0">Issued Keys</h2>
@@ -860,6 +906,7 @@
                                         <th title="Spent today (UTC) / daily cap">Spend</th>
                                         <th>Models</th>
                                         <th>Pins</th>
+                                        <th>Status</th>
                                         <th>Created</th>
                                         <th>Last Used</th>
                                         <th></th>
@@ -895,10 +942,23 @@
                                         </td>
                                         <td class="small text-nowrap">{% if not k.restrict_models %}<span class="text-muted">all</span>{% else %}{% set parts = [] %}{% if k.allowed_model_count %}{% set _ = parts.append(k.allowed_model_count ~ (' model' if k.allowed_model_count == 1 else ' models')) %}{% endif %}{% if k.allowed_group_count %}{% set _ = parts.append(k.allowed_group_count ~ (' group' if k.allowed_group_count == 1 else ' groups')) %}{% endif %}<span class="badge bg-info text-dark">{{ parts | join(', ') if parts else 'none' }}</span>{% endif %}</td>
                                         <td class="text-nowrap"><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span>{% if k.strict_pins %} <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>{% endif %}</td>
+                                        <td class="small text-nowrap">{{ key_status_badge(k) }}{% if k.expires_at %}<div class="text-muted">until {{ k.expires_at | when }}</div>{% endif %}</td>
                                         <td class="small text-muted">{{ k.created_at | when }}</td>
                                         <td class="small text-muted">{{ k.last_used_at | when }}</td>
                                         <td class="text-end">
                                             {% if not read_only %}
+                                            <button class="btn btn-sm btn-outline-success me-1" onclick='renewApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Renew: a new expiry, same secret" aria-label="Renew key {{ k.key_prefix }}">
+                                                <i class="bi bi-calendar-plus"></i>
+                                            </button>
+                                            {% if k.paused_at %}
+                                            <button class="btn btn-sm btn-outline-secondary me-1" onclick='unpauseApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Unpause" aria-label="Unpause key {{ k.key_prefix }}">
+                                                <i class="bi bi-play-fill"></i>
+                                            </button>
+                                            {% else %}
+                                            <button class="btn btn-sm btn-outline-secondary me-1" onclick='openKeyPause({{ k.id }}, {{ k.key_prefix | tojson }})' title="Pause" aria-label="Pause key {{ k.key_prefix }}">
+                                                <i class="bi bi-pause-fill"></i>
+                                            </button>
+                                            {% endif %}
                                             <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyEdit({{ k.id }}, {{ k.key_prefix | tojson }})' title="Edit key" aria-label="Edit key {{ k.key_prefix }}">
                                                 <i class="bi bi-pencil-square"></i>
                                             </button>
@@ -1816,6 +1876,32 @@
 {% if not read_only %}
 <!-- Group Members Modal -->
 <script type="application/json" id="group-picker-data">{{ group_picker | tojson }}</script>
+<div class="modal fade" id="pauseKeyModal" tabindex="-1" aria-labelledby="pause-key-title">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="pause-key-title">Pause key <code id="pause-key-prefix"></code></h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted">Requests with the key get 403 until it is unpaused; its settings, pins and history stay, and its expiry keeps running.</p>
+                <div class="mb-2">
+                    <label for="pause-key-reason" class="form-label small text-muted mb-1">Reason (optional, shown to the owner)</label>
+                    <input id="pause-key-reason" type="text" maxlength="500" class="form-control form-control-sm">
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="pause-key-locked">
+                    <label class="form-check-label" for="pause-key-locked">Require an admin to unpause</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-warning" onclick="submitKeyPause()">Pause</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="modal fade" id="groupMembersModal" tabindex="-1" aria-labelledby="gm-title">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
@@ -2100,6 +2186,11 @@
                 <div class="mb-2">
                     <label for="edit-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
                     <input id="edit-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
+                </div>
+                <div class="mb-2">
+                    <label for="edit-key-expires" class="form-label small text-muted mb-1">Expires</label>
+                    <input id="edit-key-expires" type="date" class="form-control form-control-sm" placeholder="never">
+                    <div class="form-text">Blank: never. Saving a new date clears a pending renewal request.</div>
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-6">
@@ -3164,7 +3255,7 @@ function generateApiKey() {
     fetch('/api/keys/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label, strict_pins: document.getElementById('new-key-strict').checked, allowed: KeyAccess.value('new-key')})
+        body: JSON.stringify({routing_mode: mode, allow_fallback: allowFallback, session_affinity: affinity, locality: locality, daily_spend_cap_usd: cap, label: label, strict_pins: document.getElementById('new-key-strict').checked, expires_at: document.getElementById('new-key-expires').value || null, allowed: KeyAccess.value('new-key')})
     })
     .then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
@@ -3263,6 +3354,9 @@ function openKeyEdit(keyId, keyPrefix) {
         document.getElementById('edit-key-locality').value = k.locality || 'any';
         document.getElementById('edit-key-cap').value = k.daily_spend_cap_usd == null ? '' : k.daily_spend_cap_usd;
         document.getElementById('edit-key-tokens').value = k.daily_token_limit == null ? '' : k.daily_token_limit;
+        var exp = document.getElementById('edit-key-expires');
+        exp.value = k.expires_at ? new Date(Date.parse(k.expires_at) - 1000).toISOString().slice(0, 10) : '';  // its last whole day
+        exp.dataset.original = exp.value;
         document.getElementById('edit-key-rpm').value = k.requests_per_minute == null ? '' : k.requests_per_minute;
         document.getElementById('edit-key-affinity').value =
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
@@ -3288,6 +3382,7 @@ function saveKeyEdit() {
             locality: document.getElementById('edit-key-locality').value,
             daily_spend_cap_usd: cap === '' ? null : cap,
             daily_token_limit: document.getElementById('edit-key-tokens').value || null,
+            expires_at: _expiryEdit(document.getElementById('edit-key-expires')),
             requests_per_minute: document.getElementById('edit-key-rpm').value || null,
             session_affinity: document.getElementById('edit-key-affinity').value,
             strict_pins: document.getElementById('edit-key-strict').checked,
@@ -3317,6 +3412,71 @@ function regenerateApiKey(keyId, keyPrefix) {
         bootstrap.Modal.getOrCreateInstance(modalEl).show();
     })
     .catch(function(err) { alert(err.message || 'Failed to regenerate key'); });
+}
+
+function _expiryEdit(el) {
+    // Unchanged: keep the stored time (a date input shows only the day).
+    if (el.value === (el.dataset.original || '')) return undefined;
+    return el.value || null;
+}
+
+function _keyAction(url, body) {
+    return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})})
+        .then(function(r) {
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+            location.reload();
+        })
+        .catch(function(err) { alert(err.message || 'Failed'); });
+}
+
+function renewApiKey(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
+    if (!confirm('Renew key ' + keyPrefix + '? It gets a new expiry from today; the secret stays.')) return;
+    _keyAction('/api/keys/' + keyId + '/renew');
+}
+
+function decideRenewal(keyId, approve) {
+    if (!dashRequireWrite()) return;
+    if (approve) { _keyAction('/api/keys/' + keyId + '/renewal/approve'); return; }
+    var reason = prompt('Why is the renewal denied? The owner sees this.');
+    if (reason === null) return;
+    _keyAction('/api/keys/' + keyId + '/renewal/deny', {reason: reason});
+}
+
+var _pauseKeyId = null;
+function openKeyPause(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
+    _pauseKeyId = keyId;
+    document.getElementById('pause-key-prefix').textContent = keyPrefix;
+    document.getElementById('pause-key-reason').value = '';
+    document.getElementById('pause-key-locked').checked = {{ (key_lifecycle.holds_by_default if key_lifecycle else true) | tojson }};
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('pauseKeyModal')).show();
+}
+
+function submitKeyPause() {
+    _keyAction('/api/keys/' + _pauseKeyId + '/pause', {
+        locked: document.getElementById('pause-key-locked').checked,
+        reason: document.getElementById('pause-key-reason').value
+    });
+}
+
+function unpauseApiKey(keyId, keyPrefix) {
+    if (!dashRequireWrite()) return;
+    if (!confirm('Unpause key ' + keyPrefix + '?')) return;
+    _keyAction('/api/keys/' + keyId + '/unpause');
+}
+
+function saveKeyLifecycle() {
+    fetch('/api/keys/lifecycle-settings', {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            renewal_mode: document.getElementById('key-renewal-mode').value,
+            holds_by_default: document.getElementById('key-holds-default').checked
+        })
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        document.getElementById('key-lifecycle-status').textContent = 'Saved.';
+    }).catch(function(err) { document.getElementById('key-lifecycle-status').textContent = err.message; });
 }
 
 function copyGeneratedKey() {

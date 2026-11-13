@@ -131,6 +131,18 @@
                                     <div class="dropdown d-inline-block">
                                         <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" aria-label="Actions for {{ u.username }}" title="Actions"><i class="bi bi-three-dots-vertical" aria-hidden="true"></i></button>
                                         <ul class="dropdown-menu dropdown-menu-end">
+                                            <li>
+                                                <form method="post" action="/users/{{ u.id }}/pause-keys" data-confirm="Hold every API key {{ u.username }} issued? An admin must lift each hold." onsubmit="return confirm(this.dataset.confirm);">
+                                                    <button type="submit" class="dropdown-item" title="Pause every key this user issued; only an admin can lift it">Pause all keys</button>
+                                                </form>
+                                            </li>
+                                            {% if u.approved and u.id != current_user_id %}
+                                            <li>
+                                                <form method="post" action="/users/{{ u.id }}/unapprove" data-confirm="Revoke {{ u.username }}'s approval? They are signed out and their API keys are held." onsubmit="return confirm(this.dataset.confirm);">
+                                                    <button type="submit" class="dropdown-item">Revoke approval</button>
+                                                </form>
+                                            </li>
+                                            {% endif %}
                                             {% if u.approved %}
                                             <li>
                                                 <form method="post" action="/users/{{ u.id }}/sign-out" data-confirm="Sign {{ u.username }} out of every browser?" onsubmit="return confirm(this.dataset.confirm);">

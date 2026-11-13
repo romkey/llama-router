@@ -33,6 +33,7 @@ from joserfc.jwk import KeySet
 
 from ..config import Settings, settings
 from ..database import Database
+from ..key_lifecycle import REASON_NOT_MEMBER, hold_user_keys
 
 logger = logging.getLogger(__name__)
 
@@ -555,6 +556,12 @@ async def sign_in(
     """
     allowed, is_admin = resolve_roles(cfg, claims)
     if not allowed:
+        known = await db.get_dashboard_user_by_oidc(
+            str(claims.get("iss", "")), str(claims.get("sub", ""))
+        )
+        if known is not None:
+            # Lost the group: their keys stop too, until an admin lifts it.
+            await hold_user_keys(db, int(known["id"]), REASON_NOT_MEMBER)
         raise OIDCError("not_member", f"sub {claims.get('sub')!r} not in group")
     issuer = str(claims["iss"])
     subject = str(claims["sub"])

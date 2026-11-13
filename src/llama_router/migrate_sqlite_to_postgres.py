@@ -177,6 +177,13 @@ _TABLES: list[tuple[str, list[str]]] = [
             "strict_pins",
             "daily_token_limit",
             "requests_per_minute",
+            "expires_at",
+            "renewal_requested_at",
+            "renewal_denied_reason",
+            "paused_at",
+            "paused_by_user_id",
+            "pause_locked",
+            "pause_reason",
         ],
     ),
     (

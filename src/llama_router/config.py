@@ -216,6 +216,15 @@ class Settings(BaseSettings):
     # /my-keys (0: no limit). Every pin on the key counts, an admin's too;
     # changing an existing pin is always allowed.
     max_pins_per_key: int = 50
+    # Days a key a user issues themselves may live (0: no limit); it must
+    # expire within this. Admins may still issue keys that never expire.
+    max_key_lifetime_days: int = 0
+    # Days a renewal adds from now (0: max_key_lifetime_days, or 90 when
+    # that is 0 too).
+    key_renewal_days: int = 0
+    # Put an admin hold on the keys of single sign-on users who have not
+    # signed in for this many days (0: never). Checked hourly.
+    oidc_key_max_idle_days: int = 0
     # Most chat conversations one dashboard user may keep (0: no limit).
     max_chat_conversations_per_user: int = 500
     # OpenID Connect sign-in for the dashboard. An empty issuer turns it off.

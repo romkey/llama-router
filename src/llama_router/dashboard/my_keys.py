@@ -21,6 +21,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from ..auth import key_prefix, model_access, new_api_key
 from ..config import settings
 from ..database import Database
+from ..key_lifecycle import (
+    now_utc,
+    parse_expiry,
+    renewal_mode,
+    renewed_expiry,
+    self_issued_expiry,
+    with_status,
+)
 from ..models import Provider
 from ..quotas import limits_for_user
 from ..router import ROUTING_MODES
@@ -109,7 +117,11 @@ async def _only_tighter(
 @router.get("/my-keys", response_class=HTMLResponse)
 async def my_keys_page(request: Request) -> Response:
     return templates.TemplateResponse(
-        request, "my_keys.html", await dash_page_ctx(request, {})
+        request,
+        "my_keys.html",
+        await dash_page_ctx(
+            request, {"max_key_lifetime_days": settings.max_key_lifetime_days}
+        ),
     )
 
 
@@ -119,7 +131,7 @@ async def list_my_keys(request: Request) -> JSONResponse:
     ones get."""
     owner = _owner_id(request)
     db = deps.get_db()
-    keys = await db.list_api_keys(owner_user_id=owner)
+    keys = with_status(await db.list_api_keys(owner_user_id=owner))
     today = _utc_day_start()
     used = await db.usage_by_since(today, "api_key_id")
     tracker = tracker_for(db)
@@ -135,6 +147,10 @@ async def list_my_keys(request: Request) -> JSONResponse:
             {
                 "keys": keys,
                 "defaults": await self_service_defaults(db),
+                "lifecycle": {
+                    "renewal_mode": await renewal_mode(db),
+                    "max_key_lifetime_days": settings.max_key_lifetime_days,
+                },
                 "quota": {
                     "limits": limits.to_dict(),
                     "usage": {
@@ -170,6 +186,7 @@ async def issue_my_key(request: Request) -> JSONResponse:
             detail=f"You already have {limit} API keys; revoke one to issue another",
         )
     defaults = await self_service_defaults(db)
+    expires_at = self_issued_expiry(parse_expiry(body.get("expires_at")))
     # Limiting a key to some models only narrows it, so users may.
     access = await parse_access(db, body.get("allowed"))
     plaintext, hashed = await new_api_key()
@@ -187,10 +204,13 @@ async def issue_my_key(request: Request) -> JSONResponse:
     )
     if access is not UNRESTRICTED:
         await store_access(db, key_id, access)
+    if expires_at is not None:
+        await db.set_api_key_expiry(key_id, expires_at, owner_user_id=owner)
     return JSONResponse(
         {
             "id": key_id,
             "api_key": plaintext,
+            "expires_at": expires_at.isoformat() if expires_at else None,
             "label": label,
             "routing_mode": routing_mode,
             "allow_fallback": allow_fallback,
@@ -206,7 +226,7 @@ async def _own_key(owner: int, key_id: int) -> dict[str, Any]:
     key = await db.get_api_key(key_id, owner_user_id=owner)
     if key is None:
         raise HTTPException(status_code=404, detail="API key not found")
-    return await with_access(db, key)
+    return await with_access(db, with_status([dict(key)])[0])
 
 
 @router.get("/api/my-keys/allowable")
@@ -260,10 +280,76 @@ async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
     db = deps.get_db()
     await _only_tighter(db, key_id, owner, edits)
     access = await parse_access(db, body["allowed"]) if "allowed" in body else None
+    expiry = (
+        self_issued_expiry(parse_expiry(body["expires_at"]))
+        if "expires_at" in body
+        else None
+    )
     if not await db.update_api_key(key_id, edits, owner_user_id=owner):
         raise HTTPException(status_code=404, detail="API key not found")
+    if "expires_at" in body:
+        await db.set_api_key_expiry(key_id, expiry, owner_user_id=owner)
     if access is not None:
         await store_access(db, key_id, access)
+    return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
+
+
+@router.post("/api/my-keys/{key_id:int}/renew")
+async def renew_my_key(request: Request, key_id: int) -> JSONResponse:
+    """Renew the key (a new expiry; the secret stays), or ask an admin to,
+    as the system-wide renewal option says. Allowed before or after expiry;
+    a pending request does not revive an expired key."""
+    owner = _owner_id(request)
+    db = deps.get_db()
+    await _own_key(owner, key_id)
+    mode = await renewal_mode(db)
+    if mode == "off":
+        raise HTTPException(
+            status_code=403, detail="Only an administrator can renew API keys"
+        )
+    if mode == "approval":
+        await db.request_api_key_renewal(key_id, owner, now_utc())
+    else:
+        await db.set_api_key_expiry(key_id, renewed_expiry(True), owner_user_id=owner)
+    return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
+
+
+@router.post("/api/my-keys/{key_id:int}/pause")
+async def pause_my_key(request: Request, key_id: int) -> JSONResponse:
+    """Pause the key (403 on requests until unpaused). An admin's hold
+    can't be replaced."""
+    owner = _owner_id(request)
+    key = await _own_key(owner, key_id)
+    if key.get("pause_locked"):
+        raise HTTPException(
+            status_code=403, detail="An administrator holds this key paused"
+        )
+    if not await deps.get_db().owner_set_pause(
+        key_id, owner, paused=True, when=now_utc()
+    ):
+        raise HTTPException(
+            status_code=403, detail="An administrator holds this key paused"
+        )
+    return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
+
+
+@router.post("/api/my-keys/{key_id:int}/unpause")
+async def unpause_my_key(request: Request, key_id: int) -> JSONResponse:
+    """Lift your own pause; an admin's hold only an admin can lift."""
+    owner = _owner_id(request)
+    key = await _own_key(owner, key_id)
+    if key.get("pause_locked"):
+        raise HTTPException(
+            status_code=403,
+            detail="An administrator holds this key paused; ask them to lift it",
+        )
+    if not await deps.get_db().owner_set_pause(
+        key_id, owner, paused=False, when=now_utc()
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="An administrator holds this key paused; ask them to lift it",
+        )
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
 
 

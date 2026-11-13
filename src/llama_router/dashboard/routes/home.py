@@ -14,6 +14,12 @@ from fastapi.responses import (
 
 from ...cloud_presets import PRESETS
 from ...config import settings
+from ...key_lifecycle import (
+    holds_by_default,
+    renewal_mode,
+    renewal_period,
+    with_status,
+)
 from ...models import RequestLog
 from ...router import (
     ENDPOINT_PROTOCOLS,
@@ -76,6 +82,7 @@ async def dashboard(request: Request):
 
     if read_only:
         api_keys: list[Any] = []
+        key_lifecycle: dict[str, Any] | None = None
         allow_unauthenticated = False
         key_routing_preview = {
             "balanced": [],
@@ -89,7 +96,13 @@ async def dashboard(request: Request):
         workers: list[dict[str, Any]] = []
         worker_link_status: dict[str, Any] | None = None
     else:
-        api_keys = await db.list_api_keys()
+        api_keys = with_status(await db.list_api_keys())
+        key_lifecycle = {
+            "renewal_mode": await renewal_mode(db),
+            "holds_by_default": await holds_by_default(db),
+            "renewal_days": renewal_period().days,
+            "max_key_lifetime_days": settings.max_key_lifetime_days,
+        }
         spent = await db.spend_by_key_since(_utc_day_start())
         for k in api_keys:
             k["spent_today_usd"] = spent.get(int(k["id"]), 0.0)
@@ -248,6 +261,7 @@ async def dashboard(request: Request):
                     },
                 },
                 "api_keys": api_keys,
+                "key_lifecycle": key_lifecycle,
                 "session_affinity_default": (
                     deps.get_pm().router.session_affinity_default
                     if deps.get_pm().router is not None

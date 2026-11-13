@@ -255,8 +255,23 @@ async def _resolve_key(
         user_daily_token_limit=user_limits.daily_token_limit,
         user_requests_per_minute=user_limits.requests_per_minute,
         user_daily_spend_cap_usd=user_limits.daily_spend_cap_usd,
+        expires_at=(
+            record["expires_at"].timestamp()
+            if record.get("expires_at") is not None
+            else None
+        ),
+        paused=record.get("paused_at") is not None,
     )
     return prefs, int(record["id"])
+
+
+def _usable(prefs: RoutingPreferences) -> RoutingPreferences:
+    """Refuse a paused (403) or expired (401) key."""
+    if prefs.paused:
+        raise HTTPException(status_code=403, detail="API key paused")
+    if prefs.expires_at is not None and time.time() >= prefs.expires_at:
+        raise HTTPException(status_code=401, detail="API key expired")
+    return prefs
 
 
 async def model_access(db: Database, key_id: int) -> ModelAccess | None:
@@ -619,6 +634,7 @@ async def _key_preferences(db: Database, request: Request) -> RoutingPreferences
     hit = cache.prefs.get(fingerprint)
     if hit is not None and now - hit[0] < _PREFS_TTL_S:
         _, key_id, prefs = hit
+        _usable(prefs)
         if now - cache.touched.get(key_id, 0.0) >= _TOUCH_INTERVAL_S:
             cache.touched[key_id] = now
             spawn(db.touch_api_key(key_id), name="touch-api-key")
@@ -635,11 +651,10 @@ async def _key_preferences(db: Database, request: Request) -> RoutingPreferences
     prefs, key_id = resolved
     # lookup_api_key just wrote last_used_at.
     cache.touched[key_id] = now
-    if cache.generation != generation:
-        # A key, pin or policy changed while we looked it up; answer this
-        # request but do not cache what may already be stale.
-        return prefs
-    if len(cache.prefs) >= _MAX_CACHED_KEYS:
-        cache.prefs.clear()
-    cache.prefs[fingerprint] = (now, key_id, prefs)
-    return prefs
+    if cache.generation == generation:
+        # (Otherwise a key, pin or policy changed while we looked it up:
+        # answer this request but do not cache what may already be stale.)
+        if len(cache.prefs) >= _MAX_CACHED_KEYS:
+            cache.prefs.clear()
+        cache.prefs[fingerprint] = (now, key_id, prefs)
+    return _usable(prefs)

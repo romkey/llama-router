@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from ..db_events import CHANGE_API_KEYS, CHANGE_AUTH_SETTINGS, _notifies
 from ..db_sql import qmark
-from .base import Repository, _tristate
+from .base import Repository, _tristate, _utc_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,8 @@ class ApiKeyRepository(Repository):
             "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
             "k.owner_user_id, k.label, k.restrict_models, k.strict_pins, "
             "k.daily_token_limit, k.requests_per_minute, "
+            "k.expires_at, k.renewal_requested_at, k.renewal_denied_reason, "
+            "k.paused_at, k.paused_by_user_id, k.pause_locked, k.pause_reason, "
             "u.username AS owner_username, "
             "COUNT(DISTINCT p.id) AS pin_count, "
             "COUNT(DISTINCT a.model_name) AS allowed_model_count, "
@@ -177,7 +181,10 @@ class ApiKeyRepository(Repository):
             + "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
             "k.last_used_at, k.owner_user_id, k.label, k.restrict_models, "
-            "k.strict_pins, k.daily_token_limit, k.requests_per_minute, u.username "
+            "k.strict_pins, k.daily_token_limit, k.requests_per_minute, "
+            "k.expires_at, k.renewal_requested_at, k.renewal_denied_reason, "
+            "k.paused_at, k.paused_by_user_id, k.pause_locked, k.pause_reason, "
+            "u.username "
             "ORDER BY k.created_at DESC, k.id DESC",
             tuple(params),
         )
@@ -202,11 +209,139 @@ class ApiKeyRepository(Repository):
                 "strict_pins": bool(r["strict_pins"]),
                 "daily_token_limit": _int_or_none(r["daily_token_limit"]),
                 "requests_per_minute": _int_or_none(r["requests_per_minute"]),
+                **_lifecycle(r),
                 "allowed_model_count": int(r["allowed_model_count"] or 0),
                 "allowed_group_count": int(r["allowed_group_count"] or 0),
             }
             for r in rows
         ]
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_api_key_expiry(
+        self,
+        key_id: int,
+        expires_at: datetime | None,
+        *,
+        owner_user_id: int | None = None,
+    ) -> bool:
+        """Set when the key stops working (None: never); clears a pending
+        renewal request and an earlier denial."""
+        sql = (
+            "UPDATE api_keys SET expires_at = ?, renewal_requested_at = NULL, "
+            "renewal_denied_reason = NULL WHERE id = ?"
+        )
+        params: tuple[Any, ...] = (self._bind_time(expires_at), key_id)
+        if owner_user_id is not None:
+            sql += " AND owner_user_id = ?"
+            params += (owner_user_id,)
+        if await self._execute_rowcount(sql, params):
+            return True
+        return await self._key_exists(key_id, owner_user_id)
+
+    @_notifies(CHANGE_API_KEYS)
+    async def request_api_key_renewal(
+        self, key_id: int, owner_user_id: int, when: datetime
+    ) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET renewal_requested_at = ?, "
+                "renewal_denied_reason = NULL WHERE id = ? AND owner_user_id = ?",
+                (self._bind_time(when), key_id, owner_user_id),
+            )
+        ) or await self._key_exists(key_id, owner_user_id)
+
+    @_notifies(CHANGE_API_KEYS)
+    async def deny_api_key_renewal(self, key_id: int, reason: str | None) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET renewal_requested_at = NULL, "
+                "renewal_denied_reason = ? WHERE id = ?",
+                (reason or "denied", key_id),
+            )
+        ) or await self._key_exists(key_id, None)
+
+    async def list_api_key_renewal_requests(self) -> list[dict[str, Any]]:
+        return [
+            k
+            for k in await self._list_api_keys()
+            if k["renewal_requested_at"] is not None
+        ]
+
+    @_notifies(CHANGE_API_KEYS)
+    async def pause_api_key(
+        self,
+        key_id: int,
+        *,
+        by_user_id: int | None,
+        locked: bool,
+        reason: str | None,
+        when: datetime,
+    ) -> bool:
+        """Pause the key. An owner's pause (*locked* false) never replaces
+        an admin hold; callers check that first."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET paused_at = ?, paused_by_user_id = ?, "
+                "pause_locked = ?, pause_reason = ? WHERE id = ?",
+                (self._bind_time(when), by_user_id, int(locked), reason, key_id),
+            )
+        ) or await self._key_exists(key_id, None)
+
+    @_notifies(CHANGE_API_KEYS)
+    async def owner_set_pause(
+        self, key_id: int, owner_user_id: int, *, paused: bool, when: datetime
+    ) -> bool:
+        """Pause or unpause *owner_user_id*'s own key unless an admin holds
+        it; the check and the write are one statement, so a hold placed
+        meanwhile is never lifted or replaced. False when the key is held."""
+        if paused:
+            sql = (
+                "UPDATE api_keys SET paused_at = ?, paused_by_user_id = ?, "
+                "pause_locked = 0, pause_reason = NULL "
+                "WHERE id = ? AND owner_user_id = ? AND pause_locked = 0"
+            )
+            params: tuple[Any, ...] = (
+                self._bind_time(when),
+                owner_user_id,
+                key_id,
+                owner_user_id,
+            )
+        else:
+            sql = (
+                "UPDATE api_keys SET paused_at = NULL, paused_by_user_id = NULL, "
+                "pause_reason = NULL "
+                "WHERE id = ? AND owner_user_id = ? AND pause_locked = 0"
+            )
+            params = (key_id, owner_user_id)
+        if await self._execute_rowcount(sql, params):
+            return True
+        # MySQL counts only changed rows: look before saying it is held.
+        key = await self.get_api_key(key_id, owner_user_id=owner_user_id)
+        return key is not None and not key["pause_locked"]
+
+    @_notifies(CHANGE_API_KEYS)
+    async def unpause_api_key(self, key_id: int) -> bool:
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE api_keys SET paused_at = NULL, paused_by_user_id = NULL, "
+                "pause_locked = 0, pause_reason = NULL WHERE id = ?",
+                (key_id,),
+            )
+        ) or await self._key_exists(key_id, None)
+
+    @_notifies(CHANGE_API_KEYS)
+    async def hold_user_api_keys(
+        self, user_id: int, reason: str, *, by_user_id: int | None, when: datetime
+    ) -> int:
+        """Put an admin hold on every key *user_id* issued (replacing owner
+        pauses); returns how many keys it touched."""
+        return await self._execute_rowcount(
+            "UPDATE api_keys SET paused_at = COALESCE(paused_at, ?), "
+            "paused_by_user_id = ?, pause_locked = 1, pause_reason = ? "
+            "WHERE owner_user_id = ? "
+            "AND NOT (pause_locked = 1 AND COALESCE(pause_reason, '') = ?)",
+            (self._bind_time(when), by_user_id, reason, user_id, reason),
+        )
 
     @_notifies(CHANGE_API_KEYS)
     async def delete_api_key(self, key_id: int) -> None:
@@ -233,16 +368,23 @@ class ApiKeyRepository(Repository):
         row = await self._select_one(
             "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
             "locality, daily_spend_cap_usd, strict_pins, owner_user_id, "
-            "daily_token_limit, requests_per_minute FROM api_keys "
+            "daily_token_limit, requests_per_minute, expires_at, "
+            "renewal_requested_at, renewal_denied_reason, paused_at, "
+            "paused_by_user_id, pause_locked, pause_reason FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
         if not row:
             return None
-        await self._execute(
-            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (row["id"],),
-        )
+        # A paused or expired key is refused: it was not used.
+        expires = _utc_datetime(row["expires_at"])
+        if row["paused_at"] is None and (
+            expires is None or expires > datetime.now(UTC)
+        ):
+            await self._execute(
+                "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["id"],),
+            )
         return {
             "id": int(row["id"]),
             "key_prefix": row["key_prefix"],
@@ -255,6 +397,7 @@ class ApiKeyRepository(Repository):
             "owner_user_id": _int_or_none(row["owner_user_id"]),
             "daily_token_limit": _int_or_none(row["daily_token_limit"]),
             "requests_per_minute": _int_or_none(row["requests_per_minute"]),
+            **_lifecycle(row),
         }
 
     async def touch_api_key(self, key_id: int) -> None:
@@ -509,6 +652,19 @@ class ApiKeyRepository(Repository):
         # An empty value was stored before: replace it.
         await self.set_app_setting(key, value)
         return value
+
+
+def _lifecycle(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A key's expiry, renewal request and pause, as stored."""
+    return {
+        "expires_at": _utc_datetime(row["expires_at"]),
+        "renewal_requested_at": _utc_datetime(row["renewal_requested_at"]),
+        "renewal_denied_reason": row["renewal_denied_reason"],
+        "paused_at": _utc_datetime(row["paused_at"]),
+        "paused_by_user_id": _int_or_none(row["paused_by_user_id"]),
+        "pause_locked": bool(row["pause_locked"]),
+        "pause_reason": row["pause_reason"],
+    }
 
 
 def _int_or_none(value: Any) -> int | None:

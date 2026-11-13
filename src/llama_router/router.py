@@ -203,6 +203,10 @@ class RoutingPreferences:
     user_daily_token_limit: int | None = None
     user_requests_per_minute: int | None = None
     user_daily_spend_cap_usd: float | None = None
+    # When the key stops working (Unix time; None: never), and whether it
+    # is paused (403) — checked on every request, from the cached record.
+    expires_at: float | None = None
+    paused: bool = False
 
 
 class Router:

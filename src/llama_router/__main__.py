@@ -21,6 +21,7 @@ from .dashboard.app import app as dash_app
 from .dashboard.initial_admin import ensure_initial_admin
 from .dashboard.oidc import CALLBACK_PATH, OIDCConfig
 from .database import Database
+from .key_lifecycle import IdleSweep
 from .llamacpp_api import deps as lcpp_deps
 from .llamacpp_api.app import app as lcpp_app
 from .provider_manager import ProviderManager
@@ -202,6 +203,8 @@ async def _serve(db: Database) -> int:
         logger.warning("Could not load today's usage totals", exc_info=True)
     auto_bench = AutoBenchmarker(db, pm)
     await auto_bench.start()
+    idle_sweep = IdleSweep(db)
+    idle_sweep.start()
 
     api_deps.init(db, pm, rt)
     dash_deps.init(db, pm)
@@ -302,6 +305,7 @@ async def _serve(db: Database) -> int:
     finally:
         await worker_link.stop()
         await auto_bench.stop()
+        await idle_sweep.stop()
         await rt.stop()
         await pm.worker_hub.close_all()
         await pm.stop()

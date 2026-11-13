@@ -46,6 +46,9 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
 | `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
+| `MAX_KEY_LIFETIME_DAYS` | `0` | Days an API key a user issues themselves may live: it must expire within this when issued, edited or renewed (0: no limit). Admins may issue keys that never expire. An expired key gets 401 "API key expired" and is kept |
+| `KEY_RENEWAL_DAYS` | `0` | Days a renewal gives a key from now, not added to what is left (0: `MAX_KEY_LIFETIME_DAYS`, or 90 when that is 0). Whether owners may renew is a dashboard option (Users tab) |
+| `OIDC_KEY_MAX_IDLE_DAYS` | `0` | Hold (pause, admin to lift) the API keys of single sign-on users who have not signed in for this many days, checked hourly (0: off) |
 | `MAX_PINS_PER_KEY` | `50` | Most model pins a user may set on one of their own keys on My API keys (0: no limit). A pin's model must be one the key may use, and its provider inside the key's locality. Every pin on the key counts, an admin's too; changing an existing pin is always allowed |
 | `MAX_CHAT_CONVERSATIONS_PER_USER` | `500` | Most chat conversations one user may keep; past it they must delete one to start another (0: no limit) |
 | `DASHBOARD_WEBAUTHN_ORIGIN` | *(empty)* | Fixed external origin, e.g. `https://llm.example.org`, without a path or trailing slash. Enables WebAuthn enrollment. Must use a hostname and HTTPS; `http://localhost:PORT` is allowed for development. The hostname becomes the relying party ID; changing it requires re-enrollment |

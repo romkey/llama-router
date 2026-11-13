@@ -102,6 +102,19 @@ class Repository:
             except Exception:
                 logger.exception("Change listener failed for %s", reason)
 
+    def _bind_time(self, when: datetime | None) -> Any:
+        """*when* bound for a timestamp column: UTC without a zone (asyncpg
+        refuses an aware one), as text on SQLite."""
+        if when is None:
+            return None
+        if when.tzinfo is not None:
+            when = when.astimezone(UTC).replace(tzinfo=None)
+        # Whole seconds: MySQL would round a fraction up (past a limit).
+        when = when.replace(microsecond=0)
+        if getattr(self, "_dialect_name", "") == "sqlite":
+            return when.strftime("%Y-%m-%d %H:%M:%S")
+        return when
+
     def _require_session_factory(self) -> async_sessionmaker[AsyncSession]:
         if self._session_factory is None:
             raise RuntimeError("Database not connected")

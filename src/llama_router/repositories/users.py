@@ -180,6 +180,16 @@ class DashboardUserRepository(Repository):
             (user_id,),
         )
 
+    async def unapprove_dashboard_user(self, user_id: int) -> bool:
+        """Turn the account back to waiting for approval; its sessions end."""
+        return bool(
+            await self._execute_rowcount(
+                "UPDATE dashboard_users SET approved = 0, "
+                "session_version = session_version + 1 WHERE id = ?",
+                (user_id,),
+            )
+        )
+
     async def approve_dashboard_user(self, user_id: int) -> bool:
         return bool(
             await self._execute_rowcount(
