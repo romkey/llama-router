@@ -306,7 +306,8 @@ class ApiKeyRepository(Repository):
         return await self._execute_rowcount(
             "UPDATE api_keys SET paused_at = COALESCE(paused_at, ?), "
             "paused_by_user_id = ?, pause_locked = 1, pause_reason = ? "
-            "WHERE owner_user_id = ? AND NOT (pause_locked = 1 AND pause_reason = ?)",
+            "WHERE owner_user_id = ? "
+            "AND NOT (pause_locked = 1 AND COALESCE(pause_reason, '') = ?)",
             (self._bind_time(when), by_user_id, reason, user_id, reason),
         )
 
