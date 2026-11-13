@@ -200,6 +200,27 @@ async def test_deadline_bounds_the_wait(monkeypatch: pytest.MonkeyPatch) -> None
         await gate.acquire(loop.time() - 1)
 
 
+async def test_lowered_limit_sheds_load_before_serving_waiters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "upstream_queue_timeout_seconds", 5.0)
+    gate = SlotGate(3)
+    for _ in range(3):
+        await gate.acquire(None)
+    waiter = asyncio.create_task(gate.acquire(None))
+    await asyncio.sleep(0)
+    gate.resize(1)
+    gate.release()
+    gate.release()
+    await asyncio.sleep(0)
+    # Two of three released: one still runs, which is the new limit.
+    assert not waiter.done()
+    assert gate.in_use == 1
+    gate.release()
+    await asyncio.wait_for(waiter, 1)
+    assert gate.in_use == 1
+
+
 def test_configure_adds_resizes_and_drops_gates() -> None:
     limits = capacity.CapacityLimits()
     limits.configure({1: 2, 2: None})

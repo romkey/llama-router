@@ -139,25 +139,26 @@ class SlotGate:
         fut.cancel()
         with contextlib.suppress(ValueError):
             self._waiters.remove(fut)
+        self._dispatch()
 
     def release(self) -> None:
-        """Free a slot, handing it to the longest waiter if there is one."""
-        while self._waiters:
-            fut = self._waiters.popleft()
-            if not fut.done():
-                fut.set_result(None)  # the slot changes hands; in_use stays
-                return
+        """Free a slot, handing it to the longest waiter if the limit has
+        room (after a lowered limit, holders above it are shed first)."""
         if self.in_use > 0:
             self.in_use -= 1
+        self._dispatch()
 
-    def resize(self, limit: int) -> None:
-        """Change the limit; waiters get slots that a larger limit frees."""
-        self.limit = max(1, limit)
+    def _dispatch(self) -> None:
         while self._waiters and self.in_use < self.limit:
             fut = self._waiters.popleft()
             if not fut.done():
                 self.in_use += 1
                 fut.set_result(None)
+
+    def resize(self, limit: int) -> None:
+        """Change the limit; waiters get slots that a larger limit frees."""
+        self.limit = max(1, limit)
+        self._dispatch()
 
 
 class CapacityLimits:
