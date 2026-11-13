@@ -8,6 +8,7 @@ from typing import Any, ClassVar, cast
 
 from sqlalchemy import text
 
+from ..alerts import alerts
 from ..db_events import (
     CHANGE_ADDRESSES,
     CHANGE_CAPABILITIES,
@@ -223,6 +224,15 @@ class ProviderRepository(Repository):
             # Only a real transition matters to routing; health checks write
             # the same status every cycle.
             self._changed(CHANGE_STATUS)
+            if alerts.configured:
+                row = await self._select_one(
+                    "SELECT name FROM providers WHERE id = ?", (provider_id,)
+                )
+                alerts.provider_status(
+                    provider_id,
+                    str(row["name"]) if row else str(provider_id),
+                    status not in (ProviderStatus.OFFLINE, ProviderStatus.UNKNOWN),
+                )
         else:
             # Record a busy/idle flip quietly, in one statement, so a
             # concurrent change to offline is never overwritten.

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import router_identity, routing_table
 from .affinity import Binding, SessionAffinity, session_key, short_key
+from .alerts import alerts
 from .capacity import DEFAULT_LEVEL, CapacityLimits, queue_level
 from .config import settings
 from .database import ROUTING_CHANGES, Database
@@ -341,6 +342,15 @@ class Router:
                 self._pm.stats.forget_built()
                 raise
             self._table = table
+            if reload and alerts.configured:
+                alerts.models_served(
+                    {
+                        m.name
+                        for p in inputs.providers
+                        if p.id is not None and p.status != ProviderStatus.OFFLINE
+                        for m in inputs.models.get(p.id, [])
+                    }
+                )
             if reload:
                 self._pm.capacity.configure(
                     {

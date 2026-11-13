@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import Request
 
+from .alerts import alerts
 from .config import settings
 from .database import Database
 from .pricing import _max_output_tokens, estimate_tokens
@@ -137,6 +138,12 @@ def check_rate(
     )
     if hit is not None:
         name, limit, retry = hit
+        who = key_id if name.startswith("key") else user_id
+        alerts.quota_reached(
+            "requests_per_minute",
+            f"{'API key' if name.startswith('key') else 'User'} {who}",
+            f"{name}:{who}",
+        )
         raise rate_limit_reached(limit, _whose(name), retry)
 
 
@@ -157,6 +164,7 @@ async def check_tokens_left(
         and await tracker.key_tokens_committed(key_id) >= key_limit
     ):
         tracker.refusals["key_tokens"] += 1
+        alerts.quota_reached("tokens", f"API key {key_id}", f"key:{key_id}")
         raise token_limit_reached(key_limit, "this API key")
     if (
         user_id is not None
@@ -164,6 +172,7 @@ async def check_tokens_left(
         and await tracker.user_tokens_committed(user_id) >= user_limit
     ):
         tracker.refusals["user_tokens"] += 1
+        alerts.quota_reached("tokens", f"User {user_id}", f"user:{user_id}")
         raise token_limit_reached(user_limit, "this user")
 
 

@@ -65,6 +65,7 @@ ACTIONS: dict[str, tuple[str, str | None]] = {
     "users.users_quota_defaults": ("system.user_quota_defaults", "system"),
     "users.users_pause_keys": ("user.pause_keys", "user"),
     "users.users_sign_out": ("user.sign_out", "user"),
+    "users.alerts_test": ("system.alert_test", "system"),
     "login.logout_everywhere": ("account.sign_out_everywhere", "user"),
     "mfa.registration_verify": ("account.second_factor_add", "user"),
     "mfa.regenerate_codes": ("account.recovery_codes", "user"),

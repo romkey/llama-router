@@ -9,6 +9,19 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Webhook alerts**: `LLAMA_ROUTER_ALERT_WEBHOOK_URL` (empty, the default,
+  is off) receives a JSON POST `{event, time, text, details}` when a
+  provider goes offline or comes back, a model loses its last online
+  provider, a worker disconnects or its token expires within 7 days, a user
+  or key reaches a daily limit (once a day each), an API key expires within
+  7 days, an owner requests a renewal, the router holds a user's keys, or
+  the event loop's p99 lag passes 50 ms. `LLAMA_ROUTER_ALERT_EVENTS`
+  (default `all`) picks events. Payloads carry no request content or
+  secrets. Requests only queue an alert (dropped when the queue is full); a
+  background task delivers with a 5-second timeout and 3 tries, at most once
+  per 10 minutes per event and subject, and failures are logged and
+  counted, never raised. **Send test alert** on the Users tab
+  (`POST /api/alerts/test`).
 - **Audit trail**: every state-changing dashboard action (users, API keys
   with their pins, limits, policies, renewals and pauses, management keys,
   providers and prices, workers and their tokens, model groups, aliases,

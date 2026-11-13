@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Days audit trail entries are kept (0: forever); pruned with the
     # request log.
     audit_retention_days: int = 365
+    # Webhook alerts: a JSON POST here when something needs attention
+    # (empty: off), and which events (comma-separated names, or "all").
+    alert_webhook_url: str = ""
+    alert_events: str = "all"
     # A read timeout on a request that asked for more output tokens than this
     # is blamed on the request, not the provider, so it does not count
     # toward the provider's circuit breaker.

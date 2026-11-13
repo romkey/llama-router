@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from .alerts import alerts
 from .background import spawn
 from .database import AUTH_CHANGES, CHANGE_GROUPS, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
@@ -439,6 +440,18 @@ async def _apply_spend_cap(
         over = (user_cap, "this user")
     if over is None:
         return prefs
+    subject = (
+        f"key:{prefs.key_id}"
+        if over[1] == "this API key"
+        else f"user:{prefs.owner_user_id}"
+    )
+    alerts.quota_reached(
+        "spend",
+        f"API key {prefs.key_id}"
+        if over[1] == "this API key"
+        else f"User {prefs.owner_user_id}",
+        subject,
+    )
     if prefs.locality == "cloud":
         which = "key_spend" if over[1] == "this API key" else "user_spend"
         tracker.refusals[which] += 1
