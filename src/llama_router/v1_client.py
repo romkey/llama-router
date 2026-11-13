@@ -129,8 +129,7 @@ class V1Client:
         resp = await client._post(
             path,
             op=f"Anthropic Messages ({path})",
-            headers=headers,
-            **await json_kwargs(upstream_body(body)),
+            **await _with_headers(upstream_body(body), headers),
         )
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
@@ -144,8 +143,7 @@ class V1Client:
         async with client._http.stream(
             "POST",
             "/v1/messages",
-            headers=headers,
-            **await json_kwargs(upstream_body(body)),
+            **await _with_headers(upstream_body(body), headers),
         ) as resp:
             await raise_for_stream_status(resp)
             async for chunk in resp.aiter_bytes():
@@ -254,6 +252,17 @@ class V1Client:
             return await self._llamacpp.audio_voices()
         ollama = self._require_ollama()
         return await ollama.v1_audio_voices()
+
+
+async def _with_headers(
+    body: dict[str, Any], headers: dict[str, str]
+) -> dict[str, Any]:
+    """httpx arguments sending *body* as JSON with *headers* as well: a large
+    body brings a Content-Type header of its own, merged rather than
+    passed twice."""
+    kwargs = await json_kwargs(body)
+    kwargs["headers"] = {**kwargs.get("headers", {}), **headers}
+    return kwargs
 
 
 def get_v1_client(pm: ProviderManager, provider_id: int) -> V1Client:

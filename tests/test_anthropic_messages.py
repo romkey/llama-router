@@ -367,3 +367,27 @@ def test_count_tokens_is_never_charged() -> None:
     finally:
         rl.attach_pricer(None)
     assert entry.cost_usd is None
+
+
+async def test_large_bodies_reach_the_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llama_router import json_io
+
+    monkeypatch.setattr(json_io, "LARGE_JSON_BYTES", 10)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.headers.get("accept") == "text/event-stream":
+            return httpx.Response(200, content=b"".join(STREAM))
+        return httpx.Response(200, json=REPLY)
+
+    lcpp = OpenAIClient("http://up.test/v1", transport=httpx.MockTransport(handler))
+    client = V1Client(llamacpp=lcpp)
+    hdrs = {"anthropic-version": "2023-06-01"}
+    assert await client.messages(dict(BODY), hdrs) == REPLY
+    got = b"".join([c async for c in client.messages_stream(dict(BODY), hdrs)])
+    assert got
+    for req in seen:
+        assert req.headers["content-type"] == "application/json"
+        assert req.headers["anthropic-version"] == "2023-06-01"
+    await lcpp.close()
