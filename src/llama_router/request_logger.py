@@ -21,7 +21,7 @@ from .background import on_drain
 from .client_address import client_ip
 from .config import settings
 from .database import Database
-from .endpoints import endpoint_class
+from .endpoints import UNMETERED, endpoint_class, normalize_endpoint
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
 from .json_io import json_size
 from .limits import DeadlineExceeded
@@ -682,7 +682,12 @@ def _build_entry(
     if price is not None:
         if prompt_tokens is not None or completion_tokens is not None:
             cost = price.cost(prompt_tokens, completion_tokens)
-        elif status == "ok" and provider is not None and provider.is_cloud:
+        elif (
+            status == "ok"
+            and provider is not None
+            and provider.is_cloud
+            and normalize_endpoint(endpoint) not in UNMETERED
+        ):
             if spend_reservation is not None:
                 cost = spend_reservation.amount
             else:

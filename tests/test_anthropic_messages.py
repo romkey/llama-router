@@ -345,3 +345,25 @@ async def test_affinity_fingerprint_includes_system() -> None:
     assert a is not None
     assert b is not None
     assert a != b
+
+
+def test_count_tokens_is_never_charged() -> None:
+    from llama_router import request_logger as rl
+    from llama_router.models import Provider
+    from llama_router.pricing import Price
+
+    rl.attach_pricer(lambda pid, model: Price(1_000_000.0, 1_000_000.0))
+    try:
+        entry = rl._build_entry(
+            Database("sqlite+aiosqlite:///:memory:"),
+            provider=Provider(id=1, name="anthropic", locality="cloud"),
+            protocol="v1",
+            endpoint="/v1/messages/count_tokens",
+            model="claude-x",
+            request_body={"model": "claude-x", "messages": []},
+            response_body={"input_tokens": 42},
+            duration_ms=1.0,
+        )
+    finally:
+        rl.attach_pricer(None)
+    assert entry.cost_usd is None

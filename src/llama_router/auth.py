@@ -550,6 +550,7 @@ async def route_within_cap(
         or prefs.key_id is None
         or spend_cap_of(prefs) is None
         or not result.provider.is_cloud
+        or not metered
     ):
         return result
     cap = prefs.daily_spend_cap_usd
