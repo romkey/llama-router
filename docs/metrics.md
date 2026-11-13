@@ -42,6 +42,12 @@ All names start with `llama_router_`. Provider metrics carry the labels
 | `provider_rate_limited_seconds` | gauge | provider | Seconds left of a cooldown after HTTP 429 |
 | `provider_max_concurrent` | gauge | provider | Concurrent-request limit (only providers with one) |
 | `provider_queued_requests` | gauge | provider, `level` | Requests waiting for a slot on a provider with a limit, by queue level (1 latency, 2 balanced/chaos/no key, 3 throughput/cheapest) |
+| `user_tokens_today` | gauge | `user`, `user_id` | Tokens a dashboard user's keys and chats used this UTC day |
+| `user_spend_today_usd` | gauge | `user`, `user_id` | USD a dashboard user spent this UTC day |
+| `user_daily_token_limit` | gauge | `user`, `user_id` | The user's daily token limit (users with one) |
+| `user_requests_per_minute_limit` | gauge | `user`, `user_id` | The user's requests-per-minute limit (users with one) |
+| `user_daily_spend_cap_usd` | gauge | `user`, `user_id` | The user's daily spend cap (users with one) |
+| `quota_refusals_total` | counter | `limit` | Requests refused (429) by a quota: `key_tokens`, `user_tokens`, `key_rpm`, `user_rpm`, `key_spend`, `user_spend` |
 | `upstream_queued_requests` | gauge | `level` | Requests waiting for a global upstream slot, by queue level |
 | `provider_queue_timeouts_total` | counter | provider | Requests refused (429) after waiting too long for a slot |
 | `provider_queue_wait_seconds` | histogram | provider | Time requests waited for a slot on a provider with a limit |

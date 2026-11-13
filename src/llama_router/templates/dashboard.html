@@ -2101,6 +2101,17 @@
                     <label for="edit-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
                     <input id="edit-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
                 </div>
+                <div class="row g-2 mb-2">
+                    <div class="col-6">
+                        <label for="edit-key-tokens" class="form-label small text-muted mb-1">Tokens per UTC day</label>
+                        <input id="edit-key-tokens" type="number" min="1" step="1" class="form-control form-control-sm" placeholder="owner's limit" aria-describedby="edit-key-quota-help">
+                    </div>
+                    <div class="col-6">
+                        <label for="edit-key-rpm" class="form-label small text-muted mb-1">Requests per minute</label>
+                        <input id="edit-key-rpm" type="number" min="1" step="1" class="form-control form-control-sm" placeholder="owner's limit" aria-describedby="edit-key-quota-help">
+                    </div>
+                    <div class="col-12 form-text" id="edit-key-quota-help">Optional, for this key alone. The owner's limits (Users tab) apply too; whichever is reached first refuses with 429.</div>
+                </div>
                 <div class="mb-2">
                     <label for="edit-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
                     <select id="edit-key-affinity" class="form-select form-select-sm">
@@ -3251,6 +3262,8 @@ function openKeyEdit(keyId, keyPrefix) {
         document.getElementById('edit-key-strict').checked = !!k.strict_pins;
         document.getElementById('edit-key-locality').value = k.locality || 'any';
         document.getElementById('edit-key-cap').value = k.daily_spend_cap_usd == null ? '' : k.daily_spend_cap_usd;
+        document.getElementById('edit-key-tokens').value = k.daily_token_limit == null ? '' : k.daily_token_limit;
+        document.getElementById('edit-key-rpm').value = k.requests_per_minute == null ? '' : k.requests_per_minute;
         document.getElementById('edit-key-affinity').value =
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');
         return KeyAccess.render('edit-key', k.allowed);
@@ -3274,6 +3287,8 @@ function saveKeyEdit() {
             allow_fallback: document.getElementById('edit-key-fallback').checked,
             locality: document.getElementById('edit-key-locality').value,
             daily_spend_cap_usd: cap === '' ? null : cap,
+            daily_token_limit: document.getElementById('edit-key-tokens').value || null,
+            requests_per_minute: document.getElementById('edit-key-rpm').value || null,
             session_affinity: document.getElementById('edit-key-affinity').value,
             strict_pins: document.getElementById('edit-key-strict').checked,
             allowed: KeyAccess.value('edit-key')

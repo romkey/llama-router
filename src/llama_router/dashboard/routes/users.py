@@ -7,6 +7,7 @@ import logging
 import math
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import (
@@ -15,8 +16,16 @@ from fastapi.responses import (
     RedirectResponse,
 )
 
+from ...auth import invalidate_auth_cache
 from ...client_address import client_ip
 from ...config import settings
+from ...quotas import (
+    QUOTA_FIELDS,
+    UserLimits,
+    default_limits,
+    effective_limits,
+    set_default_limits,
+)
 from .. import deps, login_throttle, management_keys, oidc
 from ..auth_core import (
     AUTH_COOKIE,
@@ -27,6 +36,7 @@ from ..auth_core import (
     unsign_session,
     verify_password,
 )
+from ..form_values import _positive_int, _usd, _utc_day_start
 from ..middleware import invalidate_dashboard_user_count_cache
 from ..pages import _require_admin, dash_page_ctx, templates
 from .login import _clear_cookie
@@ -42,6 +52,13 @@ async def users_page(request: Request):
     if not user or not user.is_admin:
         raise HTTPException(status_code=403, detail="Forbidden")
     users = await db.list_dashboard_users()
+    defaults = await default_limits(db)
+    usage = await db.usage_by_since(_utc_day_start(), "user_id")
+    for u in users:
+        u["own_limits"] = {f: u.get(f) for f in QUOTA_FIELDS}
+        u["limits"] = effective_limits(u, defaults).to_dict()
+        cost, tokens = usage.get(int(u["id"]), (0.0, 0))
+        u["usage"] = {"cost": cost, "tokens": tokens}
     mgmt_keys = await db.list_management_keys()
     now = time.time()
     for k in mgmt_keys:
@@ -57,6 +74,7 @@ async def users_page(request: Request):
             request,
             {
                 "dashboard_users": users,
+                "quota_defaults": defaults.to_dict(),
                 "mfa_required": settings.dashboard_require_second_factor,
                 "users_exist": bool(users),
                 "management_keys": mgmt_keys,
@@ -226,6 +244,79 @@ async def users_approve(request: Request, user_id: int):
         raise HTTPException(status_code=404, detail="User not found")
     logger.info("Dashboard user %d approved", user_id)
     return RedirectResponse(url="/users?approved=1", status_code=303)
+
+
+def _limits_from_form(form: Any) -> dict[str, Any]:
+    """Quota fields from a form; blank is None (the default / unlimited)."""
+    try:
+        return {
+            "daily_token_limit": _positive_int(
+                form.get("daily_token_limit"), "tokens per day"
+            ),
+            "requests_per_minute": _positive_int(
+                form.get("requests_per_minute"), "requests per minute"
+            ),
+            "daily_spend_cap_usd": _usd(form.get("daily_spend_cap_usd"), "spend cap"),
+        }
+    except HTTPException as exc:
+        raise ValueError(str(exc.detail)) from exc
+
+
+@router.post("/users/{user_id}/limits")
+async def users_limits(request: Request, user_id: int):
+    """Set a user's quotas, or (``reset``) return them to the defaults."""
+    _require_admin(request)
+    db = deps.get_db()
+    form = await request.form()
+    if form.get("reset"):
+        limits: dict[str, Any] = dict.fromkeys(QUOTA_FIELDS)
+    else:
+        try:
+            limits = _limits_from_form(form)
+        except ValueError:
+            return RedirectResponse(url="/users?error=limits", status_code=303)
+    if not await db.set_dashboard_user_limits(user_id, limits):
+        raise HTTPException(status_code=404, detail="User not found")
+    logger.info("Limits of dashboard user %d set to %s", user_id, limits)
+    return RedirectResponse(url="/users?updated=1", status_code=303)
+
+
+@router.post("/users/quota-defaults")
+async def users_quota_defaults(request: Request):
+    """Set the default limits for users without their own."""
+    _require_admin(request)
+    db = deps.get_db()
+    try:
+        limits = _limits_from_form(await request.form())
+    except ValueError:
+        return RedirectResponse(url="/users?error=limits", status_code=303)
+    await set_default_limits(db, UserLimits(**limits))
+    invalidate_auth_cache(db)
+    logger.info("Default user limits set to %s", limits)
+    return RedirectResponse(url="/users?updated=1#quota-defaults", status_code=303)
+
+
+@router.get("/api/users/usage")
+async def users_usage(request: Request) -> JSONResponse:
+    """Each user's usage today (tokens, USD), effective limits and refusals."""
+    _require_admin(request)
+    db = deps.get_db()
+    defaults = await default_limits(db)
+    usage = await db.usage_by_since(_utc_day_start(), "user_id")
+    out = []
+    for u in await db.list_dashboard_users():
+        uid = int(u["id"])
+        cost, tokens = usage.get(uid, (0.0, 0))
+        out.append(
+            {
+                "id": uid,
+                "username": u["username"],
+                "limits": effective_limits(u, defaults).to_dict(),
+                "own_limits": {f: u.get(f) for f in QUOTA_FIELDS},
+                "usage": {"tokens": tokens, "cost_usd": cost},
+            }
+        )
+    return JSONResponse({"users": out, "defaults": defaults.to_dict()})
 
 
 @router.post("/users/{user_id}/sign-out")

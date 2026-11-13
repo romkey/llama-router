@@ -23,6 +23,8 @@ EDITABLE_FIELDS = frozenset(
         "locality",
         "daily_spend_cap_usd",
         "strict_pins",
+        "daily_token_limit",
+        "requests_per_minute",
     }
 )
 
@@ -162,6 +164,7 @@ class ApiKeyRepository(Repository):
             "k.id, k.key_prefix, k.routing_mode, k.allow_fallback, k.session_affinity, "
             "k.locality, k.daily_spend_cap_usd, k.created_at, k.last_used_at, "
             "k.owner_user_id, k.label, k.restrict_models, k.strict_pins, "
+            "k.daily_token_limit, k.requests_per_minute, "
             "u.username AS owner_username, "
             "COUNT(DISTINCT p.id) AS pin_count, "
             "COUNT(DISTINCT a.model_name) AS allowed_model_count, "
@@ -174,7 +177,7 @@ class ApiKeyRepository(Repository):
             + "GROUP BY k.id, k.key_prefix, k.routing_mode, k.allow_fallback, "
             "k.session_affinity, k.locality, k.daily_spend_cap_usd, k.created_at, "
             "k.last_used_at, k.owner_user_id, k.label, k.restrict_models, "
-            "k.strict_pins, u.username "
+            "k.strict_pins, k.daily_token_limit, k.requests_per_minute, u.username "
             "ORDER BY k.created_at DESC, k.id DESC",
             tuple(params),
         )
@@ -197,6 +200,8 @@ class ApiKeyRepository(Repository):
                 "pin_count": int(r["pin_count"] or 0),
                 "restrict_models": bool(r["restrict_models"]),
                 "strict_pins": bool(r["strict_pins"]),
+                "daily_token_limit": _int_or_none(r["daily_token_limit"]),
+                "requests_per_minute": _int_or_none(r["requests_per_minute"]),
                 "allowed_model_count": int(r["allowed_model_count"] or 0),
                 "allowed_group_count": int(r["allowed_group_count"] or 0),
             }
@@ -227,7 +232,8 @@ class ApiKeyRepository(Repository):
     async def lookup_api_key(self, key_hash: str) -> dict[str, Any] | None:
         row = await self._select_one(
             "SELECT id, key_prefix, routing_mode, allow_fallback, session_affinity, "
-            "locality, daily_spend_cap_usd, strict_pins FROM api_keys "
+            "locality, daily_spend_cap_usd, strict_pins, owner_user_id, "
+            "daily_token_limit, requests_per_minute FROM api_keys "
             "WHERE key_hash = ?",
             (key_hash,),
         )
@@ -246,6 +252,9 @@ class ApiKeyRepository(Repository):
             "locality": row["locality"],
             "daily_spend_cap_usd": row["daily_spend_cap_usd"],
             "strict_pins": bool(row["strict_pins"]),
+            "owner_user_id": _int_or_none(row["owner_user_id"]),
+            "daily_token_limit": _int_or_none(row["daily_token_limit"]),
+            "requests_per_minute": _int_or_none(row["requests_per_minute"]),
         }
 
     async def touch_api_key(self, key_id: int) -> None:
@@ -500,3 +509,7 @@ class ApiKeyRepository(Repository):
         # An empty value was stored before: replace it.
         await self.set_app_setting(key, value)
         return value
+
+
+def _int_or_none(value: Any) -> int | None:
+    return None if value is None else int(value)

@@ -28,7 +28,14 @@ from .limits import DeadlineExceeded
 from .models import Provider, RequestLog
 from .pricing import Price, estimate_tokens
 from .routing_stats import ProviderStats
-from .spend import RESERVATION_STATE, Reservation, tracker_for
+from .spend import (
+    EXTRA_RESERVATIONS_STATE,
+    RESERVATION_STATE,
+    TOKEN_RESERVATION_STATE,
+    Reservation,
+    TokenReservation,
+    tracker_for,
+)
 from .timing import received_at
 
 logger = logging.getLogger(__name__)
@@ -180,6 +187,14 @@ def _take_reservation(request: Request) -> Reservation | None:
     held = getattr(request.state, RESERVATION_STATE, None)
     setattr(request.state, RESERVATION_STATE, None)
     return held if isinstance(held, Reservation) else None
+
+
+def _take_token_reservation(request: Request) -> TokenReservation | None:
+    """The request's token reservation, settled by its first successful
+    log entry (a failed attempt before a failover leaves it held)."""
+    held = getattr(request.state, TOKEN_RESERVATION_STATE, None)
+    setattr(request.state, TOKEN_RESERVATION_STATE, None)
+    return held if isinstance(held, TokenReservation) else None
 
 
 class _UsageChunkFilter:
@@ -502,6 +517,8 @@ async def log_request(
     request_meta: str | None = None,
     spend_reservation: Reservation | None = None,
     request_size: int | None = None,
+    user_id: int | None = None,
+    token_reservation: TokenReservation | None = None,
 ) -> None:
     """Write one request to the log.
 
@@ -547,6 +564,8 @@ async def log_request(
             request_meta=request_meta,
             spend_reservation=spend_reservation,
             request_size=request_size,
+            user_id=user_id,
+            token_reservation=token_reservation,
         )
     )
 
@@ -577,6 +596,8 @@ def _build_entry(
     request_meta: str | None = None,
     spend_reservation: Reservation | None = None,
     request_size: int | None = None,
+    user_id: int | None = None,
+    token_reservation: TokenReservation | None = None,
 ) -> RequestLog:
     """The log row for one request (see log_request); records its outcome
     and settles its spend on the way."""
@@ -601,8 +622,12 @@ def _build_entry(
     ip = source_ip or (client_ip(request) if request else "internal")
     if api_key_id is None and request is not None:
         api_key_id = getattr(request.state, "api_key_id", None)
+    if user_id is None and request is not None:
+        user_id = getattr(request.state, "quota_user_id", None)
     if spend_reservation is None and request is not None:
         spend_reservation = _take_reservation(request)
+    if token_reservation is None and request is not None and status != "error":
+        token_reservation = _take_token_reservation(request)
     if request_size is None and request is not None:
         request_size = _raw_body_size(request)
     if request_size is None:
@@ -625,10 +650,25 @@ def _build_entry(
                         request_body, settings.spend_estimate_completion_tokens
                     )
                 )
+    tracker = tracker_for(db)
+    charge = cost or 0.0
     if spend_reservation is not None:
-        tracker_for(db).settle(spend_reservation, cost)
-    elif cost and api_key_id is not None:
-        tracker_for(db).add(api_key_id, cost)
+        if spend_reservation.charged:
+            charge = 0.0
+        tracker.settle(spend_reservation, None)  # released; charged below
+    tokens = (
+        None
+        if prompt_tokens is None and completion_tokens is None
+        else (prompt_tokens or 0) + (completion_tokens or 0)
+    )
+    if token_reservation is not None:
+        token_reservation.release()
+        if tokens is None and status in ("ok", STATUS_CANCELLED):
+            # The response reported no usage (or was stopped before its
+            # usage arrived): count the estimate.
+            tokens = token_reservation.tokens
+    if charge or tokens:
+        tracker.add(api_key_id, charge, user_id=user_id, tokens=tokens or 0)
     return RequestLog(
         provider_id=provider.id if provider else None,
         provider_name=provider.name if provider else None,
@@ -648,6 +688,7 @@ def _build_entry(
         error_detail=error_detail,
         locality=provider.locality if provider else None,
         api_key_id=api_key_id,
+        user_id=user_id,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cost_usd=cost,
@@ -677,8 +718,20 @@ def log_request_background(
         kwargs["source_ip"] = kwargs.get("source_ip") or client_ip(request)
         if kwargs.get("api_key_id") is None:
             kwargs["api_key_id"] = getattr(request.state, "api_key_id", None)
+        if kwargs.get("user_id") is None:
+            kwargs["user_id"] = getattr(request.state, "quota_user_id", None)
+        # Holds handed to this entry are the writer's to settle now; the end
+        # of the request must not release them before it does.
+        kept = getattr(request.state, EXTRA_RESERVATIONS_STATE, None)
+        if isinstance(kept, list):
+            for name in ("token_reservation", "spend_reservation"):
+                held = kwargs.get(name)
+                if held is not None and held in kept:
+                    kept.remove(held)
         if kwargs.get("spend_reservation") is None:
             kwargs["spend_reservation"] = _take_reservation(request)
+        if kwargs.get("token_reservation") is None and kwargs.get("status") != "error":
+            kwargs["token_reservation"] = _take_token_reservation(request)
         if kwargs.get("router_ms") is None:
             kwargs["router_ms"] = _router_ms(
                 request, dispatched_at, kwargs.get("duration_ms", 0.0)
@@ -787,10 +840,23 @@ class _LogWriter:
 def _charge_estimate(db: Database, kwargs: dict[str, Any]) -> None:
     """Settle the spend reservation of a row that will not be logged at its
     estimate, so the cap still counts the request and the hold is freed.
-    A no-op when the reservation was already settled."""
+    A no-op when the reservation was already settled. A token hold is
+    counted at its estimate the same way (unless the row was a failure) and
+    freed."""
+    tracker = tracker_for(db)
     held = kwargs.get("spend_reservation")
     if isinstance(held, Reservation):
-        tracker_for(db).settle(held, held.amount)
+        tracker.settle(held, held.amount)
+    tokens = kwargs.get("token_reservation")
+    if isinstance(tokens, TokenReservation) and not tokens.released:
+        tokens.release()
+        if kwargs.get("status", "ok") != "error":
+            tracker.add(
+                kwargs.get("api_key_id"),
+                0.0,
+                user_id=kwargs.get("user_id"),
+                tokens=tokens.tokens,
+            )
 
 
 _log_writer: _LogWriter | None = None

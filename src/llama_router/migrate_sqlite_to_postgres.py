@@ -140,6 +140,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "cost_usd",
             "created_at",
             "routed_model",
+            "user_id",
         ],
     ),
     (
@@ -174,6 +175,8 @@ _TABLES: list[tuple[str, list[str]]] = [
             "label",
             "restrict_models",
             "strict_pins",
+            "daily_token_limit",
+            "requests_per_minute",
         ],
     ),
     (
@@ -221,6 +224,9 @@ _TABLES: list[tuple[str, list[str]]] = [
             "mfa_enabled",
             "session_version",
             "approved",
+            "daily_token_limit",
+            "requests_per_minute",
+            "daily_spend_cap_usd",
         ],
     ),
     (

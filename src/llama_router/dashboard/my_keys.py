@@ -22,8 +22,10 @@ from ..auth import key_prefix, model_access, new_api_key
 from ..config import settings
 from ..database import Database
 from ..models import Provider
+from ..quotas import limits_for_user
 from ..router import ROUTING_MODES
 from ..routing_table import DEFAULT_MODE
+from ..spend import next_day_start, tracker_for
 from . import deps, management_keys
 from .form_values import (
     OWNER_KEY_FIELDS,
@@ -81,6 +83,29 @@ def _owner_id(request: Request) -> int:
     return int(user.id)
 
 
+_QUOTA_KEY_FIELDS = ("daily_token_limit", "requests_per_minute")
+
+
+async def _only_tighter(
+    db: Database, key_id: int, owner: int, edits: dict[str, Any]
+) -> None:
+    """An owner may lower a key's token or rate limit, or set one, but not
+    raise or clear one (an admin may have set it)."""
+    asked = {f: edits[f] for f in _QUOTA_KEY_FIELDS if f in edits}
+    if not asked:
+        return
+    key = await db.get_api_key(key_id, owner_user_id=owner)
+    if key is None:
+        return  # the update reports 404
+    for field, new in asked.items():
+        current = key.get(field)
+        if current is not None and (new is None or new > current):
+            raise HTTPException(
+                status_code=403,
+                detail=f"You can lower {field} on your key, not raise or clear it",
+            )
+
+
 @router.get("/my-keys", response_class=HTMLResponse)
 async def my_keys_page(request: Request) -> Response:
     return templates.TemplateResponse(
@@ -95,11 +120,34 @@ async def list_my_keys(request: Request) -> JSONResponse:
     owner = _owner_id(request)
     db = deps.get_db()
     keys = await db.list_api_keys(owner_user_id=owner)
-    spent = await db.spend_by_key_since(_utc_day_start())
+    today = _utc_day_start()
+    used = await db.usage_by_since(today, "api_key_id")
+    tracker = tracker_for(db)
     for k in keys:
-        k["spent_today_usd"] = spent.get(int(k["id"]), 0.0)
+        cost, tokens = used.get(int(k["id"]), (0.0, 0))
+        k["spent_today_usd"] = cost
+        k["tokens_today"] = tokens
+        k["requests_this_minute"] = tracker.requests_this_minute(key_id=int(k["id"]))
+    cost, tokens = await db.usage_since(today, user_id=owner)
+    limits = await limits_for_user(db, owner)
     return JSONResponse(
-        jsonable_encoder({"keys": keys, "defaults": await self_service_defaults(db)})
+        jsonable_encoder(
+            {
+                "keys": keys,
+                "defaults": await self_service_defaults(db),
+                "quota": {
+                    "limits": limits.to_dict(),
+                    "usage": {
+                        "tokens": tokens,
+                        "cost_usd": cost,
+                        "requests_this_minute": tracker.requests_this_minute(
+                            user_id=owner
+                        ),
+                    },
+                    "resets_at": next_day_start().isoformat(),
+                },
+            }
+        )
     )
 
 
@@ -210,6 +258,7 @@ async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
     body = await deps.json_body(request)
     edits = key_edits(body, OWNER_KEY_FIELDS)
     db = deps.get_db()
+    await _only_tighter(db, key_id, owner, edits)
     access = await parse_access(db, body["allowed"]) if "allowed" in body else None
     if not await db.update_api_key(key_id, edits, owner_user_id=owner):
         raise HTTPException(status_code=404, detail="API key not found")

@@ -12,6 +12,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from ..limits import BodySizeLimitMiddleware
 from ..request_logger import log_request
+from ..spend import SpendReservationMiddleware
 from . import deps
 from .auth_core import _cookie_secure
 from .chat import router as chat_router
@@ -28,6 +29,8 @@ from .site_icons import router as site_icons_router
 app = FastAPI(title="llama-router Dashboard")
 app.add_middleware(DashboardAuthMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
+# Releases a chat turn's held token estimate if it ends unlogged or failed.
+app.add_middleware(SpendReservationMiddleware)
 
 _SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",

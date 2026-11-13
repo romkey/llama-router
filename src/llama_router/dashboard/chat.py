@@ -30,9 +30,18 @@ from ..config import settings
 from ..database import Database
 from ..httpx_errors import describe_httpx_error
 from ..models import Provider, ProviderStatus
+from ..quotas import (
+    UserLimits,
+    check_rate,
+    check_tokens_left,
+    limits_for_user,
+    reserve_tokens,
+    token_estimate,
+)
 from ..request_logger import STATUS_CANCELLED, log_request_background
 from ..router import Router, RoutingPreferences
 from ..routing_table import RoutingTable, alias_groups
+from ..spend import RESERVATION_STATE, cap_reached, tracker_for
 from ..v1_client import get_v1_client
 from . import deps
 from .my_keys import self_service_defaults
@@ -349,24 +358,27 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
     )
     provider, backend_model = target.provider, target.backend_model
     pid = provider.require_id()
+    # Checked before anything is saved; the token and spend estimates are
+    # held once the upstream request (history included) is known.
+    limits = await _check_rate_and_left(db, request, uid)
     # Reopening the chat brings back the choice made, not the router's pick.
     chosen_pid = pid if target.chosen else None
     answered_by = model if target.served == model else f"{model} → {target.served}"
 
-    conv_id = body.get("conversation_id")
-    if conv_id in (None, ""):
+    raw_conv = body.get("conversation_id")
+    new_conversation = raw_conv in (None, "")
+    conv_id = 0
+    history: list[dict[str, Any]] = []
+    if new_conversation:
         limit = settings.max_chat_conversations_per_user
         if limit > 0 and len(await db.list_chat_conversations(uid)) >= limit:
             raise HTTPException(
                 status_code=409,
                 detail=f"You have {limit} conversations; delete one to start another",
             )
-        title = (content or "Image").splitlines()[0][:TITLE_LEN]
-        conv_id = await db.create_chat_conversation(uid, title, chosen_pid, model)
-        history: list[dict[str, Any]] = []
     else:
         try:
-            conv_id = int(conv_id)
+            conv_id = int(str(raw_conv))
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400, detail="conversation_id must be a number"
@@ -376,18 +388,29 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
             raise HTTPException(status_code=404, detail="conversation not found")
         history = conv["messages"]
 
-    user_msg = await db.add_chat_message(
-        conv_id, "user", content, image=image, model_name=model
-    )
     endpoint = PATHS[mode]
-    if mode == "image":
-        upstream: dict[str, Any] = {"model": backend_model, "prompt": content, "n": 1}
-    else:
-        upstream = {
+
+    def upstream_for(user_msg: dict[str, Any]) -> dict[str, Any]:
+        if mode == "image":
+            return {"model": backend_model, "prompt": content, "n": 1}
+        return {
             "model": backend_model,
             "messages": chat_messages([*history, user_msg]),
             "stream": False,
         }
+
+    # Hold the turn's quota before anything is saved, so a refusal leaves
+    # no unanswered message behind.
+    if limits is not None and uid is not None:
+        draft = {"role": "user", "content": content, "image": image}
+        await _hold_quota(db, request, uid, limits, target, upstream_for(draft))
+    if new_conversation:
+        title = (content or "Image").splitlines()[0][:TITLE_LEN]
+        conv_id = await db.create_chat_conversation(uid, title, chosen_pid, model)
+    user_msg = await db.add_chat_message(
+        conv_id, "user", content, image=image, model_name=model
+    )
+    upstream = upstream_for(user_msg)
     log: dict[str, Any] = {
         "provider": provider,
         "protocol": "v1",
@@ -410,6 +433,74 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
         log,
         _is_admin(request),
     )
+
+
+async def _check_rate_and_left(
+    db: Database, request: Request, uid: int | None
+) -> UserLimits | None:
+    """Count a chat turn against the signed-in user's per-minute limit and
+    refuse it when their daily tokens are used, as their API keys' requests
+    are. The request log records the turn under the user."""
+    if uid is None:
+        return None
+    request.state.quota_user_id = uid
+    limits = await limits_for_user(db, uid)
+    check_rate(
+        db,
+        key_id=None,
+        key_rpm=None,
+        user_id=uid,
+        user_rpm=limits.requests_per_minute,
+    )
+    await check_tokens_left(
+        db,
+        key_id=None,
+        key_limit=None,
+        user_id=uid,
+        user_limit=limits.daily_token_limit,
+    )
+    return limits
+
+
+async def _hold_quota(
+    db: Database,
+    request: Request,
+    uid: int,
+    limits: UserLimits,
+    target: Target,
+    upstream: dict[str, Any],
+) -> None:
+    """Hold the turn's estimated tokens (the whole conversation sent) and,
+    on a priced cloud provider, its estimated cost against the user's daily
+    limits until the reply is logged; refuse it (429) when they don't fit."""
+    await reserve_tokens(
+        db,
+        request,
+        upstream,
+        key_id=None,
+        key_limit=None,
+        user_id=uid,
+        user_limit=limits.daily_token_limit,
+    )
+    cap = limits.daily_spend_cap_usd
+    provider = target.provider
+    if cap is None or not provider.is_cloud:
+        return
+    rt = deps.get_pm().router
+    price = (
+        rt.price_for(provider.require_id(), target.served) if rt is not None else None
+    )
+    estimate = price.cost(*token_estimate(request, upstream)) if price else 0.0
+    tracker = tracker_for(db)
+    if estimate <= 0:
+        if await tracker.user_committed_today(uid) >= cap:
+            raise cap_reached(cap, whose="this user")
+        return
+    held = await tracker.reserve(None, None, estimate, user_id=uid, user_cap=cap)
+    if held is None:
+        tracker.refusals["user_spend"] += 1
+        raise cap_reached(cap, whose="this user")
+    setattr(request.state, RESERVATION_STATE, held)
 
 
 def _error_detail(exc: Exception) -> str:

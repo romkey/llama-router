@@ -34,6 +34,7 @@ from .router import Router
 from .sentry import init_sentry
 from .shared_port import SharedPortApp
 from .single_process import LOOP_LAG, ProcessLease
+from .spend import tracker_for
 from .worker_link.worker import WorkerLinkManager
 
 logger = logging.getLogger("llama_router")
@@ -193,6 +194,12 @@ async def _serve(db: Database) -> int:
     start_log_writer()
     # Build the first routing table before any API accepts requests.
     await rt.start()
+    # Today's spend and tokens of every key and user active today, so their
+    # first requests after a restart need no query.
+    try:
+        await tracker_for(db).seed_today()
+    except Exception:
+        logger.warning("Could not load today's usage totals", exc_info=True)
     auto_bench = AutoBenchmarker(db, pm)
     await auto_bench.start()
 

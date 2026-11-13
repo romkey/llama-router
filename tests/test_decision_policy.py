@@ -637,7 +637,9 @@ async def test_decision_fan_out_past_the_spend_cap_is_refused(db, router, backen
     _key_id, raw = await _capped_key(db, 0.10)
     resp = await _post("/v1/decisions", DECISION, raw)
     assert resp.status_code == 429, resp.text
-    assert resp.json()["detail"] == "daily spend cap of $0.10 reached for this API key"
+    assert resp.json()["detail"].startswith(
+        "daily spend cap of $0.10 reached for this API key; resets at "
+    )
     assert backend.decisions == []
 
 
