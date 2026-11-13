@@ -109,6 +109,8 @@ class Repository:
             return None
         if when.tzinfo is not None:
             when = when.astimezone(UTC).replace(tzinfo=None)
+        # Whole seconds: MySQL would round a fraction up (past a limit).
+        when = when.replace(microsecond=0)
         if getattr(self, "_dialect_name", "") == "sqlite":
             return when.strftime("%Y-%m-%d %H:%M:%S")
         return when
