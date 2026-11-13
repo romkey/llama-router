@@ -9,6 +9,19 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Provider capacity limits**: "Max concurrent requests" on a provider's
+  edit form (`providers.max_concurrent`; blank, the default, is no limit, as
+  before). Routing sets a provider at its limit aside while another ranked
+  provider has room, before session affinity and the usual pick. When every
+  eligible provider is full the request waits in line (first come, first
+  served) on the one chosen, for at most
+  `LLAMA_ROUTER_UPSTREAM_QUEUE_TIMEOUT_SECONDS` and never past its deadline,
+  then gets 429 with `Retry-After`. Strict pins and a hub's request for one
+  provider wait on that provider only. Streams hold their slot until they
+  end. Provider cards show in-flight/limit and the queue; **Explain** says
+  when a provider is at capacity; new metrics
+  `llama_router_provider_max_concurrent`, `..._queued_requests`,
+  `..._queue_timeouts_total` and the `..._queue_wait_seconds` histogram.
 - **Strict pins**: an API key setting (off by default, for new and existing
   keys). Off, a pinned model whose pinned provider is offline, no longer
   lists the model or is outside the key's locality is served by another

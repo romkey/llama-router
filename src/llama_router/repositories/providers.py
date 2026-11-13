@@ -153,6 +153,7 @@ class ProviderRepository(Repository):
         "read_timeout_s": False,
         "auto_benchmark": False,
         "hub_shared": False,
+        "max_concurrent": False,
     }
 
     @_notifies(CHANGE_PROVIDERS)
@@ -451,6 +452,7 @@ def _row_to_provider(row: Mapping[str, Any]) -> Provider:
         read_timeout_s=row["read_timeout_s"],
         auto_benchmark=_tristate(row["auto_benchmark"]),
         hub_shared=row["hub_shared"] is None or bool(row["hub_shared"]),
+        max_concurrent=row.get("max_concurrent") or None,
         worker_parent_id=row["worker_parent_id"],
         worker_remote_id=row["worker_remote_id"],
     )

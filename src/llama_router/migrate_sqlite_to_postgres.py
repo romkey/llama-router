@@ -70,6 +70,7 @@ _TABLES: list[tuple[str, list[str]]] = [
             "hub_shared",
             "worker_parent_id",
             "worker_remote_id",
+            "max_concurrent",
         ],
     ),
     (

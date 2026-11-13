@@ -390,7 +390,7 @@
                 </li>
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Active Requests</span>
-                    <span>{{ info.active_requests }}</span>
+                    <span>{{ info.active_requests }}{% if info.provider.max_concurrent %} / {{ info.provider.max_concurrent }}{% if info.queued_requests %}, {{ info.queued_requests }} queued{% endif %}{% endif %}</span>
                 </li>
                 <li class="list-group-item d-flex justify-content-between">
                     <span class="text-muted">Models</span>
@@ -491,6 +491,11 @@
                             <option value="off" {% if info.provider.auto_benchmark == false %}selected{% endif %}>Off</option>
                         </select>
                     </div>
+                </div>
+                <div class="mb-3">
+                    <label for="edit-max-concurrent" class="form-label">Max concurrent requests</label>
+                    <input type="number" min="1" max="10000" step="1" class="form-control" id="edit-max-concurrent" name="max_concurrent" placeholder="No limit" value="{{ info.provider.max_concurrent or '' }}" aria-describedby="edit-max-concurrent-help">
+                    <div class="form-text" id="edit-max-concurrent-help">Requests sent to this provider at once. Others go to a provider with room, or wait in line here when every provider is full. Blank: no limit.</div>
                 </div>
                 <div class="mb-3">
                     <label for="edit-manual-models" class="form-label">Models added by hand</label>

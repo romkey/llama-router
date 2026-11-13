@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import router_identity, routing_table
 from .affinity import Binding, SessionAffinity, session_key, short_key
+from .capacity import CapacityLimits
 from .config import settings
 from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
@@ -327,6 +328,13 @@ class Router:
                 raise
             self._table = table
             if reload:
+                self._pm.capacity.configure(
+                    {
+                        p.id: p.max_concurrent
+                        for p in inputs.providers
+                        if p.id is not None
+                    }
+                )
                 gone = self.affinity.forget_providers_not_in(
                     {p.id for p in inputs.providers if p.id is not None}
                 )
@@ -421,6 +429,19 @@ class Router:
             return ranked
         ready = tuple(c for c in ranked if busy(c.provider_id) <= 0)
         return ready or ranked
+
+    def _with_room(self, ranked: tuple[Candidate, ...]) -> tuple[Candidate, ...]:
+        """Drop providers at their ``max_concurrent`` limit while another
+        has room; when every one is full, keep them all (the request queues
+        on the one chosen)."""
+        capacity = self._pm.capacity
+        if not capacity.any_limited():
+            return ranked
+        room = capacity.has_room
+        if all(room(c.provider_id) for c in ranked):
+            return ranked
+        free = tuple(c for c in ranked if room(c.provider_id))
+        return free or ranked
 
     def price_for(self, provider_id: int, model: str) -> Price | None:
         """The model's price on the provider from the current table, or None."""
@@ -584,7 +605,7 @@ class Router:
             )
             if not ranked:
                 continue
-            ranked = self._not_busy(ranked)
+            ranked = self._with_room(self._not_busy(ranked))
             chosen = None
             sticky = None
             weighing = None
@@ -901,6 +922,8 @@ class Router:
         all_cands = table.all_candidates.get((model, path), ())
         ranked = table.ranked_for(model, path, mode, locality, hub_only)
         ready = self._not_busy(ranked)
+        roomy = self._with_room(ready)
+        capacity = self._pm.capacity
         busy = self._pm.stats.busy_for
         ranked_ids = {c.provider_id for c in ranked}
         best_tier = ranked[0].tier if ranked else TIER_OK
@@ -924,6 +947,11 @@ class Router:
         for c in all_cands:
             q = active(c.provider_id)
             row = c.to_dict()
+            limit = capacity.limit(c.provider_id)
+            if limit is not None:
+                gate = capacity.gate(c.provider_id)
+                row["max_concurrent"] = limit
+                row["queued_requests"] = gate.queued if gate is not None else 0
             row.update(
                 {
                     "static_score": round(c.scores[mode], 2),
@@ -958,6 +986,11 @@ class Router:
                 row["excluded"] = (
                     f"rate limited (HTTP 429) for {busy(c.provider_id):.0f}s more; "
                     "other providers are ready"
+                )
+            elif c not in roomy:
+                row["excluded"] = (
+                    f"at capacity ({_capacity_text(capacity, c.provider_id)}); "
+                    "another provider has room"
                 )
             else:
                 # In the best tier available, so it is used despite problems.
@@ -1016,6 +1049,12 @@ class Router:
             if best_tier != TIER_OK:
                 step["outcome"] += (
                     " (every provider has a problem; using the least bad)"
+                )
+            first_id = eligible[0]["provider_id"]
+            if not capacity.has_room(first_id):
+                step["outcome"] += (
+                    f"; all at capacity; would queue on {eligible[0]['provider']} "
+                    f"({_capacity_text(capacity, first_id)})"
                 )
         else:
             step["outcome"] = "no provider can serve this model"
@@ -1286,6 +1325,16 @@ def _hide_from_hub(inputs: RoutingInputs, hidden: set[int]) -> RoutingInputs:
             for p in inputs.providers
         ],
     )
+
+
+def _capacity_text(capacity: CapacityLimits, provider_id: int) -> str:
+    gate = capacity.gate(provider_id)
+    if gate is None:
+        return "no limit"
+    text = f"{gate.in_use}/{gate.limit}"
+    if gate.queued:
+        text += f", {gate.queued} queued"
+    return text
 
 
 def _group_of(table: RoutingTable, name: str) -> str | None:

@@ -103,6 +103,37 @@ class Histogram(Family):
         yield f"{self.name}_count {self.count}"
 
 
+class LabeledHistogram(Family):
+    """A histogram family with one labelled series per sample set."""
+
+    def __init__(self, name: str, help_text: str) -> None:
+        super().__init__(name, "histogram", help_text)
+        self.series: list[
+            tuple[dict[str, object], list[tuple[float, int]], float, int]
+        ] = []
+
+    def observe_series(
+        self,
+        buckets: list[tuple[float, int]],
+        total: float,
+        count: int,
+        **labels: object,
+    ) -> None:
+        self.series.append((labels, buckets, total, count))
+
+    def lines(self) -> Iterable[str]:
+        yield f"# HELP {self.name} {_escape(self.help)}"
+        yield f"# TYPE {self.name} histogram"
+        for labels, buckets, total, count in self.series:
+            body = ",".join(f'{k}="{_escape(v)}"' for k, v in labels.items())
+            sep = "," if body else ""
+            for bound, n in buckets:
+                le = "+Inf" if math.isinf(bound) else repr(float(bound))
+                yield f'{self.name}_bucket{{{body}{sep}le="{le}"}} {n}'
+            yield f"{self.name}_sum{{{body}}} {_fmt(float(total))}"
+            yield f"{self.name}_count{{{body}}} {count}"
+
+
 def render(families: Iterable[Family]) -> str:
     out: list[str] = []
     for fam in families:
@@ -137,6 +168,7 @@ def collect(
     hub: Any = None,
     worker_link: dict[str, Any] | None = None,
     auto_benchmark: Any = None,
+    capacity: Any = None,
 ) -> list[Family]:
     """Build every metric family from the router's current state.
 
@@ -433,6 +465,40 @@ def collect(
             LOOP_LAG.count,
         )
     )
+
+    if capacity is not None:
+        gates = capacity.gates()
+        limit_fam = Family(
+            "provider_max_concurrent",
+            "gauge",
+            "The provider's concurrent-request limit (only providers with one).",
+        )
+        queued = Family(
+            "provider_queued_requests",
+            "gauge",
+            "Requests waiting for one of the provider's concurrent-request slots.",
+        )
+        refused = Family(
+            "provider_queue_timeouts_total",
+            "counter",
+            "Requests refused (429) after waiting too long for a slot.",
+        )
+        waits = LabeledHistogram(
+            "provider_queue_wait_seconds",
+            "How long requests waited for a slot on a provider with a limit.",
+        )
+        for pid, gate in sorted(gates.items()):
+            owner = by_id.get(pid)
+            if owner is None:
+                continue
+            labels = _provider_labels(owner)
+            limit_fam.add(gate.limit, **labels)
+            queued.add(gate.queued, **labels)
+            refused.add(gate.refused, **labels)
+            waits.observe_series(
+                gate.waits.cumulative(), gate.waits.total, gate.waits.count, **labels
+            )
+        families += [limit_fam, queued, refused, waits]
 
     if auto_benchmark is not None:
         runs = Family(

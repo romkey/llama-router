@@ -102,6 +102,20 @@ def _timeout(value: str | None) -> float | None:
     return seconds
 
 
+def _max_concurrent(value: str | None) -> int | None:
+    """A provider's concurrent-request limit; None (blank) for no limit."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise ValueError("max concurrent requests must be a whole number") from exc
+    if not 1 <= limit <= 10_000:
+        raise ValueError("max concurrent requests must be between 1 and 10000")
+    return limit
+
+
 def _model_lines(text: str | None) -> list[str]:
     """Model names, one per line or comma-separated."""
     out: list[str] = []
