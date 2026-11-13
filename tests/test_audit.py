@@ -265,3 +265,13 @@ async def test_refused_form_change_writes_nothing(dash_client: DashClient) -> No
     )
     assert "error=" in resp.headers["location"]
     assert await db.list_audit_log() == []
+
+
+def test_limits_are_not_secrets_but_header_names_are() -> None:
+    assert not audit.is_secret("daily_token_limit")
+    assert audit.changes({"daily_token_limit": 5}, {"daily_token_limit": 9}) == (
+        "daily_token_limit: 5 -> 9"
+    )
+    assert audit.changes({"api_key_header": "a"}, {"api_key_header": "b"}) == (
+        "api_key_header: changed"
+    )

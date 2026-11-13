@@ -188,6 +188,8 @@ def route_name(endpoint: Any) -> str:
 
 def is_secret(name: str) -> bool:
     lowered = name.lower()
+    if lowered.endswith("_limit"):
+        return False  # a usage cap (daily_token_limit), not a credential
     return any(part in lowered for part in _SECRET_PARTS)
 
 

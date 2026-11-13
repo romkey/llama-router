@@ -404,6 +404,9 @@ async def edit_provider(
         "gpu_ram": gpu_ram or None,
         **settings_,
     }
+    if api_key_header is not None:
+        # The header's name; recorded as "changed" (it may say where a key goes).
+        after["api_key_header"] = api_key_header.strip() or None
     old: dict[str, Any] = before.model_dump(mode="json") if before else {}
     summary = audit.changes(old, after)
     if (api_key or "").strip() or clear_api_key:
