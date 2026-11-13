@@ -9,6 +9,7 @@ that adds per-request work extends the first test's configuration.
 from __future__ import annotations
 
 import json
+import platform
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -206,11 +207,13 @@ async def test_route_with_benchmark_20_candidates(
         return time.perf_counter() - start
 
     run()
-    ratio = min(run() / _calibrate() for _ in range(7))
-    recorded = json.loads(BASELINE.read_text())
-    if recorded.get("ratio") is None:
-        pytest.fail(f"no baseline recorded; measured {ratio:.3f}")
-    assert ratio <= recorded["ratio"] * recorded.get("tolerance", 1.2), (
-        f"route_with with 20 candidates is {ratio / recorded['ratio']:.2f}x "
-        "its recorded baseline"
+    ratio = min(run() / _calibrate() for _ in range(15))
+    platform_key = f"{platform.machine()}-{platform.system()}"
+    recorded = json.loads(BASELINE.read_text())["ratios"].get(platform_key)
+    if recorded is None:
+        pytest.skip(f"no baseline for {platform_key}; measured {ratio:.2f}")
+    tolerance = json.loads(BASELINE.read_text()).get("tolerance", 1.2)
+    assert ratio <= recorded * tolerance, (
+        f"route_with with 20 candidates is {ratio / recorded:.2f}x "
+        f"its recorded baseline on {platform_key} (measured {ratio:.2f})"
     )

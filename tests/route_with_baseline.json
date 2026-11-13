@@ -1,5 +1,8 @@
 {
-  "ratio": 10.3,
   "tolerance": 1.2,
-  "note": "route_with time for 500 routes over 20 candidates divided by tests/test_hot_path.py::_calibrate, min of 7 runs. Re-record only for an intended change."
+  "ratios": {
+    "arm64-Darwin": 10.3,
+    "x86_64-Linux": 13.1
+  },
+  "note": "route_with time for 500 routes over 20 candidates divided by tests/test_hot_path.py::_calibrate (min of 15 runs), per machine and OS: the ratio depends on the CPU. x86_64-Linux is the CI runner. Re-record only for an intended change."
 }
