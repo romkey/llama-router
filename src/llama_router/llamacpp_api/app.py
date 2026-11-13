@@ -24,6 +24,8 @@ from .completions import router as completions_router
 from .decisions import router as decisions_router
 from .embeddings import router as embeddings_router
 from .images import router as images_router
+from .messages import AnthropicErrorMiddleware
+from .messages import router as messages_router
 from .models import router as models_router
 from .rerank import router as rerank_router
 from .responses import router as responses_router
@@ -38,6 +40,8 @@ app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(LoopGuardMiddleware)
 app.add_middleware(HubRelayMiddleware)
 app.add_middleware(BodySizeLimitMiddleware)
+# Outermost: router errors on /v1/messages get Anthropic's shape.
+app.add_middleware(AnthropicErrorMiddleware)
 
 
 @app.get("/health")
@@ -81,6 +85,7 @@ app.include_router(completions_router)
 app.include_router(decisions_router)
 app.include_router(embeddings_router)
 app.include_router(images_router)
+app.include_router(messages_router)
 app.include_router(models_router)
 app.include_router(rerank_router)
 app.include_router(responses_router)

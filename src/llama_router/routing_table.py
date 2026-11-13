@@ -22,6 +22,7 @@ from .endpoints import (
     DECISION_PATHS,
     ENDPOINTS,
     GENERATE,
+    PASSTHROUGH_ONLY,
     RERANK_PATH,
     normalize_endpoint,  # noqa: F401  (re-exported for callers)
 )
@@ -867,6 +868,8 @@ def reload(inputs: RoutingInputs) -> TableBase:
                 sup = endpoint_support(p, TRANSLATED_ROUTES[path])
             else:
                 continue
+            if path in PASSTHROUGH_ONLY and sup != SUPPORT_SUPPORTED:
+                continue  # passed through as is, so only where served
             # A decision route may still be ruled out by live samples
             # (rescore), so keep it for now.
             if offers(p, path, sup) or path in DECISION_PATHS:

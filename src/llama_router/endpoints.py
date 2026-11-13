@@ -17,7 +17,9 @@ AUDIO = "audio"
 DECIDE = "decide"
 # Reranking: one query scored against a list of documents.
 RERANK = "rerank"
-CLASSES = (GENERATE, EMBED, IMAGE, AUDIO, DECIDE, RERANK)
+# Counting a request's tokens without running it.
+COUNT = "count"
+CLASSES = (GENERATE, EMBED, IMAGE, AUDIO, DECIDE, RERANK, COUNT)
 
 # path -> (protocol, class). Ollama native routes need an Ollama-capable
 # provider (protocol "ollama"); OpenAI-style routes take any provider (None).
@@ -40,7 +42,19 @@ ENDPOINTS: dict[str, tuple[str | None, str]] = {
     # route, otherwise answered from chat completion logprobs.
     "/v1/decisions": (None, DECIDE),
     "/v1/systemone": (None, DECIDE),
+    # Anthropic Messages, passed through unchanged to a provider that serves
+    # it natively (PASSTHROUGH_ONLY), never translated.
+    "/v1/messages": (None, GENERATE),
+    "/v1/messages/count_tokens": (None, COUNT),
 }
+
+MESSAGES_PATH = "/v1/messages"
+COUNT_TOKENS_PATH = "/v1/messages/count_tokens"
+# Routes only a provider whose last probe found them may serve: unknown or
+# missing leaves the provider out rather than ranking it lower.
+PASSTHROUGH_ONLY = frozenset({MESSAGES_PATH, COUNT_TOKENS_PATH})
+# Routes that run no model: not counted against token or rate quotas.
+UNMETERED = frozenset({COUNT_TOKENS_PATH})
 
 DECISION_PATHS = tuple(p for p, (_proto, cls) in ENDPOINTS.items() if cls == DECIDE)
 

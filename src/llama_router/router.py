@@ -30,12 +30,13 @@ from .database import ROUTING_CHANGES, Database
 from .endpoints import (  # noqa: F401  (re-exported)
     ENDPOINT_PROTOCOLS,
     ENDPOINTS,
+    PASSTHROUGH_ONLY,
     UnknownEndpointError,
     normalize_endpoint,
     protocol_for_endpoint,
     resolve_endpoint,
 )
-from .models import Provider, ProviderStatus
+from .models import ENDPOINT_SUPPORTED, Provider, ProviderStatus
 from .pricing import Price
 from .provider_manager import ProviderManager
 
@@ -1314,6 +1315,11 @@ class Router:
         for provider, models in table.chaos.get(protocol, ()):
             if not _eligible(provider, locality, hub_only) or provider.id in exclude:
                 continue
+            if (
+                path in PASSTHROUGH_ONLY
+                and provider.endpoint_state(path) != ENDPOINT_SUPPORTED
+            ):
+                continue  # a pass-through route goes only where it is served
             if access is not None:
                 models = tuple(
                     m

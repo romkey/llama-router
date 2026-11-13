@@ -52,3 +52,45 @@ optionally Sentry and an OpenID Connect provider.
   rescores it (`routing_table.rescore`).
 - Rules: https://github.com/romkey/python-ai-rules/blob/main/RULES.md;
   deviations in AGENTS.md.
+
+## Anthropic Messages (Claude Code, the Anthropic SDK)
+
+The OpenAI API port also serves `POST /v1/messages` and
+`POST /v1/messages/count_tokens`, passed through unchanged (never translated
+to or from the OpenAI format) to a provider whose last endpoint probe found
+the route. Point a client at the router as its base URL, with a router API
+key as its key:
+
+```bash
+export ANTHROPIC_BASE_URL=http://router.local:8080
+export ANTHROPIC_API_KEY=lrk_...   # sent as x-api-key; never forwarded
+claude
+```
+
+The Anthropic SDK takes the same `base_url` and `api_key`. The router
+forwards `anthropic-version` and `anthropic-beta`, sends the provider's own
+credentials, replaces `model` with the backend's name for it and clamps
+`max_tokens`; the rest of the body and the reply (streamed SSE bytes too)
+are left as they are.
+
+- **Model names.** Clients ask for `claude-*` names. Map them to local
+  models with an alias (`claude-sonnet-4-5` → `qwen3-coder`) or a model
+  group whose members are on providers that serve the route; on the
+  Anthropic cloud preset the names are Anthropic's own.
+- **Which backends.** A provider is a candidate only when its probe found
+  `/v1/messages`: recent Ollama, llama.cpp `llama-server`, vLLM and the
+  Anthropic API serve it; a provider whose probe has not run or found it
+  missing is left out, and with none left the request gets 404 ("no provider
+  serves the Anthropic Messages API for model ..."). Re-probe a provider from
+  its page after upgrading it.
+- **Errors** the router raises on these routes use Anthropic's shape
+  (`{"type": "error", "error": {"type": ..., "message": ...}}`); upstream
+  errors are sanitised as on every route.
+- **Usage and limits.** Tokens and cost are logged from `usage` (input,
+  cached input and output tokens; for streams from `message_start` and
+  `message_delta`). Keys' locality, model access, spend caps, quotas,
+  provider capacity and queue order apply as for any request;
+  `count_tokens` runs no model and is not counted against quotas.
+- **Known gaps.** Local backends differ in what they support: extended
+  thinking, `cache_control`, server tools and the Files and Batches APIs
+  are often missing or ignored, and some report no cached-token counts.

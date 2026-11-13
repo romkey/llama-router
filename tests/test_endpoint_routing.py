@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from llama_router.database import Database
-from llama_router.endpoints import ENDPOINTS, UnknownEndpointError, endpoint_class
+from llama_router.endpoints import (
+    ENDPOINTS,
+    PASSTHROUGH_ONLY,
+    UnknownEndpointError,
+    endpoint_class,
+)
 from llama_router.models import (
     BenchmarkResult,
     ProviderModel,
@@ -86,8 +91,11 @@ async def test_table_is_built_for_every_endpoint(
     rt = Router(db, pm)
     table = await rt.rebuild()
     for path, (protocol, _cls) in ENDPOINTS.items():
-        names = {c.provider.name for c in table.all_candidates[("m", path)]}
-        if protocol == "ollama" and not translation:
+        names = {c.provider.name for c in table.all_candidates.get(("m", path), ())}
+        if path in PASSTHROUGH_ONLY:
+            # Unprobed providers are never offered a pass-through route.
+            assert names == set(), path
+        elif protocol == "ollama" and not translation:
             assert names == {"ollama-box"}, path
         else:
             assert names == {"ollama-box", "lcpp-box"}, path

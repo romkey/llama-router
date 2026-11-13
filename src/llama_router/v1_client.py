@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from starlette.datastructures import FormData, UploadFile
 
+from .httpx_errors import raise_for_stream_status
 from .json_io import json_kwargs
 
 if TYPE_CHECKING:
@@ -113,6 +114,42 @@ class V1Client:
         resp.raise_for_status()
         out: dict[str, Any] = resp.json()
         return out
+
+    # --- Anthropic Messages (passed through; never translated) ---
+
+    def _any(self) -> LlamaCppClient | OllamaClient:
+        return self._llamacpp if self._llamacpp is not None else self._require_ollama()
+
+    async def messages(
+        self, body: dict[str, Any], headers: dict[str, str], path: str = "/v1/messages"
+    ) -> dict[str, Any]:
+        """POST an Anthropic Messages body (or count_tokens, with *path*) as
+        is, with the client's ``anthropic-*`` *headers*; the answer as is."""
+        client = self._any()
+        resp = await client._post(
+            path,
+            op=f"Anthropic Messages ({path})",
+            headers=headers,
+            **await json_kwargs(upstream_body(body)),
+        )
+        resp.raise_for_status()
+        out: dict[str, Any] = resp.json()
+        return out
+
+    async def messages_stream(
+        self, body: dict[str, Any], headers: dict[str, str]
+    ) -> AsyncIterator[bytes]:
+        """A streamed Messages reply: the upstream's SSE bytes, unchanged."""
+        client = self._any()
+        async with client._http.stream(
+            "POST",
+            "/v1/messages",
+            headers=headers,
+            **await json_kwargs(upstream_body(body)),
+        ) as resp:
+            await raise_for_stream_status(resp)
+            async for chunk in resp.aiter_bytes():
+                yield chunk
 
     # --- chat/completions ---
 
