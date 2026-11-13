@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import pytest
 from alembic import command
+from fastapi import HTTPException
 
 from llama_router import proxy
 from llama_router.auth import generate_api_key, key_prefix
@@ -507,3 +508,16 @@ async def test_refused_key_is_not_marked_used(db: Database) -> None:
     key = await db.get_api_key(kid)
     assert key is not None
     assert key["last_used_at"] is None
+
+
+def test_last_allowed_day_counts_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llama_router.key_lifecycle import parse_expiry, self_issued_expiry
+
+    monkeypatch.setattr(settings, "max_key_lifetime_days", 30)
+    now = datetime(2030, 1, 1, 6, tzinfo=UTC)
+    last = (now + timedelta(days=30)).date().isoformat()
+    assert self_issued_expiry(parse_expiry(last), now=now) == datetime(
+        2030, 2, 1, tzinfo=UTC
+    )
+    with pytest.raises(HTTPException):
+        self_issued_expiry(parse_expiry("2030-02-01"), now=now)

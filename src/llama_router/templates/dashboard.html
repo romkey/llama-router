@@ -3355,7 +3355,7 @@ function openKeyEdit(keyId, keyPrefix) {
         document.getElementById('edit-key-cap').value = k.daily_spend_cap_usd == null ? '' : k.daily_spend_cap_usd;
         document.getElementById('edit-key-tokens').value = k.daily_token_limit == null ? '' : k.daily_token_limit;
         var exp = document.getElementById('edit-key-expires');
-        exp.value = k.expires_at ? String(k.expires_at).slice(0, 10) : '';
+        exp.value = k.expires_at ? new Date(Date.parse(k.expires_at) - 1000).toISOString().slice(0, 10) : '';  // its last whole day
         exp.dataset.original = exp.value;
         document.getElementById('edit-key-rpm').value = k.requests_per_minute == null ? '' : k.requests_per_minute;
         document.getElementById('edit-key-affinity').value =

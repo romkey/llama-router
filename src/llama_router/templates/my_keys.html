@@ -393,7 +393,7 @@ function editMyKey(id, prefix) {
         document.getElementById('my-edit-fallback').checked = !!k.allow_fallback;
         document.getElementById('my-edit-strict').checked = !!k.strict_pins;
         var exp = document.getElementById('my-edit-expires');
-        exp.value = k.expires_at ? String(k.expires_at).slice(0, 10) : '';
+        exp.value = k.expires_at ? new Date(Date.parse(k.expires_at) - 1000).toISOString().slice(0, 10) : '';  // its last whole day
         exp.dataset.original = exp.value;
         document.getElementById('my-edit-affinity').value =
             k.session_affinity == null ? 'default' : (k.session_affinity ? 'on' : 'off');

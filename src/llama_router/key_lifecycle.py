@@ -122,7 +122,12 @@ def self_issued_expiry(
     latest = now + limit
     if requested is None:
         return latest
-    if requested > latest + timedelta(minutes=1):
+    # A date alone means the end of that day: the last allowed day counts
+    # whole.
+    last_day_end = datetime.combine(
+        latest.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+    )
+    if requested > max(latest + timedelta(minutes=1), last_day_end):
         raise HTTPException(
             status_code=400,
             detail=(
