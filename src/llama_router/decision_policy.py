@@ -343,7 +343,7 @@ async def _decide(
                 f"no available provider for decision model {req.model!r}"
             )
         # Raises 429, which the caller passes on rather than failing over.
-        held = await svc.hold_quota(db, rt, prefs, result, req)
+        held = await svc.hold_quota(db, rt, prefs, result, req, request)
         provider = result.provider
         provider_id = provider.require_id()
         start = time.monotonic()

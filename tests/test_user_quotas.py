@@ -600,3 +600,51 @@ async def test_decision_requests_hold_tokens(db: Database) -> None:
     prefs.user_daily_token_limit = 100_000
     held = await svc.hold_quota(db, Rt(), prefs, result, req)  # type: ignore[arg-type]
     assert held["token_reservation"].tokens > 0
+
+
+async def test_refused_chat_turn_saves_nothing(
+    dash_client: tuple[httpx.AsyncClient, Database],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from llama_router.dashboard import deps as dash_deps
+
+    c, db = dash_client
+    _, ann = await _dash_users(db)
+    pid = await _provider(db, "local")
+    pm = dash_deps.get_pm()
+    pm.attach_router(Router(db, pm))
+    await db.set_dashboard_user_limits(ann, {"daily_token_limit": 3})
+    body = {"model": "m", "content": "hello there " * 10, "provider_id": pid}
+    resp = await c.post("/api/chat/send", json=body, headers=_as(ann))
+    assert resp.status_code == 429
+    assert await db.list_chat_conversations(ann) == []
+
+
+async def test_unlogged_decision_holds_are_released_at_request_end(
+    db: Database,
+) -> None:
+    from llama_router.spend import (
+        EXTRA_RESERVATIONS_STATE,
+        SpendReservationMiddleware,
+        keep_for_release,
+    )
+
+    uid = await _user(db)
+    tracker = tracker_for(db)
+    held = await tracker.reserve_tokens(
+        90, key_id=None, key_limit=None, user_id=uid, user_limit=100
+    )
+    assert not isinstance(held, str)
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        from starlette.requests import Request
+
+        keep_for_release(Request(scope), held)
+
+    scope: dict[str, Any] = {"type": "http", "state": {}}
+    await SpendReservationMiddleware(app)(scope, None, None)
+    assert EXTRA_RESERVATIONS_STATE not in scope["state"]
+    again = await tracker.reserve_tokens(
+        90, key_id=None, key_limit=None, user_id=uid, user_limit=100
+    )
+    assert not isinstance(again, str)

@@ -455,6 +455,24 @@ RESERVATION_STATE = "spend_reservation"
 TOKEN_RESERVATION_STATE = "token_reservation"  # noqa: S105 - a state name
 
 
+# Further holds a request took (decision fan-outs), released at its end.
+EXTRA_RESERVATIONS_STATE = "extra_reservations"
+
+
+def keep_for_release(request: Any, held: Reservation | TokenReservation) -> None:
+    """Release *held* when *request* ends, if nothing settled it first."""
+    if request is None:
+        return
+    state = getattr(request, "state", None)
+    if state is None:
+        return
+    kept = getattr(state, EXTRA_RESERVATIONS_STATE, None)
+    if not isinstance(kept, list):
+        kept = []
+        setattr(state, EXTRA_RESERVATIONS_STATE, kept)
+    kept.append(held)
+
+
 class SpendReservationMiddleware:
     """Releases a request's spend reservation if it is still held when the
     request ends, for example when the handler failed before the request was
@@ -476,3 +494,6 @@ class SpendReservationMiddleware:
                 tokens = state.pop(TOKEN_RESERVATION_STATE, None)
                 if isinstance(tokens, TokenReservation):
                     tokens.release()
+                for extra in state.pop(EXTRA_RESERVATIONS_STATE, None) or ():
+                    if isinstance(extra, (Reservation, TokenReservation)):
+                        extra.release()

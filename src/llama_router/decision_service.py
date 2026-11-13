@@ -30,7 +30,12 @@ from .config import settings
 from .database import CHANGE_DECISIONS, Database
 from .provider_manager import ProviderManager
 from .routing_table import alias_groups, native_decision_path
-from .spend import cap_reached, token_limit_reached, tracker_for
+from .spend import (
+    cap_reached,
+    keep_for_release,
+    token_limit_reached,
+    tracker_for,
+)
 from .v1_client import get_v1_client
 from .worker_link.protocol import refused as worker_refused
 
@@ -278,6 +283,7 @@ async def hold_quota(
     prefs: RoutingPreferences | None,
     result: RouteResult,
     request: d.DecisionRequest,
+    http_request: Any = None,
 ) -> dict[str, Any]:
     """Hold *request*'s estimated tokens against the key's and its owner's
     daily token limits, and its estimated cost on the routed provider
@@ -286,6 +292,8 @@ async def hold_quota(
     A request fans out into one call per question, so it is held as a whole
     before any of them is sent. Returns the holds as request log fields
     (``token_reservation``, ``spend_reservation``), which the log settles.
+    They are also kept on *http_request*, so one never logged (a policy that
+    timed out) is released when the request ends.
     """
     if prefs is None or prefs.key_id is None:
         return {}
@@ -314,6 +322,7 @@ async def hold_quota(
                 "this API key" if held == "key_tokens" else "this user",
             )
         out["token_reservation"] = held
+        keep_for_release(http_request, held)
     cap = prefs.daily_spend_cap_usd
     user_cap = prefs.user_daily_spend_cap_usd if owner is not None else None
     if cap is None and user_cap is None:
@@ -329,6 +338,7 @@ async def hold_quota(
     )
     if spend is not None:
         out["spend_reservation"] = spend
+        keep_for_release(http_request, spend)
         return out
     tokens = out.get("token_reservation")
     if tokens is not None:

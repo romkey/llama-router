@@ -365,20 +365,20 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
     chosen_pid = pid if target.chosen else None
     answered_by = model if target.served == model else f"{model} → {target.served}"
 
-    conv_id = body.get("conversation_id")
-    if conv_id in (None, ""):
+    raw_conv = body.get("conversation_id")
+    new_conversation = raw_conv in (None, "")
+    conv_id = 0
+    history: list[dict[str, Any]] = []
+    if new_conversation:
         limit = settings.max_chat_conversations_per_user
         if limit > 0 and len(await db.list_chat_conversations(uid)) >= limit:
             raise HTTPException(
                 status_code=409,
                 detail=f"You have {limit} conversations; delete one to start another",
             )
-        title = (content or "Image").splitlines()[0][:TITLE_LEN]
-        conv_id = await db.create_chat_conversation(uid, title, chosen_pid, model)
-        history: list[dict[str, Any]] = []
     else:
         try:
-            conv_id = int(conv_id)
+            conv_id = int(str(raw_conv))
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400, detail="conversation_id must be a number"
@@ -388,20 +388,29 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
             raise HTTPException(status_code=404, detail="conversation not found")
         history = conv["messages"]
 
-    user_msg = await db.add_chat_message(
-        conv_id, "user", content, image=image, model_name=model
-    )
     endpoint = PATHS[mode]
-    if mode == "image":
-        upstream: dict[str, Any] = {"model": backend_model, "prompt": content, "n": 1}
-    else:
-        upstream = {
+
+    def upstream_for(user_msg: dict[str, Any]) -> dict[str, Any]:
+        if mode == "image":
+            return {"model": backend_model, "prompt": content, "n": 1}
+        return {
             "model": backend_model,
             "messages": chat_messages([*history, user_msg]),
             "stream": False,
         }
+
+    # Hold the turn's quota before anything is saved, so a refusal leaves
+    # no unanswered message behind.
     if limits is not None and uid is not None:
-        await _hold_quota(db, request, uid, limits, target, upstream)
+        draft = {"role": "user", "content": content, "image": image}
+        await _hold_quota(db, request, uid, limits, target, upstream_for(draft))
+    if new_conversation:
+        title = (content or "Image").splitlines()[0][:TITLE_LEN]
+        conv_id = await db.create_chat_conversation(uid, title, chosen_pid, model)
+    user_msg = await db.add_chat_message(
+        conv_id, "user", content, image=image, model_name=model
+    )
+    upstream = upstream_for(user_msg)
     log: dict[str, Any] = {
         "provider": provider,
         "protocol": "v1",

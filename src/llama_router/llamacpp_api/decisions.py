@@ -110,7 +110,7 @@ async def serve(
             )
         # One request is a call per question: hold (or refuse) it whole
         # against the daily token limits and spend caps.
-        held = await svc.hold_quota(db, rt, prefs, result, req)
+        held = await svc.hold_quota(db, rt, prefs, result, req, request)
         provider = result.provider
         provider_id = provider.require_id()
         start = time.monotonic()
