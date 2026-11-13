@@ -37,9 +37,9 @@
 {% if show_cache %}{{ pane('cache', 'Cache', 'archive') }}{% endif %}
 {# Access #}
 {% if show_api_keys or show_users_tab %}
-{% call menu('Access', 'shield-lock', request.url.path == '/users') %}
+{% call menu('Access', 'shield-lock', request.url.path in ('/users', '/audit')) %}
 {% if show_api_keys %}{{ pane('keys', 'API Keys', 'key', menu=true) }}{{ pane('routing', 'Routing', 'signpost-2', menu=true) }}{% endif %}
-{% if show_users_tab %}{{ page_link('/users', 'Users', 'people', menu=true) }}{% endif %}
+{% if show_users_tab %}{{ page_link('/users', 'Users', 'people', menu=true) }}{{ page_link('/audit', 'Audit', 'journal-check', menu=true) }}{% endif %}
 {% endcall %}
 {% endif %}
 {# Tools #}

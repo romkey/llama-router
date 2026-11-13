@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+from .. import audit
 from ..auth import key_prefix, model_access, new_api_key
 from ..config import settings
 from ..database import Database
@@ -229,6 +230,18 @@ async def _own_key(owner: int, key_id: int) -> dict[str, Any]:
     return await with_access(db, with_status([dict(key)])[0])
 
 
+@router.get("/api/my-keys/audit")
+async def my_keys_audit(request: Request) -> JSONResponse:
+    """Audit entries for the user's own keys, newest first."""
+    owner = _owner_id(request)
+    db = deps.get_db()
+    ids = [str(k["id"]) for k in await db.list_api_keys(owner_user_id=owner)]
+    entries = await db.list_audit_log(limit=100, target_kind="api_key", target_ids=ids)
+    for e in entries:
+        e.pop("client_ip", None)
+    return JSONResponse(jsonable_encoder({"entries": entries}))
+
+
 @router.get("/api/my-keys/allowable")
 async def allowable_models(request: Request) -> JSONResponse:
     """What a key can be limited to: model groups and known model names,
@@ -285,10 +298,17 @@ async def edit_my_key(request: Request, key_id: int) -> JSONResponse:
         if "expires_at" in body
         else None
     )
+    before = await db.get_api_key(key_id, owner_user_id=owner)
     if not await db.update_api_key(key_id, edits, owner_user_id=owner):
         raise HTTPException(status_code=404, detail="API key not found")
     if "expires_at" in body:
         await db.set_api_key_expiry(key_id, expiry, owner_user_id=owner)
+        edits["expires_at"] = expiry
+    if "allowed" in body:
+        edits["allowed"] = body["allowed"]
+    await audit.record(
+        request, "api_key.update", ("api_key", key_id), audit.changes(before, edits)
+    )
     if access is not None:
         await store_access(db, key_id, access)
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
@@ -468,6 +488,14 @@ async def set_self_service_defaults(request: Request) -> JSONResponse:
     locality = _key_locality(body.get("locality"))
     cap = _usd(body.get("daily_spend_cap_usd"), "daily spend cap")
     db = deps.get_db()
+    before = await self_service_defaults(db)
     await db.set_app_setting(LOCALITY_SETTING, locality or "any")
     await db.set_app_setting(CAP_SETTING, "" if cap is None else str(cap))
-    return JSONResponse(await self_service_defaults(db))
+    after = await self_service_defaults(db)
+    await audit.record(
+        request,
+        "system.self_service_defaults",
+        ("system", "self_service_defaults"),
+        audit.changes(before, after),
+    )
+    return JSONResponse(after)

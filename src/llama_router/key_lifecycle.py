@@ -30,6 +30,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from . import audit
 from .config import settings
 from .database import Database
 from .repositories.base import _utc_datetime
@@ -224,7 +225,16 @@ async def sweep_idle_sso_users(db: Database, *, now: datetime | None = None) -> 
         last = _utc_datetime(user.get("last_login_at") or user.get("created_at"))
         if last is not None and last > cutoff:
             continue
-        held += await hold_user_keys(db, int(user["id"]), REASON_INACTIVE)
+        n = await hold_user_keys(db, int(user["id"]), REASON_INACTIVE)
+        if n:
+            await audit.record(
+                None,
+                "user.keys_held",
+                ("user", int(user["id"])),
+                f"{n} key{'' if n == 1 else 's'} held: {REASON_INACTIVE}",
+                db=db,
+            )
+        held += n
     return held
 
 

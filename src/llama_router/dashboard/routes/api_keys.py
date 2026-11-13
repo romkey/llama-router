@@ -11,6 +11,7 @@ from fastapi.responses import (
     JSONResponse,
 )
 
+from ... import audit
 from ...auth import key_prefix, new_api_key
 from ...config import settings
 from ...key_lifecycle import (
@@ -80,6 +81,7 @@ async def api_set_lifecycle_settings(request: Request):
     _require_admin(request)
     db = deps.get_db()
     body = await deps.json_body(request)
+    before = await _lifecycle_settings(db)
     if "renewal_mode" in body:
         await set_renewal_mode(db, str(body["renewal_mode"]).strip().lower())
     if "holds_by_default" in body:
@@ -88,7 +90,14 @@ async def api_set_lifecycle_settings(request: Request):
                 status_code=400, detail="holds_by_default must be true or false"
             )
         await set_holds_by_default(db, body["holds_by_default"])
-    return JSONResponse(await _lifecycle_settings(db))
+    after = await _lifecycle_settings(db)
+    await audit.record(
+        request,
+        "system.key_lifecycle",
+        ("system", "key_lifecycle"),
+        audit.changes(before, after),
+    )
+    return JSONResponse(after)
 
 
 @router.get("/api/keys/renewal-requests")
@@ -291,10 +300,17 @@ async def api_update_key(key_id: int, request: Request):
     access = await parse_access(db, body["allowed"]) if "allowed" in body else None
     # Validated before anything is saved, so a bad date changes nothing.
     expiry = parse_expiry(body["expires_at"]) if "expires_at" in body else None
+    before = await db.get_api_key(key_id)
     if not await db.update_api_key(key_id, edits):
         raise HTTPException(status_code=404, detail="API key not found")
     if "expires_at" in body:
         await db.set_api_key_expiry(key_id, expiry)
+        edits["expires_at"] = expiry
+    if access is not None:
+        edits["allowed"] = body["allowed"]
+    await audit.record(
+        request, "api_key.update", ("api_key", key_id), audit.changes(before, edits)
+    )
     if access is not None:
         await store_access(db, key_id, access)
     key = await db.get_api_key(key_id)
@@ -415,5 +431,14 @@ async def api_set_allow_unauthenticated(request: Request):
     db = deps.get_db()
     body = await deps.json_body(request)
     allow = bool(body.get("allow", True))
+    before = await db.get_allow_unauthenticated()
     await db.set_allow_unauthenticated(allow)
+    await audit.record(
+        request,
+        "system.anonymous_access",
+        ("system", "anonymous_access"),
+        audit.changes(
+            {"allow_unauthenticated": before}, {"allow_unauthenticated": allow}
+        ),
+    )
     return JSONResponse({"allow_unauthenticated": allow})

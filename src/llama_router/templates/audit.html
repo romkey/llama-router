@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Audit - llama-router{% endblock %}
+
+{% block content %}
+<h1 class="h2 mb-3"><i class="bi bi-journal-check me-2" aria-hidden="true"></i>Audit trail</h1>
+<p class="text-muted">Every change made in the dashboard or through its API: who, what, and the fields changed. Secrets are recorded only as "changed".</p>
+
+<form method="get" action="/audit" class="row g-2 align-items-end mb-3" aria-label="Filter the audit trail">
+    <div class="col-sm-6 col-md-2">
+        <label for="f-actor-kind" class="form-label small text-muted mb-1">Actor</label>
+        <select id="f-actor-kind" name="actor_kind" class="form-select form-select-sm">
+            <option value="">anyone</option>
+            {% for v, label in [('user', 'users'), ('management_key', 'management keys'), ('system', 'the router')] %}
+            <option value="{{ v }}" {% if filters.actor_kind == v %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-sm-6 col-md-2">
+        <label for="f-actor-name" class="form-label small text-muted mb-1">Actor name</label>
+        <input id="f-actor-name" name="actor_name" class="form-control form-control-sm" value="{{ filters.actor_name }}">
+    </div>
+    <div class="col-sm-6 col-md-2">
+        <label for="f-action" class="form-label small text-muted mb-1">Action starts with</label>
+        <input id="f-action" name="action_prefix" class="form-control form-control-sm" placeholder="api_key." value="{{ filters.action_prefix }}">
+    </div>
+    <div class="col-sm-6 col-md-2">
+        <label for="f-target-kind" class="form-label small text-muted mb-1">Target kind</label>
+        <input id="f-target-kind" name="target_kind" class="form-control form-control-sm" placeholder="provider" value="{{ filters.target_kind }}">
+    </div>
+    <div class="col-sm-6 col-md-1">
+        <label for="f-target-id" class="form-label small text-muted mb-1">Target id</label>
+        <input id="f-target-id" name="target_id" class="form-control form-control-sm" value="{{ filters.target_id }}">
+    </div>
+    <div class="col-sm-6 col-md-1">
+        <label for="f-days" class="form-label small text-muted mb-1">Last days</label>
+        <input id="f-days" name="days" type="number" min="0" step="1" class="form-control form-control-sm" value="{{ filters.days }}">
+    </div>
+    <div class="col-md-2 d-flex gap-2">
+        <button type="submit" class="btn btn-sm btn-primary flex-fill">Filter</button>
+        <a href="/audit" class="btn btn-sm btn-outline-secondary flex-fill">Clear</a>
+    </div>
+</form>
+
+<div class="card">
+    <div class="card-body p-0">
+        {% if entries %}
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0 align-middle">
+                <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Summary</th><th>From</th></tr></thead>
+                <tbody>
+                    {% for e in entries %}
+                    <tr>
+                        <td class="small text-nowrap">{{ e.at | when }}</td>
+                        <td class="small text-nowrap">{% if e.actor_kind == 'management_key' %}<i class="bi bi-key me-1" aria-hidden="true"></i><span class="visually-hidden">management key </span>{% elif e.actor_kind == 'system' %}<i class="bi bi-cpu me-1" aria-hidden="true"></i>{% endif %}{{ e.actor_name or e.actor_kind }}</td>
+                        <td><code>{{ e.action }}</code></td>
+                        <td class="small text-nowrap">{% if e.target_kind %}{{ e.target_kind }}{% if e.target_id %} {{ e.target_id }}{% endif %}{% endif %}</td>
+                        <td class="small text-break">{{ e.summary or '' }}</td>
+                        <td class="small text-muted">{{ e.client_ip or '' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% if entries | length >= 200 %}
+        <div class="p-2"><a class="btn btn-sm btn-outline-secondary" href="?{% for k, v in filters.items() if v %}{{ k }}={{ v | urlencode }}&amp;{% endfor %}before={{ entries[-1].id }}">Older</a></div>
+        {% endif %}
+        {% else %}
+        <p class="text-muted p-3 mb-0">No entries.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

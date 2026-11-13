@@ -37,6 +37,7 @@ from .db_events import (
 from .db_migrate import run_upgrade_sync
 from .repositories import (
     ApiKeyRepository,
+    AuditRepository,
     BenchmarkRepository,
     ChatRepository,
     DashboardUserRepository,
@@ -104,6 +105,7 @@ def _normalize_database_url(database_url: str | None) -> str:
 
 
 class Database(
+    AuditRepository,
     ProviderRepository,
     BenchmarkRepository,
     RequestLogRepository,

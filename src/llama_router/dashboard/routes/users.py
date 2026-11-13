@@ -16,6 +16,7 @@ from fastapi.responses import (
     RedirectResponse,
 )
 
+from ... import audit
 from ...auth import invalidate_auth_cache
 from ...client_address import client_ip
 from ...config import settings
@@ -277,8 +278,12 @@ async def users_limits(request: Request, user_id: int):
             limits = _limits_from_form(form)
         except ValueError:
             return RedirectResponse(url="/users?error=limits", status_code=303)
+    before = await db.get_dashboard_user_by_id(user_id)
     if not await db.set_dashboard_user_limits(user_id, limits):
         raise HTTPException(status_code=404, detail="User not found")
+    await audit.record(
+        request, "user.limits", ("user", user_id), audit.changes(before, limits)
+    )
     logger.info("Limits of dashboard user %d set to %s", user_id, limits)
     return RedirectResponse(url="/users?updated=1", status_code=303)
 
@@ -292,8 +297,15 @@ async def users_quota_defaults(request: Request):
         limits = _limits_from_form(await request.form())
     except ValueError:
         return RedirectResponse(url="/users?error=limits", status_code=303)
+    before = (await default_limits(db)).to_dict()
     await set_default_limits(db, UserLimits(**limits))
     invalidate_auth_cache(db)
+    await audit.record(
+        request,
+        "system.user_quota_defaults",
+        ("system", "user_quota_defaults"),
+        audit.changes(before, limits),
+    )
     logger.info("Default user limits set to %s", limits)
     return RedirectResponse(url="/users?updated=1#quota-defaults", status_code=303)
 

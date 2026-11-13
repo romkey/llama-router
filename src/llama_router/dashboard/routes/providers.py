@@ -19,6 +19,7 @@ from fastapi.responses import (
     Response,
 )
 
+from ... import audit
 from ...cloud_presets import get_preset
 from ...config import settings
 from ...httpx_errors import describe_httpx_error
@@ -337,6 +338,7 @@ async def api_probe_provider(provider_id: int):
 
 @router.post("/providers/{provider_id}/edit")
 async def edit_provider(
+    request: Request,
     provider_id: int,
     name: str = Form(...),
     protocol: str = Form("ollama"),
@@ -375,6 +377,7 @@ async def edit_provider(
             settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:
         return _provider_error(provider_id, str(exc) or "Invalid protocol")
+    before = await deps.get_db().get_provider(provider_id)
     try:
         await pm.update_provider(
             provider_id,
@@ -393,6 +396,26 @@ async def edit_provider(
     except Exception:
         logger.exception("update_provider failed (provider_id=%s)", provider_id)
         return _provider_error(provider_id, "Could not update provider")
+    after: dict[str, Any] = {
+        "name": name,
+        "protocol": proto.value,
+        "machine_type": machine_type or None,
+        "gpu_type": gpu_type or None,
+        "gpu_ram": gpu_ram or None,
+        **settings_,
+    }
+    if api_key_header is not None:
+        # The header's name; recorded as "changed" (it may say where a key goes).
+        after["api_key_header"] = api_key_header.strip() or None
+    old: dict[str, Any] = before.model_dump(mode="json") if before else {}
+    summary = audit.changes(old, after)
+    if (api_key or "").strip() or clear_api_key:
+        summary = (
+            ("api_key: changed; " + summary)
+            if summary != "no change"
+            else ("api_key: changed")
+        )
+    await audit.record(request, "provider.update", ("provider", provider_id), summary)
     return RedirectResponse(url=_provider_url(provider_id), status_code=303)
 
 

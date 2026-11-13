@@ -1,6 +1,7 @@
 """Per-domain repositories; ``Database`` combines them into one store."""
 
 from .api_keys import ApiKeyRepository
+from .audit import AuditRepository
 from .base import Repository
 from .benchmarks import BenchmarkRepository
 from .chat import ChatRepository
@@ -14,6 +15,7 @@ from .workers import WorkerRepository
 
 __all__ = [
     "ApiKeyRepository",
+    "AuditRepository",
     "BenchmarkRepository",
     "ChatRepository",
     "DashboardUserRepository",

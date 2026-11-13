@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from . import (
     api_keys,
+    audit,
     benchmarks,
     cache,
     health,
@@ -33,5 +34,6 @@ for _tab in (
     cache,
     model_aliases,
     workers,
+    audit,
 ):
     router.include_router(_tab.router)

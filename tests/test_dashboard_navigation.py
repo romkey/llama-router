@@ -67,11 +67,11 @@ async def test_navigation_stays_consistent_across_pages(
     # Operate tabs, then the Access menu (admins only), then Tools.
     expected = ["/#providers-pane", "/#benchmarks-pane", "/#models-pane"]
     if role != "viewer":
-        pages.append("/users")
+        pages.extend(["/users", "/audit"])
         expected.extend(["/#workers-pane", "/#log-pane"])
         if cache is not None:
             expected.append("/#cache-pane")
-        expected.extend(["/#keys-pane", "/#routing-pane", "/users"])
+        expected.extend(["/#keys-pane", "/#routing-pane", "/users", "/audit"])
     else:
         expected.append("/#log-pane")
     expected.extend(["/decisions", "/chat"])
@@ -95,7 +95,9 @@ async def test_navigation_stays_consistent_across_pages(
         open_menus = [
             m for m in _Navigation(response.text).menus if "active" in str(m["class"])
         ]
-        assert len(open_menus) == (path in ("/chat", "/users", "/decisions")), path
+        assert len(open_menus) == (
+            path in ("/chat", "/users", "/audit", "/decisions")
+        ), path
         assert response.text.count('href="/decisions"') == 1, path
         if path in ("/", "/chat", "/users", "/decisions"):
             assert len(active) == 1, path
