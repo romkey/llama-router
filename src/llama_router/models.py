@@ -106,6 +106,8 @@ class Provider(BaseModel):
     # Whether a hub this router serves as a worker may route to this provider
     # (and see its models). Set from the Workers tab.
     hub_shared: bool = True
+    # Requests sent to the provider at once; more wait in line. None: no limit.
+    max_concurrent: int | None = None
 
     @property
     def is_cloud(self) -> bool:
@@ -360,6 +362,8 @@ class ProviderInfo(BaseModel):
     benchmarks: list[BenchmarkResult] = []
     addresses: list[ProviderAddress] = []
     active_requests: int = 0
+    # Requests waiting for one of the provider's max_concurrent slots.
+    queued_requests: int = 0
     hot_models: list[HotModel] = []
     worker: dict[str, Any] | None = None
     # Why the provider is offline although an address answers, if known.

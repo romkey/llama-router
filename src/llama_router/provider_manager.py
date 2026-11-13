@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from . import router_identity
+from .capacity import CapacityLimits, SlotGate
 from .client_pool import ClientPool, upstream_headers
 from .config import settings
 from .database import Database
@@ -101,6 +102,9 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         self.stats = ProviderStats()
         self.clients = ClientPool(self.worker_hub, self.stats)
         self._active_requests: dict[int, int] = defaultdict(int)
+        # Gates of the providers with a max_concurrent limit; configured from
+        # the provider rows each time the routing table reloads.
+        self.capacity = CapacityLimits()
         self._hot_models: dict[int, list[HotModel]] = {}
         # The model each llama.cpp upstream reports as loaded (/props).
         self._llamacpp_loaded: dict[int, set[str]] = {}
@@ -529,6 +533,7 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
             benchmarks=benchmarks,
             addresses=addresses,
             active_requests=self._active_requests.get(provider_id, 0),
+            queued_requests=self._queued(provider_id),
             hot_models=self._hot_models.get(provider_id, []),
             worker=self.worker_summary(provider),
             status_detail=self._reported_detail(provider),
@@ -615,6 +620,7 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
                     benchmarks=benchmarks.get(p_id, []),
                     addresses=addresses.get(p_id, []),
                     active_requests=self._active_requests.get(p_id, 0),
+                    queued_requests=self._queued(p_id),
                     hot_models=self._hot_models.get(p_id, []),
                     worker=self.worker_summary(p),
                     status_detail=self._reported_detail(p),
@@ -685,20 +691,64 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
         self._active_requests[provider_id] = current - 1
         self._last_activity[provider_id] = time.monotonic()
 
+    async def take_slot(
+        self, provider_id: int, deadline: float | None = None
+    ) -> SlotGate | None:
+        """Take one of the provider's ``max_concurrent`` slots, waiting in
+        line when all are in use (:class:`ProviderAtCapacity` when the wait
+        runs past the queue timeout or *deadline*).
+
+        Returns the gate to release, or None for a provider without a limit.
+        Never suspends when a slot is free.
+        """
+        gate = self.capacity.gate(provider_id)
+        if gate is None:
+            return None
+        await gate.acquire(deadline, provider_id)
+        return gate
+
     @asynccontextmanager
-    async def acquire_provider(self, provider_id: int) -> AsyncIterator[None]:
-        """Count a request against the provider for its duration.
+    async def acquire_provider(
+        self,
+        provider_id: int,
+        *,
+        deadline: float | None = None,
+        slot: SlotGate | None = None,
+        slot_taken: bool = False,
+    ) -> AsyncIterator[None]:
+        """Take a slot on the provider (see :meth:`take_slot`), then count
+        the request against it for its duration.
+
+        Pass *slot_taken* with the gate :meth:`take_slot` returned (*slot*)
+        when the slot was taken beforehand; this block then releases it.
 
         The provider's clients are kept open until it ends even if an edit
         replaces them, so fetch the client inside this block, not before.
         """
-        pinned = self.clients.pin(provider_id)
-        self.acquire(provider_id)
+        if not slot_taken:
+            slot = await self.take_slot(provider_id, deadline)
+        try:
+            pinned = self.clients.pin(provider_id)
+            self.acquire(provider_id)
+        except BaseException:
+            if slot is not None:
+                slot.release()
+            raise
         try:
             yield
         finally:
             self.release(provider_id)
+            if slot is not None:
+                slot.release()
             await self.clients.unpin(pinned)
+
+    def _queued(self, provider_id: int) -> int:
+        gate = self.capacity.gate(provider_id)
+        return gate.queued if gate is not None else 0
+
+    def has_room(self, provider_id: int) -> bool:
+        """A request sent to the provider now would not wait for a slot."""
+        return self.capacity.has_room(provider_id)
 
     def active_requests(self, provider_id: int) -> int:
         return self._active_requests.get(provider_id, 0)

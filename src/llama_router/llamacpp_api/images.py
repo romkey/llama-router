@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from ..auth import route_within_cap, routing_preferences_from_request
+from ..capacity import ProviderAtCapacity
 from ..httpx_errors import describe_httpx_error, forward_upstream_http_error
 from ..limits import upstream_slot
 from ..proxy import proxy_json
@@ -60,7 +61,7 @@ async def images_edits(request: Request) -> Response:
     start = time.monotonic()
     slot = await upstream_slot(request, prefs)
     try:
-        async with slot, pm.acquire_provider(provider_id):
+        async with slot, pm.acquire_provider(provider_id, deadline=slot.deadline):
             client = get_v1_client(pm, provider_id)
             resp = await client.images_edits(upstream)
             duration = (time.monotonic() - start) * 1000
@@ -81,6 +82,8 @@ async def images_edits(request: Request) -> Response:
                 status_code=resp.status_code,
                 media_type=resp.headers.get("content-type", "application/json"),
             )
+    except ProviderAtCapacity:
+        raise  # never sent: not the provider's failure
     except httpx.HTTPStatusError as exc:
         duration = (time.monotonic() - start) * 1000
         logger.warning(

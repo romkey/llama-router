@@ -29,6 +29,7 @@ from ...provider_secrets import format_extra_headers, parse_extra_headers
 from .. import deps
 from ..auth_core import _cookie_secure
 from ..form_values import (
+    _max_concurrent,
     _model_filter,
     _model_lines,
     _parse_locality,
@@ -352,6 +353,7 @@ async def edit_provider(
     model_filter: str | None = Form(None),
     read_timeout_s: str | None = Form(None),
     auto_benchmark: str | None = Form(None),
+    max_concurrent: str | None = Form(None),
 ):
     """Edit provider details. A blank API key keeps the stored one.
 
@@ -368,6 +370,7 @@ async def edit_provider(
             settings_["model_filter"] = _model_filter(model_filter)
             settings_["read_timeout_s"] = _timeout(read_timeout_s)
             settings_["auto_benchmark"] = _tristate(auto_benchmark)
+            settings_["max_concurrent"] = _max_concurrent(max_concurrent)
         if locality:
             settings_["locality"] = _parse_locality(locality)
     except ValueError as exc:

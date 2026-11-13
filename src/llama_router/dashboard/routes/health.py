@@ -39,6 +39,7 @@ async def metrics() -> PlainTextResponse:
         hub=pm.worker_hub,
         worker_link=await deps.get_worker_link().status(),
         auto_benchmark=deps.auto_benchmark_if_running(),
+        capacity=pm.capacity,
     )
     return PlainTextResponse(
         metrics_mod.render(families), media_type=metrics_mod.CONTENT_TYPE

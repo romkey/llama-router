@@ -148,8 +148,8 @@
                             <p class="mb-1" data-card-hot style="{% if not hot_names %}display:none{% endif %}">
                                 <span class="badge bg-danger bg-opacity-75 rounded-pill"><i class="bi bi-fire me-1"></i><span data-hot-count>{{ hot_names | length }}</span> hot</span>
                             </p>
-                            <p class="text-warning mb-1" data-card-active style="{% if info.active_requests == 0 %}display:none{% endif %}">
-                                <i class="bi bi-activity me-1"></i><span>{{ info.active_requests }}</span> active request{{ 's' if info.active_requests != 1 }}
+                            <p class="text-warning mb-1" data-card-active style="{% if info.active_requests == 0 and not info.queued_requests %}display:none{% endif %}">
+                                <i class="bi bi-activity me-1"></i><span>{{ info.active_requests }}</span>{% if info.provider.max_concurrent %}/{{ info.provider.max_concurrent }}{% endif %} active request{{ 's' if info.active_requests != 1 }}{% if info.queued_requests %}, {{ info.queued_requests }} queued{% endif %}
                             </p>
                             {% if info.models %}
                             <div class="mt-2">
@@ -3069,9 +3069,12 @@ function updateDashboard(data) {
 
         const activeEl = card.querySelector('[data-card-active]');
         if (activeEl) {
-            if (p.active_requests > 0) {
+            if (p.active_requests > 0 || p.queued_requests > 0) {
                 activeEl.style.display = '';
-                activeEl.innerHTML = '<i class="bi bi-activity me-1"></i><span>' + esc(p.active_requests) + '</span> active request' + (p.active_requests !== 1 ? 's' : '');
+                activeEl.innerHTML = '<i class="bi bi-activity me-1"></i><span>' + esc(p.active_requests) + '</span>'
+                    + (p.max_concurrent ? '/' + esc(p.max_concurrent) : '')
+                    + ' active request' + (p.active_requests !== 1 ? 's' : '')
+                    + (p.queued_requests > 0 ? ', ' + esc(p.queued_requests) + ' queued' : '');
             } else {
                 activeEl.style.display = 'none';
             }

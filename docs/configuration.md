@@ -101,7 +101,7 @@ turns the limit off.
 | `MAX_TOKENS_CAP` | `32768` | `max_tokens`, `max_completion_tokens`, `max_output_tokens` and Ollama's `options.num_predict` are lowered to this (a negative, unlimited `num_predict` too). Absent fields are left absent |
 | `UPSTREAM_MAX_CONCURRENCY` | `256` | Upstream calls in flight at once across all clients |
 | `UPSTREAM_MAX_CONCURRENCY_PER_KEY` | `32` | Upstream calls in flight at once for one API key. Requests without a key share only the global limit |
-| `UPSTREAM_QUEUE_TIMEOUT_SECONDS` | `30` | When those are full, a request waits this long (never past its deadline) for a slot, then gets 429 with `Retry-After` |
+| `UPSTREAM_QUEUE_TIMEOUT_SECONDS` | `30` | When those are full, or every provider that can serve it is at its "Max concurrent requests" (set per provider in the dashboard), a request waits this long (never past its deadline) for a slot, then gets 429 with `Retry-After` |
 | `MAX_STREAMS_PER_KEY` | `16` | Streamed responses open at once for one API key; one more gets 429 straight away |
 | `UPSTREAM_FAILOVER_ATTEMPTS` | `1` | Other providers one request may try when its provider fails before anything reached the client: a connect error, a connect or pool timeout, or HTTP 429, 502 or 503. Never after a read timeout or the first streamed chunk, after other 4xx answers or upstream 401/403, for a strict-pinned model, or for a hub request for one provider. Every attempt is routed and checked again (model access, locality, spend cap, hub scope), within one upstream slot and the request deadline. `0` turns failover off |
 | `REQUEST_DEADLINE_SECONDS` | `1800` | A proxied request must finish this long after it arrives. Before the response starts it gets 504; a stream already under way is ended |

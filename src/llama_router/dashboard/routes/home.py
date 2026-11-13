@@ -312,6 +312,8 @@ def _provider_status_payload(info: Any, *, admin: bool = True) -> dict[str, Any]
         "model_count": len(info.models),
         "model_names": sorted({m.name for m in info.models}),
         "active_requests": info.active_requests,
+        "max_concurrent": info.provider.max_concurrent,
+        "queued_requests": info.queued_requests,
         "hot_models": info.hot_models,
         "worker": info.worker if admin else _redacted_worker(info.worker),
         "addresses": [

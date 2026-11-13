@@ -27,6 +27,7 @@ from .auth import (
     route_within_cap,
     routing_preferences_from_request,
 )
+from .capacity import ProviderAtCapacity, SlotGate
 from .client_address import client_ip
 from .config import settings
 from .database import Database
@@ -167,10 +168,15 @@ async def proxy_json(
                 # Usage in the stream's last event lets the request be costed.
                 hide_usage = ask_stream_usage(body, provider) if stream_usage else False
                 held = failover.reservation()
+                # Waits in line when the provider is at its max_concurrent
+                # limit; the stream holds the slot until it ends.
+                gate = await pm.take_slot(provider_id, slot.deadline)
 
-                async def chunks(pid: int = provider_id) -> AsyncIterator[bytes]:
+                async def chunks(
+                    pid: int = provider_id, gate: SlotGate | None = gate
+                ) -> AsyncIterator[bytes]:
                     try:
-                        async with pm.acquire_provider(pid):
+                        async with pm.acquire_provider(pid, slot=gate, slot_taken=True):
                             async for chunk in slot.stream(
                                 stream_call(client(pid), body)
                             ):
@@ -224,8 +230,11 @@ async def proxy_json(
                 held = failover.reservation()
                 start = time.monotonic()
                 try:
-                    async with pm.acquire_provider(provider_id):
+                    async with pm.acquire_provider(provider_id, deadline=slot.deadline):
                         reply = await call(client(provider_id), body)
+                except ProviderAtCapacity:
+                    # Not the provider's failure: it was never sent the request.
+                    raise
                 except Exception as exc:
                     rt.forget_session(session)
                     _log_failure(

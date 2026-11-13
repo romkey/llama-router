@@ -40,6 +40,10 @@ All names start with `llama_router_`. Provider metrics carry the labels
 | `provider_probe_failure_rate` | gauge | provider | Share of recent health checks the provider failed (0..1) |
 | `provider_circuit_open` | gauge | provider | 1 while the provider is skipped for failing too often |
 | `provider_rate_limited_seconds` | gauge | provider | Seconds left of a cooldown after HTTP 429 |
+| `provider_max_concurrent` | gauge | provider | Concurrent-request limit (only providers with one) |
+| `provider_queued_requests` | gauge | provider | Requests waiting for a slot on a provider with a limit |
+| `provider_queue_timeouts_total` | counter | provider | Requests refused (429) after waiting too long for a slot |
+| `provider_queue_wait_seconds` | histogram | provider | Time requests waited for a slot on a provider with a limit |
 | `address_up` | gauge | provider, `url` | 1 when the address answered its last health check |
 | `address_rtt_milliseconds` | gauge | provider, `url` | Moving-average health-check round trip |
 | `address_health_checks_total` | counter | provider, `url` | Health checks run |
