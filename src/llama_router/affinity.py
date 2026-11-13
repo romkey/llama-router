@@ -162,7 +162,10 @@ def session_key(
             b"id\x00" + explicit.encode("utf-8", "surrogatepass"), digest_size=16
         ).hexdigest()
     elif "messages" in body:
-        digest = _fingerprint(_chat_parts(body.get("messages")))
+        # Anthropic Messages keeps its system prompt beside the messages.
+        system = body.get("system")
+        lead = ["system", *_texts(system)] if system else []
+        digest = _fingerprint([*lead, *_chat_parts(body.get("messages"))])
     elif "input" in body or "instructions" in body:
         digest = _fingerprint(_responses_parts(body))
     elif "prompt" in body:

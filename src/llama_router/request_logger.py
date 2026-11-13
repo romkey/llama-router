@@ -21,7 +21,7 @@ from .background import on_drain
 from .client_address import client_ip
 from .config import settings
 from .database import Database
-from .endpoints import endpoint_class
+from .endpoints import UNMETERED, endpoint_class, normalize_endpoint
 from .httpx_errors import describe_httpx_error, forward_upstream_http_error
 from .json_io import json_size
 from .limits import DeadlineExceeded
@@ -78,6 +78,9 @@ _COMPLETION_TOKEN_RES = tuple(
         rb'"eval_count"\s*:\s*(\d+)',
     )
 )
+# Bytes kept from the start of a Messages stream (its message_start).
+_HEAD_BYTES = 8192
+MESSAGES_PATH = "/v1/messages"
 # Chunks kept from the end of a stream to read those fields from.
 _TAIL_CHUNKS = 3
 # Request fields that cap the length of the answer.
@@ -111,6 +114,11 @@ def usage_from_body(body: Any) -> tuple[int | None, int | None]:
     usage = body.get("usage")
     if isinstance(usage, dict):
         prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        if isinstance(prompt, int) and "input_tokens" in usage:
+            # Anthropic counts cached prompt tokens apart from input_tokens.
+            prompt += sum(
+                v for k in _CACHE_TOKEN_FIELDS if isinstance(v := usage.get(k), int)
+            )
         completion = usage.get("completion_tokens", usage.get("output_tokens"))
         if isinstance(prompt, int) or isinstance(completion, int):
             return (
@@ -124,6 +132,39 @@ def usage_from_body(body: Any) -> tuple[int | None, int | None]:
             completion if isinstance(completion, int) else None,
         )
     return None, None
+
+
+_CACHE_TOKEN_FIELDS = ("cache_creation_input_tokens", "cache_read_input_tokens")
+_CACHE_TOKEN_RES = tuple(
+    re.compile(rb'"' + f.encode() + rb'"\s*:\s*(\d+)') for f in _CACHE_TOKEN_FIELDS
+)
+_INPUT_TOKENS_RE = re.compile(rb'"input_tokens"\s*:\s*(\d+)')
+_OUTPUT_TOKENS_RE = re.compile(rb'"output_tokens"\s*:\s*(\d+)')
+# Where an Anthropic Messages stream's text starts (its time to first token).
+CONTENT_DELTA = b"content_block_delta"
+
+
+def usage_from_messages_stream(
+    head: bytes, tail: bytes
+) -> tuple[int | None, int | None]:
+    """(prompt, completion) tokens of an Anthropic Messages stream: input
+    tokens (and cached ones) are in its first event, ``message_start``;
+    output tokens in its last, ``message_delta``. Read with the byte
+    patterns, never by decoding every event."""
+
+    def first(pattern: re.Pattern[bytes], data: bytes) -> int | None:
+        m = pattern.search(data)
+        return int(m.group(1)) if m else None
+
+    prompt = first(_INPUT_TOKENS_RE, head)
+    if prompt is not None:
+        prompt += sum(first(r, head) or 0 for r in _CACHE_TOKEN_RES)
+    found = _OUTPUT_TOKENS_RE.findall(tail)
+    completion = int(found[-1]) if found else None
+    if prompt is None:
+        # A message_delta may restate the input count.
+        prompt = first(_INPUT_TOKENS_RE, tail)
+    return prompt, completion
 
 
 def usage_from_tail(tail: bytes) -> tuple[int | None, int | None]:
@@ -641,7 +682,12 @@ def _build_entry(
     if price is not None:
         if prompt_tokens is not None or completion_tokens is not None:
             cost = price.cost(prompt_tokens, completion_tokens)
-        elif status == "ok" and provider is not None and provider.is_cloud:
+        elif (
+            status == "ok"
+            and provider is not None
+            and provider.is_cloud
+            and normalize_endpoint(endpoint) not in UNMETERED
+        ):
             if spend_reservation is not None:
                 cost = spend_reservation.amount
             else:
@@ -938,6 +984,11 @@ class StreamLogger:
         self._total_bytes = 0
         self._first_chunk_at: float | None = None
         self._tail: deque[bytes] = deque(maxlen=_TAIL_CHUNKS)
+        # An Anthropic Messages stream reports input tokens in its first
+        # event and starts its text at the first content delta.
+        self._messages = endpoint.startswith(MESSAGES_PATH)
+        self._head = b""
+        self._first_content_at: float | None = None
         # Keep the usage-only event the router asked for from the client;
         # it is still read for token counts (see ask_stream_usage).
         self._filter = _UsageChunkFilter() if hide_usage else None
@@ -951,6 +1002,11 @@ class StreamLogger:
                     self._first_chunk_at = time.monotonic()
                 self._total_bytes += len(chunk)
                 self._tail.append(chunk)
+                if self._messages:
+                    if len(self._head) < _HEAD_BYTES:
+                        self._head += chunk[: _HEAD_BYTES - len(self._head)]
+                    if self._first_content_at is None and CONTENT_DELTA in chunk:
+                        self._first_content_at = time.monotonic()
                 if self._filter is None:
                     yield chunk
                     continue
@@ -987,9 +1043,17 @@ class StreamLogger:
             tps = None
             prompt_tps = None
             tail = b"".join(self._tail)
-            prompt_tokens, completion_tokens = usage_from_tail(tail)
-            if self._first_chunk_at is not None:
-                ttft_ms = (self._first_chunk_at - self._start) * 1000
+            if self._messages:
+                prompt_tokens, completion_tokens = usage_from_messages_stream(
+                    self._head, tail
+                )
+            else:
+                prompt_tokens, completion_tokens = usage_from_tail(tail)
+            first_token_at = (
+                self._first_content_at if self._messages else self._first_chunk_at
+            )
+            if first_token_at is not None and self._first_chunk_at is not None:
+                ttft_ms = (first_token_at - self._start) * 1000
                 if status == "ok":
                     tps = _tps_from_tail(tail, (ended - self._first_chunk_at) * 1000)
                     prompt_tps = _prompt_tps_from_tail(tail)

@@ -16,6 +16,7 @@ from .alerts import alerts
 from .background import spawn
 from .database import AUTH_CHANGES, CHANGE_GROUPS, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
+from .endpoints import UNMETERED, normalize_endpoint
 from .provider_secrets import (
     key_hash,
     key_hash_legacy,
@@ -508,8 +509,10 @@ async def route_within_cap(
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
-    await charge_quotas(db, request, prefs)
-    if prefs is not None:
+    metered = normalize_endpoint(path) not in UNMETERED
+    if metered:
+        await charge_quotas(db, request, prefs)
+    if prefs is not None and metered:
         await reserve_tokens(
             db,
             request,
@@ -547,6 +550,7 @@ async def route_within_cap(
         or prefs.key_id is None
         or spend_cap_of(prefs) is None
         or not result.provider.is_cloud
+        or not metered
     ):
         return result
     cap = prefs.daily_spend_cap_usd
@@ -608,14 +612,16 @@ def _strictly_pinned(prefs: RoutingPreferences, result: RouteResult) -> bool:
 
 
 def client_api_key(request: Request) -> str:
-    """The client's key from ``API-KEY``, else ``Authorization: Bearer``.
+    """The client's key from ``API-KEY``, ``x-api-key`` (the Anthropic SDK
+    and Claude Code), else ``Authorization: Bearer``.
 
     OpenAI-compatible clients such as Open WebUI and the OpenAI SDKs can only
-    send Bearer. Neither header is forwarded upstream.
+    send Bearer. None of these headers is forwarded upstream.
     """
-    key = (request.headers.get("API-KEY") or "").strip()
-    if key:
-        return key
+    for name in ("API-KEY", "x-api-key"):
+        key = (request.headers.get(name) or "").strip()
+        if key:
+            return key
     raw = (request.headers.get("authorization") or "").strip()
     scheme, _, token = raw.partition(" ")
     return token.strip() if scheme.lower() == "bearer" else ""

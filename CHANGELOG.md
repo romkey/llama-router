@@ -9,6 +9,20 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Anthropic Messages pass-through**: `POST /v1/messages` and
+  `POST /v1/messages/count_tokens` on the OpenAI API port go unchanged to a
+  provider whose last probe found the route (never translated; unknown or
+  missing leaves the provider out, and with none the request gets 404).
+  Clients authenticate with `x-api-key` (as Claude Code and the Anthropic
+  SDK do), which is never forwarded; `anthropic-version` and
+  `anthropic-beta` are. The body keeps everything but `model` (the backend's
+  name) and a clamped `max_tokens`; replies and stream bytes are relayed as
+  is. Tokens (cached input included) and cost are logged for plain and
+  streamed replies, time to first token from the first content delta.
+  Router errors on these routes have Anthropic's error shape. Session
+  affinity includes the top-level `system`. `count_tokens` is not counted
+  against quotas. See docs/overview.md for pointing Claude Code at the
+  router and mapping `claude-*` names.
 - **Webhook alerts**: `LLAMA_ROUTER_ALERT_WEBHOOK_URL` (empty, the default,
   is off) receives a JSON POST `{event, time, text, details}` when a
   provider goes offline or comes back, a model loses its last online
