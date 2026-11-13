@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-13
+
 ### Added
 
 - **Anthropic Messages pass-through**: `POST /v1/messages` and
