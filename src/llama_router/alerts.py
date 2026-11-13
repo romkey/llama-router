@@ -82,6 +82,7 @@ class Alerts:
         self._sent: dict[tuple[str, str], float] = {}
         # Last provider states seen and models served, to report changes.
         self._provider_online: dict[int, bool] = {}
+        self._unknown: set[int] = set()
         self._served: set[str] | None = None
         self.delivered = 0
         self.failed = 0
@@ -96,6 +97,7 @@ class Alerts:
     def reset(self) -> None:
         self._sent.clear()
         self._provider_online.clear()
+        self._unknown.clear()
         self._served = None
         self.delivered = self.failed = self.dropped = 0
         self._queue = None
@@ -213,6 +215,14 @@ class Alerts:
         before this write (None: never checked), so the first change after a
         restart is reported too; a provider seen for the first time sets the
         baseline."""
+        if provider_id in self._unknown:
+            # Its state is unknown (a worker at start-up): being marked
+            # offline until it dials in is no outage, and dialling in sets
+            # the baseline.
+            if online:
+                self._unknown.discard(provider_id)
+                self._provider_online[provider_id] = online
+            return
         before = self._provider_online.get(provider_id, was)
         self._provider_online[provider_id] = online
         if before is None or before == online:
@@ -224,6 +234,13 @@ class Alerts:
             f"Provider {name} is {'back online' if online else 'offline'}",
             {"provider_id": provider_id, "provider": name},
         )
+
+    def forget_provider(self, provider_id: int) -> None:
+        """Treat the provider's state as unknown: its next state (a worker
+        marked offline at start-up, then online when it dials in) only sets
+        the baseline."""
+        self._provider_online.pop(provider_id, None)
+        self._unknown.add(provider_id)
 
     def models_served(self, served: set[str]) -> None:
         """The models some online provider serves; alerts on each one that

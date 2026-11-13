@@ -212,3 +212,17 @@ async def test_first_change_after_restart_is_reported(db: Database, hook: Hook) 
     alerts.reset()  # a restart: nothing in memory
     await db.update_provider_status(pid, ProviderStatus.OFFLINE)
     assert await _events(hook) == ["provider_offline"]
+
+
+async def test_worker_marked_offline_at_start_up_is_no_outage(
+    db: Database, hook: Hook
+) -> None:
+    p = await db.add_provider("w", ProviderProtocol.OLLAMA)
+    pid = p.require_id()
+    await db.update_provider_status(pid, ProviderStatus.IDLE)
+    alerts.reset()  # restart
+    alerts.forget_provider(pid)
+    await db.update_provider_status(pid, ProviderStatus.OFFLINE)  # start-up
+    await db.update_provider_status(pid, ProviderStatus.IDLE)  # dials in
+    await db.update_provider_status(pid, ProviderStatus.OFFLINE)  # real outage
+    assert await _events(hook) == ["provider_offline"]
