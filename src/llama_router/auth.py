@@ -13,16 +13,21 @@ from typing import Any
 from fastapi import HTTPException, Request
 
 from .background import spawn
-from .config import settings
 from .database import AUTH_CHANGES, CHANGE_GROUPS, CHANGE_PROVIDERS, Database
 from .decision_policy import DecisionPolicy, parse_policy
-from .pricing import estimate_tokens
 from .provider_secrets import (
     key_hash,
     key_hash_legacy,
     key_hash_pbkdf2,
     key_hash_previous,
     pbkdf2_peppers,
+)
+from .quotas import (
+    check_rate,
+    check_tokens_left,
+    limits_for_user,
+    reserve_tokens,
+    token_estimate,
 )
 from .router import (
     ROUTING_MODES,
@@ -231,6 +236,8 @@ async def _resolve_key(
     if mode not in ROUTING_MODES:
         mode = DEFAULT_MODE
     pins = await db.list_api_key_model_pins(int(record["id"]))
+    owner = record.get("owner_user_id")
+    user_limits = await limits_for_user(db, owner)
     prefs = RoutingPreferences(
         mode=mode,
         allow_fallback=bool(record["allow_fallback"]),
@@ -242,6 +249,12 @@ async def _resolve_key(
         daily_spend_cap_usd=record.get("daily_spend_cap_usd"),
         decision_policy=await _decision_policy(db, int(record["id"])),
         access=await model_access(db, int(record["id"])),
+        owner_user_id=owner,
+        daily_token_limit=record.get("daily_token_limit"),
+        requests_per_minute=record.get("requests_per_minute"),
+        user_daily_token_limit=user_limits.daily_token_limit,
+        user_requests_per_minute=user_limits.requests_per_minute,
+        user_daily_spend_cap_usd=user_limits.daily_spend_cap_usd,
     )
     return prefs, int(record["id"])
 
@@ -332,23 +345,77 @@ async def routing_preferences_from_request(
         )
     if prefs is not None and prefs.key_id is not None:
         request.state.api_key_id = prefs.key_id
-        prefs = await _apply_spend_cap(db, prefs)
+        if prefs.owner_user_id is not None:
+            request.state.quota_user_id = prefs.owner_user_id
+        prefs = await apply_quotas(db, prefs)
     return prefs
+
+
+async def apply_quotas(db: Database, prefs: RoutingPreferences) -> RoutingPreferences:
+    """Per-minute rates, daily tokens and spend caps of the key and its
+    owner: refuse a request past a limit (429), or narrow it to local
+    providers past a spend cap. Arithmetic only once today's totals are
+    loaded."""
+    owner = prefs.owner_user_id
+    check_rate(
+        db,
+        key_id=prefs.key_id,
+        key_rpm=prefs.requests_per_minute,
+        user_id=owner,
+        user_rpm=prefs.user_requests_per_minute,
+    )
+    await check_tokens_left(
+        db,
+        key_id=prefs.key_id,
+        key_limit=prefs.daily_token_limit,
+        user_id=owner,
+        user_limit=prefs.user_daily_token_limit,
+    )
+    return await _apply_spend_cap(db, prefs)
+
+
+def spend_cap_of(prefs: RoutingPreferences) -> float | None:
+    """The tighter of the key's and its owner's daily spend caps."""
+    caps = [
+        c
+        for c in (
+            prefs.daily_spend_cap_usd,
+            prefs.user_daily_spend_cap_usd if prefs.owner_user_id is not None else None,
+        )
+        if c is not None
+    ]
+    return min(caps) if caps else None
 
 
 async def _apply_spend_cap(
     db: Database, prefs: RoutingPreferences
 ) -> RoutingPreferences:
-    """A key over its daily cap is limited to local providers, which cost
-    nothing; a cloud-only key over its cap is refused until the next UTC day."""
+    """A key over its daily cap, or whose owner is over theirs, is limited
+    to local providers, which cost nothing; a cloud-only key is refused
+    until the next UTC day."""
+    tracker = tracker_for(db)
     cap = prefs.daily_spend_cap_usd
-    if cap is None or prefs.key_id is None:
-        return prefs
-    spent = await tracker_for(db).committed_today(prefs.key_id)
-    if spent < cap:
+    over: tuple[float, str] | None = None
+    if (
+        cap is not None
+        and prefs.key_id is not None
+        and await tracker.committed_today(prefs.key_id) >= cap
+    ):
+        over = (cap, "this API key")
+    user_cap = prefs.user_daily_spend_cap_usd
+    if (
+        over is None
+        and user_cap is not None
+        and prefs.owner_user_id is not None
+        and await tracker.user_committed_today(prefs.owner_user_id) >= user_cap
+    ):
+        over = (user_cap, "this user")
+    if over is None:
         return prefs
     if prefs.locality == "cloud":
-        raise cap_reached(cap)
+        which = "key_spend" if over[1] == "this API key" else "user_spend"
+        tracker.refusals[which] += 1
+        raise cap_reached(over[0], whose=over[1])
     return replace(prefs, locality="local", spend_capped=True)
 
 
@@ -401,8 +468,18 @@ async def route_within_cap(
     """
     path = request.url.path
     await require_model_access(rt, prefs, model)
+    if prefs is not None:
+        await reserve_tokens(
+            db,
+            request,
+            body,
+            key_id=prefs.key_id,
+            key_limit=prefs.daily_token_limit,
+            user_id=prefs.owner_user_id,
+            user_limit=prefs.user_daily_token_limit,
+        )
     # Remembered with the session's binding: the prompt its provider caches.
-    prompt_tokens = estimate_tokens(body, 0)[0] if session is not None else 0
+    prompt_tokens = token_estimate(request, body)[0] if session is not None else 0
     try:
         result = await rt.route(
             model,
@@ -417,21 +494,24 @@ async def route_within_cap(
             prefs is not None
             and prefs.spend_capped
             and exc.outside_locality
-            and prefs.daily_spend_cap_usd is not None
+            and spend_cap_of(prefs) is not None
         ):
             # Over the cap the key was narrowed to local providers, which
             # left its strict cloud pin out: the cap refused it, not the pin.
-            raise cap_reached(prefs.daily_spend_cap_usd) from exc
+            raise cap_reached(spend_cap_of(prefs) or 0.0) from exc
         raise
     if (
         result is None
         or prefs is None
         or prefs.key_id is None
-        or prefs.daily_spend_cap_usd is None
+        or spend_cap_of(prefs) is None
         or not result.provider.is_cloud
     ):
         return result
     cap = prefs.daily_spend_cap_usd
+    user_cap = (
+        prefs.user_daily_spend_cap_usd if prefs.owner_user_id is not None else None
+    )
     price = rt.price_for(result.provider.require_id(), result.model_key)
     if price is None:
         if not _is_media_endpoint(path):
@@ -439,17 +519,28 @@ async def route_within_cap(
         status = 403
         reason = f"model '{model}' has no price, so its cost cannot be capped"
     else:
-        estimate = price.cost(
-            *estimate_tokens(body, settings.spend_estimate_completion_tokens)
-        )
+        estimate = price.cost(*token_estimate(request, body))
         if estimate <= 0:
             return result
-        held = await tracker_for(db).reserve(prefs.key_id, cap, estimate)
+        tracker = tracker_for(db)
+        held = await tracker.reserve(
+            prefs.key_id,
+            cap,
+            estimate,
+            user_id=prefs.owner_user_id,
+            user_cap=user_cap,
+        )
         if held is not None:
             setattr(request.state, RESERVATION_STATE, held)
             return result
         status = 429
-        reason = f"daily spend cap of ${cap:.2f} reached for this API key"
+        key_over = (
+            cap is not None
+            and await tracker.committed_today(prefs.key_id) + estimate > cap
+        )
+        shown = cap if key_over or user_cap is None else user_cap
+        whose = "this API key" if key_over or user_cap is None else "this user"
+        reason = f"daily spend cap of ${shown or 0.0:.2f} reached for {whose}"
     local = None
     # A strict pin is never rerouted away from its provider, even to local.
     if prefs.locality != "cloud" and not _strictly_pinned(prefs, result):

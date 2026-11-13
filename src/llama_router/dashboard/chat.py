@@ -30,9 +30,16 @@ from ..config import settings
 from ..database import Database
 from ..httpx_errors import describe_httpx_error
 from ..models import Provider, ProviderStatus
+from ..quotas import (
+    check_rate,
+    check_tokens_left,
+    limits_for_user,
+    reserve_tokens,
+)
 from ..request_logger import STATUS_CANCELLED, log_request_background
 from ..router import Router, RoutingPreferences
 from ..routing_table import RoutingTable, alias_groups
+from ..spend import cap_reached, tracker_for
 from ..v1_client import get_v1_client
 from . import deps
 from .my_keys import self_service_defaults
@@ -349,6 +356,7 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
     )
     provider, backend_model = target.provider, target.backend_model
     pid = provider.require_id()
+    await _check_quota(db, request, uid, provider, content)
     # Reopening the chat brings back the choice made, not the router's pick.
     chosen_pid = pid if target.chosen else None
     answered_by = model if target.served == model else f"{model} → {target.served}"
@@ -409,6 +417,55 @@ async def _start_turn(request: Request, body: dict[str, Any]) -> Turn:
         upstream,
         log,
         _is_admin(request),
+    )
+
+
+async def _check_quota(
+    db: Database,
+    request: Request,
+    uid: int | None,
+    provider: Provider,
+    content: str,
+) -> None:
+    """Count a chat turn against the signed-in user's quotas, as their API
+    keys' requests are: per-minute rate, daily tokens (an estimate held
+    until the reply is logged) and, on a cloud provider, the daily spend
+    cap. The request log records the turn under the user."""
+    if uid is None:
+        return
+    request.state.quota_user_id = uid
+    limits = await limits_for_user(db, uid)
+    check_rate(
+        db,
+        key_id=None,
+        key_rpm=None,
+        user_id=uid,
+        user_rpm=limits.requests_per_minute,
+    )
+    await check_tokens_left(
+        db,
+        key_id=None,
+        key_limit=None,
+        user_id=uid,
+        user_limit=limits.daily_token_limit,
+    )
+    cap = limits.daily_spend_cap_usd
+    if (
+        provider.is_cloud
+        and cap is not None
+        and await tracker_for(db).user_committed_today(uid) >= cap
+    ):
+        raise cap_reached(cap, whose="this user")
+    # Estimated from the new message; the whole history is counted when the
+    # reply's usage is logged.
+    await reserve_tokens(
+        db,
+        request,
+        {"messages": [{"role": "user", "content": content}]},
+        key_id=None,
+        key_limit=None,
+        user_id=uid,
+        user_limit=limits.daily_token_limit,
     )
 
 

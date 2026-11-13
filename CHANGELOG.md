@@ -9,6 +9,26 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Per-user quotas**: on the Users tab an admin sets, per user, tokens per
+  UTC day (prompt plus completion, local and cloud), requests per minute
+  (a fixed one-minute window) and a daily spend cap in USD across all of the
+  user's keys; blank follows **Default limits for users** on the same tab
+  (unlimited until set), and **Reset to default** clears a user's own. A key
+  may carry a tighter token or rate limit of its own (`daily_token_limit`,
+  `requests_per_minute` in `PATCH /api/keys/{id}`; owners may lower theirs
+  on **My API keys**, not raise or clear them); whichever is hit first
+  applies. Past a token or rate limit requests get 429 with `Retry-After`
+  and a body naming the limit and when it resets; past the spend cap a key
+  uses local providers only, and a cloud-only key gets 429, as with a key's
+  own cap. Keys without an owner have key-level limits only. Dashboard chat
+  counts against the signed-in user. A request's estimated tokens are held
+  until it is logged, so concurrent requests cannot jointly pass a limit;
+  usage is kept in memory, loaded from the request log at start-up and
+  recorded there under the new `request_log.user_id`, so revoking and
+  reissuing a key does not reset it. **My API keys** shows usage against the
+  limits; `GET /api/users/usage` lists every user's; new metrics
+  `llama_router_user_tokens_today`, `..._user_spend_today_usd`, the users'
+  limits and `llama_router_quota_refusals_total` by limit.
 - **Queue order follows the routing mode**: requests waiting for an upstream
   slot (the global and per-key limits) or a provider's "Max concurrent
   requests" slot are served by level, first come first served within one:

@@ -11,7 +11,10 @@ from fastapi.responses import (
 from ... import __version__
 from ... import metrics as metrics_mod
 from ...config import settings
+from ...quotas import default_limits, effective_limits
+from ...spend import tracker_for
 from .. import deps
+from ..form_values import _utc_day_start
 
 router = APIRouter()
 
@@ -32,6 +35,17 @@ async def metrics() -> PlainTextResponse:
     if not settings.metrics_enabled:
         raise HTTPException(status_code=404, detail="Metrics are disabled")
     pm = deps.get_pm()
+    db = deps.get_db()
+    defaults = await default_limits(db)
+    usage = await db.usage_by_since(_utc_day_start(), "user_id")
+    users = [
+        {
+            **u,
+            "limits": effective_limits(u, defaults).to_dict(),
+            "usage": usage.get(int(u["id"]), (0.0, 0)),
+        }
+        for u in await db.list_dashboard_users()
+    ]
     families = metrics_mod.collect(
         await pm.list_provider_infos(),
         pm.stats,
@@ -40,6 +54,7 @@ async def metrics() -> PlainTextResponse:
         worker_link=await deps.get_worker_link().status(),
         auto_benchmark=deps.auto_benchmark_if_running(),
         capacity=pm.capacity,
+        quotas=(tracker_for(db), users),
     )
     return PlainTextResponse(
         metrics_mod.render(families), media_type=metrics_mod.CONTENT_TYPE

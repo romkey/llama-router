@@ -171,6 +171,7 @@ def collect(
     worker_link: dict[str, Any] | None = None,
     auto_benchmark: Any = None,
     capacity: Any = None,
+    quotas: Any = None,
 ) -> list[Family]:
     """Build every metric family from the router's current state.
 
@@ -504,6 +505,62 @@ def collect(
                 gate.waits.cumulative(), gate.waits.total, gate.waits.count, **labels
             )
         families += [limit_fam, queued, refused, waits]
+
+    if quotas is not None:
+        tracker, users = quotas
+        tokens = Family(
+            "user_tokens_today",
+            "gauge",
+            "Prompt and completion tokens a dashboard user's keys and chats "
+            "used this UTC day.",
+        )
+        spend = Family(
+            "user_spend_today_usd", "gauge", "USD a dashboard user spent this UTC day."
+        )
+        token_limit = Family(
+            "user_daily_token_limit",
+            "gauge",
+            "A dashboard user's daily token limit (users with one).",
+        )
+        rpm_limit = Family(
+            "user_requests_per_minute_limit",
+            "gauge",
+            "A dashboard user's requests-per-minute limit (users with one).",
+        )
+        spend_limit = Family(
+            "user_daily_spend_cap_usd",
+            "gauge",
+            "A dashboard user's daily spend cap (users with one).",
+        )
+        for user in users:
+            uid = int(user["id"])
+            labels = {"user": user["username"], "user_id": uid}
+            cost, used = user.get("usage") or (0.0, 0)
+            tokens.add(int(used), **labels)
+            spend.add(float(cost), **labels)
+            limits = user["limits"]
+            if limits.get("daily_token_limit") is not None:
+                token_limit.add(limits["daily_token_limit"], **labels)
+            if limits.get("requests_per_minute") is not None:
+                rpm_limit.add(limits["requests_per_minute"], **labels)
+            if limits.get("daily_spend_cap_usd") is not None:
+                spend_limit.add(limits["daily_spend_cap_usd"], **labels)
+        refusals = Family(
+            "quota_refusals_total",
+            "counter",
+            "Requests refused (429) by a quota since start-up, by limit: "
+            "key_tokens, user_tokens, key_rpm, user_rpm, key_spend, user_spend.",
+        )
+        for name in (
+            "key_tokens",
+            "user_tokens",
+            "key_rpm",
+            "user_rpm",
+            "key_spend",
+            "user_spend",
+        ):
+            refusals.add(int(tracker.refusals.get(name, 0)), limit=name)
+        families += [tokens, spend, token_limit, rpm_limit, spend_limit, refusals]
 
     upstream = limiter.global_gate()
     if upstream is not None:

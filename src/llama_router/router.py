@@ -193,6 +193,16 @@ class RoutingPreferences:
     hub_provider: int | None = None
     # The models and groups the API key may use; None: any.
     access: ModelAccess | None = None
+    # The dashboard user who issued the key (or is chatting); their quotas
+    # apply across all their keys. None for ownerless keys.
+    owner_user_id: int | None = None
+    # The key's own quotas (None: none), tighter than the owner's.
+    daily_token_limit: int | None = None
+    requests_per_minute: int | None = None
+    # The owner's quotas, their own or the admin's default (None: none).
+    user_daily_token_limit: int | None = None
+    user_requests_per_minute: int | None = None
+    user_daily_spend_cap_usd: float | None = None
 
 
 class Router:

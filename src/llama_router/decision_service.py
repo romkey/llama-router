@@ -282,7 +282,10 @@ async def check_spend_cap(
     if prefs is None or prefs.key_id is None:
         return
     cap = prefs.daily_spend_cap_usd
-    if cap is None:
+    user_cap = (
+        prefs.user_daily_spend_cap_usd if prefs.owner_user_id is not None else None
+    )
+    if cap is None and user_cap is None:
         return
     price = rt.price_for(
         result.provider.require_id(), result.model_key or request.model
@@ -290,7 +293,20 @@ async def check_spend_cap(
     estimate = estimated_cost(price, request)
     if estimate <= 0:
         return
-    spent = await tracker_for(db).committed_today(prefs.key_id)
+    tracker = tracker_for(db)
+    if user_cap is not None and prefs.owner_user_id is not None:
+        user_spent = await tracker.user_committed_today(prefs.owner_user_id)
+        if user_spent + estimate > user_cap:
+            logger.info(
+                "Refusing a decision request from key %s: its owner would pass "
+                "their $%.2f cap",
+                prefs.key_id,
+                user_cap,
+            )
+            raise cap_reached(user_cap, whose="this user")
+    if cap is None:
+        return
+    spent = await tracker.committed_today(prefs.key_id)
     if spent + estimate > cap:
         logger.info(
             "Refusing a decision request from key %s: $%.4f spent, about $%.4f "

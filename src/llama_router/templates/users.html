@@ -27,6 +27,8 @@
 <div class="alert alert-warning py-2">Single sign-on accounts have no password; they sign in through the identity provider.</div>
 {% elif query_error == 'invalid_username' %}
 <div class="alert alert-warning py-2">Username is not valid.</div>
+{% elif query_error == 'limits' %}
+<div class="alert alert-warning py-2">Limits must be whole numbers of at least 1 (tokens, requests) and a non-negative amount (spend cap).</div>
 {% elif query_error %}
 <div class="alert alert-warning py-2">{{ query_error }}</div>
 {% endif %}
@@ -98,6 +100,7 @@
                                 <th>Role</th>
                                 <th>Sign-in</th>
                                 <th>Last sign-in</th>
+                                <th>Today</th>
                                 <th class="text-end">Actions</th>
                             </tr>
                         </thead>
@@ -114,6 +117,11 @@
                                 <td><span class="badge text-bg-light border" title="{{ signin_detail }}" data-bs-toggle="tooltip" tabindex="0">Local{% if u.mfa_enabled %} <i class="bi bi-shield-check text-success" aria-hidden="true"></i>{% endif %}</span><span class="visually-hidden">: {{ signin_detail }}</span></td>
                                 {% endif %}
                                 <td class="small text-muted text-nowrap">{% if u.last_login_at %}{{ u.last_login_at | when(relative=true) }}{% else %}never{% endif %}</td>
+                                {% set lim = u.limits %}
+                                <td class="small text-nowrap" data-user-usage="{{ u.id }}">
+                                    {{ "{:,}".format(u.usage.tokens) }} tokens{% if lim.daily_token_limit %} / {{ "{:,}".format(lim.daily_token_limit) }}{% endif %}
+                                    <div class="text-muted">${{ "%.2f" | format(u.usage.cost) }}{% if lim.daily_spend_cap_usd is not none %} / ${{ "%.2f" | format(lim.daily_spend_cap_usd) }}{% endif %}{% if lim.requests_per_minute %} · {{ lim.requests_per_minute }}/min{% endif %}</div>
+                                </td>
                                 <td class="text-end text-nowrap">
                                     {% if not u.approved %}
                                     <form method="post" action="/users/{{ u.id }}/approve" class="d-inline">
@@ -133,6 +141,7 @@
                                             {% if u.auth_source != 'oidc' %}
                                             <li><button type="button" class="dropdown-item" data-bs-toggle="collapse" data-bs-target="#pw-{{ u.id }}" aria-controls="pw-{{ u.id }}">Set password</button></li>
                                             {% endif %}
+                                            <li><button type="button" class="dropdown-item" data-bs-toggle="collapse" data-bs-target="#limits-{{ u.id }}" aria-controls="limits-{{ u.id }}">Limits</button></li>
                                             <li><hr class="dropdown-divider"></li>
                                             <li>
                                                 <form method="post" action="/users/{{ u.id }}/delete" data-confirm="Delete user {{ u.username }}?" onsubmit="return confirm(this.dataset.confirm);">
@@ -143,9 +152,32 @@
                                     </div>
                                 </td>
                             </tr>
+                            <tr class="collapse" id="limits-{{ u.id }}">
+                                <td colspan="6" class="bg-body-secondary">
+                                    <form method="post" action="/users/{{ u.id }}/limits" class="row g-2 align-items-end py-2 px-2">
+                                        <div class="col-md-3">
+                                            <label class="form-label small mb-0" for="ltok-{{ u.id }}">Tokens per UTC day</label>
+                                            <input type="number" min="1" step="1" class="form-control form-control-sm" id="ltok-{{ u.id }}" name="daily_token_limit" value="{{ u.own_limits.daily_token_limit or '' }}" placeholder="{{ quota_defaults.daily_token_limit or 'Default: unlimited' }}">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label small mb-0" for="lrpm-{{ u.id }}">Requests per minute</label>
+                                            <input type="number" min="1" step="1" class="form-control form-control-sm" id="lrpm-{{ u.id }}" name="requests_per_minute" value="{{ u.own_limits.requests_per_minute or '' }}" placeholder="{{ quota_defaults.requests_per_minute or 'Default: unlimited' }}">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label small mb-0" for="lusd-{{ u.id }}">Spend cap (USD per UTC day)</label>
+                                            <input type="number" min="0" step="0.01" class="form-control form-control-sm" id="lusd-{{ u.id }}" name="daily_spend_cap_usd" value="{{ u.own_limits.daily_spend_cap_usd if u.own_limits.daily_spend_cap_usd is not none else '' }}" placeholder="{{ quota_defaults.daily_spend_cap_usd if quota_defaults.daily_spend_cap_usd is not none else 'Default: none' }}">
+                                        </div>
+                                        <div class="col-md-3 d-flex gap-2">
+                                            <button type="submit" class="btn btn-sm btn-primary flex-fill">Save</button>
+                                            <button type="submit" class="btn btn-sm btn-outline-secondary flex-fill" name="reset" value="1">Reset to default</button>
+                                        </div>
+                                        <div class="col-12 form-text">Across all of this user's API keys and their dashboard chats. Blank follows the default for users.</div>
+                                    </form>
+                                </td>
+                            </tr>
                             {% if u.auth_source != 'oidc' %}
                             <tr class="collapse" id="pw-{{ u.id }}">
-                                <td colspan="5" class="bg-body-secondary">
+                                <td colspan="6" class="bg-body-secondary">
                                     <form method="post" action="/users/{{ u.id }}/password" class="row g-2 align-items-end py-2 px-2">
                                         <div class="col-md-8">
                                             <label class="form-label small mb-0" for="npw-{{ u.id }}">New password</label>
@@ -171,6 +203,28 @@
 </div>
 
 {% if users_exist %}
+<div class="card mt-4" id="quota-defaults">
+    <div class="card-header"><h2 class="h5 mb-0"><i class="bi bi-speedometer2 me-2"></i>Default limits for users</h2></div>
+    <div class="card-body">
+        <form method="post" action="/users/quota-defaults" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label small mb-0" for="qd-tokens">Tokens per UTC day</label>
+                <input type="number" min="1" step="1" class="form-control form-control-sm" id="qd-tokens" name="daily_token_limit" value="{{ quota_defaults.daily_token_limit or '' }}" placeholder="Unlimited">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small mb-0" for="qd-rpm">Requests per minute</label>
+                <input type="number" min="1" step="1" class="form-control form-control-sm" id="qd-rpm" name="requests_per_minute" value="{{ quota_defaults.requests_per_minute or '' }}" placeholder="Unlimited">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small mb-0" for="qd-usd">Spend cap (USD per UTC day)</label>
+                <input type="number" min="0" step="0.01" class="form-control form-control-sm" id="qd-usd" name="daily_spend_cap_usd" value="{{ quota_defaults.daily_spend_cap_usd if quota_defaults.daily_spend_cap_usd is not none else '' }}" placeholder="None">
+            </div>
+            <div class="col-md-3"><button type="submit" class="btn btn-sm btn-primary w-100">Save defaults</button></div>
+            <div class="col-12 form-text">Apply to every user without limits of their own. A user past their token or rate limit gets HTTP 429; past their spend cap their keys use local providers only (cloud-only keys get 429) until the next UTC day.</div>
+        </form>
+    </div>
+</div>
+
 <div class="card mt-4" id="management-keys">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h2 class="h5 mb-0"><i class="bi bi-shield-lock me-2"></i>Management keys</h2>

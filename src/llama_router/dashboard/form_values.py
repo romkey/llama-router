@@ -32,6 +32,25 @@ def _utc_day_start() -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
 
+def _positive_int(value: Any, what: str) -> int | None:
+    """A whole number of at least 1 from a form or JSON value; blank (or
+    null) is None."""
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{what} must be a whole number")
+    raw = str(value if value is not None else "").strip()
+    if not raw:
+        return None
+    try:
+        number = int(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"{what} must be a whole number"
+        ) from exc
+    if not 1 <= number <= 10**12:
+        raise HTTPException(status_code=400, detail=f"{what} is out of range")
+    return number
+
+
 def _usd(value: Any, what: str) -> float | None:
     """A non-negative USD amount from a form or JSON value; blank is None."""
     raw = str(value if value is not None else "").strip().lstrip("$")
@@ -136,6 +155,8 @@ ADMIN_KEY_FIELDS = (
     "locality",
     "daily_spend_cap_usd",
     "strict_pins",
+    "daily_token_limit",
+    "requests_per_minute",
 )
 # Locality and the spend cap of a self-issued key are an administrator's to
 # set, so its owner can't widen them. Strict pins only ever refuse, so the
@@ -146,6 +167,9 @@ OWNER_KEY_FIELDS = (
     "allow_fallback",
     "session_affinity",
     "strict_pins",
+    # Owners may only tighten their own quotas on a key (see my_keys).
+    "daily_token_limit",
+    "requests_per_minute",
 )
 
 
@@ -170,6 +194,8 @@ _KEY_PARSERS: dict[str, Any] = {
     "locality": _key_locality,
     "daily_spend_cap_usd": lambda v: _usd(v, "daily spend cap"),
     "strict_pins": lambda v: _flag(v, "strict_pins"),
+    "daily_token_limit": lambda v: _positive_int(v, "daily_token_limit"),
+    "requests_per_minute": lambda v: _positive_int(v, "requests_per_minute"),
 }
 
 

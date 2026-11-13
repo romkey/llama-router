@@ -59,6 +59,9 @@
         </div>
     </div>
     <div class="col-lg-8">
+        <div class="card mb-3" id="my-quota-card" hidden>
+            <div class="card-body py-2 small" id="my-quota" aria-live="polite"></div>
+        </div>
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h2 class="h5 mb-0">Your keys</h2>
@@ -75,6 +78,7 @@
                                 <th>Models</th>
                                 <th>Pins</th>
                                 <th title="Spent today (UTC) / daily cap">Spend</th>
+                                <th title="Tokens today (UTC) / the key's own daily limit">Tokens</th>
                                 <th>Created</th>
                                 <th>Last used</th>
                                 <th><span class="visually-hidden">Actions</span></th>
@@ -226,6 +230,20 @@ function localityLabel(l) {
 
 function money(v) { return '$' + Number(v || 0).toFixed(2); }
 
+function renderQuota(q) {
+    var card = document.getElementById('my-quota-card');
+    if (!q) { card.hidden = true; return; }
+    var l = q.limits, u = q.usage, parts = [];
+    function n(v) { return Number(v || 0).toLocaleString(); }
+    parts.push('Today across your keys and chats: ' + n(u.tokens) + ' tokens' + (l.daily_token_limit ? ' of ' + n(l.daily_token_limit) : ''));
+    parts.push(money(u.cost_usd) + (l.daily_spend_cap_usd == null ? '' : ' of ' + money(l.daily_spend_cap_usd)));
+    if (l.requests_per_minute) parts.push(n(u.requests_this_minute) + ' of ' + n(l.requests_per_minute) + ' requests this minute');
+    var limited = l.daily_token_limit || l.requests_per_minute || l.daily_spend_cap_usd != null;
+    document.getElementById('my-quota').textContent = parts.join(' · ') +
+        (limited ? '. Daily limits reset at ' + new Date(q.resets_at).toLocaleString() + '.' : '. No limits apply to you.');
+    card.hidden = false;
+}
+
 function loadMyKeys() {
     fetch('/api/my-keys').then(function(r) {
         if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || r.statusText); });
@@ -236,10 +254,11 @@ function loadMyKeys() {
             'New keys can use ' + ({local: 'local providers only', cloud: 'cloud providers only'}[d.locality] || 'local and cloud providers') +
             (d.daily_spend_cap_usd == null ? '' : ', with a daily spend cap of ' + money(d.daily_spend_cap_usd)) +
             '. An administrator sets these.';
+        renderQuota(data.quota);
         document.getElementById('my-keys-count').textContent = data.keys.length;
         var body = document.getElementById('my-keys-body');
         if (!data.keys.length) {
-            body.innerHTML = '<tr><td colspan="9" class="text-muted small">No keys yet.</td></tr>';
+            body.innerHTML = '<tr><td colspan="10" class="text-muted small">No keys yet.</td></tr>';
             return;
         }
         body.innerHTML = data.keys.map(function(k) {
@@ -251,6 +270,10 @@ function loadMyKeys() {
                 '<td class="small">' + esc(KeyAccess.summary(k)) + '</td>' +
                 '<td class="small text-nowrap">' + esc(pinSummary(k)) + '</td>' +
                 '<td class="small text-nowrap">' + money(k.spent_today_usd) + cap + '</td>' +
+                '<td class="small text-nowrap">' + esc(Number(k.tokens_today || 0).toLocaleString()) +
+                    (k.daily_token_limit ? ' <span class="text-muted">/ ' + esc(Number(k.daily_token_limit).toLocaleString()) + '</span>' : '') +
+                    (k.requests_per_minute ? '<div class="text-muted">' + esc(k.requests_this_minute || 0) + ' / ' + esc(k.requests_per_minute) + ' this minute</div>' : '') +
+                '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.created_at) + '</td>' +
                 '<td class="small text-muted">' + llrTime.html(k.last_used_at) + '</td>' +
                 '<td class="text-end text-nowrap">' +

@@ -12,6 +12,10 @@ from ..config import settings
 from ..models import RequestLog
 from .base import Repository, _utc_datetime
 
+_TOKENS_SUM = (
+    "COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)"
+)
+
 
 class RequestLogRepository(Repository):
     async def save_request_log(self, entry: RequestLog) -> None:
@@ -20,8 +24,8 @@ class RequestLogRepository(Repository):
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
             "router_ms, status, streamed, error_detail, locality, api_key_id, "
-            "prompt_tokens, completion_tokens, cost_usd, routed_model) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "prompt_tokens, completion_tokens, cost_usd, routed_model, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.provider_id,
                 entry.provider_name,
@@ -44,6 +48,7 @@ class RequestLogRepository(Repository):
                 entry.completion_tokens,
                 entry.cost_usd,
                 entry.routed_model,
+                entry.user_id,
             ),
         )
 
@@ -70,6 +75,7 @@ class RequestLogRepository(Repository):
                 "error_detail": e.error_detail,
                 "locality": e.locality,
                 "api_key_id": e.api_key_id,
+                "user_id": e.user_id,
                 "prompt_tokens": e.prompt_tokens,
                 "completion_tokens": e.completion_tokens,
                 "cost_usd": e.cost_usd,
@@ -82,12 +88,12 @@ class RequestLogRepository(Repository):
             "(provider_id, provider_name, protocol, endpoint, source_ip, model, "
             "request_size, response_size, request_meta, duration_ms, ttfb_ms, "
             "router_ms, status, streamed, error_detail, locality, api_key_id, "
-            "prompt_tokens, completion_tokens, cost_usd, routed_model) "
+            "prompt_tokens, completion_tokens, cost_usd, routed_model, user_id) "
             "VALUES (:provider_id, :provider_name, :protocol, :endpoint, "
             ":source_ip, :model, :request_size, :response_size, :request_meta, "
             ":duration_ms, :ttfb_ms, :router_ms, :status, :streamed, "
             ":error_detail, :locality, :api_key_id, :prompt_tokens, "
-            ":completion_tokens, :cost_usd, :routed_model)"
+            ":completion_tokens, :cost_usd, :routed_model, :user_id)"
         )
         sf = self._require_session_factory()
         async with sf() as session, session.begin():
@@ -131,6 +137,48 @@ class RequestLogRepository(Repository):
             (key_id, when),
         )
         return float(row["total"] or 0) if row else 0.0
+
+    async def usage_since(
+        self,
+        since: datetime,
+        *,
+        key_id: int | None = None,
+        user_id: int | None = None,
+    ) -> tuple[float, int]:
+        """(USD, prompt+completion tokens) logged since *since* (UTC) for
+        one API key, or for one user across all their requests."""
+        if key_id is not None:
+            column, value = "api_key_id", key_id
+        elif user_id is not None:
+            column, value = "user_id", user_id
+        else:
+            raise ValueError("usage_since needs key_id or user_id")
+        sql = (
+            "SELECT COALESCE(SUM(cost_usd), 0) AS cost, "  # noqa: S608 - column is one of two fixed names
+            + _TOKENS_SUM
+            + f" AS tokens FROM request_log WHERE {column} = ? AND created_at >= ?"
+        )
+        row = await self._select_one(sql, (value, self._log_time(since)))
+        if not row:
+            return 0.0, 0
+        return float(row["cost"] or 0), int(row["tokens"] or 0)
+
+    async def usage_by_since(
+        self, since: datetime, column: str
+    ) -> dict[int, tuple[float, int]]:
+        """(USD, tokens) since *since* per ``api_key_id`` or ``user_id``."""
+        if column not in ("api_key_id", "user_id"):
+            raise ValueError(column)
+        sql = (
+            f"SELECT {column} AS who, COALESCE(SUM(cost_usd), 0) AS cost, "  # noqa: S608 - column is one of two fixed names
+            + _TOKENS_SUM
+            + f" AS tokens FROM request_log WHERE {column} IS NOT NULL "
+            f"AND created_at >= ? GROUP BY {column}"
+        )
+        rows = await self._select_all(sql, (self._log_time(since),))
+        return {
+            int(r["who"]): (float(r["cost"] or 0), int(r["tokens"] or 0)) for r in rows
+        }
 
     async def spend_by_key_since(self, since: datetime) -> dict[int, float]:
         when = self._log_time(since)

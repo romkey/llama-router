@@ -187,6 +187,28 @@ class DashboardUserRepository(Repository):
             )
         )
 
+    # The per-user quota columns; null follows the admin's default.
+    QUOTA_FIELDS = ("daily_token_limit", "requests_per_minute", "daily_spend_cap_usd")
+
+    @_notifies(CHANGE_API_KEYS)
+    async def set_dashboard_user_limits(
+        self, user_id: int, limits: dict[str, Any]
+    ) -> bool:
+        """Set the user's quotas in *limits* (``QUOTA_FIELDS``; None follows
+        the default). Their keys pick the change up on the next request."""
+        unknown = set(limits) - set(self.QUOTA_FIELDS)
+        if unknown:
+            raise ValueError(f"unknown limits: {sorted(unknown)}")
+        if not limits:
+            return await self.get_dashboard_user_by_id(user_id) is not None
+        names = sorted(limits)
+        assignments = ", ".join(f"{n} = ?" for n in names)
+        sql = "UPDATE dashboard_users SET " + assignments + " WHERE id = ?"  # noqa: S608 - names from QUOTA_FIELDS
+        params = (*[limits[n] for n in names], user_id)
+        if await self._execute_rowcount(sql, params):
+            return True
+        return await self.get_dashboard_user_by_id(user_id) is not None
+
     @_notifies(CHANGE_API_KEYS)
     async def delete_dashboard_user(self, user_id: int) -> None:
         """Delete the user and the API keys they issued to themselves."""
@@ -240,7 +262,8 @@ _DASHBOARD_USER_COLUMNS = (
     "id, username, password_hash, is_admin, created_at, auth_source, "
     "oidc_issuer, oidc_subject, email, display_name, last_login_at, "
     "mfa_enabled, "
-    "session_version, approved"
+    "session_version, approved, "
+    "daily_token_limit, requests_per_minute, daily_spend_cap_usd"
 )
 
 
@@ -260,4 +283,15 @@ def _row_to_dashboard_user(row: Mapping[str, Any]) -> dict[str, Any]:
         "mfa_enabled": bool(row["mfa_enabled"]),
         "session_version": int(row["session_version"] or 0),
         "approved": bool(row["approved"]),
+        "daily_token_limit": _opt_int(row.get("daily_token_limit")),
+        "requests_per_minute": _opt_int(row.get("requests_per_minute")),
+        "daily_spend_cap_usd": (
+            None
+            if row.get("daily_spend_cap_usd") is None
+            else float(row["daily_spend_cap_usd"])
+        ),
     }
+
+
+def _opt_int(value: Any) -> int | None:
+    return None if value is None else int(value)

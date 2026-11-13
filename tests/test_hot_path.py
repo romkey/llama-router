@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import platform
+import sys
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -108,6 +109,15 @@ async def _configure_everything(db: Database) -> tuple[str, int]:
     a = await _provider(db, "a", startup=100.0, limit=8)
     await _provider(db, "b", startup=300.0, limit=8)
     await _provider(db, "cloud", startup=50.0, limit=8, locality="cloud")
+    owner = await db.create_dashboard_user("owner", "x", False)
+    await db.set_dashboard_user_limits(
+        owner,
+        {
+            "daily_token_limit": 10_000_000,
+            "requests_per_minute": 10_000,
+            "daily_spend_cap_usd": 50.0,
+        },
+    )
     plaintext = generate_api_key()
     key_id = await db.create_api_key(
         key_prefix(plaintext),
@@ -117,6 +127,10 @@ async def _configure_everything(db: Database) -> tuple[str, int]:
         session_affinity=True,
         daily_spend_cap_usd=5.0,
         strict_pins=False,
+        owner_user_id=owner,
+    )
+    await db.update_api_key(
+        key_id, {"daily_token_limit": 1_000_000, "requests_per_minute": 1_000}
     )
     await db.set_api_key_model_pin(key_id, "other", a)
     return plaintext, key_id
@@ -208,7 +222,11 @@ async def test_route_with_benchmark_20_candidates(
 
     run()
     ratio = min(run() / _calibrate() for _ in range(15))
-    platform_key = f"{platform.machine()}-{platform.system()}"
+    # Coverage tracing slows route_with more than the calibration loop.
+    traced = "coverage" in sys.modules and sys.modules["coverage"].Coverage.current()
+    platform_key = f"{platform.machine()}-{platform.system()}" + (
+        "-cov" if traced else ""
+    )
     recorded = json.loads(BASELINE.read_text())["ratios"].get(platform_key)
     if recorded is None:
         pytest.skip(f"no baseline for {platform_key}; measured {ratio:.2f}")

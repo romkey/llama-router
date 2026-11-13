@@ -349,6 +349,9 @@ class RequestLog(BaseModel):
     locality: str | None = None
     # The API key that made the request, if any.
     api_key_id: int | None = None
+    # The dashboard user whose quota the request counted against: the key's
+    # owner, or the signed-in user of a dashboard chat.
+    user_id: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     # USD, from the provider's price for the model; None when unknown.
