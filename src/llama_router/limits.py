@@ -6,7 +6,8 @@
 - ``clamp_generation_params`` caps ``n`` and the output-token fields of chat
   and completion requests.
 - ``upstream_slot`` holds a global and a per-key slot for each upstream call.
-  When every slot is taken the request waits up to
+  When every slot is taken the request waits, in the order its routing mode
+  sets (latency first, throughput and cheapest last), up to
   ``upstream_queue_timeout_seconds`` (and never past its deadline), then gets
   429. Streams also count against ``max_streams_per_key``, which refuses at
   once with 429.
@@ -27,6 +28,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 from fastapi import HTTPException, Request
 
+from .capacity import DEFAULT_LEVEL, QueueTimeout, SlotGate, queue_level
 from .config import settings
 from .timing import received_at
 
@@ -180,17 +182,19 @@ def request_deadline(request: Request) -> float | None:
 
 
 class UpstreamLimiter:
-    """Global and per-key semaphores, and per-key stream counts.
+    """Global and per-key slot gates, and per-key stream counts.
 
-    Sized from settings when first used; ``reset`` drops them so new settings
-    take effect (tests). Requests without an API key share only the global
-    limit.
+    The gates are :class:`~.capacity.SlotGate`, so waiters are served in
+    queue-level order (see :func:`~.capacity.queue_level`), first come first
+    served within a level. Sized from settings when first used; ``reset``
+    drops them so new settings take effect (tests). Requests without an API
+    key share only the global limit.
     """
 
     def __init__(self) -> None:
-        self._global: asyncio.Semaphore | None = None
+        self._global: SlotGate | None = None
         self._global_size = 0
-        self._per_key: dict[int, asyncio.Semaphore] = {}
+        self._per_key: dict[int, SlotGate] = {}
         self._streams: dict[int, int] = {}
 
     def reset(self) -> None:
@@ -202,29 +206,34 @@ class UpstreamLimiter:
     def active_streams(self, key_id: int) -> int:
         return self._streams.get(key_id, 0)
 
-    def _global_semaphore(self) -> asyncio.Semaphore | None:
+    def global_gate(self) -> SlotGate | None:
         size = settings.upstream_max_concurrency
         if size <= 0:
             return None
         if self._global is None or self._global_size != size:
-            self._global = asyncio.Semaphore(size)
+            self._global = SlotGate(size)
             self._global_size = size
         return self._global
 
-    def _key_semaphore(self, key_id: int | None) -> asyncio.Semaphore | None:
+    def _key_gate(self, key_id: int | None) -> SlotGate | None:
         size = settings.upstream_max_concurrency_per_key
         if key_id is None or size <= 0:
             return None
-        sem = self._per_key.get(key_id)
-        if sem is None:
-            sem = self._per_key[key_id] = asyncio.Semaphore(size)
-        return sem
+        gate = self._per_key.get(key_id)
+        if gate is None:
+            gate = self._per_key[key_id] = SlotGate(size)
+        return gate
 
     async def acquire(
-        self, key_id: int | None, *, stream: bool, deadline: float | None
-    ) -> list[asyncio.Semaphore]:
+        self,
+        key_id: int | None,
+        *,
+        stream: bool,
+        deadline: float | None,
+        level: int = DEFAULT_LEVEL,
+    ) -> list[SlotGate]:
         """Take the slots for one upstream call, or raise 429."""
-        held: list[asyncio.Semaphore] = []
+        held: list[SlotGate] = []
         if stream and key_id is not None:
             cap = settings.max_streams_per_key
             if cap > 0 and self._streams.get(key_id, 0) >= cap:
@@ -235,21 +244,38 @@ class UpstreamLimiter:
                 )
             self._streams[key_id] = self._streams.get(key_id, 0) + 1
         try:
-            for sem in (self._key_semaphore(key_id), self._global_semaphore()):
-                if sem is None:
+            for gate in (self._key_gate(key_id), self.global_gate()):
+                if gate is None:
                     continue
-                await _acquire_bounded(sem, deadline)
-                held.append(sem)
+                try:
+                    waited = await gate.acquire(deadline, level)
+                except QueueTimeout:
+                    logger.info(
+                        "Upstream slots full: request at queue level %d timed out",
+                        level,
+                    )
+                    raise HTTPException(
+                        status_code=429,
+                        detail="too many concurrent requests; try again shortly",
+                        headers={"Retry-After": "1"},
+                    ) from None
+                if waited > 0:
+                    logger.debug(
+                        "Request waited %.3fs at queue level %d for an upstream slot",
+                        waited,
+                        level,
+                    )
+                held.append(gate)
         except BaseException:
             self.release(key_id, stream=stream, held=held)
             raise
         return held
 
     def release(
-        self, key_id: int | None, *, stream: bool, held: list[asyncio.Semaphore]
+        self, key_id: int | None, *, stream: bool, held: list[SlotGate]
     ) -> None:
-        for sem in held:
-            sem.release()
+        for gate in held:
+            gate.release()
         held.clear()
         if stream and key_id is not None:
             left = self._streams.get(key_id, 0) - 1
@@ -257,27 +283,6 @@ class UpstreamLimiter:
                 self._streams[key_id] = left
             else:
                 self._streams.pop(key_id, None)
-
-
-async def _acquire_bounded(sem: asyncio.Semaphore, deadline: float | None) -> None:
-    wait = max(0.0, settings.upstream_queue_timeout_seconds)
-    if deadline is not None:
-        wait = min(wait, max(0.0, deadline - time.monotonic()))
-    if not sem.locked():
-        await sem.acquire()
-        return
-    if wait > 0:
-        try:
-            async with asyncio.timeout(wait):
-                await sem.acquire()
-            return
-        except TimeoutError:
-            pass
-    raise HTTPException(
-        status_code=429,
-        detail="too many concurrent requests; try again shortly",
-        headers={"Retry-After": "1"},
-    )
 
 
 limiter = UpstreamLimiter()
@@ -296,13 +301,15 @@ class UpstreamSlot:
     def __init__(
         self,
         key_id: int | None,
-        held: list[asyncio.Semaphore],
+        held: list[SlotGate],
         *,
         stream: bool,
         deadline: float | None,
     ) -> None:
         self.stream_mode = stream
         self.deadline = deadline
+        # The queue level the request waits at (see capacity.queue_level).
+        self.level = DEFAULT_LEVEL
         self._release = weakref.finalize(
             self, limiter.release, key_id, stream=stream, held=held
         )
@@ -395,5 +402,8 @@ async def upstream_slot(
     """
     key_id = prefs.key_id if prefs is not None else None
     deadline = request_deadline(request)
-    held = await limiter.acquire(key_id, stream=stream, deadline=deadline)
-    return UpstreamSlot(key_id, held, stream=stream, deadline=deadline)
+    level = queue_level(prefs.mode if prefs is not None else None)
+    held = await limiter.acquire(key_id, stream=stream, deadline=deadline, level=level)
+    slot = UpstreamSlot(key_id, held, stream=stream, deadline=deadline)
+    slot.level = level
+    return slot

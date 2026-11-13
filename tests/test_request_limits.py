@@ -348,7 +348,7 @@ async def test_non_streamed_call_past_deadline_is_504(
     with pytest.raises(DeadlineExceeded) as exc:
         await _sleep_in(slot, 1)
     assert exc.value.status_code == 504
-    assert limiter._per_key[1]._value == settings.upstream_max_concurrency_per_key
+    assert limiter._per_key[1].in_use == 0
 
 
 async def test_deadline_counts_from_arrival(monkeypatch: pytest.MonkeyPatch) -> None:

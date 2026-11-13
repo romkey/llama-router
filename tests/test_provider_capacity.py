@@ -15,7 +15,7 @@ from alembic import command
 
 from llama_router import capacity, metrics, proxy
 from llama_router.auth import generate_api_key, key_prefix
-from llama_router.capacity import ProviderAtCapacity, SlotGate
+from llama_router.capacity import ProviderAtCapacity, QueueTimeout, SlotGate
 from llama_router.config import settings
 from llama_router.database import Database
 from llama_router.llamacpp_api import deps as v1_deps
@@ -162,12 +162,16 @@ async def test_waiters_are_served_first_come_first_served(
     assert gate.waits.count == 4
 
 
-async def test_wait_times_out_with_429(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_wait_times_out_with_429(
+    db: Database, pm: ProviderManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(settings, "upstream_queue_timeout_seconds", 0.05)
-    gate = SlotGate(1)
+    pm.capacity.configure({7: 1})
+    gate = pm.capacity.gate(7)
+    assert gate is not None
     await gate.acquire(None)
     with pytest.raises(ProviderAtCapacity) as err:
-        await gate.acquire(None, provider_id=7)
+        await pm.take_slot(7)
     assert err.value.status_code == 429
     assert err.value.headers == {"Retry-After": "1"}
     assert gate.queued == 0
@@ -196,7 +200,7 @@ async def test_deadline_bounds_the_wait(monkeypatch: pytest.MonkeyPatch) -> None
     gate = SlotGate(1)
     await gate.acquire(None)
     loop = asyncio.get_running_loop()
-    with pytest.raises(ProviderAtCapacity):
+    with pytest.raises(QueueTimeout):
         await gate.acquire(loop.time() - 1)
 
 

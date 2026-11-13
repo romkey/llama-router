@@ -24,13 +24,14 @@
                 </div>
                 <div class="mb-2">
                     <label for="my-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
-                    <select id="my-key-mode" class="form-select form-select-sm">
+                    <select id="my-key-mode" aria-describedby="my-key-mode-help" class="form-select form-select-sm">
                         <option value="balanced" selected>Balanced (fastest overall response)</option>
                         <option value="latency">Minimal latency</option>
                         <option value="throughput">Maximum tokens/sec</option>
                         <option value="cheapest">Cheapest (lowest price per request)</option>
                         <option value="chaos">Chaos mode (random provider/model)</option>
                     </select>
+                            <div class="form-text" id="my-key-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
                 </div>
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="my-key-fallback" checked>
@@ -104,13 +105,14 @@
                 </div>
                 <div class="mb-2">
                     <label for="my-edit-mode" class="form-label small text-muted mb-1">Routing priority</label>
-                    <select id="my-edit-mode" class="form-select form-select-sm">
+                    <select id="my-edit-mode" aria-describedby="my-edit-mode-help" class="form-select form-select-sm">
                         <option value="balanced">Balanced (fastest overall response)</option>
                         <option value="latency">Minimal latency</option>
                         <option value="throughput">Maximum tokens/sec</option>
                         <option value="cheapest">Cheapest (lowest price per request)</option>
                         <option value="chaos">Chaos mode (random provider/model)</option>
                     </select>
+                            <div class="form-text" id="my-edit-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
                 </div>
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="my-edit-fallback">

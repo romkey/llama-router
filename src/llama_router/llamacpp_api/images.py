@@ -61,7 +61,10 @@ async def images_edits(request: Request) -> Response:
     start = time.monotonic()
     slot = await upstream_slot(request, prefs)
     try:
-        async with slot, pm.acquire_provider(provider_id, deadline=slot.deadline):
+        async with (
+            slot,
+            pm.acquire_provider(provider_id, deadline=slot.deadline, level=slot.level),
+        ):
             client = get_v1_client(pm, provider_id)
             resp = await client.images_edits(upstream)
             duration = (time.monotonic() - start) * 1000
