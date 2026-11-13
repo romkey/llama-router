@@ -182,3 +182,24 @@ async def test_send_test_alert(
     assert hook.sent[-1]["event"] == "test"
     page = await c.get("/users", headers=cookie)
     assert "hooks.test" in page.text
+
+
+async def test_lasting_states_repeat_at_most_daily(
+    db: Database, hook: Hook, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr(alerts, "clock", lambda: clock[0])
+    uid = await db.create_dashboard_user("ann", "x", False)
+    plaintext = generate_api_key()
+    kid = await db.create_api_key(
+        key_prefix(plaintext), key_hash(plaintext), "balanced", True, owner_user_id=uid
+    )
+    await db.set_api_key_expiry(kid, datetime.now(UTC) + timedelta(days=2))
+    watch = LagWatch()
+    await periodic_checks(db, LoopLag(), watch)
+    clock[0] += 3600  # an hour later: past the 10-minute debounce
+    await periodic_checks(db, LoopLag(), watch)
+    alerts.quota_reached("tokens", "User 1", "user:1")
+    clock[0] += 3600
+    alerts.quota_reached("tokens", "User 1", "user:1")
+    assert await _events(hook) == ["key_expiring", "quota_reached"]

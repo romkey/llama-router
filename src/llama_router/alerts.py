@@ -53,6 +53,9 @@ EVENTS = (
 )
 QUEUE_MAX = 1000
 DEBOUNCE_S = 600.0
+# Alerts about a state that lasts (a limit reached today, a key expiring
+# this week) repeat at most daily.
+DAILY_S = 86400.0
 TIMEOUT_S = 5.0
 RETRIES = 3
 RETRY_DELAY_S = 1.0
@@ -107,9 +110,11 @@ class Alerts:
         details: dict[str, Any] | None = None,
         *,
         force: bool = False,
+        debounce_s: float = DEBOUNCE_S,
     ) -> bool:
         """Queue an alert without waiting; False when off, not chosen,
-        debounced or dropped. *force* skips the debounce (test alerts)."""
+        debounced (sent for the same event and subject within *debounce_s*)
+        or dropped. *force* skips the debounce (test alerts)."""
         if not settings.alert_webhook_url:
             return False
         if event != "test" and event not in _enabled_events():
@@ -117,7 +122,7 @@ class Alerts:
         key = (event, subject)
         now = self.clock()
         last = self._sent.get(key)
-        if not force and last is not None and now - last < DEBOUNCE_S:
+        if not force and last is not None and now - last < debounce_s:
             return False
         queue = self._ensure_queue()
         payload = {
@@ -238,6 +243,7 @@ class Alerts:
             f"{who} reached its daily {limit.replace('_', ' ')} limit",
             {"limit": limit, "subject": str(subject)},
             # Once a day each: the subject carries the day.
+            debounce_s=DAILY_S,
         )
 
     # --- periodic checks ---
@@ -318,6 +324,7 @@ async def periodic_checks(db: Any, lag: Any, watch: LagWatch) -> None:
                     "worker": w["name"],
                     "expires_at": when.isoformat(),
                 },
+                debounce_s=DAILY_S,
             )
     for k in await db.list_api_keys():
         when = k.get("expires_at")
@@ -332,6 +339,7 @@ async def periodic_checks(db: Any, lag: Any, watch: LagWatch) -> None:
                     "owner": k.get("owner_username"),
                     "expires_at": when.isoformat(),
                 },
+                debounce_s=DAILY_S,
             )
     p99 = watch.p99_since_last(lag.cumulative())
     if p99 is not None and p99 > LAG_THRESHOLD_S:
