@@ -446,7 +446,7 @@ def _online_or_none(status: Any) -> bool | None:
     """Whether a stored status is online; None for unknown (never checked)."""
     if status in (None, ProviderStatus.UNKNOWN.value):
         return None
-    return status != ProviderStatus.OFFLINE.value
+    return bool(status != ProviderStatus.OFFLINE.value)
 
 
 def _row_to_provider(row: Mapping[str, Any]) -> Provider:
