@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from . import router_identity
+from .alerts import alerts
 from .capacity import (
     DEFAULT_LEVEL,
     CapacityLimits,
@@ -268,6 +269,8 @@ class ProviderManager(HealthChecks, WorkerSync, Benchmarking):
             if p.is_worker:
                 # Workers come online when they dial in, not at startup.
                 if not self.worker_hub.is_connected(p_id):
+                    # Not an outage: its state is unknown until it dials in.
+                    alerts.forget_provider(p_id)
                     await self._mark_worker_offline(p_id)
                 continue
             http_providers.append(p)

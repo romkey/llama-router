@@ -8,6 +8,7 @@ import math
 import time
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import (
@@ -17,6 +18,7 @@ from fastapi.responses import (
 )
 
 from ... import audit
+from ...alerts import alerts
 from ...auth import invalidate_auth_cache
 from ...client_address import client_ip
 from ...config import settings
@@ -78,6 +80,13 @@ async def users_page(request: Request):
                 "dashboard_users": users,
                 "quota_defaults": defaults.to_dict(),
                 "current_user_id": int(user.id),
+                "alerts": {
+                    "configured": alerts.configured,
+                    "host": urlsplit(settings.alert_webhook_url).hostname or "",
+                    "events": settings.alert_events,
+                    "delivered": alerts.delivered,
+                    "failed": alerts.failed,
+                },
                 "mfa_required": settings.dashboard_require_second_factor,
                 "users_exist": bool(users),
                 "management_keys": mgmt_keys,
@@ -371,6 +380,19 @@ async def users_pause_keys(request: Request, user_id: int):
     if request.url.path.startswith("/api/"):
         return JSONResponse({"user_id": user_id, "held": n})
     return RedirectResponse(url="/users?updated=1", status_code=303)
+
+
+@router.post("/api/alerts/test")
+async def alerts_test(request: Request) -> JSONResponse:
+    """Send a test alert to the webhook now (admins)."""
+    _require_admin(request)
+    if not alerts.configured:
+        raise HTTPException(
+            status_code=409,
+            detail="No alert webhook is set (LLAMA_ROUTER_ALERT_WEBHOOK_URL)",
+        )
+    delivered = await alerts.send_test()
+    return JSONResponse({"delivered": delivered})
 
 
 @router.post("/users/{user_id}/sign-out")

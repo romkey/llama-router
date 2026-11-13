@@ -19,6 +19,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from .. import audit
+from ..alerts import alerts
 from ..auth import key_prefix, model_access, new_api_key
 from ..config import settings
 from ..database import Database
@@ -329,6 +330,13 @@ async def renew_my_key(request: Request, key_id: int) -> JSONResponse:
         )
     if mode == "approval":
         await db.request_api_key_renewal(key_id, owner, now_utc())
+        user = getattr(request.state, "dashboard_user", None)
+        alerts.emit(
+            "renewal_requested",
+            str(key_id),
+            f"{getattr(user, 'username', 'A user')} asked to renew API key {key_id}",
+            {"key_id": key_id, "owner": getattr(user, "username", None)},
+        )
     else:
         await db.set_api_key_expiry(key_id, renewed_expiry(True), owner_user_id=owner)
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))

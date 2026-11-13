@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from .alerts import alerts
 from .config import settings
 from .models import WORKER_URL_SCHEME, Provider, ProviderProtocol, ProviderStatus
 from .provider_health import _PROBE_TIMEOUT, _failure_reason
@@ -428,6 +429,13 @@ class WorkerSync:
                 # A newer session already took over; its handler owns status.
                 return
             provider = await self._db.get_provider(provider_id)
+            if provider is not None:
+                alerts.emit(
+                    "worker_disconnected",
+                    str(provider_id),
+                    f"Worker {provider.worker_name or provider.name} disconnected",
+                    {"provider_id": provider_id, "worker": provider.worker_name},
+                )
             was_online = provider is not None and provider.status not in (
                 ProviderStatus.OFFLINE,
                 ProviderStatus.UNKNOWN,

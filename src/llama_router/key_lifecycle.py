@@ -31,6 +31,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from . import audit
+from .alerts import alerts
 from .config import settings
 from .database import Database
 from .repositories.base import _utc_datetime
@@ -199,7 +200,14 @@ async def hold_user_keys(
     n = await db.hold_user_api_keys(
         user_id, reason, by_user_id=by_user_id, when=now_utc()
     )
-    if n:
+    if n and by_user_id is None:
+        # The router's own hold (not an admin's): tell the operators.
+        alerts.emit(
+            "keys_held",
+            f"{user_id}:{reason}",
+            f"Held {n} API key{'' if n == 1 else 's'} of user {user_id}: {reason}",
+            {"user_id": user_id, "keys": n, "reason": reason},
+        )
         logger.warning(
             "Held %d API key%s of dashboard user %d: %s",
             n,

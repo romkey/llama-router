@@ -12,6 +12,7 @@ from collections.abc import Iterator
 import uvicorn
 
 from . import __version__, background, router_identity
+from .alerts import LagWatch, alerts, periodic_checks
 from .api import deps as api_deps
 from .api.app import app as api_app
 from .auto_benchmark import AutoBenchmarker
@@ -205,6 +206,8 @@ async def _serve(db: Database) -> int:
     await auto_bench.start()
     idle_sweep = IdleSweep(db)
     idle_sweep.start()
+    lag_watch = LagWatch()
+    alerts.start_checks(lambda: periodic_checks(db, LOOP_LAG, lag_watch))
 
     api_deps.init(db, pm, rt)
     dash_deps.init(db, pm)
@@ -306,6 +309,7 @@ async def _serve(db: Database) -> int:
         await worker_link.stop()
         await auto_bench.stop()
         await idle_sweep.stop()
+        await alerts.stop()
         await rt.stop()
         await pm.worker_hub.close_all()
         await pm.stop()

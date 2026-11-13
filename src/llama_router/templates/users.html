@@ -237,6 +237,28 @@
     </div>
 </div>
 
+<div class="card mt-4" id="alerts">
+    <div class="card-header"><h2 class="h5 mb-0"><i class="bi bi-bell me-2"></i>Alerts</h2></div>
+    <div class="card-body small">
+        {% if alerts.configured %}
+        <p class="mb-2">Webhook alerts go to <code>{{ alerts.host }}</code> (events: {{ alerts.events }}). Delivered {{ alerts.delivered }}, failed {{ alerts.failed }} since start-up.</p>
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="sendTestAlert()">Send test alert</button>
+        <span class="ms-2 text-muted" id="alert-test-status" aria-live="polite"></span>
+        <script>
+        function sendTestAlert() {
+            var el = document.getElementById('alert-test-status');
+            el.textContent = 'Sending…';
+            fetch('/api/alerts/test', {method: 'POST'}).then(function(r) { return r.json(); })
+                .then(function(d) { el.textContent = d.delivered ? 'Delivered.' : (d.detail || 'Not delivered; see the log.'); })
+                .catch(function() { el.textContent = 'Failed.'; });
+        }
+        </script>
+        {% else %}
+        <p class="mb-0 text-muted">Off. Set <code>LLAMA_ROUTER_ALERT_WEBHOOK_URL</code> (and optionally <code>LLAMA_ROUTER_ALERT_EVENTS</code>) to get a JSON POST when a provider goes offline, a model loses its last provider, a worker disconnects, a quota is reached, a key or worker token is about to expire, a renewal is requested, the router holds a user's keys, or the event loop lags.</p>
+        {% endif %}
+    </div>
+</div>
+
 <div class="card mt-4" id="management-keys">
     <div class="card-header d-flex justify-content-between align-items-center">
         <h2 class="h5 mb-0"><i class="bi bi-shield-lock me-2"></i>Management keys</h2>
