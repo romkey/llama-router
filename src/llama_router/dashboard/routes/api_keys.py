@@ -289,10 +289,12 @@ async def api_update_key(key_id: int, request: Request):
     body = await deps.json_body(request)
     edits = key_edits(body, ADMIN_KEY_FIELDS)
     access = await parse_access(db, body["allowed"]) if "allowed" in body else None
+    # Validated before anything is saved, so a bad date changes nothing.
+    expiry = parse_expiry(body["expires_at"]) if "expires_at" in body else None
     if not await db.update_api_key(key_id, edits):
         raise HTTPException(status_code=404, detail="API key not found")
     if "expires_at" in body:
-        await db.set_api_key_expiry(key_id, parse_expiry(body["expires_at"]))
+        await db.set_api_key_expiry(key_id, expiry)
     if access is not None:
         await store_access(db, key_id, access)
     key = await db.get_api_key(key_id)

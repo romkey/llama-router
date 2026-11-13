@@ -311,7 +311,7 @@ async def test_regenerate_keeps_expiry_and_pause(dash_client: DashClient) -> Non
     await c.post(f"/api/keys/{kid}/regenerate", headers=_as(admin))
     key = await db.get_api_key(kid)
     assert key is not None
-    assert key["expires_at"] == datetime(2099, 1, 1, tzinfo=UTC)
+    assert key["expires_at"] == datetime(2099, 1, 2, tzinfo=UTC)  # end of 1 Jan
     assert key["paused_at"] is not None
 
 
@@ -446,3 +446,64 @@ def test_migration_round_trip(tmp_path: Path) -> None:
     assert not (wanted & cols())
     command.upgrade(cfg, "head")
     assert wanted <= cols()
+
+
+# --- review regressions ---
+
+
+async def test_owner_pause_write_never_touches_a_hold(db: Database) -> None:
+    uid = await db.create_dashboard_user("ann", "x", False)
+    _, kid = await _key(db, uid)
+    await db.pause_api_key(
+        kid, by_user_id=None, locked=True, reason="audit", when=datetime.now(UTC)
+    )
+    now = datetime.now(UTC)
+    assert not await db.owner_set_pause(kid, uid, paused=False, when=now)
+    assert not await db.owner_set_pause(kid, uid, paused=True, when=now)
+    key = await db.get_api_key(kid)
+    assert key is not None
+    assert (key["pause_locked"], key["pause_reason"]) == (True, "audit")
+
+
+def test_date_only_expiry_lasts_through_that_day() -> None:
+    from llama_router.key_lifecycle import parse_expiry
+
+    assert parse_expiry("2030-05-01") == datetime(2030, 5, 2, tzinfo=UTC)
+    assert parse_expiry("2030-05-01T12:00:00Z") == datetime(2030, 5, 1, 12, tzinfo=UTC)
+
+
+async def test_owner_expiry_must_be_in_the_future(dash_client: DashClient) -> None:
+    c, db = dash_client
+    _, ann = await _users(db)
+    resp = await c.post(
+        "/api/my-keys", json={"expires_at": "2001-01-01"}, headers=_as(ann)
+    )
+    assert resp.status_code == 400
+
+
+async def test_bad_expiry_in_admin_edit_changes_nothing(
+    dash_client: DashClient,
+) -> None:
+    c, db = dash_client
+    admin, _ = await _users(db)
+    made = (await c.post("/api/keys/generate", json={}, headers=_as(admin))).json()
+    resp = await c.patch(
+        f"/api/keys/{made['id']}",
+        json={"label": "new", "expires_at": "not a date"},
+        headers=_as(admin),
+    )
+    assert resp.status_code == 400
+    key = await db.get_api_key(made["id"])
+    assert key is not None
+    assert key["label"] is None
+
+
+async def test_refused_key_is_not_marked_used(db: Database) -> None:
+    plaintext, kid = await _key(db)
+    await db.pause_api_key(
+        kid, by_user_id=None, locked=True, reason=None, when=datetime.now(UTC)
+    )
+    await db.lookup_api_key(key_hash(plaintext))
+    key = await db.get_api_key(kid)
+    assert key is not None
+    assert key["last_used_at"] is None

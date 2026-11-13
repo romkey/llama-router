@@ -324,9 +324,12 @@ async def pause_my_key(request: Request, key_id: int) -> JSONResponse:
         raise HTTPException(
             status_code=403, detail="An administrator holds this key paused"
         )
-    await deps.get_db().pause_api_key(
-        key_id, by_user_id=owner, locked=False, reason=None, when=now_utc()
-    )
+    if not await deps.get_db().owner_set_pause(
+        key_id, owner, paused=True, when=now_utc()
+    ):
+        raise HTTPException(
+            status_code=403, detail="An administrator holds this key paused"
+        )
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
 
 
@@ -340,7 +343,13 @@ async def unpause_my_key(request: Request, key_id: int) -> JSONResponse:
             status_code=403,
             detail="An administrator holds this key paused; ask them to lift it",
         )
-    await deps.get_db().unpause_api_key(key_id)
+    if not await deps.get_db().owner_set_pause(
+        key_id, owner, paused=False, when=now_utc()
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="An administrator holds this key paused; ask them to lift it",
+        )
     return JSONResponse(jsonable_encoder(await _own_key(owner, key_id)))
 
 

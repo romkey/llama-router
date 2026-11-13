@@ -88,8 +88,8 @@ async def set_holds_by_default(db: Database, value: bool) -> None:
 
 
 def parse_expiry(value: Any) -> datetime | None:
-    """An ``expires_at`` from JSON: ISO 8601 (a date alone is midnight UTC);
-    null or blank for never."""
+    """An ``expires_at`` from JSON: ISO 8601 (a date alone means the end of
+    that UTC day); null or blank for never."""
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if not isinstance(value, str):
@@ -101,6 +101,9 @@ def parse_expiry(value: Any) -> datetime | None:
         raise HTTPException(
             status_code=400, detail="expires_at must be an ISO 8601 date"
         ) from exc
+    if len(raw) == 10:
+        # A date alone (the forms' date fields) lasts through that UTC day.
+        when += timedelta(days=1)
     return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
@@ -111,6 +114,8 @@ def self_issued_expiry(
     which must fall within the maximum lifetime; with no request, the end of
     the maximum lifetime (or never, without one)."""
     now = now or now_utc()
+    if requested is not None and requested <= now:
+        raise HTTPException(status_code=400, detail="expires_at must be in the future")
     limit = max_lifetime()
     if limit is None:
         return requested

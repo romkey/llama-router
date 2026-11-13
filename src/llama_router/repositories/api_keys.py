@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from ..db_events import CHANGE_API_KEYS, CHANGE_AUTH_SETTINGS, _notifies
@@ -288,6 +288,38 @@ class ApiKeyRepository(Repository):
         ) or await self._key_exists(key_id, None)
 
     @_notifies(CHANGE_API_KEYS)
+    async def owner_set_pause(
+        self, key_id: int, owner_user_id: int, *, paused: bool, when: datetime
+    ) -> bool:
+        """Pause or unpause *owner_user_id*'s own key unless an admin holds
+        it; the check and the write are one statement, so a hold placed
+        meanwhile is never lifted or replaced. False when the key is held."""
+        if paused:
+            sql = (
+                "UPDATE api_keys SET paused_at = ?, paused_by_user_id = ?, "
+                "pause_locked = 0, pause_reason = NULL "
+                "WHERE id = ? AND owner_user_id = ? AND pause_locked = 0"
+            )
+            params: tuple[Any, ...] = (
+                self._bind_time(when),
+                owner_user_id,
+                key_id,
+                owner_user_id,
+            )
+        else:
+            sql = (
+                "UPDATE api_keys SET paused_at = NULL, paused_by_user_id = NULL, "
+                "pause_reason = NULL "
+                "WHERE id = ? AND owner_user_id = ? AND pause_locked = 0"
+            )
+            params = (key_id, owner_user_id)
+        if await self._execute_rowcount(sql, params):
+            return True
+        # MySQL counts only changed rows: look before saying it is held.
+        key = await self.get_api_key(key_id, owner_user_id=owner_user_id)
+        return key is not None and not key["pause_locked"]
+
+    @_notifies(CHANGE_API_KEYS)
     async def unpause_api_key(self, key_id: int) -> bool:
         return bool(
             await self._execute_rowcount(
@@ -344,10 +376,15 @@ class ApiKeyRepository(Repository):
         )
         if not row:
             return None
-        await self._execute(
-            "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (row["id"],),
-        )
+        # A paused or expired key is refused: it was not used.
+        expires = _utc_datetime(row["expires_at"])
+        if row["paused_at"] is None and (
+            expires is None or expires > datetime.now(UTC)
+        ):
+            await self._execute(
+                "UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (row["id"],),
+            )
         return {
             "id": int(row["id"]),
             "key_prefix": row["key_prefix"],
