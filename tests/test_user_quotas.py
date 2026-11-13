@@ -677,3 +677,19 @@ async def test_logged_decision_holds_are_left_for_the_writer(db: Database) -> No
     )
     assert getattr(request.state, EXTRA_RESERVATIONS_STATE) == []
     await request_logger.stop_log_writer()
+
+
+async def test_dropped_log_row_frees_and_counts_its_token_hold(db: Database) -> None:
+    from llama_router.request_logger import _charge_estimate
+
+    uid = await _user(db)
+    tracker = tracker_for(db)
+    await tracker.user_tokens_committed(uid)
+    held = await tracker.reserve_tokens(
+        60, key_id=None, key_limit=None, user_id=uid, user_limit=100
+    )
+    assert not isinstance(held, str)
+    _charge_estimate(db, {"token_reservation": held, "user_id": uid})
+    assert held.released
+    assert tracker.usage(user_id=uid).tokens == 60
+    assert await tracker.user_tokens_committed(uid) == 60

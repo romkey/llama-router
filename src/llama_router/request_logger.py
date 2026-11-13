@@ -840,10 +840,23 @@ class _LogWriter:
 def _charge_estimate(db: Database, kwargs: dict[str, Any]) -> None:
     """Settle the spend reservation of a row that will not be logged at its
     estimate, so the cap still counts the request and the hold is freed.
-    A no-op when the reservation was already settled."""
+    A no-op when the reservation was already settled. A token hold is
+    counted at its estimate the same way (unless the row was a failure) and
+    freed."""
+    tracker = tracker_for(db)
     held = kwargs.get("spend_reservation")
     if isinstance(held, Reservation):
-        tracker_for(db).settle(held, held.amount)
+        tracker.settle(held, held.amount)
+    tokens = kwargs.get("token_reservation")
+    if isinstance(tokens, TokenReservation) and not tokens.released:
+        tokens.release()
+        if kwargs.get("status", "ok") != "error":
+            tracker.add(
+                kwargs.get("api_key_id"),
+                0.0,
+                user_id=kwargs.get("user_id"),
+                tokens=tokens.tokens,
+            )
 
 
 _log_writer: _LogWriter | None = None
