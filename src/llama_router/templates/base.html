@@ -135,6 +135,85 @@
         apply();
         return { format: format, set: set, node: node, html: html, apply: apply };
     })();
+
+    // Click-to-sort columns: a <table data-sortable> whose <th data-sort>
+    // headers ("text" or "num") become buttons. A cell sorts by its
+    // data-sort-value, else its first <time>, else its text; blanks go last.
+    // A table whose rows a script redraws keeps its sort.
+    window.llrSort = (function () {
+        function cellValue(row, index, kind) {
+            var cell = row.cells[index];
+            if (!cell) return null;
+            var v = cell.getAttribute('data-sort-value');
+            if (v === null) {
+                var t = cell.querySelector('time[datetime]');
+                v = t ? t.getAttribute('datetime') : cell.textContent;
+            }
+            v = String(v).trim();
+            if (v === '' || v === '—') return null;
+            if (kind === 'num') {
+                var n = parseFloat(v.replace(/[^0-9.eE+-]/g, ''));
+                return isNaN(n) ? null : n;
+            }
+            return v.toLowerCase();
+        }
+        function sortRows(table) {
+            var th = table.querySelector('th[aria-sort]');
+            var body = table.tBodies[0];
+            if (!th || !body) return;
+            var rows = Array.prototype.slice.call(body.rows);
+            // A lone "Loading…" or "No keys yet." row has nothing to sort.
+            if (rows.some(function (r) { return r.cells.length === 1 && r.cells[0].colSpan > 1; })) return;
+            var index = th.cellIndex, kind = th.getAttribute('data-sort');
+            var dir = th.getAttribute('aria-sort') === 'descending' ? -1 : 1;
+            rows.map(function (r, i) { return {r: r, i: i, v: cellValue(r, index, kind)}; })
+                .sort(function (a, b) {
+                    if (a.v === b.v) return a.i - b.i;
+                    if (a.v === null) return 1;
+                    if (b.v === null) return -1;
+                    return (a.v < b.v ? -1 : 1) * dir;
+                })
+                .forEach(function (x) { body.appendChild(x.r); });
+        }
+        function sort(table) {
+            var obs = table._llrSortObserver;
+            if (obs) obs.disconnect();
+            sortRows(table);
+            if (obs) { obs.takeRecords(); obs.observe(table.tBodies[0], {childList: true}); }
+        }
+        function init(root) {
+            (root || document).querySelectorAll('table[data-sortable]').forEach(function (table) {
+                if (table._llrSortObserver) return;
+                table.querySelectorAll('th[data-sort]').forEach(function (th) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'btn btn-link p-0 text-reset fw-bold text-decoration-none text-nowrap llr-sort';
+                    while (th.firstChild) b.appendChild(th.firstChild);
+                    var icon = document.createElement('i');
+                    icon.className = 'bi bi-arrow-down-up ms-1 small opacity-50';
+                    icon.setAttribute('aria-hidden', 'true');
+                    b.appendChild(icon);
+                    th.appendChild(b);
+                    b.addEventListener('click', function () {
+                        var next = th.getAttribute('aria-sort') === 'ascending' ? 'descending' : 'ascending';
+                        table.querySelectorAll('th[data-sort]').forEach(function (h) {
+                            h.removeAttribute('aria-sort');
+                            h.querySelector('.llr-sort i').className = 'bi bi-arrow-down-up ms-1 small opacity-50';
+                        });
+                        th.setAttribute('aria-sort', next);
+                        icon.className = 'bi bi-sort-' + (next === 'ascending' ? 'up' : 'down') + ' ms-1 small';
+                        sort(table);
+                    });
+                });
+                if (table.tBodies[0]) {
+                    table._llrSortObserver = new MutationObserver(function () { sort(table); });
+                    table._llrSortObserver.observe(table.tBodies[0], {childList: true});
+                }
+            });
+        }
+        init();
+        return { init: init, sort: sort };
+    })();
     </script>
     {% block scripts %}{% endblock %}
 </body>

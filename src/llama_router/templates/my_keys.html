@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "key_access_picker.html" import key_access_fields, key_access_script %}
+{% from "key_usage.html" import key_usage_card %}
 {% block title %}My API keys - llama-router{% endblock %}
 
 {% block content %}
@@ -13,97 +14,125 @@
     Send the key in the <code>API-KEY</code> header.
 </p>
 
-<div class="row g-4">
-    <div class="col-lg-4">
-        <div class="card">
-            <div class="card-header"><h2 class="h5 mb-0">New key</h2></div>
-            <div class="card-body">
-                <div class="mb-2">
-                    <label for="my-key-label" class="form-label small text-muted mb-1">Label (optional)</label>
-                    <input id="my-key-label" type="text" maxlength="100" class="form-control form-control-sm" placeholder="e.g. laptop scripts" autocomplete="off">
-                </div>
-                <div class="mb-2">
-                    <label for="my-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
-                    <select id="my-key-mode" aria-describedby="my-key-mode-help" class="form-select form-select-sm">
-                        <option value="balanced" selected>Balanced (fastest overall response)</option>
-                        <option value="latency">Minimal latency</option>
-                        <option value="throughput">Maximum tokens/sec</option>
-                        <option value="cheapest">Cheapest (lowest price per request)</option>
-                        <option value="chaos">Chaos mode (random provider/model)</option>
-                    </select>
-                            <div class="form-text" id="my-key-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
-                </div>
-                <div class="mb-2">
-                    <label for="my-key-expires" class="form-label small text-muted mb-1">Expires</label>
-                    <input id="my-key-expires" type="date" class="form-control form-control-sm" aria-describedby="my-key-expires-help">
-                    <div class="form-text" id="my-key-expires-help">{% if max_key_lifetime_days %}Within {{ max_key_lifetime_days }} days; blank uses the longest allowed.{% else %}Blank: never.{% endif %}</div>
-                </div>
-                <div class="form-check mb-2">
-                    <input class="form-check-input" type="checkbox" id="my-key-fallback" checked>
-                    <label class="form-check-label" for="my-key-fallback">Allow fallback models</label>
-                </div>
-                <div class="form-check form-switch mb-2">
-                    <input class="form-check-input" type="checkbox" role="switch" id="my-key-strict" aria-describedby="my-key-strict-help">
-                    <label class="form-check-label" for="my-key-strict">Pins are strict</label>
-                    <div class="form-text" id="my-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
-                </div>
-                <div class="mb-3">
-                    <label for="my-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
-                    <select id="my-key-affinity" class="form-select form-select-sm">
-                        <option value="default" selected>Server default</option>
-                        <option value="on">On: keep each conversation on one provider</option>
-                        <option value="off">Off: route every request afresh</option>
-                    </select>
-                </div>
-                {{ key_access_fields('my-key') }}
-                <div class="small text-muted mb-3" id="my-key-limits">Loading limits…</div>
-                <button class="btn btn-sm btn-primary" onclick="issueMyKey()">
-                    <i class="bi bi-plus-lg me-1"></i>Issue key
-                </button>
+<div class="card mb-3" id="my-quota-card" hidden>
+    <div class="card-body py-2 small" id="my-quota" aria-live="polite"></div>
+</div>
+
+<ul class="nav nav-pills mb-3" id="my-keys-subtabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="my-keys-list-tab" data-bs-toggle="pill" data-bs-target="#my-keys-list-pane" type="button" role="tab" aria-controls="my-keys-list-pane" aria-selected="true">
+            <i class="bi bi-list-ul me-1"></i>Your keys <span class="badge text-bg-secondary ms-1" id="my-keys-count"></span>
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="my-keys-usage-tab" data-bs-toggle="pill" data-bs-target="#my-keys-usage-pane" type="button" role="tab" aria-controls="my-keys-usage-pane" aria-selected="false">
+            <i class="bi bi-bar-chart me-1"></i>Usage
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="my-keys-new-tab" data-bs-toggle="pill" data-bs-target="#my-keys-new-pane" type="button" role="tab" aria-controls="my-keys-new-pane" aria-selected="false">
+            <i class="bi bi-key me-1"></i>New key
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="my-keys-history-tab" data-bs-toggle="pill" data-bs-target="#my-keys-history-pane" type="button" role="tab" aria-controls="my-keys-history-pane" aria-selected="false">
+            <i class="bi bi-clock-history me-1"></i>Recent changes
+        </button>
+    </li>
+</ul>
+<div class="tab-content">
+<div class="tab-pane fade show active" id="my-keys-list-pane" role="tabpanel" aria-labelledby="my-keys-list-tab" tabindex="0">
+    <div class="card">
+        <div class="card-header"><h2 class="h5 mb-0">Your keys</h2></div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0" data-sortable>
+                    <thead>
+                        <tr>
+                            <th data-sort="text">Key</th>
+                            <th data-sort="text">Routing</th>
+                            <th data-sort="text">Providers</th>
+                            <th data-sort="num" title="Spent today (UTC) / daily cap">Spend</th>
+                            <th data-sort="num" title="Tokens today (UTC) / the key's own daily limit">Tokens</th>
+                            <th data-sort="text">Models</th>
+                            <th data-sort="num">Pins</th>
+                            <th data-sort="text">Status</th>
+                            <th data-sort="text">Last used</th>
+                            <th><span class="visually-hidden">Actions</span></th>
+                        </tr>
+                    </thead>
+                    <tbody id="my-keys-body">
+                        <tr><td colspan="10" class="text-muted small">Loading…</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
-    <div class="col-lg-8">
-        <div class="card mb-3" id="my-quota-card" hidden>
-            <div class="card-body py-2 small" id="my-quota" aria-live="polite"></div>
-        </div>
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h2 class="h5 mb-0">Your keys</h2>
-                <span class="badge bg-secondary" id="my-keys-count"></span>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>Key</th>
-                                <th>Priority</th>
-                                <th>Providers</th>
-                                <th>Models</th>
-                                <th>Pins</th>
-                                <th title="Spent today (UTC) / daily cap">Spend</th>
-                                <th title="Tokens today (UTC) / the key's own daily limit">Tokens</th>
-                                <th>Status</th>
-                                <th>Created</th>
-                                <th>Last used</th>
-                                <th><span class="visually-hidden">Actions</span></th>
-                            </tr>
-                        </thead>
-                        <tbody id="my-keys-body">
-                            <tr><td colspan="9" class="text-muted small">Loading…</td></tr>
-                        </tbody>
-                    </table>
+</div>
+<div class="tab-pane fade" id="my-keys-usage-pane" role="tabpanel" aria-labelledby="my-keys-usage-tab" tabindex="0">
+    {{ key_usage_card('/api/my-keys/usage', intro="From the request log: every request one of your keys made, by the provider that served it. Cost is counted for models with a price on their provider's page.") }}
+</div>
+<div class="tab-pane fade" id="my-keys-new-pane" role="tabpanel" aria-labelledby="my-keys-new-tab" tabindex="0">
+    <div class="row">
+        <div class="col-lg-8 col-xl-6">
+            <div class="card">
+                <div class="card-header"><h2 class="h5 mb-0"><i class="bi bi-key me-2" aria-hidden="true"></i>New key</h2></div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label for="my-key-label" class="form-label small text-muted mb-1">Label (optional)</label>
+                        <input id="my-key-label" type="text" maxlength="100" class="form-control form-control-sm" placeholder="e.g. laptop scripts" autocomplete="off">
+                    </div>
+                    <div class="mb-2">
+                        <label for="my-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
+                        <select id="my-key-mode" aria-describedby="my-key-mode-help" class="form-select form-select-sm">
+                            <option value="balanced" selected>Balanced (fastest overall response)</option>
+                            <option value="latency">Minimal latency</option>
+                            <option value="throughput">Maximum tokens/sec</option>
+                            <option value="cheapest">Cheapest (lowest price per request)</option>
+                            <option value="chaos">Chaos mode (random provider/model)</option>
+                        </select>
+                                <div class="form-text" id="my-key-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
+                    </div>
+                    <div class="mb-2">
+                        <label for="my-key-expires" class="form-label small text-muted mb-1">Expires</label>
+                        <input id="my-key-expires" type="date" class="form-control form-control-sm" aria-describedby="my-key-expires-help">
+                        <div class="form-text" id="my-key-expires-help">{% if max_key_lifetime_days %}Within {{ max_key_lifetime_days }} days; blank uses the longest allowed.{% else %}Blank: never.{% endif %}</div>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="my-key-fallback" checked>
+                        <label class="form-check-label" for="my-key-fallback">Allow fallback models</label>
+                    </div>
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch" id="my-key-strict" aria-describedby="my-key-strict-help">
+                        <label class="form-check-label" for="my-key-strict">Pins are strict</label>
+                        <div class="form-text" id="my-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="my-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
+                        <select id="my-key-affinity" class="form-select form-select-sm">
+                            <option value="default" selected>Server default</option>
+                            <option value="on">On: keep each conversation on one provider</option>
+                            <option value="off">Off: route every request afresh</option>
+                        </select>
+                    </div>
+                    {{ key_access_fields('my-key') }}
+                    <div class="small text-muted mb-3" id="my-key-limits">Loading limits…</div>
+                    <button class="btn btn-sm btn-primary" onclick="issueMyKey()">
+                        <i class="bi bi-plus-lg me-1"></i>Issue key
+                    </button>
                 </div>
             </div>
         </div>
-            <div class="card mt-3">
-            <div class="card-header"><h2 class="h6 mb-0">Recent changes to your keys</h2></div>
-            <div class="card-body p-0">
-                <ul class="list-group list-group-flush small" id="my-keys-audit"><li class="list-group-item text-muted">Loading…</li></ul>
-            </div>
+    </div>
+</div>
+<div class="tab-pane fade" id="my-keys-history-pane" role="tabpanel" aria-labelledby="my-keys-history-tab" tabindex="0">
+    <div class="card">
+        <div class="card-header"><h2 class="h5 mb-0">Recent changes to your keys</h2></div>
+        <div class="card-body p-0">
+            <ul class="list-group list-group-flush small" id="my-keys-audit"><li class="list-group-item text-muted">Loading…</li></ul>
         </div>
     </div>
+</div>
 </div>
 
 <!-- Edit one of the user's keys. Providers and spend cap are read-only. -->
@@ -231,7 +260,14 @@
 {% if dash_user %}
 {{ key_access_script() }}
 <script>
-var MODE_LABELS = {latency: 'minimal latency', throughput: 'max tokens/sec', balanced: 'balanced', cheapest: 'cheapest', chaos: 'chaos'};
+// The same badges as the API Keys tab.
+var MODE_BADGES = {latency: ['bg-primary', 'minimal latency'], throughput: ['bg-info text-dark', 'max tokens/sec'],
+    balanced: ['bg-success', 'balanced'], cheapest: ['bg-secondary', 'cheapest'], chaos: ['bg-warning text-dark', 'chaos']};
+function localityBadge(l) {
+    return l === 'local' ? '<span class="badge bg-success">local only</span>'
+        : l === 'cloud' ? '<span class="badge bg-warning text-dark">cloud only</span>'
+        : '<span class="text-muted">any</span>';
+}
 
 function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
@@ -291,57 +327,59 @@ function loadMyKeys() {
         document.getElementById('my-keys-count').textContent = data.keys.length;
         var body = document.getElementById('my-keys-body');
         if (!data.keys.length) {
-            body.innerHTML = '<tr><td colspan="11" class="text-muted small">No keys yet.</td></tr>';
+            body.innerHTML = '<tr><td colspan="10" class="text-muted small">No keys yet.</td></tr>';
             return;
         }
         body.innerHTML = data.keys.map(function(k) {
-            var cap = k.daily_spend_cap_usd == null ? '' : ' <span class="text-muted">/ ' + money(k.daily_spend_cap_usd) + '</span>';
+            var cap = k.daily_spend_cap_usd == null ? '' : ' <span class="text-muted">/ ' + money(k.daily_spend_cap_usd) + '</span>' +
+                ((k.spent_today_usd || 0) >= k.daily_spend_cap_usd ? ' <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>' : '');
+            var mode = MODE_BADGES[k.routing_mode] || ['bg-secondary', k.routing_mode];
+            var affinity = k.session_affinity == null ? 'default' : (k.session_affinity ? 'sticky' : 'off');
+            var data = ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"';
+            var item = function(attrs, icon, label) {
+                return '<li><button type="button" class="dropdown-item"' + attrs + data + '><i class="bi bi-' + icon + ' me-2" aria-hidden="true"></i>' + label + '</button></li>';
+            };
             return '<tr>' +
-                '<td><code>' + esc(k.key_prefix) + '</code>' + (k.label ? '<div class="small text-muted">' + esc(k.label) + '</div>' : '') + '</td>' +
-                '<td>' + esc(MODE_LABELS[k.routing_mode] || k.routing_mode) + '</td>' +
-                '<td>' + esc(localityLabel(k.locality)) + '</td>' +
-                '<td class="small">' + esc(KeyAccess.summary(k)) + '</td>' +
-                '<td class="small text-nowrap">' + esc(pinSummary(k)) + '</td>' +
-                '<td class="small text-nowrap">' + money(k.spent_today_usd) + cap + '</td>' +
-                '<td class="small text-nowrap">' + esc(Number(k.tokens_today || 0).toLocaleString()) +
+                '<td data-sort-value="' + esc(k.key_prefix) + '"><code>' + esc(k.key_prefix) + '</code>' + (k.label ? '<div class="small text-muted">' + esc(k.label) + '</div>' : '') + '</td>' +
+                '<td data-sort-value="' + esc(k.routing_mode) + '"><span class="badge ' + mode[0] + '">' + esc(mode[1]) + '</span>' +
+                    '<div class="small text-muted text-nowrap">fallback ' + (k.allow_fallback ? 'allowed' : 'disallowed') + '</div>' +
+                    '<div class="small text-muted text-nowrap">sessions ' + affinity + '</div></td>' +
+                '<td data-sort-value="' + esc(k.locality || 'any') + '">' + localityBadge(k.locality) + '</td>' +
+                '<td class="small text-nowrap" data-sort-value="' + Number(k.spent_today_usd || 0) + '">' + money(k.spent_today_usd) + cap + '</td>' +
+                '<td class="small text-nowrap" data-sort-value="' + Number(k.tokens_today || 0) + '">' + esc(Number(k.tokens_today || 0).toLocaleString()) +
                     (k.daily_token_limit ? ' <span class="text-muted">/ ' + esc(Number(k.daily_token_limit).toLocaleString()) + '</span>' : '') +
                     (k.requests_per_minute ? '<div class="text-muted">' + esc(k.requests_this_minute || 0) + ' / ' + esc(k.requests_per_minute) + ' this minute</div>' : '') +
                 '</td>' +
-                '<td class="small text-nowrap">' + statusBadge(k) +
+                '<td class="small">' + esc(KeyAccess.summary(k)) + '</td>' +
+                '<td class="text-nowrap" data-sort-value="' + Number(k.pin_count || 0) + '"><span class="badge bg-secondary">' + esc(k.pin_count || 0) + '</span>' +
+                    (k.strict_pins ? ' <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>' : '') + '</td>' +
+                '<td class="small text-nowrap" data-sort-value="' + esc(k.key_status) + '">' + statusBadge(k) +
                     (k.expires_at ? '<div class="text-muted">until ' + llrTime.html(k.expires_at) + '</div>' : '') +
                     (k.renewal_denied_reason ? '<div class="text-danger">renewal denied: ' + esc(k.renewal_denied_reason) + '</div>' : '') +
                 '</td>' +
-                '<td class="small text-muted">' + llrTime.html(k.created_at) + '</td>' +
-                '<td class="small text-muted">' + llrTime.html(k.last_used_at) + '</td>' +
+                '<td class="small text-muted" data-sort-value="' + esc(k.last_used_at || '') + '">' + llrTime.html(k.last_used_at) +
+                    '<div title="Created">created ' + llrTime.html(k.created_at) + '</div></td>' +
                 '<td class="text-end text-nowrap">' +
-                (renewalMode === 'off' ? '' :
-                '<button type="button" class="btn btn-sm btn-outline-success me-1" data-renew-key' +
-                    ' title="' + (renewalMode === 'approval' ? 'Ask for a renewal' : 'Renew: a new expiry, same secret') + '"' +
-                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
-                    ' aria-label="Renew key ' + esc(k.key_prefix) + '"><i class="bi bi-calendar-plus" aria-hidden="true"></i></button>') +
-                (k.pause_locked ? '' :
-                '<button type="button" class="btn btn-sm btn-outline-secondary me-1" data-' + (k.paused_at ? 'unpause' : 'pause') + '-key' +
-                    ' title="' + (k.paused_at ? 'Unpause' : 'Pause') + '"' +
-                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
-                    ' aria-label="' + (k.paused_at ? 'Unpause' : 'Pause') + ' key ' + esc(k.key_prefix) + '"><i class="bi bi-' + (k.paused_at ? 'play' : 'pause') + '-fill" aria-hidden="true"></i></button>') +
-                '<button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Pins" data-pins-key' +
-                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
-                    ' data-locality="' + esc(k.locality || '') + '" data-strict="' + (k.strict_pins ? '1' : '') + '"' +
-                    ' aria-label="Pins of key ' + esc(k.key_prefix) + '"><i class="bi bi-pin-angle" aria-hidden="true"></i></button>' +
-                '<button type="button" class="btn btn-sm btn-outline-primary me-1" title="Edit" data-edit-key' +
-                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
+                '<button type="button" class="btn btn-sm btn-outline-primary me-1" title="Edit" data-edit-key' + data +
                     ' aria-label="Edit key ' + esc(k.key_prefix) + '"><i class="bi bi-pencil-square" aria-hidden="true"></i></button>' +
-                '<button type="button" class="btn btn-sm btn-outline-warning me-1" title="Regenerate secret" data-regenerate-key' +
-                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
-                    ' aria-label="Regenerate secret of key ' + esc(k.key_prefix) + '"><i class="bi bi-arrow-repeat" aria-hidden="true"></i></button>' +
-                '<button type="button" class="btn btn-sm btn-outline-danger" title="Revoke" data-revoke-key' +
-                    ' data-id="' + esc(k.id) + '" data-prefix="' + esc(k.key_prefix) + '"' +
-                    ' aria-label="Revoke key ' + esc(k.key_prefix) + '"><i class="bi bi-trash" aria-hidden="true"></i></button></td>' +
+                '<div class="dropdown d-inline-block">' +
+                '<button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" data-bs-popper-config=\'{"strategy":"fixed"}\' aria-expanded="false"' +
+                    ' title="More actions" aria-label="More actions for key ' + esc(k.key_prefix) + '"><i class="bi bi-three-dots" aria-hidden="true"></i></button>' +
+                '<ul class="dropdown-menu dropdown-menu-end">' +
+                (renewalMode === 'off' ? '' : item(' data-renew-key', 'calendar-plus text-success',
+                    renewalMode === 'approval' ? 'Ask for a renewal' : 'Renew (new expiry, same secret)')) +
+                (k.pause_locked ? '' : (k.paused_at ? item(' data-unpause-key', 'play-fill', 'Unpause') : item(' data-pause-key', 'pause-fill', 'Pause'))) +
+                item(' data-regenerate-key', 'arrow-repeat text-warning', 'Regenerate secret') +
+                '<li><hr class="dropdown-divider"></li>' +
+                item(' data-pins-key data-locality="' + esc(k.locality || '') + '" data-strict="' + (k.strict_pins ? '1' : '') + '"', 'diagram-3', 'Pinned routes') +
+                '<li><hr class="dropdown-divider"></li>' +
+                '<li><button type="button" class="dropdown-item text-danger" data-revoke-key' + data + '><i class="bi bi-trash me-2" aria-hidden="true"></i>Revoke key</button></li>' +
+                '</ul></div></td>' +
                 '</tr>';
         }).join('');
     }).catch(function(err) {
         document.getElementById('my-keys-body').innerHTML =
-            '<tr><td colspan="11" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
+            '<tr><td colspan="10" class="text-danger small">Could not load keys: ' + esc(err.message) + '</td></tr>';
     });
 }
 
@@ -364,6 +402,7 @@ function issueMyKey() {
     }).then(function(data) {
         showNewKey(data.api_key);
         document.getElementById('my-key-label').value = '';
+        bootstrap.Tab.getOrCreateInstance(document.getElementById('my-keys-list-tab')).show();
         loadMyKeys();
     }).catch(function(err) { alert(err.message || 'Failed to issue key'); });
 }
@@ -453,11 +492,6 @@ function copyMyNewKey() {
     navigator.clipboard.writeText(el.value)
         .then(function() { document.getElementById('my-new-key-copy').textContent = 'Copied'; })
         .catch(function() { el.select(); });
-}
-
-function pinSummary(k) {
-    if (!k.pin_count) return 'none';
-    return k.pin_count + (k.pin_count === 1 ? ' pin' : ' pins') + (k.strict_pins ? ', strict' : '');
 }
 
 var _myPins = {id: null, locality: '', allowable: null};
@@ -577,6 +611,18 @@ document.getElementById('my-keys-body').addEventListener('click', function(ev) {
     btn = ev.target.closest('[data-regenerate-key]');
     if (btn) regenerateMyKey(btn.dataset.id, btn.dataset.prefix);
 });
+
+// The hash names a sub-tab's pane, so a reload stays put.
+document.querySelectorAll('#my-keys-subtabs [data-bs-toggle="pill"]').forEach(function(tab) {
+    tab.addEventListener('shown.bs.tab', function(e) { history.replaceState(null, '', e.target.dataset.bsTarget); });
+});
+document.getElementById('my-keys-usage-tab').addEventListener('shown.bs.tab', keyUsage.load);
+function showHashTab() {
+    var tab = location.hash && document.querySelector('#my-keys-subtabs [data-bs-target="' + location.hash + '"]');
+    if (tab) bootstrap.Tab.getOrCreateInstance(tab).show();
+}
+showHashTab();
+window.addEventListener('hashchange', showHashTab);
 
 loadMyKeys();
 fetch('/api/my-keys/audit').then(function(r) { return r.ok ? r.json() : {entries: []}; }).then(function(d) {

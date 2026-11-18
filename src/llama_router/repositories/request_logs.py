@@ -190,12 +190,18 @@ class RequestLogRepository(Repository):
         return {int(r["api_key_id"]): float(r["total"] or 0) for r in rows}
 
     async def usage_by_key_and_provider(
-        self, since: datetime | None = None, key_id: int | None = None
+        self,
+        since: datetime | None = None,
+        key_id: int | None = None,
+        *,
+        owner_user_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Requests, tokens and cost per API key and provider, busiest first.
 
         Counts requests logged since *since* (UTC; None for all), only for
-        *key_id* when given. Requests with no key have ``api_key_id`` None;
+        *key_id* when given, and only for the existing keys of
+        *owner_user_id* when given. Requests with no key have ``api_key_id``
+        None; a key with no owner has ``owner_username`` None;
         requests that never reached a provider, and the router's own entries
         (health and probe events, benchmarks, model pulls), are left out.
         Names come from the current rows, or from the log for a provider
@@ -214,8 +220,14 @@ class RequestLogRepository(Repository):
         if key_id is not None:
             where.append("r.api_key_id = ?")
             params.append(key_id)
+        if owner_user_id is not None:
+            where.append(
+                "r.api_key_id IN (SELECT id FROM api_keys WHERE owner_user_id = ?)"
+            )
+            params.append(owner_user_id)
         rows = await self._select_all(
             "SELECT r.api_key_id, MAX(k.key_prefix) AS key_prefix, "  # noqa: S608 - fixed clauses; values are bound
+            "MAX(k.label) AS key_label, MAX(u.username) AS owner_username, "
             "r.provider_id, COALESCE(MAX(p.name), MAX(r.provider_name)) AS provider, "
             "MAX(CASE WHEN p.id IS NULL THEN 0 ELSE 1 END) AS provider_exists, "
             "COUNT(*) AS requests, "
@@ -226,6 +238,7 @@ class RequestLogRepository(Repository):
             "MAX(r.created_at) AS last_request_at "
             "FROM request_log r "
             "LEFT JOIN api_keys k ON k.id = r.api_key_id "
+            "LEFT JOIN dashboard_users u ON u.id = k.owner_user_id "
             "LEFT JOIN providers p ON p.id = r.provider_id "
             f"WHERE {' AND '.join(where)} "
             "GROUP BY r.api_key_id, r.provider_id "
@@ -238,6 +251,8 @@ class RequestLogRepository(Repository):
                     int(r["api_key_id"]) if r["api_key_id"] is not None else None
                 ),
                 "key_prefix": r["key_prefix"],
+                "key_label": r["key_label"],
+                "owner_username": r["owner_username"],
                 "provider_id": int(r["provider_id"]),
                 "provider": r["provider"],
                 "provider_exists": bool(r["provider_exists"]),
