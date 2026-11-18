@@ -251,6 +251,12 @@ class DashboardUserRepository(Repository):
             (raise_floor, (user_id, _SESSION_FLOOR_KEY)),
             ("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,)),
             (
+                "DELETE FROM user_model_group_subscriptions WHERE user_id = ? "
+                "OR group_id IN "
+                "(SELECT id FROM user_model_groups WHERE owner_user_id = ?)",
+                (user_id, user_id),
+            ),
+            (
                 "DELETE FROM user_model_group_members WHERE group_id IN "
                 "(SELECT id FROM user_model_groups WHERE owner_user_id = ?)",
                 (user_id,),

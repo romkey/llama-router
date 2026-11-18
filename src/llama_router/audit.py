@@ -101,6 +101,8 @@ ACTIONS: dict[str, tuple[str, str | None]] = {
     "my_groups.create_my_group": ("my_model_group.create", "my_model_group"),
     "my_groups.update_my_group": ("my_model_group.update", "my_model_group"),
     "my_groups.delete_my_group": ("my_model_group.delete", "my_model_group"),
+    "my_groups.opt_in_shared_group": ("my_model_group.opt_in", "my_model_group"),
+    "my_groups.opt_out_shared_group": ("my_model_group.opt_out", "my_model_group"),
     # Management keys
     "management_keys.api_create_management_key": (
         "management_key.create",

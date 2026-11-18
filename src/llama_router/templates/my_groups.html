@@ -9,8 +9,9 @@
 {% else %}
 <p class="text-muted">
     A model group is one name your programs can ask for like a model; each request goes to the best of its members.
-    These groups are yours alone: only requests made with your API keys, and your chats, can use them.
-    A group of yours wins over a model or shared group of the same name, for you.
+    These groups are yours: only requests made with your API keys, and your chats, can use them.
+    A group of yours wins over a model or router-wide group of the same name, for you.
+    You can share a group with everyone; others then choose whether to opt in to it.
 </p>
 
 <div class="row g-4">
@@ -48,6 +49,11 @@
                     </button>
                     <div class="form-text">At most {{ max_members }} members{% if max_groups %}, and {{ max_groups }} groups{% endif %}. A member is a model, on any provider or on one.</div>
                 </fieldset>
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="group-shared" aria-describedby="group-shared-help">
+                    <label class="form-check-label small" for="group-shared">Share with everyone</label>
+                    <div class="form-text" id="group-shared-help">Other users can see it and opt in to use it. It changes nothing for anyone who doesn't.</div>
+                </div>
                 <div class="d-flex gap-2">
                     <button class="btn btn-sm btn-primary" id="group-save"><i class="bi bi-check-lg me-1" aria-hidden="true"></i>Save group</button>
                     <button class="btn btn-sm btn-outline-secondary" id="group-cancel" hidden>Cancel</button>
@@ -73,6 +79,31 @@
                     </table>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h2 class="h5 mb-0">Shared by others</h2>
+        <span class="badge bg-secondary" id="shared-count"></span>
+    </div>
+    <div class="card-body pb-0">
+        <p class="small text-muted mb-2">
+            Groups other users share. Opt in to one to use it by its name from your API keys and chats, as if it were yours.
+            One that has the name of a router-wide group or a model replaces it for you once you opt in.
+        </p>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr><th>Name</th><th>Shared by</th><th>Members</th><th>Goes to now</th><th><span class="visually-hidden">Opt in</span></th></tr>
+                </thead>
+                <tbody id="shared-body">
+                    <tr><td colspan="5" class="text-muted">Loading…</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
 </div>
@@ -111,6 +142,7 @@ function resetForm() {
     document.getElementById('group-id').value = '';
     document.getElementById('group-name').value = '';
     document.getElementById('group-description').value = '';
+    document.getElementById('group-shared').checked = false;
     document.getElementById('group-form-title').textContent = 'New group';
     document.getElementById('group-cancel').hidden = true;
     draft = [];
@@ -123,11 +155,62 @@ function editGroup(id) {
     document.getElementById('group-id').value = g.id;
     document.getElementById('group-name').value = g.name;
     document.getElementById('group-description').value = g.description || '';
+    document.getElementById('group-shared').checked = !!g.shared;
     document.getElementById('group-form-title').textContent = 'Edit ' + g.name;
     document.getElementById('group-cancel').hidden = false;
     draft = g.members.map(function(m) { return {model_name: m.model_name, provider_id: m.provider_id}; });
     renderDraft();
     document.getElementById('group-name').focus();
+}
+
+function memberBadges(list) {
+    return list.map(function(m) {
+        return '<span class="badge ' + (m.available ? 'text-bg-light' : 'text-bg-warning') + ' me-1"' +
+            (m.available ? '' : ' title="Nothing serves this now"') + '>' + esc(m.label) + '</span>';
+    }).join('') || '<span class="text-muted">none</span>';
+}
+
+function shadowText(kind, name) {
+    return kind === 'group' ? 'the router-wide group ' + name : 'the model ' + name;
+}
+
+function loadShared() {
+    fetch('/api/shared-groups').then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    }).then(function(d) {
+        var rows = d.groups;
+        document.getElementById('shared-count').textContent = rows.length;
+        var body = document.getElementById('shared-body');
+        if (!rows.length) { body.innerHTML = '<tr><td colspan="5" class="text-muted">Nobody shares a group yet.</td></tr>'; return; }
+        body.innerHTML = rows.map(function(g) {
+            var notes = '';
+            if (g.hidden_by === 'own') {
+                notes += '<div class="small text-muted">Your own group ' + esc(g.name) + ' wins this name; rename it to use this one.</div>';
+            } else if (g.hidden_by === 'shared') {
+                notes += g.opted_in
+                    ? '<div class="small text-muted">Another shared group of this name you opted in to earlier wins.</div>'
+                    : '<div class="small text-muted">You already use another shared group of this name; opt out of it to use this one.</div>';
+            } else if (g.shadows) {
+                notes += g.opted_in
+                    ? '<div class="small text-warning-emphasis"><i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>Replaces ' + esc(shadowText(g.shadows, g.name)) + ' for you</div>'
+                    : '<div class="small text-muted"><i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>Opting in replaces ' + esc(shadowText(g.shadows, g.name)) + ' for you</div>';
+            }
+            var action = g.opted_in
+                ? '<button class="btn btn-sm btn-outline-secondary" data-opt-out="' + esc(g.id) + '" aria-label="Opt out of ' + esc(g.name) + ' shared by ' + esc(g.owner) + '">Opt out</button>'
+                : '<button class="btn btn-sm btn-outline-primary" data-opt-in="' + esc(g.id) + '" aria-label="Opt in to ' + esc(g.name) + ' shared by ' + esc(g.owner) + '"' +
+                  (g.hidden_by ? ' disabled' : '') + '>Opt in</button>';
+            return '<tr><td><code>' + esc(g.name) + '</code>' +
+                (g.opted_in ? ' <span class="badge text-bg-success">opted in</span>' : '') +
+                (g.description ? '<div class="small text-muted">' + esc(g.description) + '</div>' : '') + notes + '</td>' +
+                '<td class="small">' + esc(g.owner) + '</td>' +
+                '<td class="small">' + memberBadges(g.members) + '</td>' +
+                '<td class="small">' + (g.opted_in ? (g.choice ? esc(g.choice) : '<span class="text-muted">nothing serves it</span>') : '<span class="text-muted">not opted in</span>') + '</td>' +
+                '<td class="text-nowrap text-end">' + action + '</td></tr>';
+        }).join('');
+    }).catch(function(err) {
+        document.getElementById('shared-body').innerHTML = '<tr><td colspan="5" class="text-danger">' + esc(err.message) + '</td></tr>';
+    });
 }
 
 function loadGroups() {
@@ -149,12 +232,12 @@ function loadGroups() {
         var body = document.getElementById('groups-body');
         if (!groups.length) { body.innerHTML = '<tr><td colspan="4" class="text-muted">No groups yet.</td></tr>'; return; }
         body.innerHTML = groups.map(function(g) {
-            var members = g.members.map(function(m) {
-                return '<span class="badge ' + (m.available ? 'text-bg-light' : 'text-bg-warning') + ' me-1"' +
-                    (m.available ? '' : ' title="Nothing serves this now"') + '>' + esc(m.label) + '</span>';
-            }).join('') || '<span class="text-muted">none</span>';
-            var shadow = g.shadows ? '<div class="small text-muted">hides the shared ' + esc(g.shadows) + ' of this name, for you</div>' : '';
-            return '<tr><td><code>' + esc(g.name) + '</code>' +
+            var members = memberBadges(g.members);
+            var shadow = g.shadows ? '<div class="small text-muted">hides ' + esc(shadowText(g.shadows, g.name)) + ', for you</div>' : '';
+            var shared = g.shared
+                ? ' <span class="badge text-bg-info" title="Other users can opt in to it">shared · ' + esc(g.opted_in) + ' opted in</span>'
+                : '';
+            return '<tr><td><code>' + esc(g.name) + '</code>' + shared +
                 (g.description ? '<div class="small text-muted">' + esc(g.description) + '</div>' : '') + shadow + '</td>' +
                 '<td class="small">' + members + '</td>' +
                 '<td class="small">' + (g.choice ? esc(g.choice) : '<span class="text-muted">nothing serves it</span>') + '</td>' +
@@ -194,13 +277,15 @@ document.getElementById('group-save').addEventListener('click', function() {
     var body = {
         name: document.getElementById('group-name').value.trim(),
         description: document.getElementById('group-description').value.trim(),
+        shared: document.getElementById('group-shared').checked,
         members: draft
     };
     send(id ? 'PATCH' : 'POST', id ? '/api/my-groups/' + id : '/api/my-groups', body).then(function() {
         resetForm();
         // The router picks up the change within its rebuild debounce.
-        setTimeout(loadGroups, 1500);
+        setTimeout(function() { loadGroups(); loadShared(); }, 1500);
         loadGroups();
+        loadShared();
     }).catch(function(err) { alert(err.message); });
 });
 
@@ -213,16 +298,32 @@ document.addEventListener('click', function(ev) {
     if (btn) { editGroup(btn.dataset.editGroup); return; }
     btn = ev.target.closest('[data-delete-group]');
     if (btn) {
-        if (!confirm('Delete group ' + btn.dataset.name + '? Requests for it stop working.')) return;
+        if (!confirm('Delete group ' + btn.dataset.name + '? Requests for it stop working, for you and anyone who opted in to it.')) return;
         send('DELETE', '/api/my-groups/' + btn.dataset.deleteGroup).then(function() {
             if (document.getElementById('group-id').value === btn.dataset.deleteGroup) resetForm();
             loadGroups();
+            loadShared();
         }).catch(function(err) { alert(err.message); });
+        return;
+    }
+    btn = ev.target.closest('[data-opt-in]');
+    if (btn) {
+        send('POST', '/api/shared-groups/' + btn.dataset.optIn + '/opt-in').then(function() {
+            loadShared();
+            setTimeout(loadShared, 1500);
+        }).catch(function(err) { alert(err.message); });
+        return;
+    }
+    btn = ev.target.closest('[data-opt-out]');
+    if (btn) {
+        send('DELETE', '/api/shared-groups/' + btn.dataset.optOut + '/opt-in').then(loadShared)
+            .catch(function(err) { alert(err.message); });
     }
 });
 
 renderDraft();
 loadGroups();
+loadShared();
 </script>
 {% endif %}
 {% endblock %}

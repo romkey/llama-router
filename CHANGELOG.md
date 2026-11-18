@@ -11,6 +11,13 @@ described in their git tags and GitHub Releases.
 
 ### Added
 
+- **Shared private model groups**: a user can tick **Share with everyone**
+  on one of their model groups (off by default). Other users see it under
+  **Shared by others** on **My model groups** (`/api/shared-groups`) and
+  can opt in to it; only those who do can use it, from their own keys and
+  chats. An opted-in group wins over a router-wide group or model of the
+  same name for that user, and the page calls this out. Unsharing a group
+  drops everyone's opt-in.
 - **Sortable tables**: click a column heading on Issued Keys, Usage and
   My API keys to sort by it; click again to reverse. A table keeps its sort
   when its rows reload.
