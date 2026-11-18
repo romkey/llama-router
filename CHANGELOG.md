@@ -7,8 +7,6 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
-## [0.33.0] - 2026-11-18
-
 ### Added
 
 - **Shared private model groups**: a user can tick **Share with everyone**
@@ -18,6 +16,11 @@ described in their git tags and GitHub Releases.
   chats. An opted-in group wins over a router-wide group or model of the
   same name for that user, and the page calls this out. Unsharing a group
   drops everyone's opt-in.
+
+## [0.33.0] - 2026-11-18
+
+### Added
+
 - **Sortable tables**: click a column heading on Issued Keys, Usage and
   My API keys to sort by it; click again to reverse. A table keeps its sort
   when its rows reload.
