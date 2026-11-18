@@ -22,6 +22,7 @@ from .management_keys import router as management_keys_router
 from .mfa import router as mfa_router
 from .middleware import DashboardAuthMiddleware
 from .model_groups import router as model_groups_router
+from .my_groups import router as my_groups_router
 from .my_keys import router as my_keys_router
 from .pages import merge_dash_template_ctx, templates
 from .routes import router
@@ -138,5 +139,6 @@ app.include_router(model_groups_router)
 app.include_router(chat_router)
 app.include_router(management_keys_router)
 app.include_router(my_keys_router)
+app.include_router(my_groups_router)
 
 app.include_router(mfa_router)

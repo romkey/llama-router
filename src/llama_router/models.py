@@ -267,6 +267,9 @@ class ModelGroup(BaseModel):
     name: str
     description: str | None = None
     members: list[ModelGroupMember] = Field(default_factory=list)
+    # The dashboard user a private group belongs to; None for the router's
+    # own groups, which every key can use.
+    owner_user_id: int | None = None
 
 
 class BenchmarkResult(BaseModel):

@@ -28,6 +28,8 @@ optionally Sentry and an OpenID Connect provider.
   `provider_benchmark.py`; `client_pool.py` holds each provider's clients.
 - `src/llama_router/router.py`, `routing_table.py`, `routing_stats.py`, `affinity.py`: routing.
 - `src/llama_router/model_listing.py`, `dashboard/model_groups.py`: model groups in listings and their API.
+  `dashboard/my_groups.py`, `repositories/user_groups.py`: private groups users define for their own keys,
+  compiled into the routing table under `routing_table.user_group_key` and found by `RoutingTable.resolve`.
 - `src/llama_router/dashboard/mfa.py`, `mfa_store.py`: local WebAuthn, enforced enrollment, recovery.
 - `src/llama_router/dashboard/management_keys.py`: privilege-scoped management keys for the dashboard API.
 - `src/llama_router/dashboard/chat.py`, `templates/chat.html`: Chat tab for trying a model, group or alias on a provider, or on any provider the router picks. Chat replies stream from `/api/chat/stream`; images use `/api/chat/send`.

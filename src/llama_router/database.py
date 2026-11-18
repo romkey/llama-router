@@ -46,6 +46,7 @@ from .repositories import (
     ModelConfigRepository,
     ProviderRepository,
     RequestLogRepository,
+    UserGroupRepository,
     WorkerRepository,
 )
 from .repositories.base import _bind_params, _utc_datetime
@@ -110,6 +111,7 @@ class Database(
     BenchmarkRepository,
     RequestLogRepository,
     ModelConfigRepository,
+    UserGroupRepository,
     DecisionRepository,
     ChatRepository,
     WorkerRepository,

@@ -19,6 +19,7 @@ CHANGE_BENCHMARKS = "benchmarks"
 CHANGE_FALLBACKS = "fallbacks"
 CHANGE_ALIASES = "aliases"
 CHANGE_GROUPS = "groups"
+CHANGE_USER_GROUPS = "user_groups"
 CHANGE_PRICES = "prices"
 CHANGE_CAPABILITIES = "capabilities"
 CHANGE_API_KEYS = "api_keys"
@@ -34,6 +35,7 @@ ROUTING_CHANGES = frozenset(
         CHANGE_FALLBACKS,
         CHANGE_ALIASES,
         CHANGE_GROUPS,
+        CHANGE_USER_GROUPS,
         CHANGE_PRICES,
         CHANGE_CAPABILITIES,
     }

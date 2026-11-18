@@ -219,6 +219,9 @@ class Settings(BaseSettings):
     # Most API keys one dashboard user may issue themselves on /my-keys
     # (0: no limit). Keys an admin issues on the API Keys tab don't count.
     max_api_keys_per_user: int = 20
+    # Most private model groups one dashboard user may define on /my-groups
+    # (0: no limit). Each adds candidate lists to the routing table.
+    max_model_groups_per_user: int = 20
     # Most model pins a dashboard user may set on one of their own keys on
     # /my-keys (0: no limit). Every pin on the key counts, an admin's too;
     # changing an existing pin is always allowed.

@@ -23,6 +23,7 @@ async def list_models(request: Request) -> JSONResponse:
         hub_only=from_hub(request),
         provider_id=hub_provider(request),
         access=prefs.access if prefs else None,
+        owner_user_id=prefs.owner_user_id if prefs else None,
     )
     return JSONResponse(
         content={
@@ -50,6 +51,7 @@ async def get_model(model_name: str, request: Request) -> JSONResponse:
         hub_only=from_hub(request),
         provider_id=hub_provider(request),
         access=prefs.access if prefs else None,
+        owner_user_id=prefs.owner_user_id if prefs else None,
     )
     for m in models:
         if m["name"] == model_name:

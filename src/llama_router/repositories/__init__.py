@@ -10,6 +10,7 @@ from .management_keys import ManagementKeyRepository
 from .model_config import ModelConfigRepository
 from .providers import ProviderRepository
 from .request_logs import RequestLogRepository
+from .user_groups import UserGroupRepository
 from .users import DashboardUserRepository
 from .workers import WorkerRepository
 
@@ -25,5 +26,6 @@ __all__ = [
     "ProviderRepository",
     "Repository",
     "RequestLogRepository",
+    "UserGroupRepository",
     "WorkerRepository",
 ]

@@ -555,9 +555,21 @@ class Router:
         locality = preferences.locality if preferences else None
         hub_only = bool(preferences and preferences.hub_only)
         access = preferences.access if preferences else None
-        if not table.allows(access, model_name):
+        owner = preferences.owner_user_id if preferences else None
+        # The owner's private group of this name, if any: one lookup.
+        target = table.resolve(owner, model_name)
+        if not table.allows(access, model_name, owner):
             # Callers refuse such a request first (HTTP 403); never route it.
             return None
+        private = target != model_name
+        if private:
+            # A private group: its own members only. Pins, fallbacks and chaos
+            # name router-wide models, so none apply; a hub never asks for one.
+            if hub_only or (preferences is not None and preferences.hub_provider):
+                return None
+            pins = None
+            if mode not in MODES:
+                mode = DEFAULT_MODE
         if preferences is not None and preferences.hub_provider is not None:
             return self._route_hub_provider(
                 table,
@@ -571,21 +583,21 @@ class Router:
                 access,
                 strict,
             )
-        if mode == "chaos" and not (pins and model_name in pins):
+        if mode == "chaos" and not (pins and model_name in pins) and not private:
             return self._route_chaos(
                 table, model_name, path, locality, hub_only, access, exclude
             )
         if mode not in MODES:
             mode = DEFAULT_MODE
 
-        if preferences and not preferences.allow_fallback:
-            chain: tuple[str, ...] = (model_name,)
+        if private or (preferences and not preferences.allow_fallback):
+            chain: tuple[str, ...] = (target,)
         else:
             chain = table.chain(model_name)
         active = self._pm.active_requests
 
         for candidate_model in chain:
-            if not table.allows(access, candidate_model):
+            if candidate_model != target and not table.allows(access, candidate_model):
                 # A fallback never takes a key to a model it may not use.
                 continue
             if pins:
@@ -691,7 +703,7 @@ class Router:
                         chosen.provider.name,
                         candidate_model,
                     )
-            if candidate_model != model_name:
+            if candidate_model != target:
                 logger.info(
                     "Model %s unavailable; fell back to %s",
                     model_name,
@@ -699,12 +711,24 @@ class Router:
                 )
             logger.debug(
                 "Routing model %s (%s, %s) to %s on provider %s",
-                candidate_model,
+                model_name,
                 path,
                 mode,
                 chosen.model,
                 chosen.provider.name,
             )
+            if private:
+                # Shown and logged by the name the owner gave it; not counted
+                # in the group metrics, which would publish it.
+                result = RouteResult(
+                    chosen.provider,
+                    model_name,
+                    chosen.backend_model,
+                    chosen.model,
+                    model_name,
+                )
+                result.affinity = weighing
+                return result
             group = _group_of(table, candidate_model)
             if group is not None and record:
                 self._count_group(group, chosen)
@@ -825,12 +849,14 @@ class Router:
                 "fell_back": decision.resolved_model != model_name,
             }
         access = preferences.access if preferences else None
+        owner = preferences.owner_user_id if preferences else None
+        target = table.resolve(owner, model_name)
         if access is not None:
             out["request"]["allowed"] = {
                 "models": sorted(access.models),
                 "groups": sorted(access.groups),
             }
-            if not table.allows(access, model_name):
+            if not table.allows(access, model_name, owner):
                 out["summary"] = (
                     f"Refused: this API key may not use '{model_name}' (HTTP 403)."
                 )
@@ -839,6 +865,11 @@ class Router:
         if session:
             out["session"] = self._explain_session(
                 session, bound, decision, mode, affinity_on, model_name in pins
+            )
+
+        if target != model_name:
+            return self._explain_private(
+                out, table, decision, model_name, target, path, protocol, bound
             )
 
         if mode == "chaos" and model_name not in pins:
@@ -924,6 +955,45 @@ class Router:
                 return out
             if decision is not None and decision.resolved_model == candidate_model:
                 break
+        out["summary"] = _summary(out, model_name)
+        return out
+
+    def _explain_private(
+        self,
+        out: dict[str, Any],
+        table: RoutingTable,
+        decision: RouteResult | None,
+        model_name: str,
+        target: str,
+        path: str,
+        protocol: str | None,
+        bound: Binding | None,
+    ) -> dict[str, Any]:
+        """The rest of :meth:`explain_with` for the owner's private group
+        *model_name*, filed under *target*: one step, without pins, fallbacks
+        or chaos, as :meth:`route_with` routes it."""
+        request = out["request"]
+        mode = request["mode"] if request["mode"] in MODES else DEFAULT_MODE
+        members = list(table.private_labels.get(target, ()))
+        out["fallback_chain"] = [model_name]
+        chosen_id = decision.provider.id if decision is not None else None
+        step = self._explain_step(
+            table,
+            target,
+            path,
+            protocol,
+            mode,
+            {},
+            self._pm.active_requests,
+            chosen_id,
+            bound,
+            request["locality"] if request["locality"] != "any" else None,
+            request["hub_only"],
+            decision.model_key if decision is not None else None,
+        )
+        step["model"] = model_name
+        step["group"] = {"name": model_name, "members": members, "private": True}
+        out["steps"].append(step)
         out["summary"] = _summary(out, model_name)
         return out
 
