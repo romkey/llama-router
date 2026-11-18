@@ -119,6 +119,8 @@ def _own_data_path(path: str) -> bool:
         or path.startswith("/api/my-keys/")
         or path == "/api/my-groups"
         or path.startswith("/api/my-groups/")
+        or path == "/api/shared-groups"
+        or path.startswith("/api/shared-groups/")
     )
 
 

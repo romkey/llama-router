@@ -7,6 +7,16 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Shared private model groups**: a user can tick **Share with everyone**
+  on one of their model groups (off by default). Other users see it under
+  **Shared by others** on **My model groups** (`/api/shared-groups`) and
+  can opt in to it; only those who do can use it, from their own keys and
+  chats. An opted-in group wins over a router-wide group or model of the
+  same name for that user, and the page calls this out. Unsharing a group
+  drops everyone's opt-in.
+
 ## [0.32.0] - 2026-11-18
 
 ### Added

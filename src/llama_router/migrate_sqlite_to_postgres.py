@@ -238,11 +238,15 @@ _TABLES: list[tuple[str, list[str]]] = [
     ),
     (
         "user_model_groups",
-        ["id", "owner_user_id", "name", "description", "created_at"],
+        ["id", "owner_user_id", "name", "description", "shared", "created_at"],
     ),
     (
         "user_model_group_members",
         ["id", "group_id", "model_name", "provider_id", "position"],
+    ),
+    (
+        "user_model_group_subscriptions",
+        ["id", "user_id", "group_id", "created_at"],
     ),
     (
         "decision_calibrations",
@@ -352,6 +356,7 @@ _SEQUENCE_TABLES = [
     "model_group_members",
     "user_model_groups",
     "user_model_group_members",
+    "user_model_group_subscriptions",
     "model_prices",
     "decision_calibrations",
     "chat_conversations",

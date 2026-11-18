@@ -270,6 +270,8 @@ class ModelGroup(BaseModel):
     # The dashboard user a private group belongs to; None for the router's
     # own groups, which every key can use.
     owner_user_id: int | None = None
+    # A private group its owner offers to every other user; each must opt in.
+    shared: bool = False
 
 
 class BenchmarkResult(BaseModel):

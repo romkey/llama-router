@@ -201,6 +201,9 @@ class RoutingInputs:
     groups: list[ModelGroup] = field(default_factory=list)
     # Every user's private groups (see user_group_key).
     user_groups: list[ModelGroup] = field(default_factory=list)
+    # (user id, group id) of each opt-in to another user's shared group,
+    # oldest first.
+    user_group_subscriptions: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +259,7 @@ async def load_inputs(db: Database) -> RoutingInputs:
     prices = await db.list_model_prices()
     groups = await db.list_model_groups()
     user_groups = await db.list_user_model_groups()
+    subscriptions = await db.list_user_model_group_subscriptions()
     return RoutingInputs(
         providers,
         models,
@@ -266,6 +270,7 @@ async def load_inputs(db: Database) -> RoutingInputs:
         prices,
         groups,
         user_groups,
+        subscriptions,
     )
 
 
@@ -639,12 +644,15 @@ class RoutingTable:
     warnings: tuple[str, ...] = ()
     # Name -> every name of its alias group (see alias_groups).
     alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
-    # Private groups: owner -> group name -> table key (user_group_key), and
+    # Private groups: user -> group name -> table key (user_group_key), and
     # the reverse, table key -> its members' model names (for key access)
-    # and labels (for listings).
+    # and labels (for listings). A user's map holds their own groups and the
+    # shared groups they opted in to; their own win a name both have.
     user_groups: dict[int, dict[str, str]] = field(default_factory=dict)
     private_models: dict[str, tuple[str, ...]] = field(default_factory=dict)
     private_labels: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Table key -> the user who owns that private group.
+    private_owners: dict[str, int] = field(default_factory=dict)
     # Private group table keys that something can serve now.
     private_reach: frozenset[str] = frozenset()
 
@@ -654,10 +662,11 @@ class RoutingTable:
     def resolve(self, owner_user_id: int | None, name: str) -> str:
         """The table key a request for *name* routes as.
 
-        A user's private group of that name, for a request made by them (an
-        API key they issued, or their dashboard chat), wins over a model or
-        group of the same name. Anyone asking for a private group's table key
-        by itself gets :data:`UNROUTABLE`. Every other name is itself. Costs
+        A user's private group of that name (their own, or a shared one they
+        opted in to), for a request made by them (an API key they issued, or
+        their dashboard chat), wins over a model or group of the same name.
+        Anyone asking for a private group's table key by itself gets
+        :data:`UNROUTABLE`. Every other name is itself. Costs
         nothing when nobody has a private group, and one or two dict lookups
         when someone does.
         """
@@ -720,6 +729,7 @@ class RoutingTable:
                     "family": "group",
                     "group": True,
                     "private": True,
+                    "shared": self.private_owners.get(key) != owner_user_id,
                     "members": list(self.private_labels.get(key, ())),
                 },
             }
@@ -908,6 +918,7 @@ class TableBase:
     user_groups: dict[int, dict[str, str]] = field(default_factory=dict)
     private_models: dict[str, tuple[str, ...]] = field(default_factory=dict)
     private_labels: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    private_owners: dict[str, int] = field(default_factory=dict)
 
 
 def build_table(
@@ -1059,6 +1070,7 @@ def rescore(
         user_groups=base.user_groups,
         private_models=base.private_models,
         private_labels=base.private_labels,
+        private_owners=base.private_owners,
     )
     hot: dict[int, set[str]] = {}
     rtt: dict[int, float | None] = {}
@@ -1285,6 +1297,7 @@ def _add_user_groups(
             continue
         key = user_group_key(g.owner_user_id, g.name)
         table.user_groups.setdefault(g.owner_user_id, {})[g.name] = key
+        table.private_owners[key] = g.owner_user_id
         table.private_models[key] = tuple(
             dict.fromkeys(m.model_name for m in g.members)
         )
@@ -1311,3 +1324,19 @@ def _add_user_groups(
         for path, bucket in merged.items():
             if bucket:
                 grouped[(key, path)] = bucket
+    # Shared groups a user opted in to, after every user's own groups so
+    # those win a name both have; between two opted-in groups of one name,
+    # the earlier opt-in wins.
+    shared = {
+        g.id: (g.owner_user_id, g.name)
+        for g in inputs.user_groups
+        if g.shared and g.id is not None and g.owner_user_id is not None
+    }
+    for user_id, group_id in inputs.user_group_subscriptions:
+        found = shared.get(group_id)
+        if found is None or found[0] == user_id:
+            continue
+        owner, name = found
+        table.user_groups.setdefault(user_id, {}).setdefault(
+            name, user_group_key(owner, name)
+        )

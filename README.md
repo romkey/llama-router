@@ -430,14 +430,22 @@ curl -X DELETE http://localhost/api/model-groups/1
 
 ### Private Groups
 
-Any signed-in user can define model groups of their own under **My model groups**. A private group works like the groups above, but only for its owner: requests made with API keys they issued themselves, and their dashboard chats. Nobody else sees it, in model listings or anywhere else, and asking for it with another key gets 404.
+Any signed-in user can define model groups of their own under **My model groups**. A private group works like the router-wide groups above, but only for its owner: requests made with API keys they issued themselves, and their dashboard chats. Unless its owner shares it, nobody else sees it, in model listings or anywhere else, and asking for it with another key gets 404.
 
-- **Names** only have to be unique among the owner's own groups. A private group may share its name with a served model or a shared group; for the owner, their group wins, and their model listings show the group in its place (or nothing, while nothing serves the group).
-- **Members** are models, on any provider or on one, as for shared groups. A member can't be a group (shared or private), but it can have the group's own name: `llama` with members `llama` and `qwen3` means "the real llama, or qwen3". A group has at most 50 members, and a user at most `LLAMA_ROUTER_MAX_MODEL_GROUPS_PER_USER` groups (20 by default).
+- **Names** only have to be unique among the owner's own groups. A private group may have the same name as a served model or a router-wide group; for the owner, their group wins, and their model listings show the group in its place (or nothing, while nothing serves the group).
+- **Members** are models, on any provider or on one, as for router-wide groups. A member can't be a group (router-wide or private), but it can have the group's own name: `llama` with members `llama` and `qwen3` means "the real llama, or qwen3". A group has at most 50 members, and a user at most `LLAMA_ROUTER_MAX_MODEL_GROUPS_PER_USER` groups (20 by default).
 - **Limits still apply.** The key's locality, spend cap and quotas work as for any request. A key that an admin limited to some models can use a private group only if it may use every member, so grouping models never widens a key.
-- **Not included:** pins, fallbacks, chaos mode and decision policies name shared models and don't apply to private groups. A hub never routes to one. `/metrics` doesn't count private groups, so their names stay private.
+- **Not included:** pins, fallbacks, chaos mode and decision policies name router-wide models and don't apply to private groups. A hub never routes to one. `/metrics` doesn't count private groups, so their names stay private.
 
-Private groups cost no more per request than shared ones. The routing table compiles every user's groups when it rebuilds, so resolving one is a single dictionary lookup on the owner, and nothing at all when nobody has a private group.
+Private groups cost no more per request than router-wide ones. The routing table compiles every user's groups, and the shared groups each user opted in to, when it rebuilds, so resolving one is a single dictionary lookup on the user, and nothing at all when nobody has a private group.
+
+#### Sharing a group
+
+Tick **Share with everyone** on a group (off by default) to offer it to every other user. Sharing alone changes nothing for anyone: other users see it under **Shared by others** on their **My model groups** page, with who shares it and its members, and only those who **opt in** can use it. For them it then works like one of their own groups: from their own API keys and chats, by its name, with their own keys' limits.
+
+- **Shadowing.** An opted-in group wins over a router-wide group or a model of the same name, for that user only. The page says so before and after opting in ("Opting in replaces the router-wide group chat for you").
+- **Name clashes.** A user's own group always wins over a shared one of the same name, and a user can't opt in to two shared groups of one name (or one their own group already has); the page explains when one is hidden.
+- **The owner stays in charge.** Changes to members apply to everyone who opted in. Unsharing a group drops every opt-in to it (sharing it again doesn't restore them), and so does deleting the group or its owner. The owner's list shows how many users opted in.
 
 ```bash
 # As a signed-in user (session cookie)
@@ -449,6 +457,13 @@ curl http://localhost/api/my-groups -b cookies.txt
 curl -X PATCH http://localhost/api/my-groups/1 -b cookies.txt \
   -H 'Content-Type: application/json' -d '{"members": [{"model_name": "codestral"}]}'
 curl -X DELETE http://localhost/api/my-groups/1 -b cookies.txt
+# Share one (or "shared": false to stop sharing)
+curl -X PATCH http://localhost/api/my-groups/1 -b cookies.txt \
+  -H 'Content-Type: application/json' -d '{"shared": true}'
+# Other users' shared groups, and opting in or out of one
+curl http://localhost/api/shared-groups -b cookies.txt
+curl -X POST http://localhost/api/shared-groups/7/opt-in -b cookies.txt
+curl -X DELETE http://localhost/api/shared-groups/7/opt-in -b cookies.txt
 ```
 
 ## Editing API Keys
