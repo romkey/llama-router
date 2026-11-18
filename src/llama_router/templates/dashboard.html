@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "status_macros.html" import status_badge, live_mark, key_status_badge %}
 {% from "key_access_picker.html" import key_access_fields, key_access_script %}
+{% from "key_usage.html" import key_usage_card %}
 {% block title %}Dashboard - llama-router{% endblock %}
 
 {% block content %}
@@ -755,6 +756,11 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
+                <button class="nav-link" id="keys-usage-tab" data-bs-toggle="pill" data-bs-target="#keys-usage-pane" type="button" role="tab" aria-controls="keys-usage-pane" aria-selected="false">
+                    <i class="bi bi-bar-chart me-1"></i>Usage
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
                 <button class="nav-link" id="keys-generate-tab" data-bs-toggle="pill" data-bs-target="#keys-generate-pane" type="button" role="tab" aria-controls="keys-generate-pane" aria-selected="false">
                     <i class="bi bi-key me-1"></i>Generate API Key
                 </button>
@@ -793,18 +799,18 @@
             <div class="card-body p-0">
                 {% if api_keys %}
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                    <table class="table table-hover mb-0" data-sortable>
                         <thead>
                             <tr>
-                                <th>Key</th>
-                                <th>Owner</th>
-                                <th>Routing</th>
-                                <th>Providers</th>
-                                <th title="Spent today (UTC) / daily cap">Spend</th>
-                                <th>Models</th>
-                                <th>Pins</th>
-                                <th>Status</th>
-                                <th>Last Used</th>
+                                <th data-sort="text">Key</th>
+                                <th data-sort="text">Owner</th>
+                                <th data-sort="text">Routing</th>
+                                <th data-sort="text">Providers</th>
+                                <th data-sort="num" title="Spent today (UTC) / daily cap">Spend</th>
+                                <th data-sort="text">Models</th>
+                                <th data-sort="num">Pins</th>
+                                <th data-sort="text">Status</th>
+                                <th data-sort="text">Last Used</th>
                                 <th><span class="visually-hidden">Actions</span></th>
                             </tr>
                         </thead>
@@ -813,14 +819,14 @@
                             <tr>
                                 <td><code>{{ k.key_prefix }}</code>{% if k.label %}<div class="small text-muted">{{ k.label }}</div>{% endif %}</td>
                                 <td class="small">{% if k.owner_username %}{{ k.owner_username }}{% else %}<span class="text-muted">admin</span>{% endif %}</td>
-                                <td>
+                                <td data-sort-value="{{ k.routing_mode }}">
                                     {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
                                     {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
                                     <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
                                     <div class="small text-muted text-nowrap">fallback {{ 'allowed' if k.allow_fallback else 'disallowed' }}</div>
                                     <div class="small text-muted text-nowrap">sessions {% if k.session_affinity is none %}default{% elif k.session_affinity %}sticky{% else %}off{% endif %}</div>
                                 </td>
-                                <td>
+                                <td data-sort-value="{{ k.locality or 'any' }}">
                                     {% if read_only %}
                                     {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
                                     {% else %}
@@ -831,15 +837,15 @@
                                     </select>
                                     {% endif %}
                                 </td>
-                                <td class="small text-nowrap">
+                                <td class="small text-nowrap" data-sort-value="{{ k.spent_today_usd or 0 }}">
                                     ${{ "%.2f" | format(k.spent_today_usd or 0) }}
                                     {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
                                     {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap" aria-label="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
                                 </td>
                                 <td class="small text-nowrap">{% if not k.restrict_models %}<span class="text-muted">all</span>{% else %}{% set parts = [] %}{% if k.allowed_model_count %}{% set _ = parts.append(k.allowed_model_count ~ (' model' if k.allowed_model_count == 1 else ' models')) %}{% endif %}{% if k.allowed_group_count %}{% set _ = parts.append(k.allowed_group_count ~ (' group' if k.allowed_group_count == 1 else ' groups')) %}{% endif %}<span class="badge bg-info text-dark">{{ parts | join(', ') if parts else 'none' }}</span>{% endif %}</td>
-                                <td class="text-nowrap"><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span>{% if k.strict_pins %} <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>{% endif %}</td>
-                                <td class="small text-nowrap">{{ key_status_badge(k) }}{% if k.expires_at %}<div class="text-muted">until {{ k.expires_at | when }}</div>{% endif %}</td>
-                                <td class="small text-muted">{{ k.last_used_at | when }}<div title="Created">created {{ k.created_at | when }}</div></td>
+                                <td class="text-nowrap" data-sort-value="{{ k.pin_count or 0 }}"><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span>{% if k.strict_pins %} <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>{% endif %}</td>
+                                <td class="small text-nowrap" data-sort-value="{{ k.key_status }}">{{ key_status_badge(k) }}{% if k.expires_at %}<div class="text-muted">until {{ k.expires_at | when }}</div>{% endif %}</td>
+                                <td class="small text-muted" data-sort-value="{{ k.last_used_at or '' }}">{{ k.last_used_at | when }}<div title="Created">created {{ k.created_at | when }}</div></td>
                                 <td class="text-end text-nowrap">
                                     {% if not read_only %}
                                     <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyEdit({{ k.id }}, {{ k.key_prefix | tojson }})' title="Edit key" aria-label="Edit key {{ k.key_prefix }}">
@@ -878,99 +884,18 @@
                 {% endif %}
             </div>
         </div>
-        <div class="card mt-3" id="key-usage">
-            <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h2 class="h5 mb-0">Usage by key and provider</h2>
-                <div class="d-flex align-items-center gap-2">
-                    <label class="small text-muted" for="key-usage-period">Last</label>
-                    <select class="form-select form-select-sm w-auto" id="key-usage-period">
-                        <option value="24h">24 hours</option>
-                        <option value="7d" selected>7 days</option>
-                        <option value="30d">30 days</option>
-                        <option value="all">all time</option>
-                    </select>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <p class="small text-muted px-3 pt-3 mb-2">From the request log: every request a key made, by the provider that served it. Providers a worker shares one by one show up separately. Cost is counted for models with a price on their provider's page.</p>
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover mb-0">
-                        <thead>
-                            <tr>
-                                <th>Key</th>
-                                <th>Provider</th>
-                                <th class="text-end">Requests</th>
-                                <th class="text-end">Errors</th>
-                                <th class="text-end">Tokens in</th>
-                                <th class="text-end">Tokens out</th>
-                                <th class="text-end">Cost</th>
-                                <th>Last request</th>
-                            </tr>
-                        </thead>
-                        <tbody id="key-usage-tbody">
-                            <tr><td colspan="8" class="text-muted small">Loading…</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
-        <script>
-        (function() {
-            var sel = document.getElementById('key-usage-period');
-            var body = document.getElementById('key-usage-tbody');
-            if (!sel || !body) return;
-            function esc(v) {
-                return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
-                    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
-                });
-            }
-            function num(n) { return Number(n || 0).toLocaleString(); }
-            function keyLabel(r) {
-                if (r.api_key_id == null) return '<span class="text-muted">no key</span>';
-                if (r.key_prefix) return '<code>' + esc(r.key_prefix) + '</code>';
-                return '<span class="text-muted">deleted key #' + esc(r.api_key_id) + '</span>';
-            }
-            function providerLabel(r) {
-                var name = esc(r.provider || ('#' + r.provider_id));
-                if (!r.provider_exists) return '<span class="text-muted">' + name + ' (deleted)</span>';
-                return '<a href="/providers/' + esc(r.provider_id) + '">' + name + '</a>';
-            }
-            var latest = 0;
-            function load() {
-                // Only the newest request may fill the table, however the
-                // responses arrive.
-                var mine = ++latest;
-                body.innerHTML = '<tr><td colspan="8" class="text-muted small">Loading…</td></tr>';
-                fetch('/api/keys/usage?period=' + encodeURIComponent(sel.value)).then(function(r) {
-                    if (!r.ok) throw new Error('HTTP ' + r.status);
-                    return r.json();
-                }).then(function(j) {
-                    if (mine !== latest) return;
-                    if (!j.rows.length) {
-                        body.innerHTML = '<tr><td colspan="8" class="text-muted small">No requests in this period.</td></tr>';
-                        return;
-                    }
-                    body.innerHTML = j.rows.map(function(r) {
-                        var when = r.last_request_at ? llrTime.html(r.last_request_at) : '';
-                        return '<tr><td>' + keyLabel(r) + '</td><td>' + providerLabel(r) + '</td>' +
-                            '<td class="text-end">' + num(r.requests) + '</td>' +
-                            '<td class="text-end">' + (r.errors ? '<span class="text-danger">' + num(r.errors) + '</span>' : '0') + '</td>' +
-                            '<td class="text-end">' + num(r.prompt_tokens) + '</td>' +
-                            '<td class="text-end">' + num(r.completion_tokens) + '</td>' +
-                            '<td class="text-end">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>' +
-                            '<td class="small text-muted">' + when + '</td></tr>';
-                    }).join('');
-                }).catch(function(e) {
-                    if (mine !== latest) return;
-                    body.innerHTML = '<tr><td colspan="8" class="text-danger small">Could not load usage: ' + esc(e.message) + '</td></tr>';
-                });
-            }
-            sel.addEventListener('change', load);
-            var tab = document.getElementById('keys-tab');
-            if (tab) tab.addEventListener('shown.bs.tab', load);
-            if (document.getElementById('keys-pane').classList.contains('active')) load();
-        })();
-        </script>
+        <div class="tab-pane fade" id="keys-usage-pane" role="tabpanel" aria-labelledby="keys-usage-tab" tabindex="0">
+            {{ key_usage_card('/api/keys/usage', show_owner=true, intro="From the request log: every request a key made, by the provider that served it. Providers a worker shares one by one show up separately. Cost is counted for models with a price on their provider's page.") }}
+            <script>
+            (function() {
+                // Load when the Usage sub-tab is shown, or on arrival if the
+                // page opens on it.
+                var sub = document.getElementById('keys-usage-tab');
+                sub.addEventListener('shown.bs.tab', keyUsage.load);
+                if (document.getElementById('keys-usage-pane').classList.contains('active')) keyUsage.load();
+            })();
+            </script>
         </div>
         <div class="tab-pane fade" id="keys-generate-pane" role="tabpanel" aria-labelledby="keys-generate-tab" tabindex="0">
             <div class="row">
