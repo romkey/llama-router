@@ -783,6 +783,15 @@ async def test_disconnected_worker_reason_and_no_relog(link) -> None:
     assert [e.error_detail for e in logs] == ["worker is not connected"]
 
 
+async def _disconnect_logged(db) -> bool:
+    """The disconnect handler marks the provider offline before it writes
+    the log entry, so tests wait for the entry, not just the status."""
+    return any(
+        e.protocol == "system" and e.endpoint == "disconnect"
+        for e in await db.get_request_logs(50, 0)
+    )
+
+
 async def test_live_disconnect_is_logged_once(link) -> None:
     w = await _connected_worker(link)
     pm, pid, db = link["pm"], link["provider_id"], link["db"]
@@ -797,6 +806,7 @@ async def test_live_disconnect_is_logged_once(link) -> None:
         return (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
 
     await _wait_for(offline)
+    await _wait_for(lambda: _disconnect_logged(db))
     # The following health check must not log the same disconnect again.
     await pm.check_provider(await db.get_provider(pid))
     logs = [e for e in await db.get_request_logs(50, 0) if e.protocol == "system"]
@@ -821,6 +831,7 @@ async def test_disconnect_during_cycle_is_not_logged_twice(link) -> None:
         return (await db.get_provider(pid)).status == ProviderStatus.OFFLINE
 
     await _wait_for(offline)
+    await _wait_for(lambda: _disconnect_logged(db))
     await pm.check_provider(stale)
     errors = [
         e
