@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-18
+
 ### Added
 
 - **Sortable tables**: click a column heading on Issued Keys, Usage and
