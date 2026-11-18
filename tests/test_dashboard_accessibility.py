@@ -286,3 +286,13 @@ def test_api_keys_table_cells_are_closed() -> None:
         template.index('id="keys-issued-pane"') : template.index('id="keys-usage-pane"')
     ]
     assert len(re.findall(r"<td\b", issued)) == issued.count("</td>")
+
+
+def test_usage_numbers_sort_by_raw_value() -> None:
+    """Locale-formatted counts ("1.234" in some locales) must not be what
+    sorting reads: numeric usage cells carry the raw number."""
+    template = (
+        Path(__file__).parent.parent / "src/llama_router/templates/key_usage.html"
+    ).read_text()
+    assert "'<td class=\"text-end\">' + num(" not in template
+    assert "data-sort-value=\"' + Number(n || 0)" in template

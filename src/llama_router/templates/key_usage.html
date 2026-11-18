@@ -73,6 +73,10 @@ window.keyUsage = (function() {
         if (!r.provider_exists) return '<td><span class="text-muted">' + name + ' (deleted)</span></td>';
         return '<td><a href="/providers/' + esc(r.provider_id) + '">' + name + '</a></td>';
     }
+    // Sorts by the raw number: the shown one has locale separators.
+    function numCell(n) {
+        return '<td class="text-end" data-sort-value="' + Number(n || 0) + '">' + num(n) + '</td>';
+    }
     function errorsCell(r) {
         if (!r.errors) return '<td class="text-end" data-sort-value="0">0</td>';
         var pct = r.requests ? (100 * r.errors / r.requests) : 0;
@@ -93,10 +97,10 @@ window.keyUsage = (function() {
             if (!j.rows.length) { message('No requests in this period.', 'text-muted'); return; }
             body.innerHTML = j.rows.map(function(r) {
                 return '<tr>' + keyCell(r) + (SHOW_OWNER ? ownerCell(r) : '') + providerCell(r) +
-                    '<td class="text-end">' + num(r.requests) + '</td>' +
+                    numCell(r.requests) +
                     errorsCell(r) +
-                    '<td class="text-end">' + num(r.prompt_tokens) + '</td>' +
-                    '<td class="text-end">' + num(r.completion_tokens) + '</td>' +
+                    numCell(r.prompt_tokens) +
+                    numCell(r.completion_tokens) +
                     '<td class="text-end" data-sort-value="' + Number(r.cost_usd || 0) + '">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>' +
                     '<td class="small text-muted">' + (r.last_request_at ? llrTime.html(r.last_request_at) : '') + '</td></tr>';
             }).join('');
