@@ -118,12 +118,14 @@ def _description(body: dict[str, Any], current: str | None = None) -> str | None
 
 
 async def _members(
-    db: Database, raw: Any, *, name: str, own_names: set[str]
+    db: Database, raw: Any, *, own_names: set[str]
 ) -> list[tuple[str, int | None]]:
     """Members from a request body: [{model_name, provider_id?}].
 
     A member is a model, anywhere or on one provider. Groups do not nest, so
     neither a router-wide group nor another of the user's groups may be one.
+    A member may have the group's own name: it is then the model the group
+    shadows, as member names always mean models.
     """
     if not isinstance(raw, list):
         raise HTTPException(status_code=400, detail="members must be a list")
@@ -141,8 +143,6 @@ async def _members(
             raise HTTPException(status_code=400, detail="model_name is required")
         if len(model) > MAX_NAME:
             raise HTTPException(status_code=400, detail="model_name is too long")
-        if model == name:
-            raise HTTPException(status_code=400, detail="a group cannot contain itself")
         if model in router_groups or model in own_names:
             raise HTTPException(
                 status_code=400, detail="a member cannot be another model group"
@@ -239,9 +239,7 @@ async def create_my_group(request: Request) -> JSONResponse:
             status_code=409,
             detail=f"You already have {limit} model groups; delete one to add another",
         )
-    members = await _members(
-        db, body.get("members") or [], name=name, own_names=own_names
-    )
+    members = await _members(db, body.get("members") or [], own_names=own_names)
     group = await db.create_user_model_group(owner, name, _description(body), members)
     await audit.record(
         request,
@@ -265,12 +263,10 @@ async def update_my_group(group_id: int, request: Request) -> JSONResponse:
     if name in others:
         raise HTTPException(status_code=409, detail=f"you already have a group {name}")
     members = (
-        await _members(db, body["members"], name=name, own_names=others)
+        await _members(db, body["members"], own_names=others)
         if "members" in body
         else None
     )
-    if members is None and any(m.model_name == name for m in group.members):
-        raise HTTPException(status_code=400, detail="a group cannot contain itself")
     description = _description(body, group.description)
     await db.update_user_model_group(
         owner, group_id, name=name, description=description, members=members

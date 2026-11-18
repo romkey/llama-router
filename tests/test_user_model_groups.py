@@ -104,6 +104,27 @@ async def test_private_group_hides_a_shared_name_for_its_owner_only(
     assert theirs.model_key == "llama"
 
 
+async def test_group_can_include_the_model_it_shadows(
+    db: Database, pm: ProviderManager
+) -> None:
+    await _provider(db, "a", {"llama": 100.0, "qwen": 900.0})
+    ann, _ = await _people(db)
+    # "llama" for ann: the real llama, or qwen when llama can't serve.
+    await db.create_user_model_group(
+        ann, "llama", members=[("llama", None), ("qwen", None)]
+    )
+    rt = Router(db, pm)
+    table = await rt.current_table()
+    got = await rt.route("llama", CHAT, _prefs(ann))
+    assert got is not None
+    assert (got.model_key, got.group) == ("llama", "llama")
+    key = user_group_key(ann, "llama")
+    assert {c.model for c in table.all_candidates[(key, CHAT)]} == {"llama", "qwen"}
+    access = ModelAccess(models=frozenset({"llama"}))
+    assert not table.allows(access, "llama", ann)
+    assert table.allows(ModelAccess(models=frozenset({"llama", "qwen"})), "llama", ann)
+
+
 async def test_member_tied_to_a_provider_and_no_fallbacks(
     db: Database, pm: ProviderManager
 ) -> None:
@@ -213,15 +234,19 @@ async def test_listing_shows_the_owners_groups(
     ann, bob = await _people(db)
     await db.create_user_model_group(ann, "llama", members=[("qwen", None)])
     await db.create_user_model_group(ann, "ghost", members=[("absent", None)])
+    # Nothing serves it, yet routing sends "qwen" to it for ann.
+    await db.create_user_model_group(ann, "qwen", members=[("absent", None)])
     rt = Router(db, pm)
 
     mine = await listed_models(db, rt, owner_user_id=ann)
     by_name = {m["name"]: m for m in mine}
-    # Replaces the model of the same name; a group nothing serves is hidden.
-    assert sorted(by_name) == ["llama", "qwen"]
+    # Replaces the model of the same name; a group nothing serves is hidden,
+    # and so is the model it shadows, which ann can't reach by that name.
+    assert sorted(by_name) == ["llama"]
     assert by_name["llama"]["details"]["private"] is True
     assert by_name["llama"]["details"]["members"] == ["qwen"]
     theirs = await listed_models(db, rt, owner_user_id=bob)
+    assert sorted(m["name"] for m in theirs) == ["llama", "qwen"]
     assert "private" not in {m["name"]: m for m in theirs}["llama"]["details"]
     assert await listed_models(
         db, rt, owner_user_id=ann, hub_only=True
@@ -275,6 +300,13 @@ async def test_user_manages_own_groups(dash_client: DashClient) -> None:
         await c.delete(f"/api/my-groups/{gid}", headers=_as(bob))
     ).status_code == 404
 
+    # A member may be the model the group's name shadows.
+    resp = await c.patch(
+        f"/api/my-groups/{gid}",
+        json={"name": "llama", "members": [{"model_name": "llama"}]},
+        headers=_as(ann),
+    )
+    assert resp.status_code == 200, resp.text
     resp = await c.patch(
         f"/api/my-groups/{gid}",
         json={"name": "coding", "members": [{"model_name": "llama"}]},
@@ -323,7 +355,6 @@ async def test_group_validation(dash_client: DashClient) -> None:
     assert await post({"name": "g"}) == 409
     assert await post({"name": "h", "members": "llama"}) == 400
     assert await post({"name": "h", "members": [{"model_name": ""}]}) == 400
-    assert await post({"name": "h", "members": [{"model_name": "h"}]}) == 400
     assert await post({"name": "h", "members": [{"model_name": "shared"}]}) == 400
     assert await post({"name": "h", "members": [{"model_name": "g"}]}) == 400
     assert (

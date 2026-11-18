@@ -46,14 +46,20 @@ async def listed_models(
         )
     if table is None or provider_id is not None:
         return _allowed(models, table, access)
-    private = table.private_listing(owner_user_id, hub_only)
-    if not table.groups and not private:
+    # Every private group name of the owner, served now or not: routing
+    # sends that name to their group either way, as it does for shared ones.
+    mine = (
+        set(table.user_groups.get(owner_user_id, ()))
+        if owner_user_id is not None and not hub_only
+        else set()
+    )
+    if not table.groups and not mine:
         return _allowed(models, table, access)
     rows = [m for m in models if m["name"] not in table.groups]
     rows += table.group_listing(hub_only)
-    if private:
-        mine = {m["name"] for m in private}
-        rows = [m for m in rows if m["name"] not in mine] + private
+    if mine:
+        rows = [m for m in rows if m["name"] not in mine]
+        rows += table.private_listing(owner_user_id, hub_only)
     rows.sort(key=lambda m: str(m["name"]))
     return _allowed(rows, table, access, owner_user_id)
 
