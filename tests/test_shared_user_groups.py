@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from llama_router.database import Database
 from llama_router.model_listing import listed_models
 from llama_router.provider_manager import ProviderManager
@@ -294,10 +297,13 @@ async def test_opt_in_refuses_a_name_already_in_use(dash_client: DashClient) -> 
     assert resp.status_code == 409
     shared = (await c.get("/api/shared-groups", headers=_as(bob))).json()["groups"]
     assert shared[0]["hidden_by"] == "own"
-    # Cat already uses another "coder".
+    # Cat already uses another "coder"; the list says so before the click.
     assert (
         await c.post(f"/api/shared-groups/{a.id}/opt-in", headers=_as(cat))
     ).status_code == 200
+    shared = (await c.get("/api/shared-groups", headers=_as(cat))).json()["groups"]
+    state = {g["id"]: (g["opted_in"], g["hidden_by"]) for g in shared}
+    assert state == {a.id: (True, None), b.id: (False, "shared")}
     assert (
         await c.post(f"/api/shared-groups/{b.id}/opt-in", headers=_as(cat))
     ).status_code == 409
@@ -326,3 +332,21 @@ async def test_unsharing_through_the_api(dash_client: DashClient) -> None:
     group = await db.get_user_model_group(ann, g.id)
     assert group is not None
     assert group.shared is True
+
+
+async def test_concurrent_opt_in_is_not_an_error(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ann, bob = await _people(db)
+    g = await db.create_user_model_group(ann, "coder", shared=True)
+    assert g.id is not None
+    real = db._subscribe
+
+    async def racing(user_id: int, group_id: int) -> bool:
+        # Another request opts in between this one's check and its insert.
+        await real(user_id, group_id)
+        raise IntegrityError("INSERT", {}, Exception("duplicate"))
+
+    monkeypatch.setattr(db, "_subscribe", racing)
+    assert await db.subscribe_user_model_group(bob, g.id)
+    assert await db.list_user_model_group_subscriptions(bob) == [(bob, g.id)]

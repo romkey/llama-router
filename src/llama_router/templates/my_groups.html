@@ -188,7 +188,9 @@ function loadShared() {
             if (g.hidden_by === 'own') {
                 notes += '<div class="small text-muted">Your own group ' + esc(g.name) + ' wins this name; rename it to use this one.</div>';
             } else if (g.hidden_by === 'shared') {
-                notes += '<div class="small text-muted">Another shared group of this name you opted in to earlier wins.</div>';
+                notes += g.opted_in
+                    ? '<div class="small text-muted">Another shared group of this name you opted in to earlier wins.</div>'
+                    : '<div class="small text-muted">You already use another shared group of this name; opt out of it to use this one.</div>';
             } else if (g.shadows) {
                 notes += g.opted_in
                     ? '<div class="small text-warning-emphasis"><i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>Replaces ' + esc(shadowText(g.shadows, g.name)) + ' for you</div>'
@@ -197,7 +199,7 @@ function loadShared() {
             var action = g.opted_in
                 ? '<button class="btn btn-sm btn-outline-secondary" data-opt-out="' + esc(g.id) + '" aria-label="Opt out of ' + esc(g.name) + ' shared by ' + esc(g.owner) + '">Opt out</button>'
                 : '<button class="btn btn-sm btn-outline-primary" data-opt-in="' + esc(g.id) + '" aria-label="Opt in to ' + esc(g.name) + ' shared by ' + esc(g.owner) + '"' +
-                  (g.hidden_by === 'own' ? ' disabled' : '') + '>Opt in</button>';
+                  (g.hidden_by ? ' disabled' : '') + '>Opt in</button>';
             return '<tr><td><code>' + esc(g.name) + '</code>' +
                 (g.opted_in ? ' <span class="badge text-bg-success">opted in</span>' : '') +
                 (g.description ? '<div class="small text-muted">' + esc(g.description) + '</div>' : '') + notes + '</td>' +
@@ -281,8 +283,9 @@ document.getElementById('group-save').addEventListener('click', function() {
     send(id ? 'PATCH' : 'POST', id ? '/api/my-groups/' + id : '/api/my-groups', body).then(function() {
         resetForm();
         // The router picks up the change within its rebuild debounce.
-        setTimeout(loadGroups, 1500);
+        setTimeout(function() { loadGroups(); loadShared(); }, 1500);
         loadGroups();
+        loadShared();
     }).catch(function(err) { alert(err.message); });
 });
 
@@ -299,6 +302,7 @@ document.addEventListener('click', function(ev) {
         send('DELETE', '/api/my-groups/' + btn.dataset.deleteGroup).then(function() {
             if (document.getElementById('group-id').value === btn.dataset.deleteGroup) resetForm();
             loadGroups();
+            loadShared();
         }).catch(function(err) { alert(err.message); });
         return;
     }

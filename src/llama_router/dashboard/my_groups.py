@@ -362,12 +362,18 @@ async def list_shared_groups(request: Request) -> JSONResponse:
     groups = await db.list_user_model_groups()
     shared = _shared_by_others(groups, user)
     own_names = {g.name for g in groups if g.owner_user_id == user}
-    mine = {gid for _u, gid in await db.list_user_model_group_subscriptions(user)}
+    subscribed = [gid for _u, gid in await db.list_user_model_group_subscriptions(user)]
+    mine = set(subscribed)
+    # Name -> the opted-in shared group that has it for the user: the
+    # earliest opt-in, as in the routing table.
+    winners: dict[str, int] = {}
+    for gid in subscribed:
+        if gid in shared:
+            winners.setdefault(shared[gid].name, gid)
     owners = _owner_names(await db.list_dashboard_users())
     table = _table()
     served = await _served_names(db)
     providers = await _provider_names(db)
-    resolved = table.user_groups.get(user, {}) if table is not None else {}
     rows = []
     for gid, g in sorted(
         shared.items(),
@@ -375,11 +381,13 @@ async def list_shared_groups(request: Request) -> JSONResponse:
     ):
         key = user_group_key(g.owner_user_id or 0, g.name)
         opted = gid in mine
-        # Which of the user's groups wins this name instead, if any.
+        # Which of the user's groups has this name instead, if any: their
+        # own, or another shared group they opted in to. Either way opting
+        # in to this one is refused, or (if already in) it isn't used.
         hidden_by = None
         if g.name in own_names:
             hidden_by = "own"
-        elif opted and table is not None and resolved.get(g.name) not in (None, key):
+        elif winners.get(g.name, gid) != gid:
             hidden_by = "shared"
         rows.append(
             {

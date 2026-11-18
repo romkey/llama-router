@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from ..db_events import CHANGE_USER_GROUPS, _notifies
 from ..db_sql import qmark, result_first
 from ..models import ModelGroup, ModelGroupMember
@@ -229,7 +231,21 @@ class UserGroupRepository(Repository):
     async def subscribe_user_model_group(self, user_id: int, group_id: int) -> bool:
         """Opt *user_id* in to another user's shared group. False when there
         is no such shared group, or it is the user's own. Opting in twice is
-        the same as once."""
+        the same as once, even two at the same moment."""
+        try:
+            return await self._subscribe(user_id, group_id)
+        except IntegrityError:
+            # A concurrent opt-in inserted the row between our check and
+            # insert, and the unique constraint caught it; or the group went
+            # away meanwhile. Opted in exactly when the row is there.
+            row = await self._select_one(
+                "SELECT id FROM user_model_group_subscriptions "
+                "WHERE user_id = ? AND group_id = ?",
+                (user_id, group_id),
+            )
+            return row is not None
+
+    async def _subscribe(self, user_id: int, group_id: int) -> bool:
         sf = self._require_session_factory()
         async with sf() as session, session.begin():
             st, bd = qmark(
