@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-18
+
 ### Added
 
 - **Private model groups**: any signed-in user can define model groups of
