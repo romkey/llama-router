@@ -1,0 +1,116 @@
+{#
+  Usage by key and provider, from the request log. The API Keys tab shows
+  every key (with its owner); My API keys shows only the user's own, from
+  the endpoint it passes. The page calls keyUsage.load() when the table
+  comes into view; the period picker reloads it.
+#}
+{% macro key_usage_card(endpoint, show_owner=false, intro='') %}
+<div class="card" id="key-usage">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <h2 class="h5 mb-0">Usage by key and provider</h2>
+        <div class="d-flex align-items-center gap-2">
+            <label class="small text-muted" for="key-usage-period">Last</label>
+            <select class="form-select form-select-sm w-auto" id="key-usage-period">
+                <option value="24h">24 hours</option>
+                <option value="7d" selected>7 days</option>
+                <option value="30d">30 days</option>
+                <option value="all">all time</option>
+            </select>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <p class="small text-muted px-3 pt-3 mb-2">{{ intro }}</p>
+        <div class="table-responsive">
+            <table class="table table-sm table-hover mb-0" data-sortable>
+                <thead>
+                    <tr>
+                        <th data-sort="text">Key</th>
+                        {% if show_owner %}<th data-sort="text">Owner</th>{% endif %}
+                        <th data-sort="text">Provider</th>
+                        <th class="text-end" data-sort="num">Requests</th>
+                        <th class="text-end" data-sort="num" title="Failed requests, and their share of all requests">Errors</th>
+                        <th class="text-end" data-sort="num">Tokens in</th>
+                        <th class="text-end" data-sort="num">Tokens out</th>
+                        <th class="text-end" data-sort="num">Cost</th>
+                        <th data-sort="text">Last request</th>
+                    </tr>
+                </thead>
+                <tbody id="key-usage-tbody">
+                    <tr><td colspan="{{ 9 if show_owner else 8 }}" class="text-muted small">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<script>
+window.keyUsage = (function() {
+    var ENDPOINT = {{ endpoint | tojson }};
+    var SHOW_OWNER = {{ 'true' if show_owner else 'false' }};
+    var COLS = SHOW_OWNER ? 9 : 8;
+    var sel = document.getElementById('key-usage-period');
+    var body = document.getElementById('key-usage-tbody');
+    function esc(v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, function(c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+    function num(n) { return Number(n || 0).toLocaleString(); }
+    function message(text, cls) {
+        body.innerHTML = '<tr><td colspan="' + COLS + '" class="' + cls + ' small">' + esc(text) + '</td></tr>';
+    }
+    function keyCell(r) {
+        if (r.api_key_id == null) return '<td data-sort-value=""><span class="text-muted">no key</span></td>';
+        if (!r.key_prefix) return '<td data-sort-value=""><span class="text-muted">deleted key #' + esc(r.api_key_id) + '</span></td>';
+        return '<td data-sort-value="' + esc(r.key_prefix) + '"><code>' + esc(r.key_prefix) + '</code>' +
+            (r.key_label ? '<div class="small text-muted">' + esc(r.key_label) + '</div>' : '') + '</td>';
+    }
+    function ownerCell(r) {
+        if (r.api_key_id == null || !r.key_prefix) return '<td class="small text-muted">—</td>';
+        return '<td class="small">' + (r.owner_username ? esc(r.owner_username) : '<span class="text-muted">admin</span>') + '</td>';
+    }
+    function providerCell(r) {
+        var name = esc(r.provider || ('#' + r.provider_id));
+        if (!r.provider_exists) return '<td><span class="text-muted">' + name + ' (deleted)</span></td>';
+        return '<td><a href="/providers/' + esc(r.provider_id) + '">' + name + '</a></td>';
+    }
+    // Sorts by the raw number: the shown one has locale separators.
+    function numCell(n) {
+        return '<td class="text-end" data-sort-value="' + Number(n || 0) + '">' + num(n) + '</td>';
+    }
+    function errorsCell(r) {
+        if (!r.errors) return '<td class="text-end" data-sort-value="0">0</td>';
+        var pct = r.requests ? (100 * r.errors / r.requests) : 0;
+        return '<td class="text-end text-nowrap" data-sort-value="' + r.errors + '"><span class="text-danger">' + num(r.errors) +
+            '</span> <span class="small text-muted">(' + pct.toFixed(pct < 10 ? 1 : 0) + '%)</span></td>';
+    }
+    var latest = 0;
+    function load() {
+        // Only the newest request may fill the table, however the
+        // responses arrive.
+        var mine = ++latest;
+        message('Loading…', 'text-muted');
+        fetch(ENDPOINT + '?period=' + encodeURIComponent(sel.value)).then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function(j) {
+            if (mine !== latest) return;
+            if (!j.rows.length) { message('No requests in this period.', 'text-muted'); return; }
+            body.innerHTML = j.rows.map(function(r) {
+                return '<tr>' + keyCell(r) + (SHOW_OWNER ? ownerCell(r) : '') + providerCell(r) +
+                    numCell(r.requests) +
+                    errorsCell(r) +
+                    numCell(r.prompt_tokens) +
+                    numCell(r.completion_tokens) +
+                    '<td class="text-end" data-sort-value="' + Number(r.cost_usd || 0) + '">$' + Number(r.cost_usd || 0).toFixed(4) + '</td>' +
+                    '<td class="small text-muted">' + (r.last_request_at ? llrTime.html(r.last_request_at) : '') + '</td></tr>';
+            }).join('');
+        }).catch(function(e) {
+            if (mine !== latest) return;
+            message('Could not load usage: ' + e.message, 'text-danger');
+        });
+    }
+    sel.addEventListener('change', load);
+    return { load: load };
+})();
+</script>
+{% endmacro %}

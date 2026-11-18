@@ -55,7 +55,7 @@ from .key_access import (
     with_access,
 )
 from .pages import dash_page_ctx, templates
-from .routes.api_keys import validate_pin_model_name
+from .routes.api_keys import usage_report, validate_pin_model_name
 
 router = APIRouter()
 
@@ -241,6 +241,12 @@ async def my_keys_audit(request: Request) -> JSONResponse:
     for e in entries:
         e.pop("client_ip", None)
     return JSONResponse(jsonable_encoder({"entries": entries}))
+
+
+@router.get("/api/my-keys/usage")
+async def my_key_usage(request: Request, period: str = "7d") -> JSONResponse:
+    """Requests, tokens and cost of the user's own keys, per key and provider."""
+    return await usage_report(period, owner_user_id=_owner_id(request))
 
 
 @router.get("/api/my-keys/allowable")

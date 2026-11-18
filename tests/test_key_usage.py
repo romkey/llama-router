@@ -120,6 +120,25 @@ async def test_usage_groups_by_key_and_provider(db: Database) -> None:
 
     only_bob = await db.usage_by_key_and_provider(key_id=ids["bob"])
     assert [(r["api_key_id"], r["requests"]) for r in only_bob] == [(ids["bob"], 1)]
+    # Keys an admin issued have no owner.
+    assert a_gpu["owner_username"] is None
+
+
+async def test_usage_names_the_owner_and_filters_by_owner(db: Database) -> None:
+    ids = await _seed(db)
+    ann = await db.create_dashboard_user("ann", "x", False)
+    ann_key = await db.create_api_key(
+        "lr_ann", "hash-ann", "balanced", True, owner_user_id=ann, label="laptop"
+    )
+    gpu = ids["gpu"]
+    await _log(db, ann_key, gpu, "gpu", status="error")
+    await _log(db, ann_key, gpu, "gpu")
+    rows = await db.usage_by_key_and_provider()
+    mine = next(r for r in rows if r["api_key_id"] == ann_key)
+    assert (mine["owner_username"], mine["key_label"]) == ("ann", "laptop")
+    assert (mine["requests"], mine["errors"]) == (2, 1)
+    only_ann = await db.usage_by_key_and_provider(owner_user_id=ann)
+    assert [r["api_key_id"] for r in only_ann] == [ann_key]
 
 
 async def test_usage_names_follow_renames(db: Database) -> None:
@@ -229,6 +248,32 @@ async def test_usage_api(dash_client: tuple[httpx.AsyncClient, Database]) -> Non
 
     page = await client.get("/", headers=_cookie(admin))
     assert "key-usage-tbody" in page.text
+
+
+async def test_my_usage_shows_only_the_users_own_keys(
+    dash_client: tuple[httpx.AsyncClient, Database],
+) -> None:
+    client, db = dash_client
+    ids = await _seed(db)
+    ann = await db.create_dashboard_user("ann", hash_password("password-12345"), False)
+    invalidate_dashboard_user_count_cache()
+    ann_key = await db.create_api_key(
+        "lr_ann", "hash-ann", "balanced", True, owner_user_id=ann
+    )
+    await _log(db, ann_key, ids["gpu"], "gpu", prompt=3, completion=4)
+
+    r = await client.get("/api/my-keys/usage?period=all", headers=_cookie(ann))
+    assert r.status_code == 200, r.text
+    rows = r.json()["rows"]
+    assert [(row["api_key_id"], row["prompt_tokens"]) for row in rows] == [(ann_key, 3)]
+    r = await client.get("/api/my-keys/usage?period=1y", headers=_cookie(ann))
+    assert r.status_code == 400
+
+    page = await client.get("/my-keys", headers=_cookie(ann))
+    assert "/api/my-keys/usage" in page.text
+    assert 'id="my-keys-usage-pane"' in page.text
+    # The owner column is for the API Keys tab: these are all the user's.
+    assert ">Owner</th>" not in page.text
 
 
 async def test_usage_api_with_a_management_key(

@@ -203,10 +203,12 @@ _USAGE_PERIODS: dict[str, timedelta | None] = {
 }
 
 
-@router.get("/api/keys/usage")
-async def api_key_usage(period: str = "7d", key_id: int | None = None):
+async def usage_report(
+    period: str, key_id: int | None = None, owner_user_id: int | None = None
+) -> JSONResponse:
     """Requests, tokens and cost per API key and provider over *period*
-    (24h, 7d, 30d or all), from the request log."""
+    (24h, 7d, 30d or all), from the request log; only *owner_user_id*'s keys
+    when given. The API Keys tab and My API keys both show it."""
     if period not in _USAGE_PERIODS:
         raise HTTPException(
             status_code=400,
@@ -214,7 +216,9 @@ async def api_key_usage(period: str = "7d", key_id: int | None = None):
         )
     span = _USAGE_PERIODS[period]
     since = datetime.now(UTC).replace(tzinfo=None) - span if span else None
-    rows = await deps.get_db().usage_by_key_and_provider(since, key_id)
+    rows = await deps.get_db().usage_by_key_and_provider(
+        since, key_id, owner_user_id=owner_user_id
+    )
     for row in rows:
         row["last_request_at"] = _iso(row["last_request_at"])
     return JSONResponse(
@@ -225,6 +229,12 @@ async def api_key_usage(period: str = "7d", key_id: int | None = None):
             "rows": rows,
         }
     )
+
+
+@router.get("/api/keys/usage")
+async def api_key_usage(period: str = "7d", key_id: int | None = None):
+    """Usage of every key, for admins."""
+    return await usage_report(period, key_id)
 
 
 @router.post("/api/keys/generate")

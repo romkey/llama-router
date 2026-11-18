@@ -7,6 +7,26 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Sortable tables**: click a column heading on Issued Keys, Usage and
+  My API keys to sort by it; click again to reverse. A table keeps its sort
+  when its rows reload.
+- **Usage by key and provider** shows each key's owner and label, and the
+  Errors column shows the share of requests that failed, e.g. `2 (13%)`.
+- **My API keys** shows the user's own usage (new
+  `GET /api/my-keys/usage`, only their own keys) with the same table as the
+  API Keys tab.
+
+### Changed
+
+- **API Keys tab**: Usage has its own sub-tab, between Issued Keys and
+  Generate API Key.
+- **My API keys** looks like the API Keys tab: sub-tabs (Your keys, Usage,
+  New key, Recent changes), the same columns (Fallback and Sessions under
+  Routing, Created under Last used) and badges, and Edit plus a "⋯" menu
+  for the other actions.
+
 ## [0.32.0] - 2026-11-18
 
 ### Added

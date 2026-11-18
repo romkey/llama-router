@@ -112,14 +112,20 @@ async def test_dashboard_structure(dash_client: DashClient) -> None:
     assert "key-usage" in keys
     # API Keys splits into sub-tabs so the keys table gets the full width.
     issued_at = keys.index('id="keys-issued-pane"')
+    usage_at = keys.index('id="keys-usage-pane"')
     generate_at = keys.index('id="keys-generate-pane"')
     security_at = keys.index('id="keys-security-pane"')
-    issued = keys[issued_at:generate_at]
+    assert issued_at < usage_at < generate_at < security_at
+    issued = keys[issued_at:usage_at]
+    usage = keys[usage_at:generate_at]
     generate = keys[generate_at:security_at]
     security = keys[security_at:]
     assert "Issued Keys" in issued
-    assert "key-usage" in issued
+    assert "key-usage" not in issued
     assert "new-key-label" not in issued
+    assert 'id="key-usage"' in usage
+    assert "/api/keys/usage" in usage
+    assert '<th data-sort="text">Owner</th>' in usage
     assert "Generate API Key" in generate
     assert 'id="security-card"' in security
     assert "Routing Preview" in routing
@@ -277,6 +283,16 @@ def test_api_keys_table_cells_are_closed() -> None:
         Path(__file__).parent.parent / "src/llama_router/templates/dashboard.html"
     ).read_text()
     issued = template[
-        template.index('id="keys-issued-pane"') : template.index('id="key-usage"')
+        template.index('id="keys-issued-pane"') : template.index('id="keys-usage-pane"')
     ]
     assert len(re.findall(r"<td\b", issued)) == issued.count("</td>")
+
+
+def test_usage_numbers_sort_by_raw_value() -> None:
+    """Locale-formatted counts ("1.234" in some locales) must not be what
+    sorting reads: numeric usage cells carry the raw number."""
+    template = (
+        Path(__file__).parent.parent / "src/llama_router/templates/key_usage.html"
+    ).read_text()
+    assert "'<td class=\"text-end\">' + num(" not in template
+    assert "data-sort-value=\"' + Number(n || 0)" in template
