@@ -11,7 +11,7 @@
 <div class="alert alert-danger py-2"><i class="bi bi-exclamation-triangle-fill me-2"></i>{{ request.query_params.get('error') }}</div>
 {% endif %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="h2 mb-0"><i class="bi bi-speedometer2 me-2" aria-hidden="true"></i>Dashboard{% if not read_only %} <a href="#keys-pane" id="open-access-badge" class="badge text-bg-warning fs-6 align-middle text-decoration-none{% if not allow_unauthenticated %} d-none{% endif %}" title="The API accepts requests without a key; change it under API Keys, Security"><i class="bi bi-unlock me-1"></i>Open access</a>{% endif %}</h1>
+    <h1 class="h2 mb-0"><i class="bi bi-speedometer2 me-2" aria-hidden="true"></i>Dashboard{% if not read_only %} <a href="#keys-security-pane" id="open-access-badge" class="badge text-bg-warning fs-6 align-middle text-decoration-none{% if not allow_unauthenticated %} d-none{% endif %}" title="The API accepts requests without a key; change it under API Keys, Security"><i class="bi bi-unlock me-1"></i>Open access</a>{% endif %}</h1>
     {% if not read_only %}
     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProviderModal">
         <i class="bi bi-plus-lg me-1"></i>Add Provider
@@ -747,248 +747,137 @@
     <!-- ==================== API KEYS TAB ==================== -->
     {% if show_api_keys %}
     <div class="tab-pane fade" id="keys-pane" role="tabpanel" aria-labelledby="keys-tab" tabindex="0">
-        <div class="row g-3">
-            <div class="col-lg-5">
-                <div class="card">
-                    <div class="card-header">
-                        <h2 class="h5 mb-0"><i class="bi bi-key me-2"></i>Generate API Key</h2>
-                    </div>
-                    <div class="card-body">
-                        <div class="mb-2">
-                            <label for="new-key-label" class="form-label small text-muted mb-1">Label (optional)</label>
-                            <input id="new-key-label" type="text" maxlength="100" class="form-control form-control-sm" placeholder="e.g. home assistant" autocomplete="off">
-                        </div>
-                        <div class="mb-2">
-                            <label for="new-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
-                            <select id="new-key-mode" aria-describedby="new-key-mode-help" class="form-select form-select-sm">
-                                <option value="balanced" selected>Balanced (fastest overall response)</option>
-                                <option value="latency">Minimal latency</option>
-                                <option value="throughput">Maximum tokens/sec</option>
-                                <option value="cheapest">Cheapest (lowest price per request)</option>
-                                <option value="chaos">Chaos mode (random provider/model)</option>
-                            </select>
-                            <div class="form-text" id="new-key-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
-                        </div>
-                        <div class="form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="new-key-fallback" checked>
-                            <label class="form-check-label" for="new-key-fallback">Allow fallback models</label>
-                        </div>
-                        <div class="mb-2">
-                            <label for="new-key-locality" class="form-label small text-muted mb-1">Providers</label>
-                            <select id="new-key-locality" class="form-select form-select-sm">
-                                <option value="any" selected>Local or cloud</option>
-                                <option value="local">Local only: prompts never leave your network</option>
-                                <option value="cloud">Cloud only</option>
-                            </select>
-                        </div>
-                        <div class="mb-2">
-                            <label for="new-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
-                            <input id="new-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
-                            <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
-                        </div>
-                        <div class="mb-2">
-                            <label for="new-key-expires" class="form-label small text-muted mb-1">Expires (optional)</label>
-                            <input id="new-key-expires" type="date" class="form-control form-control-sm" aria-describedby="new-key-expires-help">
-                            <div class="form-text" id="new-key-expires-help">Blank: never. An expired key gets 401 until renewed; it is kept.</div>
-                        </div>
-                        {{ key_access_fields('new-key') }}
-                        <div class="form-check form-switch mb-2">
-                            <input class="form-check-input" type="checkbox" role="switch" id="new-key-strict" aria-describedby="new-key-strict-help">
-                            <label class="form-check-label" for="new-key-strict">Pins are strict</label>
-                            <div class="form-text" id="new-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
-                        </div>
-                        <div class="mb-3">
-                            <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
-                            <select id="new-key-affinity" class="form-select form-select-sm">
-                                <option value="default" selected>Server default ({{ 'on' if session_affinity_default else 'off' }})</option>
-                                <option value="on">On: keep each conversation on one provider</option>
-                                <option value="off">Off: route every request afresh</option>
-                            </select>
-                        </div>
-                        <button class="btn btn-sm btn-primary" onclick="generateApiKey()">
-                            <i class="bi bi-plus-lg me-1"></i>Generate Key
-                        </button>
-                    </div>
-                </div>
-                <div class="card mt-3" id="security-card">
-                    <div class="card-header">
-                        <h2 class="h5 mb-0"><i class="bi bi-shield-lock me-1"></i>Security</h2>
-                    </div>
-                    <div class="card-body">
-                        <h3 class="h6 mb-2">API access</h3>
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="allow-unauthenticated" {% if allow_unauthenticated %}checked{% endif %} {% if read_only %}disabled{% endif %} onchange="setAllowUnauthenticated(this)">
-                            <label class="form-check-label" for="allow-unauthenticated">
-                                Accept requests without an API key
-                            </label>
-                        </div>
-                        <div class="form-text mb-3">When on, anyone who can reach the API port can use every provider, including paid cloud ones, with no key, no spend cap and no locality limit.</div>
-                        <h3 class="h6 mb-2">Keys users issue themselves</h3>
-                        <p class="small text-muted mb-2">Any signed-in user can issue themselves keys under <a href="/my-keys">My API keys</a>. Those keys get these limits; change one afterwards in the table.</p>
-                        <div class="mb-2">
-                            <label for="self-key-locality" class="form-label small text-muted mb-1">Providers</label>
-                            <select id="self-key-locality" class="form-select form-select-sm" {% if read_only %}disabled{% endif %}>
-                                <option value="local">Local only</option>
-                                <option value="any">Local or cloud</option>
-                                <option value="cloud">Cloud only</option>
-                            </select>
-                        </div>
-                        <div class="mb-2">
-                            <label for="self-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
-                            <input id="self-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap" {% if read_only %}disabled{% endif %}>
-                        </div>
-                        {% if not read_only %}
-                        <button class="btn btn-sm btn-outline-primary" onclick="saveSelfServiceDefaults()">Save</button>
-                        <span class="small text-muted ms-2" id="self-key-status"></span>
-                        {% endif %}
-                    </div>
-                </div>
-                {% if key_lifecycle and not read_only %}
-                <div class="card mt-3" id="key-lifecycle">
-                    <div class="card-header"><h2 class="h6 mb-0"><i class="bi bi-hourglass-split me-2"></i>Expiry and renewal</h2></div>
-                    <div class="card-body">
-                        <div class="mb-2">
-                            <label for="key-renewal-mode" class="form-label small text-muted mb-1">Owners renewing their keys</label>
-                            <select id="key-renewal-mode" class="form-select form-select-sm" aria-describedby="key-renewal-help">
-                                <option value="allowed" {% if key_lifecycle.renewal_mode == 'allowed' %}selected{% endif %}>Allowed: owners renew at once</option>
-                                <option value="approval" {% if key_lifecycle.renewal_mode == 'approval' %}selected{% endif %}>Approval: owners ask, an admin decides</option>
-                                <option value="off" {% if key_lifecycle.renewal_mode == 'off' %}selected{% endif %}>Off: only admins renew</option>
-                            </select>
-                            <div class="form-text" id="key-renewal-help">A renewal sets the expiry to {{ key_lifecycle.renewal_days }} days from then{% if key_lifecycle.max_key_lifetime_days %}; keys users issue must expire within {{ key_lifecycle.max_key_lifetime_days }} days{% endif %}.</div>
-                        </div>
-                        <div class="form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="key-holds-default" {% if key_lifecycle.holds_by_default %}checked{% endif %}>
-                            <label class="form-check-label" for="key-holds-default">When an admin pauses a key, require an admin to unpause it (default)</label>
-                        </div>
-                        <button class="btn btn-sm btn-primary" onclick="saveKeyLifecycle()">Save</button>
-                        <span class="small text-muted ms-2" id="key-lifecycle-status" aria-live="polite"></span>
-                    </div>
-                </div>
-                {% endif %}
+        {% set renewals = api_keys | selectattr('renewal_requested_at') | list %}
+        <ul class="nav nav-pills mb-3" id="keys-subtabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="keys-issued-tab" data-bs-toggle="pill" data-bs-target="#keys-issued-pane" type="button" role="tab" aria-controls="keys-issued-pane" aria-selected="true">
+                    <i class="bi bi-list-ul me-1"></i>Issued Keys <span class="badge text-bg-secondary ms-1">{{ api_keys | length }}</span>{% if renewals %} <span class="badge text-bg-warning ms-1" title="Renewal requests waiting">{{ renewals | length }} renewal{{ 's' if renewals | length != 1 }}</span>{% endif %}
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="keys-generate-tab" data-bs-toggle="pill" data-bs-target="#keys-generate-pane" type="button" role="tab" aria-controls="keys-generate-pane" aria-selected="false">
+                    <i class="bi bi-key me-1"></i>Generate API Key
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="keys-security-tab" data-bs-toggle="pill" data-bs-target="#keys-security-pane" type="button" role="tab" aria-controls="keys-security-pane" aria-selected="false">
+                    <i class="bi bi-shield-lock me-1"></i>Security
+                </button>
+            </li>
+        </ul>
+        <div class="tab-content">
+        <div class="tab-pane fade show active" id="keys-issued-pane" role="tabpanel" aria-labelledby="keys-issued-tab" tabindex="0">
+        {% if renewals %}
+        <div class="card mb-3 border-warning" id="renewal-requests">
+            <div class="card-header"><h2 class="h5 mb-0">Renewal requests <span class="badge bg-warning text-dark">{{ renewals | length }}</span></h2></div>
+            <ul class="list-group list-group-flush">
+                {% for k in renewals %}
+                <li class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span><code>{{ k.key_prefix }}</code>{% if k.label %} <span class="text-muted small">{{ k.label }}</span>{% endif %} · {{ k.owner_username or 'admin' }} · <span class="small text-muted">asked {{ k.renewal_requested_at | when(relative=true) }}{% if k.expires_at %}; {{ k.key_label }}{% endif %}</span></span>
+                    {% if not read_only %}
+                    <span>
+                        <button class="btn btn-sm btn-success" onclick='decideRenewal({{ k.id }}, true)'>Approve</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick='decideRenewal({{ k.id }}, false)'>Deny</button>
+                    </span>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h2 class="h5 mb-0">Issued Keys</h2>
+                <span class="badge bg-secondary">{{ api_keys | length }}</span>
             </div>
-            <div class="col-lg-7">
-                {% set renewals = api_keys | selectattr('renewal_requested_at') | list %}
-                {% if renewals %}
-                <div class="card mb-3 border-warning" id="renewal-requests">
-                    <div class="card-header"><h2 class="h5 mb-0">Renewal requests <span class="badge bg-warning text-dark">{{ renewals | length }}</span></h2></div>
-                    <ul class="list-group list-group-flush">
-                        {% for k in renewals %}
-                        <li class="list-group-item d-flex justify-content-between align-items-center flex-wrap gap-2">
-                            <span><code>{{ k.key_prefix }}</code>{% if k.label %} <span class="text-muted small">{{ k.label }}</span>{% endif %} · {{ k.owner_username or 'admin' }} · <span class="small text-muted">asked {{ k.renewal_requested_at | when(relative=true) }}{% if k.expires_at %}; {{ k.key_label }}{% endif %}</span></span>
-                            {% if not read_only %}
-                            <span>
-                                <button class="btn btn-sm btn-success" onclick='decideRenewal({{ k.id }}, true)'>Approve</button>
-                                <button class="btn btn-sm btn-outline-danger" onclick='decideRenewal({{ k.id }}, false)'>Deny</button>
-                            </span>
-                            {% endif %}
-                        </li>
-                        {% endfor %}
-                    </ul>
-                </div>
-                {% endif %}
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h2 class="h5 mb-0">Issued Keys</h2>
-                        <span class="badge bg-secondary">{{ api_keys | length }}</span>
-                    </div>
-                    <div class="card-body p-0">
-                        {% if api_keys %}
-                        <div class="table-responsive">
-                            <table class="table table-hover mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Key</th>
-                                        <th>Owner</th>
-                                        <th>Priority</th>
-                                        <th>Fallback</th>
-                                        <th>Sessions</th>
-                                        <th>Providers</th>
-                                        <th title="Spent today (UTC) / daily cap">Spend</th>
-                                        <th>Models</th>
-                                        <th>Pins</th>
-                                        <th>Status</th>
-                                        <th>Created</th>
-                                        <th>Last Used</th>
-                                        <th></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for k in api_keys %}
-                                    <tr>
-                                        <td><code>{{ k.key_prefix }}</code>{% if k.label %}<div class="small text-muted">{{ k.label }}</div>{% endif %}</td>
-                                        <td class="small">{% if k.owner_username %}{{ k.owner_username }}{% else %}<span class="text-muted">admin</span>{% endif %}</td>
-                                        <td>
-                                            {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
-                                            {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
-                                            <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
-                                        </td>
-                                        <td>{{ 'allowed' if k.allow_fallback else 'disallowed' }}</td>
-                                        <td>{% if k.session_affinity is none %}<span class="text-muted">default</span>{% elif k.session_affinity %}sticky{% else %}off{% endif %}</td>
-                                        <td>
-                                            {% if read_only %}
-                                            {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
-                                            {% else %}
-                                            <select class="form-select form-select-sm" style="min-width: 7rem" onchange="setKeyLocality({{ k.id }}, this.value)" aria-label="Providers for key {{ k.key_prefix }}">
-                                                <option value="any" {% if not k.locality %}selected{% endif %}>any</option>
-                                                <option value="local" {% if k.locality == 'local' %}selected{% endif %}>local only</option>
-                                                <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
-                                            </select>
-                                            {% endif %}
-                                        </td>
-                                        <td class="small text-nowrap">
-                                            ${{ "%.2f" | format(k.spent_today_usd or 0) }}
-                                            {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
-                                            {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap" aria-label="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
-                                        </td>
-                                        <td class="small text-nowrap">{% if not k.restrict_models %}<span class="text-muted">all</span>{% else %}{% set parts = [] %}{% if k.allowed_model_count %}{% set _ = parts.append(k.allowed_model_count ~ (' model' if k.allowed_model_count == 1 else ' models')) %}{% endif %}{% if k.allowed_group_count %}{% set _ = parts.append(k.allowed_group_count ~ (' group' if k.allowed_group_count == 1 else ' groups')) %}{% endif %}<span class="badge bg-info text-dark">{{ parts | join(', ') if parts else 'none' }}</span>{% endif %}</td>
-                                        <td class="text-nowrap"><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span>{% if k.strict_pins %} <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>{% endif %}</td>
-                                        <td class="small text-nowrap">{{ key_status_badge(k) }}{% if k.expires_at %}<div class="text-muted">until {{ k.expires_at | when }}</div>{% endif %}</td>
-                                        <td class="small text-muted">{{ k.created_at | when }}</td>
-                                        <td class="small text-muted">{{ k.last_used_at | when }}</td>
-                                        <td class="text-end">
+            <div class="card-body p-0">
+                {% if api_keys %}
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Key</th>
+                                <th>Owner</th>
+                                <th>Routing</th>
+                                <th>Providers</th>
+                                <th title="Spent today (UTC) / daily cap">Spend</th>
+                                <th>Models</th>
+                                <th>Pins</th>
+                                <th>Status</th>
+                                <th>Last Used</th>
+                                <th><span class="visually-hidden">Actions</span></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for k in api_keys %}
+                            <tr>
+                                <td><code>{{ k.key_prefix }}</code>{% if k.label %}<div class="small text-muted">{{ k.label }}</div>{% endif %}</td>
+                                <td class="small">{% if k.owner_username %}{{ k.owner_username }}{% else %}<span class="text-muted">admin</span>{% endif %}</td>
+                                <td>
+                                    {% set mode_labels = {'latency': ('bg-primary', 'minimal latency'), 'throughput': ('bg-info text-dark', 'max tokens/sec'), 'balanced': ('bg-success', 'balanced'), 'cheapest': ('bg-secondary', 'cheapest'), 'chaos': ('bg-warning text-dark', 'chaos')} %}
+                                    {% set ml = mode_labels.get(k.routing_mode, ('bg-secondary', k.routing_mode)) %}
+                                    <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
+                                    <div class="small text-muted text-nowrap">fallback {{ 'allowed' if k.allow_fallback else 'disallowed' }}</div>
+                                    <div class="small text-muted text-nowrap">sessions {% if k.session_affinity is none %}default{% elif k.session_affinity %}sticky{% else %}off{% endif %}</div>
+                                <td>
+                                    {% if read_only %}
+                                    {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
+                                    {% else %}
+                                    <select class="form-select form-select-sm" style="min-width: 7rem" onchange="setKeyLocality({{ k.id }}, this.value)" aria-label="Providers for key {{ k.key_prefix }}">
+                                        <option value="any" {% if not k.locality %}selected{% endif %}>any</option>
+                                        <option value="local" {% if k.locality == 'local' %}selected{% endif %}>local only</option>
+                                        <option value="cloud" {% if k.locality == 'cloud' %}selected{% endif %}>cloud only</option>
+                                    </select>
+                                    {% endif %}
+                                </td>
+                                <td class="small text-nowrap">
+                                    ${{ "%.2f" | format(k.spent_today_usd or 0) }}
+                                    {% if k.daily_spend_cap_usd is not none %}<span class="text-muted">/ ${{ "%.2f" | format(k.daily_spend_cap_usd) }}</span>{% if (k.spent_today_usd or 0) >= k.daily_spend_cap_usd %} <span class="badge bg-danger" title="Over the cap: local providers only until the next UTC day">capped</span>{% endif %}{% endif %}
+                                    {% if not read_only %}<button class="btn btn-sm btn-link p-0 ms-1" onclick="setKeySpendCap({{ k.id }}, {{ k.daily_spend_cap_usd | tojson }})" title="Set daily spend cap" aria-label="Set daily spend cap"><i class="bi bi-pencil"></i></button>{% endif %}
+                                </td>
+                                <td class="small text-nowrap">{% if not k.restrict_models %}<span class="text-muted">all</span>{% else %}{% set parts = [] %}{% if k.allowed_model_count %}{% set _ = parts.append(k.allowed_model_count ~ (' model' if k.allowed_model_count == 1 else ' models')) %}{% endif %}{% if k.allowed_group_count %}{% set _ = parts.append(k.allowed_group_count ~ (' group' if k.allowed_group_count == 1 else ' groups')) %}{% endif %}<span class="badge bg-info text-dark">{{ parts | join(', ') if parts else 'none' }}</span>{% endif %}</td>
+                                <td class="text-nowrap"><span class="badge bg-secondary">{{ k.pin_count or 0 }}</span>{% if k.strict_pins %} <span class="badge bg-warning text-dark" title="Pins are strict: if the pinned provider is unavailable, the request is refused with 503">strict</span>{% endif %}</td>
+                                <td class="small text-nowrap">{{ key_status_badge(k) }}{% if k.expires_at %}<div class="text-muted">until {{ k.expires_at | when }}</div>{% endif %}</td>
+                                <td class="small text-muted">{{ k.last_used_at | when }}<div title="Created">created {{ k.created_at | when }}</div></td>
+                                <td class="text-end text-nowrap">
+                                    {% if not read_only %}
+                                    <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyEdit({{ k.id }}, {{ k.key_prefix | tojson }})' title="Edit key" aria-label="Edit key {{ k.key_prefix }}">
+                                        <i class="bi bi-pencil-square"></i>
+                                    </button>
+                                    {% endif %}
+                                    <div class="dropdown d-inline-block">
+                                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" data-bs-popper-config='{"strategy":"fixed"}' aria-expanded="false" title="More actions" aria-label="More actions for key {{ k.key_prefix }}">
+                                            <i class="bi bi-three-dots"></i>
+                                        </button>
+                                        <ul class="dropdown-menu dropdown-menu-end">
                                             {% if not read_only %}
-                                            <button class="btn btn-sm btn-outline-success me-1" onclick='renewApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Renew: a new expiry, same secret" aria-label="Renew key {{ k.key_prefix }}">
-                                                <i class="bi bi-calendar-plus"></i>
-                                            </button>
+                                            <li><button class="dropdown-item" type="button" onclick='renewApiKey({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-calendar-plus me-2 text-success"></i>Renew (new expiry, same secret)</button></li>
                                             {% if k.paused_at %}
-                                            <button class="btn btn-sm btn-outline-secondary me-1" onclick='unpauseApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Unpause" aria-label="Unpause key {{ k.key_prefix }}">
-                                                <i class="bi bi-play-fill"></i>
-                                            </button>
+                                            <li><button class="dropdown-item" type="button" onclick='unpauseApiKey({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-play-fill me-2"></i>Unpause</button></li>
                                             {% else %}
-                                            <button class="btn btn-sm btn-outline-secondary me-1" onclick='openKeyPause({{ k.id }}, {{ k.key_prefix | tojson }})' title="Pause" aria-label="Pause key {{ k.key_prefix }}">
-                                                <i class="bi bi-pause-fill"></i>
-                                            </button>
+                                            <li><button class="dropdown-item" type="button" onclick='openKeyPause({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-pause-fill me-2"></i>Pause</button></li>
                                             {% endif %}
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyEdit({{ k.id }}, {{ k.key_prefix | tojson }})' title="Edit key" aria-label="Edit key {{ k.key_prefix }}">
-                                                <i class="bi bi-pencil-square"></i>
-                                            </button>
-                                            <button class="btn btn-sm btn-outline-warning me-1" onclick='regenerateApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Regenerate secret" aria-label="Regenerate secret of key {{ k.key_prefix }}">
-                                                <i class="bi bi-arrow-repeat"></i>
-                                            </button>
+                                            <li><button class="dropdown-item" type="button" onclick='regenerateApiKey({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-arrow-repeat me-2 text-warning"></i>Regenerate secret</button></li>
+                                            <li><hr class="dropdown-divider"></li>
                                             {% endif %}
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPins({{ k.id }}, {{ k.key_prefix | tojson }})' title="Manage pinned routes" aria-label="Manage pinned routes">
-                                                <i class="bi bi-diagram-3"></i>
-                                            </button>
-                                            <button class="btn btn-sm btn-outline-primary me-1" onclick='openKeyPolicy({{ k.id }}, {{ k.key_prefix | tojson }})' title="Decision policy (tiered routing, gates)" aria-label="Decision policy (tiered routing, gates)">
-                                                <i class="bi bi-signpost-split"></i>
-                                            </button>
-                                            <button class="btn btn-sm btn-outline-danger" onclick='deleteApiKey({{ k.id }}, {{ k.key_prefix | tojson }})' title="Delete key" aria-label="Delete key {{ k.key_prefix }}">
-                                                <i class="bi bi-trash"></i>
-                                            </button>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                        {% else %}
-                        <div class="text-muted p-3">No API keys yet.</div>
-                        {% endif %}
-                    </div>
+                                            <li><button class="dropdown-item" type="button" onclick='openKeyPins({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-diagram-3 me-2"></i>Pinned routes</button></li>
+                                            <li><button class="dropdown-item" type="button" onclick='openKeyPolicy({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-signpost-split me-2"></i>Decision policy (tiered routing, gates)</button></li>
+                                            <li><hr class="dropdown-divider"></li>
+                                            <li><button class="dropdown-item text-danger" type="button" onclick='deleteApiKey({{ k.id }}, {{ k.key_prefix | tojson }})'><i class="bi bi-trash me-2"></i>Delete key</button></li>
+                                        </ul>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
                 </div>
+                {% else %}
+                <div class="text-muted p-3">No API keys yet.</div>
+                {% endif %}
             </div>
         </div>
-        <div class="card mt-4" id="key-usage">
+        <div class="card mt-3" id="key-usage">
             <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                 <h2 class="h5 mb-0">Usage by key and provider</h2>
                 <div class="d-flex align-items-center gap-2">
@@ -1081,6 +970,138 @@
             if (document.getElementById('keys-pane').classList.contains('active')) load();
         })();
         </script>
+        </div>
+        <div class="tab-pane fade" id="keys-generate-pane" role="tabpanel" aria-labelledby="keys-generate-tab" tabindex="0">
+            <div class="row">
+                <div class="col-lg-8 col-xl-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="h5 mb-0"><i class="bi bi-key me-2"></i>Generate API Key</h2>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-2">
+                                <label for="new-key-label" class="form-label small text-muted mb-1">Label (optional)</label>
+                                <input id="new-key-label" type="text" maxlength="100" class="form-control form-control-sm" placeholder="e.g. home assistant" autocomplete="off">
+                            </div>
+                            <div class="mb-2">
+                                <label for="new-key-mode" class="form-label small text-muted mb-1">Routing priority</label>
+                                <select id="new-key-mode" aria-describedby="new-key-mode-help" class="form-select form-select-sm">
+                                    <option value="balanced" selected>Balanced (fastest overall response)</option>
+                                    <option value="latency">Minimal latency</option>
+                                    <option value="throughput">Maximum tokens/sec</option>
+                                    <option value="cheapest">Cheapest (lowest price per request)</option>
+                                    <option value="chaos">Chaos mode (random provider/model)</option>
+                                </select>
+                                <div class="form-text" id="new-key-mode-help">Also sets queue order when providers are busy: latency waits first, balanced next, throughput and cheapest last (and leave a provider's last free slot to the others).</div>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="new-key-fallback" checked>
+                                <label class="form-check-label" for="new-key-fallback">Allow fallback models</label>
+                            </div>
+                            <div class="mb-2">
+                                <label for="new-key-locality" class="form-label small text-muted mb-1">Providers</label>
+                                <select id="new-key-locality" class="form-select form-select-sm">
+                                    <option value="any" selected>Local or cloud</option>
+                                    <option value="local">Local only: prompts never leave your network</option>
+                                    <option value="cloud">Cloud only</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label for="new-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
+                                <input id="new-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap">
+                                <div class="form-text">Past it, the key uses local providers only until the next UTC day.</div>
+                            </div>
+                            <div class="mb-2">
+                                <label for="new-key-expires" class="form-label small text-muted mb-1">Expires (optional)</label>
+                                <input id="new-key-expires" type="date" class="form-control form-control-sm" aria-describedby="new-key-expires-help">
+                                <div class="form-text" id="new-key-expires-help">Blank: never. An expired key gets 401 until renewed; it is kept.</div>
+                            </div>
+                            {{ key_access_fields('new-key') }}
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" role="switch" id="new-key-strict" aria-describedby="new-key-strict-help">
+                                <label class="form-check-label" for="new-key-strict">Pins are strict</label>
+                                <div class="form-text" id="new-key-strict-help">Off: if the pinned provider is unavailable, another provider serves the model. On: the request is refused with 503.</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="new-key-affinity" class="form-label small text-muted mb-1">Session affinity</label>
+                                <select id="new-key-affinity" class="form-select form-select-sm">
+                                    <option value="default" selected>Server default ({{ 'on' if session_affinity_default else 'off' }})</option>
+                                    <option value="on">On: keep each conversation on one provider</option>
+                                    <option value="off">Off: route every request afresh</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-sm btn-primary" onclick="generateApiKey()">
+                                <i class="bi bi-plus-lg me-1"></i>Generate Key
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="tab-pane fade" id="keys-security-pane" role="tabpanel" aria-labelledby="keys-security-tab" tabindex="0">
+            <div class="row g-3">
+                <div class="col-lg-6">
+                    <div class="card h-100" id="security-card">
+                        <div class="card-header">
+                            <h2 class="h5 mb-0"><i class="bi bi-shield-lock me-1"></i>Security</h2>
+                        </div>
+                        <div class="card-body">
+                            <h3 class="h6 mb-2">API access</h3>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="allow-unauthenticated" {% if allow_unauthenticated %}checked{% endif %} {% if read_only %}disabled{% endif %} onchange="setAllowUnauthenticated(this)">
+                                <label class="form-check-label" for="allow-unauthenticated">
+                                    Accept requests without an API key
+                                </label>
+                            </div>
+                            <div class="form-text mb-3">When on, anyone who can reach the API port can use every provider, including paid cloud ones, with no key, no spend cap and no locality limit.</div>
+                            <h3 class="h6 mb-2">Keys users issue themselves</h3>
+                            <p class="small text-muted mb-2">Any signed-in user can issue themselves keys under <a href="/my-keys">My API keys</a>. Those keys get these limits; change one afterwards in the table.</p>
+                            <div class="mb-2">
+                                <label for="self-key-locality" class="form-label small text-muted mb-1">Providers</label>
+                                <select id="self-key-locality" class="form-select form-select-sm" {% if read_only %}disabled{% endif %}>
+                                    <option value="local">Local only</option>
+                                    <option value="any">Local or cloud</option>
+                                    <option value="cloud">Cloud only</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label for="self-key-cap" class="form-label small text-muted mb-1">Daily spend cap (USD, optional)</label>
+                                <input id="self-key-cap" type="number" min="0" step="0.01" class="form-control form-control-sm" placeholder="no cap" {% if read_only %}disabled{% endif %}>
+                            </div>
+                            {% if not read_only %}
+                            <button class="btn btn-sm btn-outline-primary" onclick="saveSelfServiceDefaults()">Save</button>
+                            <span class="small text-muted ms-2" id="self-key-status"></span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% if key_lifecycle and not read_only %}
+                <div class="col-lg-6">
+                    <div class="card h-100" id="key-lifecycle">
+                        <div class="card-header"><h2 class="h5 mb-0"><i class="bi bi-hourglass-split me-2"></i>Expiry and renewal</h2></div>
+                        <div class="card-body">
+                            <div class="mb-2">
+                                <label for="key-renewal-mode" class="form-label small text-muted mb-1">Owners renewing their keys</label>
+                                <select id="key-renewal-mode" class="form-select form-select-sm" aria-describedby="key-renewal-help">
+                                    <option value="allowed" {% if key_lifecycle.renewal_mode == 'allowed' %}selected{% endif %}>Allowed: owners renew at once</option>
+                                    <option value="approval" {% if key_lifecycle.renewal_mode == 'approval' %}selected{% endif %}>Approval: owners ask, an admin decides</option>
+                                    <option value="off" {% if key_lifecycle.renewal_mode == 'off' %}selected{% endif %}>Off: only admins renew</option>
+                                </select>
+                                <div class="form-text" id="key-renewal-help">A renewal sets the expiry to {{ key_lifecycle.renewal_days }} days from then{% if key_lifecycle.max_key_lifetime_days %}; keys users issue must expire within {{ key_lifecycle.max_key_lifetime_days }} days{% endif %}.</div>
+                            </div>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="key-holds-default" {% if key_lifecycle.holds_by_default %}checked{% endif %}>
+                                <label class="form-check-label" for="key-holds-default">When an admin pauses a key, require an admin to unpause it (default)</label>
+                            </div>
+                            <button class="btn btn-sm btn-primary" onclick="saveKeyLifecycle()">Save</button>
+                            <span class="small text-muted ms-2" id="key-lifecycle-status" aria-live="polite"></span>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        </div>
     </div>
     {% endif %}
 
@@ -2633,22 +2654,28 @@ function switchProviderView(view) {
 
     // The hash names a tab's pane, or a sub-tab's pane inside one (such as
     // #model-groups-pane in Models), so a reload after an edit stays put.
-    if (location.hash) {
-        const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
-        if (tab) {
-            bootstrap.Tab.getOrCreateInstance(tab).show();
-            // Showing a tab in the Access menu also opens the menu; a click
-            // closes it again, so close it here too.
-            const menu = tab.closest('.dropdown-menu');
-            if (menu) {
-                menu.classList.remove('show');
-                menu.parentElement.querySelector('.dropdown-toggle').setAttribute('aria-expanded', 'false');
-            }
-            const outer = tab.closest('.tab-pane');
-            const outerTab = outer && document.querySelector('[data-bs-target="#' + outer.id + '"]');
-            if (outerTab) bootstrap.Tab.getOrCreateInstance(outerTab).show();
+    // Links such as the Open access badge change the hash to switch tabs.
+    function showTab(tab) {
+        bootstrap.Tab.getOrCreateInstance(tab).show();
+        // Showing a tab in the Access menu also opens the menu; a click
+        // closes it again, so close it here too.
+        const menu = tab.closest('.dropdown-menu');
+        if (menu) {
+            menu.classList.remove('show');
+            menu.parentElement.querySelector('.dropdown-toggle').setAttribute('aria-expanded', 'false');
         }
     }
+    function showHashTab() {
+        if (!location.hash) return;
+        const tab = document.querySelector('[data-bs-target="' + location.hash + '"]');
+        if (!tab) return;
+        showTab(tab);
+        const outer = tab.closest('.tab-pane');
+        const outerTab = outer && document.querySelector('[data-bs-target="#' + outer.id + '"]');
+        if (outerTab) showTab(outerTab);
+    }
+    showHashTab();
+    window.addEventListener('hashchange', showHashTab);
 
     document.querySelectorAll('[data-bs-toggle="tab"]').forEach(function(tab) {
         tab.addEventListener('shown.bs.tab', function(e) {
@@ -2657,7 +2684,7 @@ function switchProviderView(view) {
             history.replaceState(null, '', sub ? sub.dataset.bsTarget : e.target.dataset.bsTarget);
         });
     });
-    document.querySelectorAll('#models-subtabs [data-bs-toggle="pill"]').forEach(function(tab) {
+    document.querySelectorAll('#models-subtabs [data-bs-toggle="pill"], #keys-subtabs [data-bs-toggle="pill"]').forEach(function(tab) {
         tab.addEventListener('shown.bs.tab', function(e) {
             history.replaceState(null, '', e.target.dataset.bsTarget);
         });
@@ -3267,7 +3294,11 @@ function generateApiKey() {
         input.value = data.api_key;
         document.getElementById('generated-api-key-copy').textContent = 'Copy';
         // Reload (to list the new key) only once the user has dismissed the modal.
-        modalEl.addEventListener('hidden.bs.modal', function() { location.reload(); }, {once: true});
+        // Land on Issued Keys, where the new key is listed.
+        modalEl.addEventListener('hidden.bs.modal', function() {
+            history.replaceState(null, '', '#keys-issued-pane');
+            location.reload();
+        }, {once: true});
         modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
         bootstrap.Modal.getOrCreateInstance(modalEl).show();
     })
@@ -3407,7 +3438,11 @@ function regenerateApiKey(keyId, keyPrefix) {
         var input = document.getElementById('generated-api-key');
         input.value = data.api_key;
         document.getElementById('generated-api-key-copy').textContent = 'Copy';
-        modalEl.addEventListener('hidden.bs.modal', function() { location.reload(); }, {once: true});
+        // Land on Issued Keys, where the new key is listed.
+        modalEl.addEventListener('hidden.bs.modal', function() {
+            history.replaceState(null, '', '#keys-issued-pane');
+            location.reload();
+        }, {once: true});
         modalEl.addEventListener('shown.bs.modal', function() { input.select(); }, {once: true});
         bootstrap.Modal.getOrCreateInstance(modalEl).show();
     })

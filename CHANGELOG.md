@@ -7,6 +7,15 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Changed
+
+- **API Keys tab** splits into sub-tabs: Issued Keys (with renewal requests
+  and usage), Generate API Key, and Security (with expiry and renewal). The
+  keys table gets the full width; Fallback and Sessions show under Routing,
+  Created under Last Used, and the row actions other than Edit move to a
+  "⋯" menu, so a row fits on one line. The Open access badge now opens the
+  Security sub-tab.
+
 ## [0.31.0] - 2026-11-13
 
 ### Added

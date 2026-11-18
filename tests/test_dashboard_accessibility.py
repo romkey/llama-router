@@ -110,6 +110,18 @@ async def test_dashboard_structure(dash_client: DashClient) -> None:
     routing = html[html.index('id="routing-pane"') : html.index('id="workers-pane"')]
     assert "Issued Keys" in keys
     assert "key-usage" in keys
+    # API Keys splits into sub-tabs so the keys table gets the full width.
+    issued_at = keys.index('id="keys-issued-pane"')
+    generate_at = keys.index('id="keys-generate-pane"')
+    security_at = keys.index('id="keys-security-pane"')
+    issued = keys[issued_at:generate_at]
+    generate = keys[generate_at:security_at]
+    security = keys[security_at:]
+    assert "Issued Keys" in issued
+    assert "key-usage" in issued
+    assert "new-key-label" not in issued
+    assert "Generate API Key" in generate
+    assert 'id="security-card"' in security
     assert "Routing Preview" in routing
     # Table and explorer show once the routing table has been built.
     for card in ("Routing Preview", "Routing Table", "Route Explorer"):
