@@ -269,3 +269,14 @@ async def test_self_issued_key_label(dash_client: DashClient) -> None:
     assert resp.status_code == 200, resp.text
     mine = (await client.get("/api/my-keys", headers=_as(ann))).json()
     assert mine["keys"][0]["label"] == "laptop"
+
+
+def test_api_keys_table_cells_are_closed() -> None:
+    """Every cell the issued-keys table opens in the template is closed."""
+    template = (
+        Path(__file__).parent.parent / "src/llama_router/templates/dashboard.html"
+    ).read_text()
+    issued = template[
+        template.index('id="keys-issued-pane"') : template.index('id="key-usage"')
+    ]
+    assert len(re.findall(r"<td\b", issued)) == issued.count("</td>")

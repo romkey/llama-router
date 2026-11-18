@@ -819,6 +819,7 @@
                                     <span class="badge {{ ml[0] }}">{{ ml[1] }}</span>
                                     <div class="small text-muted text-nowrap">fallback {{ 'allowed' if k.allow_fallback else 'disallowed' }}</div>
                                     <div class="small text-muted text-nowrap">sessions {% if k.session_affinity is none %}default{% elif k.session_affinity %}sticky{% else %}off{% endif %}</div>
+                                </td>
                                 <td>
                                     {% if read_only %}
                                     {% if k.locality == 'local' %}<span class="badge bg-success">local only</span>{% elif k.locality == 'cloud' %}<span class="badge bg-warning text-dark">cloud only</span>{% else %}<span class="text-muted">any</span>{% endif %}
