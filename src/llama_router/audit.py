@@ -98,6 +98,9 @@ ACTIONS: dict[str, tuple[str, str | None]] = {
     "my_keys.regenerate_my_key": ("api_key.regenerate", "api_key"),
     "my_keys.revoke_my_key": ("api_key.delete", "api_key"),
     "my_keys.set_self_service_defaults": ("system.self_service_defaults", "system"),
+    "my_groups.create_my_group": ("my_model_group.create", "my_model_group"),
+    "my_groups.update_my_group": ("my_model_group.update", "my_model_group"),
+    "my_groups.delete_my_group": ("my_model_group.delete", "my_model_group"),
     # Management keys
     "management_keys.api_create_management_key": (
         "management_key.create",

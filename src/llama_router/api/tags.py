@@ -21,6 +21,7 @@ async def list_tags(request: Request) -> JSONResponse:
         hub_only=from_hub(request),
         provider_id=hub_provider(request),
         access=prefs.access if prefs else None,
+        owner_user_id=prefs.owner_user_id if prefs else None,
     )
     return JSONResponse(content={"models": models})
 

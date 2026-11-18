@@ -46,6 +46,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `ADMIN_USERNAME` | *(empty)* | First dashboard administrator, created at startup while there are no dashboard accounts; ignored afterwards. The first account cannot be created from the web |
 | `ADMIN_PASSWORD` | *(empty)* | That administrator's password, at least 8 characters |
 | `MAX_API_KEYS_PER_USER` | `20` | Most API keys one user may issue themselves on My API keys (0: no limit). Keys an admin issues don't count |
+| `MAX_MODEL_GROUPS_PER_USER` | `20` | Most private model groups one user may define on My model groups (0: no limit). Each group has at most 50 members |
 | `MAX_KEY_LIFETIME_DAYS` | `0` | Days an API key a user issues themselves may live: it must expire within this when issued, edited or renewed (0: no limit). Admins may issue keys that never expire. An expired key gets 401 "API key expired" and is kept |
 | `KEY_RENEWAL_DAYS` | `0` | Days a renewal gives a key from now, not added to what is left (0: `MAX_KEY_LIFETIME_DAYS`, or 90 when that is 0). Whether owners may renew is a dashboard option (Users tab) |
 | `OIDC_KEY_MAX_IDLE_DAYS` | `0` | Hold (pause, admin to lift) the API keys of single sign-on users who have not signed in for this many days, checked hourly (0: off) |

@@ -43,7 +43,7 @@ from ..router import Router, RoutingPreferences
 from ..routing_table import RoutingTable, alias_groups
 from ..spend import RESERVATION_STATE, cap_reached, tracker_for
 from ..v1_client import get_v1_client
-from . import deps
+from . import deps, management_keys
 from .my_keys import self_service_defaults
 from .pages import _is_admin, dash_page_ctx, templates
 
@@ -69,6 +69,15 @@ def _user_id(request: Request) -> int | None:
     return user.id if user is not None else None
 
 
+def _group_owner(request: Request) -> int | None:
+    """The signed-in person whose private model groups chat may use; not a
+    management key, whose id is not a user's."""
+    user = getattr(request.state, "dashboard_user", None)
+    if user is None or user.auth_source == management_keys.AUTH_SOURCE:
+        return None
+    return int(user.id)
+
+
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_page(request: Request) -> Response:
     """Chat with a model on a provider."""
@@ -86,8 +95,9 @@ async def _preferences(db: Database, request: Request) -> RoutingPreferences | N
     set one a non-admin chats on local providers only (and not at all when
     the defaults allow cloud providers only).
     """
+    owner = _group_owner(request)
     if _is_admin(request):
-        return None
+        return None if owner is None else RoutingPreferences(owner_user_id=owner)
     defaults = await self_service_defaults(db)
     locality: str | None = defaults["locality"]
     if defaults["daily_spend_cap_usd"] is not None:
@@ -98,7 +108,7 @@ async def _preferences(db: Database, request: Request) -> RoutingPreferences | N
                 "and a daily spend cap applies",
             )
         locality = "local"
-    return RoutingPreferences(locality=locality)
+    return RoutingPreferences(locality=locality, owner_user_id=owner)
 
 
 def _allowed(provider: Provider, prefs: RoutingPreferences | None) -> bool:
@@ -133,6 +143,14 @@ async def chat_targets(request: Request) -> JSONResponse:
             if name in group_names:
                 for c in cands:
                     groups.setdefault(c.provider_id, set()).add(name)
+        # The user's private groups, by the names they gave them; each hides
+        # a model or group of the same name, for them.
+        mine = table.user_groups.get(_group_owner(request) or -1, {})
+        for name, key in mine.items():
+            for path in PATHS.values():
+                for c in table.all_candidates.get((key, path), ()):
+                    groups.setdefault(c.provider_id, set()).add(name)
+        group_names |= set(mine)
     rows: list[dict[str, Any]] = []
     for p in await db.list_providers():
         if p.id is None or p.status == ProviderStatus.OFFLINE:
@@ -237,16 +255,22 @@ async def _target(
             "which you may not use",
         )
     table = await _table()
+    # The user's private group of this name, if any; otherwise the name.
+    key = (
+        table.resolve(prefs.owner_user_id if prefs else None, model)
+        if table is not None
+        else model
+    )
     # A group hides a model of the same name, as it does when routing.
-    if table is None or not table.is_group(model):
+    if table is None or (key == model and not table.is_group(model)):
         for m in await db.get_provider_models(pid):
             if m.name == model:
                 return Target(provider, m.backend_name, model, True)
     # A model group or an alias with a member on this provider.
     if table is not None and any(
-        c.provider_id == pid for c in table.all_candidates.get((model, path), ())
+        c.provider_id == pid for c in table.all_candidates.get((key, path), ())
     ):
-        c = Router._pinned(table, model, path, pid)
+        c = Router._pinned(table, key, path, pid)
         if c is not None:
             return Target(provider, c.backend_model, c.model, True)
     raise _not_found(model, provider)

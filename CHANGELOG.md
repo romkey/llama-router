@@ -7,6 +7,20 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Private model groups**: any signed-in user can define model groups of
+  their own on the new **My model groups** page (`/api/my-groups`). Only
+  requests made with that user's own API keys, and their dashboard chats,
+  can use them; they appear in that user's `/api/tags` and `/v1/models`
+  and nobody else's. A private group's name is unique per user and wins
+  over a model or shared group of the same name for its owner. A key
+  limited to some models may use one only when it may use every member.
+  Groups are compiled into the routing table, so resolving one is a single
+  lookup and warm requests still make no database calls. New setting
+  `LLAMA_ROUTER_MAX_MODEL_GROUPS_PER_USER` (default 20); deleting a user
+  deletes their groups.
+
 ## [0.31.0] - 2026-11-13
 
 ### Added

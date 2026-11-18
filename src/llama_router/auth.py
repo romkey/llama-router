@@ -467,7 +467,7 @@ async def model_allowed(
     some models may use any)."""
     if prefs is None or prefs.access is None:
         return True
-    return (await rt.current_table()).allows(prefs.access, model)
+    return (await rt.current_table()).allows(prefs.access, model, prefs.owner_user_id)
 
 
 async def require_model_access(

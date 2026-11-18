@@ -199,6 +199,8 @@ class RoutingInputs:
     # Rows of model_prices.
     prices: list[dict[str, Any]] = field(default_factory=list)
     groups: list[ModelGroup] = field(default_factory=list)
+    # Every user's private groups (see user_group_key).
+    user_groups: list[ModelGroup] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,9 +255,33 @@ async def load_inputs(db: Database) -> RoutingInputs:
     aliases = await db.get_model_aliases()
     prices = await db.list_model_prices()
     groups = await db.list_model_groups()
+    user_groups = await db.list_user_model_groups()
     return RoutingInputs(
-        providers, models, addresses, benchmarks, fallbacks, aliases, prices, groups
+        providers,
+        models,
+        addresses,
+        benchmarks,
+        fallbacks,
+        aliases,
+        prices,
+        groups,
+        user_groups,
     )
+
+
+# Never a key of the table: what resolve() gives for a name nobody may route.
+UNROUTABLE = ""
+
+
+def user_group_key(owner_user_id: int, name: str) -> str:
+    """The table key a user's private group is filed under.
+
+    Only :meth:`RoutingTable.resolve` turns a group's name into it, for its
+    owner; a client that sends the key itself gets nothing (see resolve), so
+    the format only has to keep private groups apart from each other and out
+    of the way of model names.
+    """
+    return f"~{owner_user_id}/{name}"
 
 
 def latest_benchmarks(
@@ -613,22 +639,93 @@ class RoutingTable:
     warnings: tuple[str, ...] = ()
     # Name -> every name of its alias group (see alias_groups).
     alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Private groups: owner -> group name -> table key (user_group_key), and
+    # the reverse, table key -> its members' model names (for key access)
+    # and labels (for listings).
+    user_groups: dict[int, dict[str, str]] = field(default_factory=dict)
+    private_models: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    private_labels: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Private group table keys that something can serve now.
+    private_reach: frozenset[str] = frozenset()
 
     def is_group(self, name: str) -> bool:
         return name in self.groups
 
-    def allows(self, access: ModelAccess | None, name: str) -> bool:
+    def resolve(self, owner_user_id: int | None, name: str) -> str:
+        """The table key a request for *name* routes as.
+
+        A user's private group of that name, for a request made by them (an
+        API key they issued, or their dashboard chat), wins over a model or
+        group of the same name. Anyone asking for a private group's table key
+        by itself gets :data:`UNROUTABLE`. Every other name is itself. Costs
+        nothing when nobody has a private group, and one or two dict lookups
+        when someone does.
+        """
+        if not self.private_models:
+            return name
+        if owner_user_id is not None:
+            mine = self.user_groups.get(owner_user_id)
+            if mine is not None:
+                key = mine.get(name)
+                if key is not None:
+                    return key
+        return UNROUTABLE if name in self.private_models else name
+
+    def allows(
+        self,
+        access: ModelAccess | None,
+        name: str,
+        owner_user_id: int | None = None,
+    ) -> bool:
         """Whether an API key limited to *access* may use *name* (None:
         unlimited). A group name is checked against the key's groups; any
-        other name against its models, under any alias."""
+        other name against its models, under any alias. A private group of
+        the key's owner is allowed when the key may use every member: the
+        owner can't widen a key an admin limited by grouping models."""
         if access is None:
             return True
+        key = self.resolve(owner_user_id, name)
+        if key != name:
+            models = self.private_models.get(key)
+            return models is not None and all(
+                self._allows_name(access, m) for m in models
+            )
+        return self._allows_name(access, name)
+
+    def _allows_name(self, access: ModelAccess, name: str) -> bool:
         if name in self.groups:
             return name in access.groups
         names = self.alias_names.get(name)
         if names is None:
             return name in access.models
         return not names.isdisjoint(access.models)
+
+    def private_listing(
+        self, owner_user_id: int | None, hub_only: bool = False
+    ) -> list[dict[str, Any]]:
+        """Model-list rows for the owner's private groups something serves,
+        shaped like :meth:`group_listing`'s. A hub never sees them."""
+        if hub_only or owner_user_id is None:
+            return []
+        mine = self.user_groups.get(owner_user_id)
+        if not mine:
+            return []
+        return [
+            {
+                "name": name,
+                "size": 0,
+                "digest": "",
+                "modified_at": None,
+                "details": {
+                    "family": "group",
+                    "group": True,
+                    "private": True,
+                    "members": list(self.private_labels.get(key, ())),
+                },
+            }
+            for name, key in sorted(mine.items())
+            if key in self.private_reach
+        ]
 
     def chaos_allows(
         self, access: ModelAccess | None, provider_id: int | None, model: str, path: str
@@ -751,7 +848,7 @@ class RoutingTable:
         """model -> mode -> first-choice provider name, for one endpoint."""
         rows: dict[str, dict[str, str]] = {}
         for (model, ep, mode), ranked in self.ranked.items():
-            if ep == endpoint and ranked:
+            if ep == endpoint and ranked and model not in self.private_models:
                 rows.setdefault(model, {})[mode] = ranked[0].provider.name
         return rows
 
@@ -808,6 +905,9 @@ class TableBase:
     groups: dict[str, tuple[str, ...]] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     alias_names: dict[str, frozenset[str]] = field(default_factory=dict)
+    user_groups: dict[int, dict[str, str]] = field(default_factory=dict)
+    private_models: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    private_labels: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def build_table(
@@ -915,6 +1015,7 @@ def reload(inputs: RoutingInputs) -> TableBase:
                         bucket.append(c)
 
     base.warnings = tuple(_add_groups(base, grouped, inputs))
+    _add_user_groups(base, grouped, inputs)
     base.candidates = {k: tuple(v) for k, v in grouped.items()}
 
     for protocol in PROTOCOLS:
@@ -955,6 +1056,9 @@ def rescore(
         groups=base.groups,
         warnings=base.warnings,
         alias_names=base.alias_names,
+        user_groups=base.user_groups,
+        private_models=base.private_models,
+        private_labels=base.private_labels,
     )
     hot: dict[int, set[str]] = {}
     rtt: dict[int, float | None] = {}
@@ -1035,6 +1139,12 @@ def rescore(
                 c.provider.hub_shared for c in bucket
             )
             table.group_reach[model] = (True, shared)
+    if base.private_models:
+        table.private_reach = frozenset(
+            model
+            for model, _path in table.all_candidates
+            if model in base.private_models
+        )
 
     table.built_at = time.time()
     table.build_ms = (time.perf_counter() - started) * 1000
@@ -1055,7 +1165,7 @@ def _measured_ttft(
     if stats is None:
         return out
     for (name, _path), cands in base.candidates.items():
-        if name in base.groups:
+        if name in base.groups or name in base.private_models:
             continue
         peers: dict[tuple[int, str], float] = {}
         for c in cands:
@@ -1148,3 +1258,56 @@ def _add_groups(
             if bucket:
                 grouped[(g.name, path)] = bucket
     return warnings
+
+
+def _add_user_groups(
+    table: TableBase,
+    grouped: dict[tuple[str, str], list[Candidate]],
+    inputs: RoutingInputs,
+) -> None:
+    """Add a candidate bucket per (private group, endpoint) to *grouped*,
+    under the group's :func:`user_group_key`.
+
+    Built like a router-wide group's (see :func:`_add_groups`), from the
+    model buckets alone: a member that names a router-wide group adds
+    nothing, as groups do not nest. Building them here, with the rest of the
+    table, keeps a request for one as cheap as a request for any model.
+    """
+    if not inputs.user_groups:
+        return
+    names = {p.id: p.name for p in inputs.providers}
+    model_buckets: dict[str, list[str]] = {}
+    for model, path in grouped:
+        if model not in table.groups:
+            model_buckets.setdefault(model, []).append(path)
+    for g in inputs.user_groups:
+        if g.owner_user_id is None:
+            continue
+        key = user_group_key(g.owner_user_id, g.name)
+        table.user_groups.setdefault(g.owner_user_id, {})[g.name] = key
+        table.private_models[key] = tuple(
+            dict.fromkeys(m.model_name for m in g.members)
+        )
+        table.private_labels[key] = tuple(
+            member_label(
+                m.model_name,
+                None if m.provider_id is None else names.get(m.provider_id, "?"),
+            )
+            for m in g.members
+        )
+        merged: dict[str, list[Candidate]] = {}
+        for m in g.members:
+            for path in model_buckets.get(m.model_name, ()):
+                bucket = merged.setdefault(path, [])
+                for c in grouped.get((m.model_name, path), ()):
+                    if m.provider_id is not None and c.provider_id != m.provider_id:
+                        continue
+                    if any(
+                        x.provider_id == c.provider_id and x.model == c.model
+                        for x in bucket
+                    ):
+                        continue
+                    bucket.append(c)
+        for path, bucket in merged.items():
+            if bucket:
+                grouped[(key, path)] = bucket

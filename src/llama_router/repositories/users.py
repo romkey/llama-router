@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..db_events import CHANGE_API_KEYS, _notifies
+from ..db_events import CHANGE_API_KEYS, CHANGE_USER_GROUPS, _notifies
 from ..db_sql import qmark
 from .base import Repository, _bind_params
 
@@ -219,9 +219,11 @@ class DashboardUserRepository(Repository):
             return True
         return await self.get_dashboard_user_by_id(user_id) is not None
 
+    @_notifies(CHANGE_USER_GROUPS)
     @_notifies(CHANGE_API_KEYS)
     async def delete_dashboard_user(self, user_id: int) -> None:
-        """Delete the user and the API keys they issued to themselves."""
+        """Delete the user, the API keys they issued to themselves and their
+        private model groups."""
         # Raise the floor new accounts start at above this account's version,
         # so its cookies stay dead if the id and username come back. One
         # transaction, and the floor only ever grows (GREATEST in SQL), so
@@ -248,6 +250,12 @@ class DashboardUserRepository(Repository):
             (seed, (_SESSION_FLOOR_KEY,)),
             (raise_floor, (user_id, _SESSION_FLOOR_KEY)),
             ("DELETE FROM api_keys WHERE owner_user_id = ?", (user_id,)),
+            (
+                "DELETE FROM user_model_group_members WHERE group_id IN "
+                "(SELECT id FROM user_model_groups WHERE owner_user_id = ?)",
+                (user_id,),
+            ),
+            ("DELETE FROM user_model_groups WHERE owner_user_id = ?", (user_id,)),
             ("DELETE FROM dashboard_users WHERE id = ?", (user_id,)),
         ]
         sf = self._require_session_factory()

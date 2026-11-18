@@ -18,11 +18,13 @@ async def listed_models(
     hub_only: bool = False,
     provider_id: int | None = None,
     access: ModelAccess | None = None,
+    owner_user_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Rows for ``/api/tags`` and ``/v1/models``, sorted by name.
 
     With *access* (an API key limited to some models and groups) only what
-    the key may use is listed.
+    the key may use is listed. With *owner_user_id* (the key's owner) their
+    private groups are listed too, hiding anything of the same name.
 
     Served models and groups come from the inputs of the current routing
     table, so listing reads no rows. A group appears once at least one member
@@ -42,18 +44,25 @@ async def listed_models(
         models = served_models(
             inputs, hub_only=hub_only, exclude_ids=exclude, only_id=provider_id
         )
-    if table is None or not table.groups or provider_id is not None:
+    if table is None or provider_id is not None:
+        return _allowed(models, table, access)
+    private = table.private_listing(owner_user_id, hub_only)
+    if not table.groups and not private:
         return _allowed(models, table, access)
     rows = [m for m in models if m["name"] not in table.groups]
     rows += table.group_listing(hub_only)
+    if private:
+        mine = {m["name"] for m in private}
+        rows = [m for m in rows if m["name"] not in mine] + private
     rows.sort(key=lambda m: str(m["name"]))
-    return _allowed(rows, table, access)
+    return _allowed(rows, table, access, owner_user_id)
 
 
 def _allowed(
     rows: list[dict[str, Any]],
     table: RoutingTable | None,
     access: ModelAccess | None,
+    owner_user_id: int | None = None,
 ) -> list[dict[str, Any]]:
     if access is None:
         return rows
@@ -61,11 +70,14 @@ def _allowed(
         # No routing table yet: names only, without aliases.
         names = access.models | access.groups
         return [m for m in rows if m["name"] in names]
-    return [m for m in rows if table.allows(access, str(m["name"]))]
+    return [m for m in rows if table.allows(access, str(m["name"]), owner_user_id)]
 
 
 async def key_allows(
-    router: Router | None, access: ModelAccess | None, name: str
+    router: Router | None,
+    access: ModelAccess | None,
+    name: str,
+    owner_user_id: int | None = None,
 ) -> bool:
     """Whether a key limited to *access* (None: any) may use *name*."""
     if access is None:
@@ -73,7 +85,7 @@ async def key_allows(
     table = await router.current_table() if router is not None else None
     if table is None:
         return name in access.models or name in access.groups
-    return table.allows(access, name)
+    return table.allows(access, name, owner_user_id)
 
 
 def served_models(

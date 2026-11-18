@@ -117,6 +117,8 @@ def _own_data_path(path: str) -> bool:
         path.startswith("/api/chat/")
         or path == "/api/my-keys"
         or path.startswith("/api/my-keys/")
+        or path == "/api/my-groups"
+        or path.startswith("/api/my-groups/")
     )
 
 
@@ -315,8 +317,9 @@ class DashboardAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if not user.is_admin:
-            # Everyone may chat and issue themselves API keys; those APIs
-            # only touch the user's own conversations and keys.
+            # Everyone may chat, issue themselves API keys and define their
+            # own model groups; those APIs only touch the user's own
+            # conversations, keys and groups.
             if request.method != "GET" and not _own_data_path(path):
                 return _forbidden(request)
             if non_admin_forbidden_get_path(path):

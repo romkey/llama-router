@@ -109,6 +109,7 @@ async def api_explain_routing(request: Request):
             key_id=key_id,
             locality=key.get("locality"),
             access=await model_access(db, key_id),
+            owner_user_id=key.get("owner_user_id"),
         )
         key_info = {"id": key_id, "key_prefix": key["key_prefix"]}
     else:

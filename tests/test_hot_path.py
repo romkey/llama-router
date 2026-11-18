@@ -135,6 +135,8 @@ async def _configure_everything(db: Database) -> tuple[str, int]:
     )
     await db.set_api_key_expiry(key_id, datetime.now(UTC) + timedelta(days=30))
     await db.set_api_key_model_pin(key_id, "other", a)
+    # The owner's private group, resolved on every request they make.
+    await db.create_user_model_group(owner, "mine", members=[("m", None)])
     return plaintext, key_id
 
 
@@ -162,6 +164,10 @@ async def test_warm_request_makes_no_database_calls_before_upstream(
     assert (await v1.post(CHAT, json=BODY, headers=headers)).status_code == 200
     spy = DbSpy(db, monkeypatch)
     resp = await v1.post(CHAT, json=BODY, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert calls_at_upstream[-1] == 0
+    # The owner's private group is resolved from the table, too.
+    resp = await v1.post(CHAT, json={**BODY, "model": "mine"}, headers=headers)
     assert resp.status_code == 200, resp.text
     assert calls_at_upstream[-1] == 0
 
@@ -209,8 +215,12 @@ async def test_route_with_benchmark_20_candidates(
 ) -> None:
     for n in range(20):
         await _provider(db, f"p{n}", startup=100.0 + n * 10, limit=4)
+    # Routed by a private group's name: the longest path, a resolve then
+    # the same 20 candidates.
+    owner = await db.create_dashboard_user("owner", "x", False)
+    await db.create_user_model_group(owner, "mine", members=[("m", None)])
     table = await rt.current_table()
-    prefs = RoutingPreferences(key_id=1, session_affinity=True)
+    prefs = RoutingPreferences(key_id=1, session_affinity=True, owner_user_id=owner)
     for n in range(20):
         # Some busy, so the queue cost is weighed.
         for _ in range(n % 3):
@@ -219,7 +229,7 @@ async def test_route_with_benchmark_20_candidates(
     def run() -> float:
         start = time.perf_counter()
         for i in range(500):
-            rt.route_with(table, "m", CHAT, prefs, session=f"s{i % 50}")
+            rt.route_with(table, "mine", CHAT, prefs, session=f"s{i % 50}")
         return time.perf_counter() - start
 
     run()

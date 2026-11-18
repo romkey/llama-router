@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}My model groups - llama-router{% endblock %}
+
+{% block content %}
+<h1 class="h2 mb-3"><i class="bi bi-collection me-2" aria-hidden="true"></i>My model groups</h1>
+
+{% if not dash_user %}
+<div class="alert alert-info">Sign in to define your own model groups.</div>
+{% else %}
+<p class="text-muted">
+    A model group is one name your programs can ask for like a model; each request goes to the best of its members.
+    These groups are yours alone: only requests made with your API keys, and your chats, can use them.
+    A group of yours wins over a model or shared group of the same name, for you.
+</p>
+
+<div class="row g-4">
+    <div class="col-lg-5">
+        <div class="card">
+            <div class="card-header"><h2 class="h5 mb-0" id="group-form-title">New group</h2></div>
+            <div class="card-body">
+                <input type="hidden" id="group-id">
+                <div class="mb-2">
+                    <label for="group-name" class="form-label small text-muted mb-1">Name</label>
+                    <input id="group-name" type="text" maxlength="255" class="form-control form-control-sm" placeholder="e.g. my-coder" autocomplete="off">
+                </div>
+                <div class="mb-2">
+                    <label for="group-description" class="form-label small text-muted mb-1">Description (optional)</label>
+                    <input id="group-description" type="text" maxlength="1000" class="form-control form-control-sm" autocomplete="off">
+                </div>
+                <fieldset class="mb-2">
+                    <legend class="form-label small text-muted mb-1">Members</legend>
+                    <ul class="list-group list-group-flush mb-2" id="group-members" aria-live="polite"></ul>
+                    <div class="row g-1">
+                        <div class="col-7">
+                            <label for="member-model" class="visually-hidden">Model</label>
+                            <input id="member-model" type="text" list="member-models" maxlength="255" class="form-control form-control-sm" placeholder="Model" autocomplete="off">
+                            <datalist id="member-models"></datalist>
+                        </div>
+                        <div class="col-5">
+                            <label for="member-provider" class="visually-hidden">Provider</label>
+                            <select id="member-provider" class="form-select form-select-sm">
+                                <option value="">Any provider</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="member-add">
+                        <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add member
+                    </button>
+                    <div class="form-text">At most {{ max_members }} members{% if max_groups %}, and {{ max_groups }} groups{% endif %}. A member is a model, on any provider or on one.</div>
+                </fieldset>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm btn-primary" id="group-save"><i class="bi bi-check-lg me-1" aria-hidden="true"></i>Save group</button>
+                    <button class="btn btn-sm btn-outline-secondary" id="group-cancel" hidden>Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-7">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h2 class="h5 mb-0">Your groups</h2>
+                <span class="badge bg-secondary" id="groups-count"></span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr><th>Name</th><th>Members</th><th>Goes to now</th><th><span class="visually-hidden">Actions</span></th></tr>
+                        </thead>
+                        <tbody id="groups-body">
+                            <tr><td colspan="4" class="text-muted">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if dash_user %}
+<script>
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+    });
+}
+
+var groups = [];
+var providers = {};
+var draft = [];
+
+function memberLabel(m) {
+    return m.model_name + (m.provider_id ? '@' + (providers[m.provider_id] || '?') : '');
+}
+
+function renderDraft() {
+    var el = document.getElementById('group-members');
+    if (!draft.length) { el.innerHTML = '<li class="list-group-item px-0 small text-muted">No members yet.</li>'; return; }
+    el.innerHTML = draft.map(function(m, i) {
+        return '<li class="list-group-item px-0 py-1 d-flex justify-content-between align-items-center small">' +
+            '<code>' + esc(memberLabel(m)) + '</code>' +
+            '<button type="button" class="btn btn-sm btn-link text-danger p-0" data-remove-member="' + i + '"' +
+            ' aria-label="Remove ' + esc(memberLabel(m)) + '"><i class="bi bi-x-lg" aria-hidden="true"></i></button></li>';
+    }).join('');
+}
+
+function resetForm() {
+    document.getElementById('group-id').value = '';
+    document.getElementById('group-name').value = '';
+    document.getElementById('group-description').value = '';
+    document.getElementById('group-form-title').textContent = 'New group';
+    document.getElementById('group-cancel').hidden = true;
+    draft = [];
+    renderDraft();
+}
+
+function editGroup(id) {
+    var g = groups.find(function(x) { return String(x.id) === String(id); });
+    if (!g) return;
+    document.getElementById('group-id').value = g.id;
+    document.getElementById('group-name').value = g.name;
+    document.getElementById('group-description').value = g.description || '';
+    document.getElementById('group-form-title').textContent = 'Edit ' + g.name;
+    document.getElementById('group-cancel').hidden = false;
+    draft = g.members.map(function(m) { return {model_name: m.model_name, provider_id: m.provider_id}; });
+    renderDraft();
+    document.getElementById('group-name').focus();
+}
+
+function loadGroups() {
+    fetch('/api/my-groups').then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    }).then(function(d) {
+        groups = d.groups;
+        providers = {};
+        d.providers.forEach(function(p) { providers[p.id] = p.name; });
+        document.getElementById('member-models').innerHTML = d.models.map(function(m) {
+            return '<option value="' + esc(m) + '">';
+        }).join('');
+        var sel = document.getElementById('member-provider');
+        sel.innerHTML = '<option value="">Any provider</option>' + d.providers.map(function(p) {
+            return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>';
+        }).join('');
+        document.getElementById('groups-count').textContent = groups.length;
+        var body = document.getElementById('groups-body');
+        if (!groups.length) { body.innerHTML = '<tr><td colspan="4" class="text-muted">No groups yet.</td></tr>'; return; }
+        body.innerHTML = groups.map(function(g) {
+            var members = g.members.map(function(m) {
+                return '<span class="badge ' + (m.available ? 'text-bg-light' : 'text-bg-warning') + ' me-1"' +
+                    (m.available ? '' : ' title="Nothing serves this now"') + '>' + esc(m.label) + '</span>';
+            }).join('') || '<span class="text-muted">none</span>';
+            var shadow = g.shadows ? '<div class="small text-muted">hides the shared ' + esc(g.shadows) + ' of this name, for you</div>' : '';
+            return '<tr><td><code>' + esc(g.name) + '</code>' +
+                (g.description ? '<div class="small text-muted">' + esc(g.description) + '</div>' : '') + shadow + '</td>' +
+                '<td class="small">' + members + '</td>' +
+                '<td class="small">' + (g.choice ? esc(g.choice) : '<span class="text-muted">nothing serves it</span>') + '</td>' +
+                '<td class="text-nowrap text-end">' +
+                '<button class="btn btn-sm btn-link" data-edit-group="' + esc(g.id) + '" aria-label="Edit group ' + esc(g.name) + '"><i class="bi bi-pencil-square" aria-hidden="true"></i></button>' +
+                '<button class="btn btn-sm btn-link text-danger" data-delete-group="' + esc(g.id) + '" data-name="' + esc(g.name) + '" aria-label="Delete group ' + esc(g.name) + '"><i class="bi bi-trash" aria-hidden="true"></i></button>' +
+                '</td></tr>';
+        }).join('');
+    }).catch(function(err) {
+        document.getElementById('groups-body').innerHTML = '<tr><td colspan="4" class="text-danger">' + esc(err.message) + '</td></tr>';
+    });
+}
+
+function send(method, url, body) {
+    return fetch(url, {
+        method: method,
+        headers: {'Content-Type': 'application/json'},
+        body: body ? JSON.stringify(body) : undefined
+    }).then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || 'Failed'); });
+        return r.json();
+    });
+}
+
+document.getElementById('member-add').addEventListener('click', function() {
+    var model = document.getElementById('member-model').value.trim();
+    if (!model) return;
+    var pid = document.getElementById('member-provider').value;
+    var m = {model_name: model, provider_id: pid ? Number(pid) : null};
+    if (!draft.some(function(x) { return x.model_name === m.model_name && x.provider_id === m.provider_id; })) draft.push(m);
+    document.getElementById('member-model').value = '';
+    renderDraft();
+});
+
+document.getElementById('group-save').addEventListener('click', function() {
+    var id = document.getElementById('group-id').value;
+    var body = {
+        name: document.getElementById('group-name').value.trim(),
+        description: document.getElementById('group-description').value.trim(),
+        members: draft
+    };
+    send(id ? 'PATCH' : 'POST', id ? '/api/my-groups/' + id : '/api/my-groups', body).then(function() {
+        resetForm();
+        // The router picks up the change within its rebuild debounce.
+        setTimeout(loadGroups, 1500);
+        loadGroups();
+    }).catch(function(err) { alert(err.message); });
+});
+
+document.getElementById('group-cancel').addEventListener('click', resetForm);
+
+document.addEventListener('click', function(ev) {
+    var btn = ev.target.closest('[data-remove-member]');
+    if (btn) { draft.splice(Number(btn.dataset.removeMember), 1); renderDraft(); return; }
+    btn = ev.target.closest('[data-edit-group]');
+    if (btn) { editGroup(btn.dataset.editGroup); return; }
+    btn = ev.target.closest('[data-delete-group]');
+    if (btn) {
+        if (!confirm('Delete group ' + btn.dataset.name + '? Requests for it stop working.')) return;
+        send('DELETE', '/api/my-groups/' + btn.dataset.deleteGroup).then(function() {
+            if (document.getElementById('group-id').value === btn.dataset.deleteGroup) resetForm();
+            loadGroups();
+        }).catch(function(err) { alert(err.message); });
+    }
+});
+
+renderDraft();
+loadGroups();
+</script>
+{% endif %}
+{% endblock %}
