@@ -415,9 +415,9 @@ def _prompt_tps_from_tail(tail: bytes) -> float | None:
 
 def refusal_worth_logging(request: Request, status_code: int) -> bool:
     """Whether an API refusal goes to the request log: 400, 401 and 403
-    always, 404 only with an API key, so scanners probing random paths
-    cannot fill the log."""
-    if status_code == 404:
+    always, 404 and 405 only with an API key, so scanners probing random
+    paths cannot fill the log."""
+    if status_code in (404, 405):
         return getattr(request.state, "api_key_id", None) is not None
     return status_code in (400, 401, 403)
 

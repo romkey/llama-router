@@ -10,6 +10,8 @@ from starlette.requests import Request
 
 from llama_router.api import deps as api_deps
 from llama_router.api.app import app as api_app
+from llama_router.auth import generate_api_key, key_prefix
+from llama_router.background import drain
 from llama_router.config import settings
 from llama_router.dashboard import deps as dash_deps
 from llama_router.dashboard.app import app as dashboard_app
@@ -17,12 +19,16 @@ from llama_router.dashboard.auth_core import hash_password
 from llama_router.dashboard.middleware import invalidate_dashboard_user_count_cache
 from llama_router.dashboard.routes.workers import _hub_url_hint
 from llama_router.database import Database
+from llama_router.endpoints import ENDPOINTS, RERANK_ALIASES
 from llama_router.llamacpp_api import deps as v1_deps
+from llama_router.llamacpp_api.app import app as v1_app
 from llama_router.provider_manager import ProviderManager
+from llama_router.provider_secrets import key_hash
 from llama_router.router import Router
 from llama_router.shared_port import SharedPortApp, api_routes, routes_to_api
 
 _ROUTES = api_routes(api_app)
+_SHARED = SharedPortApp(dashboard_app, api_app, v1_app)
 
 
 def _scope(method: str, path: str, kind: str = "http") -> dict:
@@ -61,6 +67,47 @@ def test_llm_routes_go_to_api(method: str, path: str) -> None:
     assert routes_to_api(_scope(method, path), _ROUTES)
 
 
+@pytest.mark.parametrize(
+    "path",
+    sorted(
+        {p for p in ENDPOINTS if not p.startswith("/api/")}
+        | RERANK_ALIASES
+        | {"/v1/messages/count_tokens"}
+    ),
+)
+def test_every_v1_endpoint_reaches_an_api(path: str) -> None:
+    # Guards against a route added to one API app but not the other.
+    assert _SHARED.app_for(_scope("POST", path)) in (api_app, v1_app)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/rerank",
+        "/rerank",
+        "/v1/reranking",
+        "/reranking",
+        "/v2/rerank",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+    ],
+)
+def test_openai_only_routes_go_to_openai_app(path: str) -> None:
+    assert _SHARED.app_for(_scope("POST", path)) is v1_app
+
+
+@pytest.mark.parametrize(
+    ("method", "path"), [("POST", "/v1/no-such-thing"), ("GET", "/v2/models")]
+)
+def test_unknown_api_paths_go_to_openai_app(method: str, path: str) -> None:
+    assert _SHARED.app_for(_scope(method, path)) is v1_app
+
+
+def test_shared_port_needs_an_api() -> None:
+    with pytest.raises(ValueError, match="at least one API app"):
+        SharedPortApp(dashboard_app)
+
+
 def test_worker_socket_goes_to_api() -> None:
     assert routes_to_api(_scope("", "/worker/ws", kind="websocket"), _ROUTES)
 
@@ -83,6 +130,7 @@ def test_worker_socket_goes_to_api() -> None:
 )
 def test_dashboard_routes_stay_on_dashboard(method: str, path: str) -> None:
     assert not routes_to_api(_scope(method, path), _ROUTES)
+    assert _SHARED.app_for(_scope(method, path)) is dashboard_app
 
 
 def test_lifespan_goes_to_dashboard() -> None:
@@ -108,10 +156,11 @@ async def shared_client(tmp_path, monkeypatch):
     await db.create_dashboard_user("admin", hash_password("pw-123456"), True)
     await db.set_allow_unauthenticated(False)
 
-    transport = ASGITransport(app=SharedPortApp(dashboard_app, api_app))
+    transport = ASGITransport(app=SharedPortApp(dashboard_app, api_app, v1_app))
     async with AsyncClient(
         transport=transport, base_url="http://testserver", follow_redirects=False
     ) as client:
+        client.db = db  # type: ignore[attr-defined]
         yield client
 
     await db.close()
@@ -143,6 +192,42 @@ async def test_api_key_auth_still_applies(shared_client) -> None:
     )
     assert r.status_code == 401
     assert "API-KEY" in r.json()["detail"]
+
+
+_RERANK = {"model": "reranker", "query": "q", "documents": ["a", "b"]}
+
+
+async def test_rerank_skips_dashboard_login_and_is_logged(shared_client) -> None:
+    r = await shared_client.post("/v1/rerank", json=_RERANK)
+    assert r.status_code == 401
+    assert "API key" in r.json()["detail"]
+    await drain()
+    (entry,) = await shared_client.db.get_request_logs(10, 0)
+    assert entry.endpoint == "/v1/rerank"
+    assert entry.status == "error"
+
+
+async def test_unknown_api_path_is_json_not_login(shared_client) -> None:
+    r = await shared_client.post("/v1/no-such-thing", json={})
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+    # Anonymous: kept out of the log so scanners cannot fill it.
+    await drain()
+    assert await shared_client.db.count_request_logs() == 0
+
+
+async def test_unknown_api_path_with_key_is_logged(shared_client) -> None:
+    db = shared_client.db
+    raw = generate_api_key()
+    await db.create_api_key(key_prefix(raw), key_hash(raw), "balanced", True)
+    r = await shared_client.post(
+        "/v1/no-such-thing", json={}, headers={"Authorization": f"Bearer {raw}"}
+    )
+    assert r.status_code == 404
+    await drain()
+    (entry,) = await db.get_request_logs(10, 0)
+    assert entry.endpoint == "/v1/no-such-thing"
+    assert "404" in (entry.error_detail or "")
 
 
 def _request(url: str, headers: dict[str, str] | None = None) -> Request:

@@ -368,6 +368,21 @@ async def routing_preferences_from_request(
     return prefs
 
 
+async def identify_refused_key(db: Database, request: Request) -> None:
+    """Record the API key of a request refused before any route checked it
+    (no such path, wrong method) on ``request.state.api_key_id``, so the
+    request log keeps refusals from real clients. Does nothing without a
+    key, and a key that fails to resolve leaves the state as it was."""
+    if getattr(request.state, "api_key_id", None) is not None:
+        return
+    if not client_api_key(request):
+        return
+    try:
+        await routing_preferences_from_request(db, request)
+    except Exception:
+        logger.debug("Could not identify refused request's key", exc_info=True)
+
+
 _CHARGED_STATE = "quota_charged"
 
 
