@@ -216,7 +216,9 @@ async def _serve(db: Database) -> int:
     lcpp_deps.init(db, pm, rt)
 
     dashboard_asgi = (
-        SharedPortApp(dash_app, api_app) if settings.api_on_dashboard_port else dash_app
+        SharedPortApp(dash_app, api_app, lcpp_app)
+        if settings.api_on_dashboard_port
+        else dash_app
     )
     dashboard_config = uvicorn.Config(
         dashboard_asgi,

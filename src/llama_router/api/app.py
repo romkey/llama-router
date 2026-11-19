@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .. import __version__
+from ..auth import identify_refused_key
 from ..config import settings
 from ..httpx_errors import install_upstream_error_handlers
 from ..limits import BodySizeLimitMiddleware
@@ -65,6 +66,9 @@ async def worker_socket(websocket: WebSocket) -> None:
 async def http_exception_handler(
     request: Request, exc: StarletteHTTPException
 ) -> JSONResponse:
+    if exc.status_code in (404, 405):
+        with contextlib.suppress(Exception):
+            await identify_refused_key(deps.get_db(), request)
     if refusal_worth_logging(request, exc.status_code):
         with contextlib.suppress(Exception):
             db = deps.get_db()

@@ -7,6 +7,20 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reranking and Anthropic Messages on the shared port**: with
+  `API_ON_DASHBOARD_PORT=true`, `/v1/rerank` (and `/rerank`,
+  `/v1/reranking`, `/reranking`, `/v2/rerank`), `/v1/messages` and
+  `/v1/messages/count_tokens` reached the dashboard, which redirected them
+  to `/login` and logged nothing. They now reach the API, like the other
+  `/v1` routes.
+- Any other `/v1/` or `/v2/` path on the shared port gets the API's JSON
+  404 or 405 instead of a login redirect.
+- A 404 or 405 from either API port goes to the request log when the
+  request carries a valid API key, as before for 404s on known routes.
+  Anonymous ones still stay out, so scanners cannot fill the log.
+
 ## [0.34.0] - 2026-11-18
 
 ### Added

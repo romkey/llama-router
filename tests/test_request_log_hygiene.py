@@ -81,6 +81,8 @@ def test_refusals_worth_logging() -> None:
     assert request_logger.refusal_worth_logging(_request(), 400)
     assert not request_logger.refusal_worth_logging(_request(), 404)
     assert request_logger.refusal_worth_logging(_request(5), 404)
+    assert not request_logger.refusal_worth_logging(_request(), 405)
+    assert request_logger.refusal_worth_logging(_request(5), 405)
     assert not request_logger.refusal_worth_logging(_request(5), 500)
 
 

@@ -32,7 +32,7 @@ SQLite is the default and fits a single router. To move to PostgreSQL, see
 | `LLAMACPP_PORT` | `8080` | OpenAI-compatible API port |
 | `METRICS_ENABLED` | `true` | Serve Prometheus metrics at `GET /metrics` on the dashboard port; see [metrics.md](metrics.md) |
 | `METRICS_TOKEN` | *(empty)* | Bearer token scrapers send to `/metrics`. Empty: the endpoint needs a dashboard sign-in, like the rest of the dashboard |
-| `API_ON_DASHBOARD_PORT` | `false` | Also serve the Ollama API, the OpenAI API, decisions and worker links on the dashboard port. The API ports keep listening either way. Require API keys before exposing it |
+| `API_ON_DASHBOARD_PORT` | `false` | Also serve the Ollama API, the OpenAI API (reranking and Anthropic Messages included), decisions and worker links on the dashboard port. The API ports keep listening either way. Require API keys before exposing it |
 
 ## Dashboard sign-in
 
