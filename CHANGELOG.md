@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-11-19
+
 ### Fixed
 
 - **Reranking and Anthropic Messages on the shared port**: with
