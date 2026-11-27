@@ -10,6 +10,7 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
+from llama_router.api.app import app as ollama_app
 from llama_router.background import drain
 from llama_router.database import Database
 from llama_router.endpoints import (
@@ -81,8 +82,8 @@ async def _serve(
     v1_deps.init(db, pm, Router(db, pm))
 
 
-def _client() -> httpx.AsyncClient:
-    transport = httpx.ASGITransport(app=v1_app, raise_app_exceptions=False)
+def _client(app: Any = v1_app) -> httpx.AsyncClient:
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     return httpx.AsyncClient(transport=transport, base_url="http://router")
 
 
@@ -175,6 +176,20 @@ async def test_rerank_proxies_and_logs(
         e.endpoint == path and e.status == "ok"
         for e in await db.get_request_logs(20, 0)
     )
+
+
+@pytest.mark.parametrize("path", ALIASES)
+async def test_ollama_port_serves_rerank(
+    db: Database, pm: ProviderManager, httpx_mock: HTTPXMock, path: str
+) -> None:
+    # A worker relays the hub's requests to its router's Ollama port; without
+    # rerank there, a hub probing through the worker finds it missing.
+    await _serve(db, pm, None)
+    httpx_mock.add_response(url=BASE + "/v1/rerank", json=ANSWER)
+    async with _client(ollama_app) as c:
+        resp = await c.post(path, json=BODY)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == ANSWER
 
 
 async def test_rerank_goes_to_the_route_the_probe_found(

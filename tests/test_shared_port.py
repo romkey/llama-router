@@ -82,15 +82,7 @@ def test_every_v1_endpoint_reaches_an_api(path: str) -> None:
 
 @pytest.mark.parametrize(
     "path",
-    [
-        "/v1/rerank",
-        "/rerank",
-        "/v1/reranking",
-        "/reranking",
-        "/v2/rerank",
-        "/v1/messages",
-        "/v1/messages/count_tokens",
-    ],
+    ["/v1/messages", "/v1/messages/count_tokens"],
 )
 def test_openai_only_routes_go_to_openai_app(path: str) -> None:
     assert _SHARED.app_for(_scope("POST", path)) is v1_app

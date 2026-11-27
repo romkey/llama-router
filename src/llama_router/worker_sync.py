@@ -29,8 +29,9 @@ def worker_protocol(targets: list[str]) -> ProviderProtocol:
     """The one protocol a worker provider is reached by.
 
     A worker that relays its own router offers both targets, and the router's
-    Ollama port also serves every OpenAI-style route, so the Ollama target
-    reaches everything. Use the OpenAI target only when it is all there is.
+    Ollama port also serves the OpenAI-style routes (all but ``/v1/messages``),
+    so the Ollama target reaches nearly everything. Use the OpenAI target only
+    when it is all there is.
     """
     if "ollama" in targets or "llamacpp" not in targets:
         return ProviderProtocol.OLLAMA

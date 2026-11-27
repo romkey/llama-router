@@ -20,6 +20,7 @@ from ..llamacpp_api.decisions import router as v1_decisions_router
 from ..llamacpp_api.embeddings import router as v1_embeddings_router
 from ..llamacpp_api.images import router as v1_images_router
 from ..llamacpp_api.models import router as v1_models_router
+from ..llamacpp_api.rerank import router as v1_rerank_router
 from ..llamacpp_api.responses import router as v1_responses_router
 from ..request_logger import log_request, refusal_worth_logging
 from ..router_identity import LoopGuardMiddleware
@@ -107,4 +108,7 @@ app.include_router(v1_decisions_router)
 app.include_router(v1_embeddings_router)
 app.include_router(v1_images_router)
 app.include_router(v1_models_router)
+# Workers relay the hub's requests to this port, so reranking must be here
+# too, or a hub probing or routing through a worker finds it missing.
+app.include_router(v1_rerank_router)
 app.include_router(v1_responses_router)

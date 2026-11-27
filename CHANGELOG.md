@@ -7,6 +7,15 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reranking through remote workers**: a worker relays the hub's requests
+  to its own router's Ollama port, which did not serve `/v1/rerank` or its
+  aliases. Probing a worker from the hub found reranking missing even when
+  the worker's own probe found it, and rerank requests routed through the
+  worker got a 404. The Ollama port now serves reranking too. Workers need
+  this release; probe them again from the hub after upgrading.
+
 ## [0.34.1] - 2026-11-19
 
 ### Fixed
