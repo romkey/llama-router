@@ -7,6 +7,8 @@ described in their git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [0.34.2] - 2026-11-27
+
 ### Fixed
 
 - **Reranking through remote workers**: a worker relays the hub's requests
