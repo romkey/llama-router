@@ -6,7 +6,7 @@ as the UI. The Ollama and OpenAI ports keep listening either way.
 
 A request goes to the first API app with a route that matches its path and
 method in full: the Ollama app (which also serves most ``/v1`` routes), then
-the OpenAI app, which alone has reranking and ``/v1/messages``. Any other
+the OpenAI app, which alone has ``/v1/messages``. Any other
 path under ``/v1/`` or ``/v2/`` goes to the OpenAI app too, so a client
 gets a JSON 404 or 405 (logged when it carries an API key) rather than a
 redirect to the dashboard login. Everything else, including ``/health``,
